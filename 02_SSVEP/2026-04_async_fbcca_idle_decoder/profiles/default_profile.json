@@ -1,0 +1,22 @@
+{
+  "freqs": [
+    8.0,
+    10.0,
+    12.0,
+    15.0
+  ],
+  "win_sec": 3.0,
+  "step_sec": 0.25,
+  "enter_score_th": 0.02,
+  "enter_ratio_th": 1.15,
+  "enter_margin_th": 0.003,
+  "exit_score_th": 0.017,
+  "exit_ratio_th": 1.0925,
+  "min_enter_windows": 2,
+  "min_exit_windows": 2,
+  "metadata": {
+    "source": "default_fallback",
+    "has_stat_model": false,
+    "requires_calibration": true
+  }
+}
