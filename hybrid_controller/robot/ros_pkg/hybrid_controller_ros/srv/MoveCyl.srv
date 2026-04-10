@@ -1,0 +1,6 @@
+float32 theta_deg
+float32 radius_mm
+float32 z_mm
+---
+bool ok
+string message

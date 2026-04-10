@@ -1,6 +1,0 @@
-# JetMax extra Python dependencies.
-# Do not install rospy or hiwonder here.
-# They should come from the official JetMax system image.
-numpy>=1.26,<3
-scipy>=1.11,<2
-opencv-python>=4.9,<5

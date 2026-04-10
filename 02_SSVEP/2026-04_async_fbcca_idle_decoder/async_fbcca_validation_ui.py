@@ -10,8 +10,8 @@ from pathlib import Path
 from typing import Any, Optional, Sequence
 
 import numpy as np
-from PyQt5.QtCore import QObject, QPoint, QRect, Qt, QThread, pyqtSignal, pyqtSlot
-from PyQt5.QtGui import QBrush, QColor, QFont, QPainter, QPen, QPolygon
+from PyQt5.QtCore import QObject, QRect, Qt, QThread, pyqtSignal, pyqtSlot
+from PyQt5.QtGui import QBrush, QColor, QFont, QPainter, QPen
 from PyQt5.QtWidgets import (
     QApplication,
     QDoubleSpinBox,
@@ -35,11 +35,11 @@ from async_fbcca_idle_standalone import (
     DEFAULT_MAX_TRANSIENT_READ_ERRORS,
     DEFAULT_BOARD_ID,
     DEFAULT_CALIBRATION_SEED,
+    DEFAULT_SERIAL_PORT,
     DEFAULT_PROFILE_PATH,
     DEFAULT_STREAM_WARMUP_SEC,
     AsyncDecisionGate,
     BoardShim,
-    BrainFlowInputParams,
     build_calibration_trials as build_calibration_trials_core,
     describe_runtime_error,
     ensure_stream_ready,
@@ -51,13 +51,16 @@ from async_fbcca_idle_standalone import (
     fit_threshold_profile,
     load_decoder_from_profile,
     load_profile,
+    normalize_serial_port,
     parse_freqs,
+    prepare_board_session,
     profile_is_default_fallback,
     profile_log_lr,
     read_recent_eeg_segment,
     resolve_selected_eeg_channels,
     require_brainflow,
     save_profile,
+    serial_port_is_auto,
     summarize_profile_quality,
     validate_calibration_plan,
 )
@@ -294,7 +297,10 @@ class FourArrowStimWidget(QWidget):
             self.decoder_state = "idle"
             self.stop_clock()
         else:
-            self.start_clock()
+            if self.flicker_enabled:
+                self.start_clock()
+            else:
+                self.stop_clock()
         self.update()
 
     def apply_result(self, payload: dict[str, Any]) -> None:
@@ -334,8 +340,11 @@ class FourArrowStimWidget(QWidget):
 
         width = self.width()
         height = self.height()
-        side = max(150, min(width, height) // 4)
-        padding = max(48, min(width, height) // 12)
+        layout_size = float(min(width, height))
+        side = int(max(120.0, layout_size * 0.24))
+        side = min(side, max(120, int(width * 0.28)), max(120, int(height * 0.28)))
+        side = min(side, max(80, width // 3), max(80, height // 3))
+        padding = int(max(30.0, layout_size * 0.09))
         cx, cy = width // 2, height // 2
         positions = [
             (cx - side // 2, padding),
@@ -361,38 +370,49 @@ class FourArrowStimWidget(QWidget):
             painter.setBrush(Qt.NoBrush)
             painter.drawRect(rect)
 
-            painter.setPen(Qt.black)
-            painter.setBrush(QBrush(Qt.black))
-            self.draw_arrow(
-                painter,
-                x + side // 2,
-                y + side // 2,
-                DIRECTION_EN[index].lower(),
-                side // 3,
+
+class DeviceConnectWorker(QObject):
+    connected = pyqtSignal(object)
+    error = pyqtSignal(str)
+    finished = pyqtSignal()
+
+    def __init__(self, *, serial_port: str, board_id: int) -> None:
+        super().__init__()
+        self.serial_port = normalize_serial_port(serial_port)
+        self.board_id = int(board_id)
+
+    @pyqtSlot()
+    def run(self) -> None:
+        board = None
+        try:
+            board, resolved_port, attempted_ports = prepare_board_session(self.board_id, self.serial_port)
+            actual_fs = int(BoardShim.get_sampling_rate(self.board_id))
+            eeg_channels = [int(item) for item in BoardShim.get_eeg_channels(self.board_id)]
+            board.start_stream(450000)
+            ready_samples = ensure_stream_ready(board, actual_fs)
+            self.connected.emit(
+                {
+                    "requested_serial_port": self.serial_port,
+                    "resolved_serial_port": resolved_port,
+                    "attempted_ports": attempted_ports,
+                    "sampling_rate": actual_fs,
+                    "eeg_channels": eeg_channels,
+                    "ready_samples": int(ready_samples),
+                }
             )
-
-            painter.setPen(QColor(230, 230, 230))
-            painter.setFont(QFont("Microsoft YaHei", max(14, side // 11), QFont.Bold))
-            label_text = f"{DIRECTION_CN[index]}  {float(freq):g}Hz"
-            text_rect = QRect(x - 12, y + side + 10, side + 24, 42)
-            painter.drawText(text_rect, Qt.AlignHCenter | Qt.AlignTop, label_text)
-
-    @staticmethod
-    def draw_arrow(painter: QPainter, x: int, y: int, direction: str, size: int) -> None:
-        half = size // 2
-        if direction == "up":
-            points = [(x, y - size), (x - half, y + half), (x + half, y + half)]
-        elif direction == "down":
-            points = [(x, y + size), (x - half, y - half), (x + half, y - half)]
-        elif direction == "left":
-            points = [(x - size, y), (x + half, y - half), (x + half, y + half)]
-        else:
-            points = [(x + size, y), (x - half, y - half), (x - half, y + half)]
-
-        polygon = QPolygon()
-        for px, py in points:
-            polygon.append(QPoint(int(px), int(py)))
-        painter.drawPolygon(polygon)
+        except Exception as exc:
+            self.error.emit(f"Connect failed: {describe_runtime_error(exc, serial_port=self.serial_port)}")
+        finally:
+            if board is not None:
+                try:
+                    board.stop_stream()
+                except Exception:
+                    pass
+                try:
+                    board.release_session()
+                except Exception:
+                    pass
+            self.finished.emit()
 
 
 class WorkflowWorker(QObject):
@@ -408,11 +428,14 @@ class WorkflowWorker(QObject):
         self.config = config
         self.mode = mode
         self._stop_event = threading.Event()
+        self._active_serial_port = normalize_serial_port(config.serial_port)
 
     @pyqtSlot()
     def run(self) -> None:
         board = None
         failed_message: Optional[str] = None
+        requested_serial = normalize_serial_port(self.config.serial_port)
+        self._active_serial_port = requested_serial
         try:
             if self.mode == "full":
                 validate_calibration_plan(
@@ -427,19 +450,22 @@ class WorkflowWorker(QObject):
                 {
                     "mode": PHASE_IDLE,
                     "title": "Preparing EEG device connection",
-                    "detail": f"Serial {self.config.serial_port} | Board ID {self.config.board_id}",
+                    "detail": f"Serial {requested_serial} | Board ID {self.config.board_id}",
                     "flicker": False,
                     "cue_freq": None,
                 }
             )
             self.log_message.emit("Connecting to BrainFlow device...")
-            params = BrainFlowInputParams()
-            params.serial_port = self.config.serial_port
-            board = BoardShim(self.config.board_id, params)
-            try:
-                board.prepare_session()
-            except Exception as exc:
-                raise RuntimeError(describe_runtime_error(exc, serial_port=self.config.serial_port)) from exc
+            board, resolved_port, attempted_ports = prepare_board_session(self.config.board_id, requested_serial)
+            self._active_serial_port = resolved_port
+            if serial_port_is_auto(requested_serial):
+                attempts = ", ".join(attempted_ports)
+                self.log_message.emit(
+                    f"Serial auto-select: requested={requested_serial} -> using {resolved_port} "
+                    f"(attempted: {attempts})"
+                )
+            else:
+                self.log_message.emit(f"Serial selected: {resolved_port}")
 
             actual_fs = BoardShim.get_sampling_rate(self.config.board_id)
             eeg_channels = BoardShim.get_eeg_channels(self.config.board_id)
@@ -448,7 +474,7 @@ class WorkflowWorker(QObject):
                 board.start_stream(450000)
                 ready_samples = ensure_stream_ready(board, actual_fs)
             except Exception as exc:
-                raise RuntimeError(describe_runtime_error(exc, serial_port=self.config.serial_port)) from exc
+                raise RuntimeError(describe_runtime_error(exc, serial_port=self._active_serial_port)) from exc
             time.sleep(DEFAULT_STREAM_WARMUP_SEC)
             board.get_board_data()
             self.log_message.emit(f"stream ready | buffered_samples={ready_samples}")
@@ -483,7 +509,7 @@ class WorkflowWorker(QObject):
             board.get_board_data()
             self._run_validation_robust(board, eeg_channels, actual_fs, profile)
         except Exception as exc:
-            failed_message = f"Workflow failed: {describe_runtime_error(exc, serial_port=self.config.serial_port)}"
+            failed_message = f"Workflow failed: {describe_runtime_error(exc, serial_port=self._active_serial_port)}"
             self.error_occurred.emit(failed_message)
         finally:
             if board is not None:
@@ -606,7 +632,7 @@ class WorkflowWorker(QObject):
                 failed_trials += 1
                 self.log_message.emit(
                     f"Calibration warning: skipped trial {index}/{total} ({trial.label}): "
-                    f"{describe_runtime_error(exc, serial_port=self.config.serial_port)}"
+                    f"{describe_runtime_error(exc, serial_port=self._active_serial_port)}"
                 )
                 if failed_trials >= DEFAULT_MAX_CALIBRATION_TRIAL_ERRORS:
                     raise RuntimeError(
@@ -639,7 +665,7 @@ class WorkflowWorker(QObject):
                 "Calibration profile fitting failed: "
                 f"usable_trials={len(trial_segments)}, "
                 f"failed_trials={failed_trials}. "
-                f"{describe_runtime_error(exc, serial_port=self.config.serial_port)}"
+                f"{describe_runtime_error(exc, serial_port=self._active_serial_port)}"
             ) from exc
         save_profile(profile, self.config.profile_path)
         summary = metadata.get("validation_summary", {})
@@ -716,7 +742,7 @@ class WorkflowWorker(QObject):
                 if consecutive_errors >= DEFAULT_MAX_TRANSIENT_READ_ERRORS:
                     raise RuntimeError(
                         "online decode aborted after repeated read failures: "
-                        f"{describe_runtime_error(exc, serial_port=self.config.serial_port)}"
+                        f"{describe_runtime_error(exc, serial_port=self._active_serial_port)}"
                     ) from exc
                 self._stop_event.wait(0.2)
                 continue
@@ -783,11 +809,13 @@ class AsyncValidationWindow(QMainWindow):
         self.windowed = bool(windowed)
         self.worker_thread: Optional[QThread] = None
         self.worker: Optional[WorkflowWorker] = None
+        self.connect_thread: Optional[QThread] = None
+        self.connect_worker: Optional[DeviceConnectWorker] = None
         self.last_result_signature: Optional[tuple[str, Optional[float]]] = None
         self.last_worker_error_message: Optional[str] = None
 
         self.initial_values = {
-            "serial_port": str(serial_port),
+            "serial_port": normalize_serial_port(serial_port),
             "board_id": int(board_id),
             "sampling_rate": int(sampling_rate),
             "refresh_rate_hz": float(refresh_rate_hz),
@@ -811,8 +839,6 @@ class AsyncValidationWindow(QMainWindow):
         self.setMinimumSize(1400, 860)
         if self.windowed:
             self.resize(1720, 980)
-        else:
-            self.showMaximized()
 
         root = QWidget(self)
         self.setCentralWidget(root)
@@ -1013,7 +1039,7 @@ class AsyncValidationWindow(QMainWindow):
         self.idle_repeats_spin.setRange(1, 30)
         self.idle_repeats_spin.setValue(self.initial_values["idle_repeats"])
 
-        form.addRow("Serial Port", self.serial_port_edit)
+        form.addRow("Serial Port (auto/COMx)", self.serial_port_edit)
         form.addRow("Board ID", self.board_id_spin)
         form.addRow("Display Refresh (Hz)", self.refresh_rate_spin)
         form.addRow("Frequencies", self.freqs_edit)
@@ -1024,6 +1050,10 @@ class AsyncValidationWindow(QMainWindow):
         form.addRow("Target Repeats", self.target_repeats_spin)
         form.addRow("idle repeats", self.idle_repeats_spin)
         layout.addLayout(form)
+
+        self.btn_connect_device = QPushButton("连接设备")
+        self.btn_connect_device.setStyleSheet("background-color: #2f7f8f; color: white;")
+        layout.addWidget(self.btn_connect_device)
 
         btn_row = QHBoxLayout()
         self.btn_start_full = QPushButton("Full Workflow")
@@ -1048,6 +1078,7 @@ class AsyncValidationWindow(QMainWindow):
         hint.setStyleSheet("color: #d7e8ee;")
         layout.addWidget(hint)
 
+        self.btn_connect_device.clicked.connect(self.connect_device)
         self.btn_start_full.clicked.connect(lambda: self.start_workflow("full"))
         self.btn_start_online.clicked.connect(lambda: self.start_workflow("online_only"))
         self.btn_stop.clicked.connect(self.stop_workflow)
@@ -1119,7 +1150,7 @@ class AsyncValidationWindow(QMainWindow):
         freqs = parse_freqs(self.freqs_edit.text())
         profile_path = Path(self.profile_path_edit.text().strip() or str(DEFAULT_PROFILE_PATH)).expanduser()
         config = WorkflowConfig(
-            serial_port=self.serial_port_edit.text().strip() or "COM3",
+            serial_port=normalize_serial_port(self.serial_port_edit.text().strip()),
             board_id=int(self.board_id_spin.value()),
             sampling_rate=self.initial_values["sampling_rate"],
             refresh_rate_hz=float(self.refresh_rate_spin.value()),
@@ -1150,6 +1181,7 @@ class AsyncValidationWindow(QMainWindow):
         self.btn_start_full.setEnabled(True)
         self.btn_start_online.setEnabled(True)
         self.btn_stop.setEnabled(False)
+        self.btn_connect_device.setEnabled(True)
         self.output_label.setText("No output")
         self.output_label.setStyleSheet("font-size: 32px; font-weight: bold; color: #dce5ea;")
         self.metrics_label.setText("Waiting to start. Full workflow calibrates first, then enters online validation.")
@@ -1167,6 +1199,10 @@ class AsyncValidationWindow(QMainWindow):
         self.btn_start_full.setEnabled(not running)
         self.btn_start_online.setEnabled(not running)
         self.btn_stop.setEnabled(running)
+        if self.connect_thread is None:
+            self.btn_connect_device.setEnabled(not running)
+        else:
+            self.btn_connect_device.setEnabled(False)
 
     def log(self, message: str) -> None:
         timestamp = time.strftime("%H:%M:%S")
@@ -1174,7 +1210,75 @@ class AsyncValidationWindow(QMainWindow):
         scroll_bar = self.log_text.verticalScrollBar()
         scroll_bar.setValue(scroll_bar.maximum())
 
+    def connect_device(self) -> None:
+        if self.worker_thread is not None:
+            self.log("Workflow is running; stop workflow before connecting device.")
+            return
+        if self.connect_thread is not None:
+            self.log("Device connection is already in progress.")
+            return
+        try:
+            config = self._collect_config("online_only")
+        except Exception as exc:
+            self.log(f"Invalid configuration: {exc}")
+            return
+        self.connect_thread = QThread(self)
+        self.connect_worker = DeviceConnectWorker(
+            serial_port=config.serial_port,
+            board_id=config.board_id,
+        )
+        self.connect_worker.moveToThread(self.connect_thread)
+        self.connect_thread.started.connect(self.connect_worker.run)
+        self.connect_worker.connected.connect(self.on_device_connected)
+        self.connect_worker.error.connect(self.on_device_connect_error)
+        self.connect_worker.finished.connect(self.connect_thread.quit)
+        self.connect_thread.finished.connect(self.connect_thread.deleteLater)
+        self.connect_thread.finished.connect(self._cleanup_connect_refs)
+        self.btn_connect_device.setEnabled(False)
+        self.btn_connect_device.setText("连接中...")
+        self.log(f"Connecting device (serial={config.serial_port}, board_id={config.board_id})...")
+        self.connect_thread.start()
+
+    @pyqtSlot(object)
+    def on_device_connected(self, payload: dict[str, Any]) -> None:
+        resolved_port = str(payload.get("resolved_serial_port", ""))
+        requested_port = str(payload.get("requested_serial_port", ""))
+        attempts = payload.get("attempted_ports") or []
+        sampling_rate = int(payload.get("sampling_rate", 0))
+        eeg_channels = payload.get("eeg_channels") or []
+        ready_samples = int(payload.get("ready_samples", 0))
+        if resolved_port:
+            self.serial_port_edit.setText(resolved_port)
+        self.log(
+            f"Device connected | requested={requested_port} -> {resolved_port} | "
+            f"fs={sampling_rate}Hz | eeg_channels={eeg_channels} | ready_samples={ready_samples}"
+        )
+        if attempts:
+            self.log(f"Serial attempts: {attempts}")
+        self.phase_label.setText("Device connected")
+        self._set_center_status(
+            title="Device connected",
+            detail=f"Serial {resolved_port} | fs={sampling_rate}Hz | channels={eeg_channels}",
+            state_text="CONNECTED",
+            output_text="Current output: No output",
+            accent="rgba(45, 132, 88, 230)",
+        )
+
+    @pyqtSlot(str)
+    def on_device_connect_error(self, message: str) -> None:
+        self.log(message)
+        self._set_center_status(
+            title="Device connect failed",
+            detail=str(message),
+            state_text="ERROR",
+            output_text="Current output: No output",
+            accent="rgba(176, 64, 64, 230)",
+        )
+
     def start_workflow(self, mode: str) -> None:
+        if self.connect_thread is not None:
+            self.log("Device connection is in progress, wait until it completes.")
+            return
         if self.worker_thread is not None:
             self.log("Workflow is already running.")
             return
@@ -1375,6 +1479,15 @@ class AsyncValidationWindow(QMainWindow):
     def _cleanup_worker_refs(self) -> None:
         self.worker = None
         self.worker_thread = None
+        if self.connect_thread is None:
+            self.btn_connect_device.setEnabled(True)
+
+    @pyqtSlot()
+    def _cleanup_connect_refs(self) -> None:
+        self.connect_worker = None
+        self.connect_thread = None
+        self.btn_connect_device.setText("连接设备")
+        self.btn_connect_device.setEnabled(self.worker_thread is None)
 
     def closeEvent(self, event) -> None:
         if self.worker is not None:
@@ -1382,13 +1495,16 @@ class AsyncValidationWindow(QMainWindow):
         if self.worker_thread is not None:
             self.worker_thread.quit()
             self.worker_thread.wait(3000)
+        if self.connect_thread is not None:
+            self.connect_thread.quit()
+            self.connect_thread.wait(3000)
         self.stim_widget.stop_clock()
         event.accept()
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="SSVEP async calibration + validation UI")
-    parser.add_argument("--serial-port", type=str, default="COM3")
+    parser.add_argument("--serial-port", type=str, default=DEFAULT_SERIAL_PORT)
     parser.add_argument("--board-id", type=int, default=DEFAULT_BOARD_ID)
     parser.add_argument("--sampling-rate", type=int, default=250)
     parser.add_argument("--refresh-rate", type=float, default=240.0)
@@ -1432,7 +1548,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         stim_phi=args.stim_phi,
         windowed=args.windowed,
     )
-    window.show()
+    if args.windowed:
+        window.show()
+    else:
+        window.showFullScreen()
     return int(app.exec_())
 
 

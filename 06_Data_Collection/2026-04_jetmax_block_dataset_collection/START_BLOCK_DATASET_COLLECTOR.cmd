@@ -1,9 +1,17 @@
 @echo off
 setlocal
 
-for %%I in ("%~dp0..\..\..") do set "PROJECT_ROOT=%%~fI"
-set "PYTHON=%PROJECT_ROOT%\.venv\Scripts\python.exe"
+for %%I in ("%~dp0..\..") do set "PROJECT_ROOT=%%~fI"
+set "RESOLVER=%PROJECT_ROOT%\tools\resolve_brain_python.cmd"
 set "SCRIPT=%~dp0block_dataset_collector.py"
+
+if not exist "%RESOLVER%" (
+  echo Interpreter resolver not found:
+  echo %RESOLVER%
+  exit /b 1
+)
+
+for /f "usebackq delims=" %%I in (`call "%RESOLVER%"`) do set "PYTHON=%%I"
 
 if not exist "%PYTHON%" (
   echo Python interpreter not found:

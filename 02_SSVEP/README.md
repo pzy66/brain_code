@@ -1,36 +1,70 @@
-# 02_SSVEP
+﻿# 02_SSVEP 目录说明与快速启动
 
-本目录存放 SSVEP 相关代码与运行入口。
+这个目录包含 SSVEP 相关代码与启动入口。当前推荐主线是：
 
-## 目录说明
-
-- `2026-03_realtime_ui_and_online_decoder/`
-  - 较早期实时 UI + 在线识别主线
 - `2026-04_async_fbcca_idle_decoder/`
-  - 当前异步识别主线（支持多模型 benchmark + 在线门控）
+
+该主线支持：
+
+- 异步识别（目标/Idle）
+- 多模型评测与排序
+- 单模型预训练 + 在线分类
+
+## 1. 目录结构（推荐关注）
+
+- `2026-04_async_fbcca_idle_decoder/`
+  - 当前主线（建议优先使用）
+- `2026-03_realtime_ui_and_online_decoder/`
+  - 较早期 UI + 在线识别实现
 - `2026-02_realtime_stimulus_and_classifier_core/`
-  - 更早的实时刺激/分类核心脚本
+  - 更早的实时刺激与分类核心
 - `2026-02_algorithms_and_data_tools/`
-  - 算法与数据工具脚本（离线分析）
+  - 算法与数据处理脚本
 - `2026-02_stimulus_variants/`
-  - 各类刺激脚本变体
+  - 刺激样式变体
 - `2026-02_custom_dataset_scripts/`
-  - 自采数据集相关脚本
+  - 自采数据相关脚本
 
-## 快速入口
+## 2. 一键入口（Python，推荐）
 
-- `START_ASYNC_SSVEP_COM4.cmd`
-  - 启动 async SSVEP 校验 UI（COM4，board_id=0）
-- `START_ASYNC_SSVEP_BENCHMARK_COM4.cmd`
-  - 启动多模型 benchmark（COM4，board_id=0）
-- `START_ASYNC_SSVEP_ONLINE_COM4.cmd`
-  - 用默认 profile 启动在线识别（COM4，board_id=0）
+只保留两个入口：
 
-## 推荐顺序
+- `START_MODEL_EVALUATION_UI.py`（多模型评测）
+- `START_FBCCA_REALTIME_UI.py`（单模型预训练 + 在线分类，默认 FBCCA）
 
-1. 先看：
-   - `2026-04_async_fbcca_idle_decoder/README.md`
-2. 再运行：
-   - `START_ASYNC_SSVEP_BENCHMARK_COM4.cmd`
-3. 然后运行：
-   - `START_ASYNC_SSVEP_ONLINE_COM4.cmd`
+直接运行：
+
+```powershell
+python .\START_MODEL_EVALUATION_UI.py --serial-port COM4
+python .\START_FBCCA_REALTIME_UI.py --serial-port COM4
+```
+
+## 3. PyCharm 直接运行
+
+直接在 PyCharm 里运行以下文件即可：
+
+- `START_MODEL_EVALUATION_UI.py`
+- `START_FBCCA_REALTIME_UI.py`
+
+默认参数可直接跑（`serial-port=auto`，`board-id=0`，`freqs=8,10,12,15`）。
+
+如果要固定 COM4，可在 PyCharm 的 Run Configuration 里加参数：
+
+```text
+--serial-port COM4
+```
+
+## 4. 建议使用顺序
+
+1. 先跑评测，选模型与阈值：
+   - `python .\START_MODEL_EVALUATION_UI.py --serial-port COM4`
+2. 再做单模型预训练 + 在线验证（默认 FBCCA）：
+   - `python .\START_FBCCA_REALTIME_UI.py --serial-port COM4`
+3. 需要脚本化时，直接使用：
+   - `2026-04_async_fbcca_idle_decoder\async_fbcca_idle_standalone.py`
+
+## 5. 详细文档
+
+完整流程、输出字段、验收与排障，请看：
+
+- `2026-04_async_fbcca_idle_decoder/README.md`

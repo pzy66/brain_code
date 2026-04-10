@@ -190,6 +190,9 @@ class TaskController:
             return
 
         if self.state == TaskState.S2_GRAB_CONFIRM and self.context.selected_target_command_point is not None:
+            if not self._selected_target_is_actionable():
+                effects.append(Effect("log", {"message": "Selected target is not actionable for PICK."}))
+                return
             if self.context.robot_busy:
                 effects.append(Effect("log", {"message": "Robot is still moving; wait before confirming PICK."}))
                 return
@@ -206,6 +209,9 @@ class TaskController:
             return
 
         if self.state == TaskState.S3_DECISION:
+            if not self.context.carrying:
+                effects.append(Effect("log", {"message": "Cannot confirm PLACE without a carried target."}))
+                return
             if self.context.robot_busy:
                 effects.append(Effect("log", {"message": "Robot is still moving; wait before confirming PLACE."}))
                 return
@@ -236,11 +242,40 @@ class TaskController:
         if target_index < 0 or target_index >= len(self.context.frozen_targets):
             return
         target = self.context.frozen_targets[target_index]
+        target_actionable = bool(getattr(target, "actionable", True))
+        target_invalid_reason = str(getattr(target, "invalid_reason", "")).strip()
+        if not target_actionable:
+            effects.append(
+                Effect(
+                    "log",
+                    {
+                        "message": (
+                            f"Rejected target slot {target_index + 1}: "
+                            f"not actionable ({target_invalid_reason or 'invalid_target'})."
+                        )
+                    },
+                )
+            )
+            return
+        command_mode = str(getattr(target, "command_mode", "pixel")).strip().lower()
+        command_point = self._normalize_command_point(getattr(target, "command_point", None))
+        if command_mode not in {"pixel", "world", "cyl"} or command_point is None:
+            effects.append(
+                Effect(
+                    "log",
+                    {
+                        "message": (
+                            f"Rejected target slot {target_index + 1}: "
+                            f"unsupported command payload mode={command_mode!r} point={getattr(target, 'command_point', None)!r}."
+                        )
+                    },
+                )
+            )
+            return
         self.context.selected_target_id = target.id
         self.context.selected_target_raw_center = target.raw_center
-        self.context.selected_target_command_mode = str(getattr(target, "command_mode", "pixel"))
-        command_point = getattr(target, "command_point", None)
-        self.context.selected_target_command_point = None if command_point is None else tuple(command_point)
+        self.context.selected_target_command_mode = command_mode
+        self.context.selected_target_command_point = command_point
         self._set_state(TaskState.S2_GRAB_CONFIRM, effects)
 
     def _handle_robot_ack(self, event: Event, effects: list[Effect]) -> None:
@@ -315,9 +350,24 @@ class TaskController:
         self.state = new_state
         effects.append(Effect("state_changed", {"from": old_state.value, "to": new_state.value}))
 
+    def _selected_target_is_actionable(self) -> bool:
+        command_mode = str(self.context.selected_target_command_mode or "").strip().lower()
+        if command_mode not in {"pixel", "world", "cyl"}:
+            return False
+        return self._normalize_command_point(self.context.selected_target_command_point) is not None
+
+    @staticmethod
+    def _normalize_command_point(value: object) -> tuple[float, float] | None:
+        if not isinstance(value, (list, tuple)) or len(value) < 2:
+            return None
+        try:
+            return (float(value[0]), float(value[1]))
+        except (TypeError, ValueError):
+            return None
+
     def _resolve_move_delta(self, event: Event) -> tuple[float, float]:
         value = event.value
-        step = float(self.config.sim_move_step_mm if event.source == "sim" else self.config.mi_step_mm)
+        step = float(self.config.sim_move_step_mm)
         if isinstance(value, dict):
             if "dx" in value or "dy" in value:
                 return float(value.get("dx", 0.0)), float(value.get("dy", 0.0))
@@ -334,15 +384,15 @@ class TaskController:
 
     def _resolve_move_cyl_delta(self, event: Event) -> tuple[float, float]:
         value = event.value
-        theta_step = float(self.config.teleop_theta_step_deg if event.source == "sim" else self.config.teleop_theta_step_deg)
-        radius_step = float(self.config.teleop_radius_step_mm if event.source == "sim" else self.config.mi_step_mm)
+        theta_step = float(self.config.teleop_theta_step_deg)
+        radius_step = float(self.config.teleop_radius_step_mm)
         if isinstance(value, dict):
             if "dtheta" in value or "dr" in value:
                 return float(value.get("dtheta", 0.0)), float(value.get("dr", 0.0))
             value = value.get("direction")
         mapping = {
-            "left": (-theta_step, 0.0),
-            "right": (theta_step, 0.0),
+            "left": (theta_step, 0.0),
+            "right": (-theta_step, 0.0),
             "forward": (0.0, radius_step),
             "backward": (0.0, -radius_step),
         }
@@ -355,17 +405,12 @@ class TaskController:
             return {"ok": False, "message": f"Radius {radius_mm:.2f} mm is outside limits."}
         if not within_limits(z_mm, self.config.robot_height_limits_mm):
             return {"ok": False, "message": f"Height {z_mm:.2f} mm is outside limits."}
-        x_mm, y_mm, _ = cylindrical_to_cartesian(theta_deg, radius_mm, z_mm)
-        if not within_limits(x_mm, self.config.robot_limits_x):
-            return {"ok": False, "message": f"X {x_mm:.2f} mm is outside safe bounds."}
-        if not within_limits(y_mm, self.config.robot_limits_y):
-            return {"ok": False, "message": f"Y {y_mm:.2f} mm is outside safe bounds."}
         margin = min(
-            x_mm - self.config.robot_limits_x[0],
-            self.config.robot_limits_x[1] - x_mm,
-            y_mm - self.config.robot_limits_y[0],
-            self.config.robot_limits_y[1] - y_mm,
+            theta_deg - self.config.robot_theta_limits_deg[0],
+            self.config.robot_theta_limits_deg[1] - theta_deg,
             radius_mm - self.config.robot_radius_limits_mm[0],
+            self.config.robot_radius_limits_mm[1] - radius_mm,
+            z_mm - self.config.robot_height_limits_mm[0],
             self.config.robot_height_limits_mm[1] - z_mm,
         )
         return {"ok": True, "message": None, "margin": float(margin), "neutral_distance": abs(z_mm - self.config.robot_auto_z_preferred_mm)}

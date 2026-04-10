@@ -39,7 +39,7 @@
 在 PowerShell 中运行：
 
 ```powershell
-& "C:\Users\P1233\Desktop\brain\.venv\Scripts\python.exe" `
+& "C:\Users\P1233\miniconda3\envs\brain-vision\python.exe" `
   "C:\Users\P1233\Desktop\brain\brain_code\06_Data_Collection\2026-04_jetmax_block_dataset_collection\block_dataset_collector.py"
 ```
 
@@ -54,7 +54,7 @@
 - `Script path`
   - `C:\Users\P1233\Desktop\brain\brain_code\06_Data_Collection\2026-04_jetmax_block_dataset_collection\block_dataset_collector.py`
 - `Python interpreter`
-  - `C:\Users\P1233\Desktop\brain\.venv\Scripts\python.exe`
+  - `C:\Users\P1233\miniconda3\envs\brain-vision\python.exe`
 - `Working directory`
   - `C:\Users\P1233\Desktop\brain`
 
@@ -174,7 +174,7 @@ C:\Users\P1233\Desktop\brain\dataset\camara\captures\
 示例：
 
 ```powershell
-& "C:\Users\P1233\Desktop\brain\.venv\Scripts\python.exe" `
+& "C:\Users\P1233\miniconda3\envs\brain-vision\python.exe" `
   "C:\Users\P1233\Desktop\brain\brain_code\06_Data_Collection\2026-04_jetmax_block_dataset_collection\block_dataset_collector.py" `
   --source "0" `
   --output-root "C:\Users\P1233\Desktop\brain\dataset\camara\captures" `

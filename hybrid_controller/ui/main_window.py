@@ -1,302 +1,838 @@
 from __future__ import annotations
 
+import math
 import time
 
 try:
-    from PyQt5.QtCore import Qt, pyqtSignal
-    from PyQt5.QtGui import QBrush, QColor, QFont, QPainter, QPen
-    from PyQt5.QtWidgets import QHBoxLayout, QLabel, QMainWindow, QPushButton, QTextEdit, QVBoxLayout, QWidget
+    from PyQt5.QtCore import QEvent, QPointF, Qt, pyqtSignal
+    from PyQt5.QtGui import QBrush, QColor, QFont, QPainter, QPainterPath, QPen
+    from PyQt5.QtWidgets import (
+        QApplication,
+        QComboBox,
+        QFrame,
+        QHBoxLayout,
+        QLabel,
+        QMainWindow,
+        QPushButton,
+        QTextEdit,
+        QVBoxLayout,
+        QWidget,
+    )
 except ImportError as error:  # pragma: no cover - UI import guard
     raise RuntimeError("PyQt5 is required to use hybrid_controller.ui.main_window") from error
+
+from hybrid_controller.snapshot import AppSnapshot
+from hybrid_controller.ui.vision_feed_widget import VisionFeedWidget
+
+AUTO_PROFILE_VALUE = "__AUTO_PROFILE__"
+_UNCHANGED = object()
 
 
 class ControlSceneWidget(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._snapshot: dict[str, object] | None = None
-        self.setMinimumHeight(300)
+        self.setMinimumHeight(240)
 
     def update_scene(self, snapshot: dict[str, object] | None) -> None:
         self._snapshot = snapshot
         self.update()
 
+    @staticmethod
+    def _world_from_cyl(theta_deg: float, radius_mm: float) -> tuple[float, float]:
+        theta_rad = math.radians(float(theta_deg))
+        x_mm = float(radius_mm) * math.sin(theta_rad)
+        y_mm = -float(radius_mm) * math.cos(theta_rad)
+        return (x_mm, y_mm)
+
+    def _iter_world_points(self) -> list[tuple[float, float]]:
+        if not self._snapshot:
+            return []
+        points: list[tuple[float, float]] = [(0.0, 0.0)]
+        home_pose = self._snapshot.get("home_pose")
+        if isinstance(home_pose, (list, tuple)) and len(home_pose) >= 2:
+            points.append((float(home_pose[0]), float(home_pose[1])))
+        robot_xy = self._snapshot.get("robot_xy")
+        if isinstance(robot_xy, (list, tuple)) and len(robot_xy) >= 2:
+            points.append((float(robot_xy[0]), float(robot_xy[1])))
+
+        limits_cyl = self._snapshot.get("limits_cyl")
+        limits_cyl_auto = self._snapshot.get("limits_cyl_auto")
+        for limits in (limits_cyl, limits_cyl_auto):
+            if not isinstance(limits, dict):
+                continue
+            theta_limits = tuple(limits.get("theta_deg", (-120.0, 120.0)))
+            radius_limits = tuple(limits.get("radius_mm", (50.0, 230.0)))
+            for theta_deg in (float(theta_limits[0]), float(theta_limits[1])):
+                for radius_mm in (float(radius_limits[0]), float(radius_limits[1])):
+                    points.append(self._world_from_cyl(theta_deg, radius_mm))
+        return points
+
+    def _build_map_point(self, margin: int, width: int, height: int):
+        points = self._iter_world_points()
+        if not points:
+            def fallback(world_xy: tuple[float, float]) -> tuple[float, float]:
+                return (margin + width / 2.0, margin + height / 2.0)
+            return fallback
+
+        xs = [point[0] for point in points]
+        ys = [point[1] for point in points]
+        min_x = min(xs)
+        max_x = max(xs)
+        min_y = min(ys)
+        max_y = max(ys)
+        span_x = max(1.0, max_x - min_x)
+        span_y = max(1.0, max_y - min_y)
+        scale = min(width / span_x, height / span_y)
+        draw_w = span_x * scale
+        draw_h = span_y * scale
+        offset_x = margin + (width - draw_w) / 2.0
+        offset_y = margin + (height - draw_h) / 2.0
+
+        def map_point(world_xy: tuple[float, float]) -> tuple[float, float]:
+            x_mm = float(world_xy[0])
+            y_mm = float(world_xy[1])
+            px = offset_x + (x_mm - min_x) * scale
+            py = offset_y + (max_y - y_mm) * scale
+            return (px, py)
+
+        return map_point
+
+    def _build_annular_sector_path(
+        self,
+        map_point,
+        theta_limits: tuple[float, float],
+        radius_limits: tuple[float, float],
+        *,
+        steps: int = 72,
+    ) -> QPainterPath:
+        theta_min = float(theta_limits[0])
+        theta_max = float(theta_limits[1])
+        radius_min = max(0.0, float(radius_limits[0]))
+        radius_max = max(radius_min, float(radius_limits[1]))
+        step_count = max(8, int(steps))
+
+        outer_points: list[QPointF] = []
+        inner_points: list[QPointF] = []
+        for index in range(step_count + 1):
+            ratio = index / step_count
+            theta_deg = theta_min + (theta_max - theta_min) * ratio
+            outer_xy = self._world_from_cyl(theta_deg, radius_max)
+            inner_xy = self._world_from_cyl(theta_deg, radius_min)
+            outer_px = map_point(outer_xy)
+            inner_px = map_point(inner_xy)
+            outer_points.append(QPointF(float(outer_px[0]), float(outer_px[1])))
+            inner_points.append(QPointF(float(inner_px[0]), float(inner_px[1])))
+
+        path = QPainterPath()
+        if not outer_points:
+            return path
+        path.moveTo(outer_points[0])
+        for point in outer_points[1:]:
+            path.lineTo(point)
+        for point in reversed(inner_points):
+            path.lineTo(point)
+        path.closeSubpath()
+        return path
+
     def paintEvent(self, event) -> None:  # noqa: N802
+        del event
         qp = QPainter(self)
         qp.setRenderHint(QPainter.Antialiasing)
         qp.fillRect(self.rect(), QColor(20, 24, 30))
         if not self._snapshot:
             qp.setPen(QColor(220, 220, 220))
-            qp.drawText(self.rect(), Qt.AlignCenter, "Control scene unavailable")
+            qp.drawText(self.rect(), Qt.AlignCenter, "Pose map unavailable")
             return
 
-        limits_x = tuple(self._snapshot["limits_x"])
-        limits_y = tuple(self._snapshot["limits_y"])
-        margin = 24
+        margin = 18
         width = max(10, self.width() - margin * 2)
         height = max(10, self.height() - margin * 2)
+        map_point = self._build_map_point(margin, width, height)
+        limits_cyl = self._snapshot.get("limits_cyl") or {}
+        limits_cyl_auto = self._snapshot.get("limits_cyl_auto") or {}
+        theta_limits = tuple(limits_cyl.get("theta_deg", (-120.0, 120.0)))
+        radius_limits = tuple(limits_cyl.get("radius_mm", (50.0, 280.0)))
+        auto_theta_limits = tuple(limits_cyl_auto.get("theta_deg", theta_limits))
+        auto_radius_limits = tuple(limits_cyl_auto.get("radius_mm", radius_limits))
 
-        def map_point(world_xy: tuple[float, float]) -> tuple[float, float]:
-            x, y = world_xy
-            px = margin + (float(x) - float(limits_x[0])) / (float(limits_x[1]) - float(limits_x[0])) * width
-            py = margin + (float(limits_y[1]) - float(y)) / (float(limits_y[1]) - float(limits_y[0])) * height
-            return px, py
+        full_path = self._build_annular_sector_path(map_point, theta_limits, radius_limits)
+        qp.setPen(QPen(QColor(85, 150, 225, 220), 2))
+        qp.setBrush(QBrush(QColor(65, 120, 190, 35)))
+        qp.drawPath(full_path)
 
-        qp.setPen(QPen(QColor(90, 160, 220), 2, Qt.DashLine))
-        qp.setBrush(Qt.NoBrush)
-        qp.drawRect(margin, margin, width, height)
+        auto_path = self._build_annular_sector_path(map_point, auto_theta_limits, auto_radius_limits)
+        qp.setPen(QPen(QColor(100, 220, 205, 220), 2))
+        qp.setBrush(QBrush(QColor(80, 220, 180, 55)))
+        qp.drawPath(auto_path)
 
-        home_x, home_y, _ = self._snapshot["home_pose"]
-        hx, hy = map_point((home_x, home_y))
+        origin_x, origin_y = map_point((0.0, 0.0))
+        qp.setPen(QPen(QColor(180, 200, 220), 2))
+        qp.setBrush(QBrush(QColor(180, 200, 220, 140)))
+        qp.drawEllipse(int(origin_x) - 4, int(origin_y) - 4, 8, 8)
+
+        home_pose = self._snapshot.get("home_pose") or (0.0, -120.0, 160.0)
+        hx, hy = map_point((float(home_pose[0]), float(home_pose[1])))
         qp.setPen(QPen(QColor(80, 220, 180), 2))
         qp.setBrush(QBrush(QColor(80, 220, 180, 90)))
         qp.drawRect(int(hx) - 6, int(hy) - 6, 12, 12)
-        qp.drawText(int(hx) + 8, int(hy) - 8, "HOME")
+        qp.drawText(int(hx) + 6, int(hy) - 6, "HOME")
 
-        qp.setFont(QFont("Arial", 10, QFont.Bold))
-        for slot in self._snapshot.get("pick_slots", []):
-            sx, sy = map_point(tuple(slot["world_xy"]))
-            if slot["occupied"]:
-                fill = QColor(245, 170, 60)
-            else:
-                fill = QColor(90, 90, 90)
-            outline = QColor(255, 220, 80) if slot.get("selected") else QColor(240, 240, 240)
-            qp.setPen(QPen(outline, 2))
-            qp.setBrush(QBrush(fill))
-            qp.drawEllipse(int(sx) - 12, int(sy) - 12, 24, 24)
-            qp.drawText(int(sx) - 8, int(sy) - 18, str(slot["slot_id"]))
-
-        for slot in self._snapshot.get("place_slots", []):
-            sx, sy = map_point(tuple(slot["world_xy"]))
-            fill = QColor(70, 180, 120) if slot["occupied"] else QColor(50, 90, 70)
-            qp.setPen(QPen(QColor(190, 255, 210), 2))
-            qp.setBrush(QBrush(fill))
-            qp.drawRect(int(sx) - 14, int(sy) - 10, 28, 20)
-            qp.drawText(int(sx) - 10, int(sy) - 16, str(slot["slot_id"]))
-
-        robot_x, robot_y = map_point(tuple(self._snapshot["robot_xy"]))
+        robot_xy = self._snapshot.get("robot_xy") or (0.0, 0.0)
+        robot_x, robot_y = map_point((float(robot_xy[0]), float(robot_xy[1])))
         qp.setPen(QPen(QColor(255, 90, 90), 2))
         qp.setBrush(QBrush(QColor(255, 90, 90)))
-        qp.drawEllipse(int(robot_x) - 10, int(robot_y) - 10, 20, 20)
-        if self._snapshot.get("carrying_target_id") is not None:
-            qp.setPen(QPen(QColor(255, 235, 120), 1))
-            qp.setBrush(QBrush(QColor(255, 235, 120)))
-            qp.drawEllipse(int(robot_x) - 4, int(robot_y) - 24, 8, 8)
+        qp.drawEllipse(int(robot_x) - 9, int(robot_y) - 9, 18, 18)
 
         qp.setPen(QColor(230, 230, 230))
-        qp.setFont(QFont("Arial", 9))
+        qp.setFont(QFont("Consolas", 9))
+        cyl = self._snapshot.get("robot_cyl") or {}
         qp.drawText(
-            margin,
-            self.height() - 10,
-            f"phase={self._snapshot.get('action_phase')} busy={self._snapshot.get('busy_action')} "
-            f"ack={self._snapshot.get('last_ack')} err={self._snapshot.get('last_error')}",
+            12,
+            self.height() - 12,
+            "theta={:.1f} r={:.1f} z={:.1f}".format(
+                float(cyl.get("theta_deg", 0.0)),
+                float(cyl.get("radius_mm", 0.0)),
+                float(cyl.get("z_mm", 0.0)),
+            ),
         )
 
 
 class MainWindow(QMainWindow):
     key_pressed = pyqtSignal(str)
     key_released = pyqtSignal(str)
+    robot_start_requested = pyqtSignal()
+    robot_connect_requested = pyqtSignal()
     abort_requested = pyqtSignal()
     reset_requested = pyqtSignal()
+    ssvep_connect_requested = pyqtSignal()
+    ssvep_pretrain_requested = pyqtSignal()
+    ssvep_load_profile_requested = pyqtSignal()
+    ssvep_open_profile_dir_requested = pyqtSignal()
+    ssvep_stim_toggled = pyqtSignal(bool)
+    ssvep_start_requested = pyqtSignal()
+    ssvep_stop_requested = pyqtSignal()
+    manual_pick_slot_requested = pyqtSignal(int)
+    manual_place_requested = pyqtSignal()
+    pick_radius_bias_delta_requested = pyqtSignal(float)
+    pick_bias_reset_requested = pyqtSignal()
+    pick_theta_bias_delta_requested = pyqtSignal(float)
+    pick_theta_bias_reset_requested = pyqtSignal()
 
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Hybrid Controller v1")
-        self.resize(980, 760)
+        self.resize(1440, 920)
+        self.setFocusPolicy(Qt.StrongFocus)
 
         root = QWidget(self)
-        layout = QVBoxLayout(root)
+        main_layout = QVBoxLayout(root)
+        main_layout.setContentsMargins(12, 12, 12, 12)
+        main_layout.setSpacing(10)
 
-        self.state_label = QLabel("State: idle")
-        self.sources_label = QLabel("Sources: move=sim decision=sim robot=fake vision=fake")
-        self.simulation_label = QLabel("Simulation: profile=formal scenario=basic enabled=True")
-        self.robot_label = QLabel("Robot: disconnected")
-        self.timer_label = QLabel("Timer: --")
-        self.cyl_label = QLabel("Robot Cyl: --")
-        self.targets_label = QLabel("Targets: []")
-        self.freq_map_label = QLabel("Freq map: []")
-        self.selection_label = QLabel("Selection: none")
-        self.raw_input_label = QLabel("Raw: mi=-- ssvep=--")
-        self.status_label = QLabel("Status: ready")
-        self.preflight_label = QLabel("Preflight: --")
+        self.top_status_label = QLabel("State: idle | Sources: --")
+        self.top_status_label.setObjectName("topStatus")
+        self.top_status_label.setStyleSheet("font: 12pt 'Consolas'; color: #E6E6E6;")
+        main_layout.addWidget(self.top_status_label)
+
+        content_layout = QHBoxLayout()
+        content_layout.setSpacing(10)
+        main_layout.addLayout(content_layout, stretch=1)
+
+        self.vision_widget = VisionFeedWidget(refresh_rate_hz=240.0)
+        self._vision_frame_cache = None
+        self._vision_packet_cache: dict[str, object] | None = None
+        self._vision_flash_cache = False
+        self._vision_status_cache = "Waiting for vision runtime..."
+        self._vision_last_frame_obj_id: int | None = None
+        self._vision_last_packet_frame_id: int | None = None
+        self._vision_last_flash: bool | None = None
+        self._vision_last_status: str | None = None
+        content_layout.addWidget(self.vision_widget, stretch=5)
+
+        right_panel = QFrame()
+        right_panel.setFrameShape(QFrame.StyledPanel)
+        right_panel.setMinimumWidth(330)
+        right_panel.setMaximumWidth(380)
+        right_panel.setStyleSheet("QFrame { background: #171B22; border: 1px solid #2E3540; }")
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(10, 10, 10, 10)
+        right_layout.setSpacing(8)
+
+        pose_title = QLabel("Robot Pose")
+        pose_title.setStyleSheet("font: bold 11pt 'Arial'; color: #F0F4F8;")
+        right_layout.addWidget(pose_title)
         self.scene_widget = ControlSceneWidget()
-        self.scene_view = QTextEdit()
-        self.scene_view.setReadOnly(True)
-        self.log_view = QTextEdit()
-        self.log_view.setReadOnly(True)
+        right_layout.addWidget(self.scene_widget)
+
+        controls_row = QHBoxLayout()
+        self.robot_start_button = QPushButton("启动机械臂")
+        self.robot_connect_button = QPushButton("连接机器人")
         self.abort_button = QPushButton("Abort")
         self.reset_button = QPushButton("Reset")
-        controls_row = QHBoxLayout()
+        controls_row.addWidget(self.robot_start_button)
+        controls_row.addWidget(self.robot_connect_button)
         controls_row.addWidget(self.abort_button)
         controls_row.addWidget(self.reset_button)
+        right_layout.addLayout(controls_row)
 
+        self.robot_start_button.clicked.connect(self.robot_start_requested.emit)
+        self.robot_connect_button.clicked.connect(self.robot_connect_requested.emit)
         self.abort_button.clicked.connect(self.abort_requested.emit)
         self.reset_button.clicked.connect(self.reset_requested.emit)
 
-        for widget in (
-            self.state_label,
-            self.sources_label,
-            self.simulation_label,
+        pick_title = QLabel("Pick/Place Debug")
+        pick_title.setStyleSheet("font: bold 11pt 'Arial'; color: #F0F4F8;")
+        right_layout.addWidget(pick_title)
+
+        pick_row = QHBoxLayout()
+        self.pick_slot1_button = QPushButton("Pick 1")
+        self.pick_slot2_button = QPushButton("Pick 2")
+        self.pick_slot3_button = QPushButton("Pick 3")
+        self.pick_slot4_button = QPushButton("Pick 4")
+        pick_row.addWidget(self.pick_slot1_button)
+        pick_row.addWidget(self.pick_slot2_button)
+        pick_row.addWidget(self.pick_slot3_button)
+        pick_row.addWidget(self.pick_slot4_button)
+        right_layout.addLayout(pick_row)
+
+        pick_row2 = QHBoxLayout()
+        self.place_now_button = QPushButton("Place")
+        pick_row2.addWidget(self.place_now_button)
+        right_layout.addLayout(pick_row2)
+
+        pick_bias_row = QHBoxLayout()
+        self.pick_r_minus_1_button = QPushButton("r-1")
+        self.pick_r_plus_1_button = QPushButton("r+1")
+        self.pick_r_reset_button = QPushButton("r reset")
+        pick_bias_row.addWidget(self.pick_r_minus_1_button)
+        pick_bias_row.addWidget(self.pick_r_plus_1_button)
+        pick_bias_row.addWidget(self.pick_r_reset_button)
+        right_layout.addLayout(pick_bias_row)
+
+        pick_theta_bias_row = QHBoxLayout()
+        self.pick_theta_minus_1_button = QPushButton("th-1")
+        self.pick_theta_plus_1_button = QPushButton("th+1")
+        self.pick_theta_reset_button = QPushButton("th reset")
+        pick_theta_bias_row.addWidget(self.pick_theta_minus_1_button)
+        pick_theta_bias_row.addWidget(self.pick_theta_plus_1_button)
+        pick_theta_bias_row.addWidget(self.pick_theta_reset_button)
+        right_layout.addLayout(pick_theta_bias_row)
+
+        self.pick_r_bias_label = QLabel("Pick r bias: +0.0 mm")
+        self.pick_r_bias_label.setStyleSheet("font: 10pt 'Consolas'; color: #D8DEE9; border: none;")
+        right_layout.addWidget(self.pick_r_bias_label)
+        self.pick_theta_bias_label = QLabel("Pick theta bias: +0.0 deg")
+        self.pick_theta_bias_label.setStyleSheet("font: 10pt 'Consolas'; color: #D8DEE9; border: none;")
+        right_layout.addWidget(self.pick_theta_bias_label)
+
+        self.pick_slot1_button.clicked.connect(lambda: self.manual_pick_slot_requested.emit(1))
+        self.pick_slot2_button.clicked.connect(lambda: self.manual_pick_slot_requested.emit(2))
+        self.pick_slot3_button.clicked.connect(lambda: self.manual_pick_slot_requested.emit(3))
+        self.pick_slot4_button.clicked.connect(lambda: self.manual_pick_slot_requested.emit(4))
+        self.place_now_button.clicked.connect(self.manual_place_requested.emit)
+        self.pick_r_minus_1_button.clicked.connect(lambda: self.pick_radius_bias_delta_requested.emit(-1.0))
+        self.pick_r_plus_1_button.clicked.connect(lambda: self.pick_radius_bias_delta_requested.emit(1.0))
+        self.pick_r_reset_button.clicked.connect(self.pick_bias_reset_requested.emit)
+        self.pick_theta_minus_1_button.clicked.connect(lambda: self.pick_theta_bias_delta_requested.emit(-1.0))
+        self.pick_theta_plus_1_button.clicked.connect(lambda: self.pick_theta_bias_delta_requested.emit(1.0))
+        self.pick_theta_reset_button.clicked.connect(self.pick_theta_bias_reset_requested.emit)
+
+        ssvep_title = QLabel("SSVEP")
+        ssvep_title.setStyleSheet("font: bold 11pt 'Arial'; color: #F0F4F8;")
+        right_layout.addWidget(ssvep_title)
+
+        ssvep_row_1 = QHBoxLayout()
+        self.ssvep_connect_button = QPushButton("连接设备")
+        self.ssvep_pretrain_button = QPushButton("开始预训练")
+        ssvep_row_1.addWidget(self.ssvep_connect_button)
+        ssvep_row_1.addWidget(self.ssvep_pretrain_button)
+        right_layout.addLayout(ssvep_row_1)
+
+        ssvep_row_2 = QHBoxLayout()
+        self.ssvep_profile_combo = QComboBox()
+        self.ssvep_profile_combo.addItem("自动（最新训练）", AUTO_PROFILE_VALUE)
+        self.ssvep_profile_combo.setMinimumContentsLength(18)
+        self.ssvep_profile_combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.ssvep_load_profile_button = QPushButton("加载选中")
+        ssvep_row_2.addWidget(self.ssvep_profile_combo, stretch=1)
+        ssvep_row_2.addWidget(self.ssvep_load_profile_button)
+        right_layout.addLayout(ssvep_row_2)
+
+        ssvep_row_3 = QHBoxLayout()
+        self.ssvep_open_profile_dir_button = QPushButton("打开 Profile 目录")
+        ssvep_row_3.addWidget(self.ssvep_open_profile_dir_button)
+        right_layout.addLayout(ssvep_row_3)
+
+        self.ssvep_profile_hint_label = QLabel("当前没有已训练 Profile，可先预训练，或直接用默认 fallback 启动。")
+        self.ssvep_profile_hint_label.setWordWrap(True)
+        self.ssvep_profile_hint_label.setStyleSheet(
+            "font: 9pt 'Microsoft YaHei'; color: #C9D4DF; border: none;"
+        )
+        right_layout.addWidget(self.ssvep_profile_hint_label)
+
+        ssvep_row_4 = QHBoxLayout()
+        self.ssvep_stim_toggle_button = QPushButton("开启SSVEP刺激")
+        self.ssvep_stim_toggle_button.setCheckable(True)
+        self.ssvep_recognition_toggle_button = QPushButton("开启SSVEP识别")
+        self.ssvep_recognition_toggle_button.setCheckable(True)
+        ssvep_row_4.addWidget(self.ssvep_stim_toggle_button)
+        ssvep_row_4.addWidget(self.ssvep_recognition_toggle_button)
+        right_layout.addLayout(ssvep_row_4)
+
+        self.ssvep_connect_button.clicked.connect(self.ssvep_connect_requested.emit)
+        self.ssvep_pretrain_button.clicked.connect(self.ssvep_pretrain_requested.emit)
+        self.ssvep_load_profile_button.clicked.connect(self.ssvep_load_profile_requested.emit)
+        self.ssvep_open_profile_dir_button.clicked.connect(self.ssvep_open_profile_dir_requested.emit)
+        self.ssvep_stim_toggle_button.toggled.connect(self.ssvep_stim_toggled.emit)
+        self.ssvep_recognition_toggle_button.toggled.connect(self._on_ssvep_recognition_toggled)
+
+        self.robot_label = QLabel("Robot: disconnected")
+        self.robot_label.setWordWrap(True)
+        self.preflight_label = QLabel("Preflight: --")
+        self.preflight_label.setWordWrap(True)
+        self.cyl_label = QLabel("Robot Cyl: --")
+        self.cyl_label.setWordWrap(True)
+        self.selection_label = QLabel("Selection: none")
+        self.selection_label.setWordWrap(True)
+        self.targets_label = QLabel("Slots: []")
+        self.targets_label.setWordWrap(True)
+        self.raw_input_label = QLabel("Input: mi=-- ssvep=--")
+        self.raw_input_label.setWordWrap(True)
+        self.status_label = QLabel("Status: ready")
+        self.status_label.setWordWrap(True)
+        self.ssvep_profile_label = QLabel("SSVEP Profile: --")
+        self.ssvep_profile_label.setWordWrap(True)
+        self.ssvep_runtime_label = QLabel("SSVEP Runtime: --")
+        self.ssvep_runtime_label.setWordWrap(True)
+        self.ssvep_result_label = QLabel("SSVEP Raw: --")
+        self.ssvep_result_label.setWordWrap(True)
+        for label in (
             self.robot_label,
-            self.timer_label,
+            self.preflight_label,
             self.cyl_label,
-            self.targets_label,
-            self.freq_map_label,
             self.selection_label,
+            self.targets_label,
             self.raw_input_label,
             self.status_label,
-            self.preflight_label,
-            self.scene_widget,
-            self.scene_view,
-            self.log_view,
+            self.ssvep_profile_label,
+            self.ssvep_runtime_label,
+            self.ssvep_result_label,
         ):
-            if widget is self.scene_widget:
-                layout.addLayout(controls_row)
-            layout.addWidget(widget)
+            label.setStyleSheet("font: 10pt 'Consolas'; color: #D8DEE9; border: none;")
+            right_layout.addWidget(label)
+
+        right_layout.addStretch(1)
+        content_layout.addWidget(right_panel, stretch=0)
+
+        self.bottom_status_label = QLabel("Vision: --")
+        self.bottom_status_label.setStyleSheet("font: 10pt 'Consolas'; color: #E6E6E6;")
+        main_layout.addWidget(self.bottom_status_label)
+
+        self.log_view = QTextEdit()
+        self.log_view.setReadOnly(True)
+        self.log_view.setMinimumHeight(110)
+        self.log_view.setStyleSheet("background: #11151B; color: #D8DEE9; font: 9pt 'Consolas';")
+        main_layout.addWidget(self.log_view)
 
         self.setCentralWidget(root)
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
 
-    def update_snapshot(
-        self,
-        snapshot: dict[str, object],
-        runtime_info: dict[str, object],
-        *,
-        simulation_snapshot: dict[str, object] | None = None,
-    ) -> None:
-        state = snapshot["state"]
-        context = snapshot["context"]
-        self.state_label.setText(f"State: {state}")
-        self.sources_label.setText(
-            "Sources: "
-            f"move={runtime_info['move_source']} decision={runtime_info['decision_source']} "
-            f"robot={runtime_info['robot_mode']} vision={runtime_info['vision_mode']}"
-        )
-        self.simulation_label.setText(
-            "Simulation: "
-            f"enabled={runtime_info['simulation_enabled']} profile={runtime_info['timing_profile']} "
-            f"scenario={runtime_info['scenario_name']}"
-        )
-        self.robot_label.setText(
-            "Robot: "
-            f"connected={runtime_info['robot_connected']} health={runtime_info['robot_health']} "
-            f"last_ack={runtime_info['last_robot_ack']} last_err={runtime_info['last_robot_error']}"
-        )
+    def shutdown(self) -> None:
+        app = QApplication.instance()
+        if app is not None:
+            try:
+                app.removeEventFilter(self)
+            except Exception:
+                pass
+        self.vision_widget.shutdown()
 
-        deadline = context["motion_deadline_ts"]
-        if deadline:
-            remaining = max(0.0, float(deadline) - time.time())
-            timer_text = f"{remaining:.1f}s remaining"
+    def eventFilter(self, watched, event):  # noqa: N802
+        event_type = event.type()
+        if event_type not in (QEvent.KeyPress, QEvent.KeyRelease):
+            return super().eventFilter(watched, event)
+        if not self.isActiveWindow():
+            return super().eventFilter(watched, event)
+        if event.isAutoRepeat():
+            return False
+        token = self._key_to_token(event.key())
+        if token is None:
+            return super().eventFilter(watched, event)
+        if event_type == QEvent.KeyPress:
+            self.key_pressed.emit(token)
         else:
-            timer_text = "--"
-        self.timer_label.setText(f"Timer: {timer_text}")
-        robot_cyl = runtime_info.get("robot_cyl")
-        if robot_cyl is None and simulation_snapshot:
-            robot_cyl = simulation_snapshot.get("robot_cyl")
-        auto_z = runtime_info.get("auto_z_current")
-        control_kernel = runtime_info.get("control_kernel")
-        if control_kernel is None and simulation_snapshot:
-            control_kernel = simulation_snapshot.get("control_kernel")
-        self.cyl_label.setText(
-            "Robot Cyl: "
-            f"{robot_cyl} auto_z={auto_z} kernel={control_kernel} "
-            f"limits={runtime_info.get('limits_cyl')}"
+            self.key_released.emit(token)
+        event.accept()
+        return True
+
+    def update_snapshot(self, snapshot: AppSnapshot) -> None:
+        self.update_panels(snapshot)
+
+    def update_panels(self, snapshot: AppSnapshot) -> None:
+        state = snapshot.task_state
+        robot = snapshot.robot
+        vision = snapshot.vision
+        ssvep = snapshot.ssvep
+
+        self._set_label_text(
+            self.top_status_label,
+            "State={} | move={} decision={} robot={} vision={} | timer={}".format(
+                state,
+                snapshot.move_source,
+                snapshot.decision_source,
+                snapshot.robot_mode,
+                snapshot.vision_mode,
+                self._format_timer(snapshot.motion_deadline_ts),
+            )
+        )
+        self._set_label_text(
+            self.robot_label,
+            "Robot: connected={} health={} ack={} err={}".format(
+                robot.connected,
+                robot.health,
+                robot.last_ack,
+                robot.last_error,
+            )
+        )
+        self._set_label_text(
+            self.preflight_label,
+            "Preflight: ok={} calibration_ready={} msg={}".format(
+                robot.preflight_ok,
+                robot.calibration_ready,
+                robot.preflight_message,
+            )
+        )
+        robot_cyl = robot.robot_cyl
+        if robot_cyl is None and robot.scene_snapshot:
+            robot_cyl = robot.scene_snapshot.get("robot_cyl")
+        self._set_label_text(
+            self.cyl_label,
+            "Robot Cyl: {} | auto_z={} | kernel={}".format(
+                robot_cyl,
+                robot.auto_z_current,
+                robot.control_kernel,
+            )
+        )
+        self._set_label_text(
+            self.selection_label,
+            "Selection: id={} raw_center={}".format(
+                snapshot.selected_target_id,
+                snapshot.selected_target_raw_center,
+            )
+        )
+        if vision.packet is not None:
+            slot_summaries = []
+            mapping_mode = str(vision.packet.get("mapping_mode", "absolute_base"))
+            for slot in vision.packet.get("slots", []):
+                if not isinstance(slot, dict) or not slot.get("valid"):
+                    continue
+                summary = self._format_slot_summary(slot)
+                if summary:
+                    slot_summaries.append(summary)
+            self._set_label_text(
+                self.targets_label,
+                "Slots({}): {}".format(mapping_mode, ", ".join(slot_summaries) if slot_summaries else "[]"),
+            )
+        else:
+            self._set_label_text(self.targets_label, f"Slots: {[target['id'] for target in snapshot.frozen_targets]}")
+        self._set_label_text(self.raw_input_label, "Input: ssvep={}".format(snapshot.last_ssvep_raw))
+        self._set_label_text(
+            self.status_label,
+            "Status: robot={} error={} carrying={} vision={}".format(
+                snapshot.last_robot_status,
+                snapshot.last_error,
+                snapshot.carrying,
+                vision.health,
+            )
+        )
+        self._set_label_text(
+            self.ssvep_profile_label,
+            "SSVEP Profile: model={} source={} debug={} count={}\n{}\nlatest={}\nlast_pretrain={}".format(
+                ssvep.model_name,
+                ssvep.profile_source,
+                ssvep.debug_keyboard,
+                ssvep.profile_count,
+                ssvep.profile_path,
+                ssvep.latest_profile_path,
+                ssvep.last_pretrain_time,
+            )
+        )
+        self._set_label_text(
+            self.ssvep_runtime_label,
+            "SSVEP Runtime: running={} busy={} connected={} mode={} status={} err={}".format(
+                ssvep.running,
+                ssvep.busy,
+                ssvep.connected,
+                ssvep.mode,
+                ssvep.runtime_status,
+                ssvep.last_error,
+            )
+        )
+        self._set_label_text(
+            self.ssvep_result_label,
+            "SSVEP Raw: state={} selected={} margin={} ratio={} stable={}".format(
+                ssvep.last_state,
+                ssvep.last_selected_freq,
+                ssvep.last_margin,
+                ssvep.last_ratio,
+                ssvep.last_stable_windows,
+            )
+        )
+        self._set_label_text(
+            self.bottom_status_label,
+            "Vision: {} | SSVEP mode={} | target_freq_map={}".format(
+                vision.health,
+                ssvep.mode,
+                list(snapshot.target_frequency_map),
+            )
         )
 
-        frozen_targets = context["frozen_targets"]
-        self.targets_label.setText(f"Targets: {[target['id'] for target in frozen_targets]}")
-        self.freq_map_label.setText(f"Freq map: {runtime_info['target_frequency_map']}")
-        self.selection_label.setText(
-            "Selection: "
-            f"id={context['selected_target_id']} raw_center={context['selected_target_raw_center']}"
+        self._set_label_text(self.ssvep_profile_hint_label, str(ssvep.status_hint))
+        self._update_profile_combo(
+            ssvep.available_profiles,
+            selected_path=ssvep.profile_path,
+            auto_selected=ssvep.profile_source in {"latest", "fallback", "default", "current", "uninitialized"},
         )
-        self.raw_input_label.setText(
-            f"Raw: mi={runtime_info['last_mi_raw']} ssvep={runtime_info['last_ssvep_raw']}"
+        self._set_button_text(self.ssvep_connect_button, "重新连接设备" if ssvep.connected else "连接设备")
+        self._set_button_enabled(self.ssvep_connect_button, not ssvep.busy)
+        self._set_button_enabled(self.ssvep_pretrain_button, ssvep.connected and not ssvep.busy)
+        self._set_button_enabled(self.ssvep_load_profile_button, not ssvep.busy)
+        stim_enabled = bool(ssvep.stim_enabled)
+        self._set_button_checked(self.ssvep_stim_toggle_button, stim_enabled)
+        self._set_button_text(self.ssvep_stim_toggle_button, "关闭SSVEP刺激" if stim_enabled else "开启SSVEP刺激")
+        self._set_button_enabled(self.ssvep_stim_toggle_button, True)
+
+        recognition_enabled = bool(ssvep.running)
+        self._set_button_checked(self.ssvep_recognition_toggle_button, recognition_enabled)
+        self._set_button_text(
+            self.ssvep_recognition_toggle_button,
+            "关闭SSVEP识别" if recognition_enabled else "开启SSVEP识别",
         )
-        self.status_label.setText(
-            "Status: "
-            f"robot={context['last_robot_status']} error={context['last_error']} carrying={context['carrying']} "
-            f"vision={runtime_info['vision_health']}"
+        self._set_button_enabled(
+            self.ssvep_recognition_toggle_button,
+            recognition_enabled or (ssvep.connected and not ssvep.busy),
         )
-        self.preflight_label.setText(
-            "Preflight: "
-            f"ok={runtime_info.get('preflight_ok')} "
-            f"calibration_ready={runtime_info.get('calibration_ready')} "
-            f"message={runtime_info.get('preflight_message', '--')}"
+        self._set_button_enabled(self.ssvep_open_profile_dir_button, True)
+        self._set_button_text(
+            self.robot_start_button,
+            "启动中..." if robot.start_active else ("重启机械臂" if robot.connected else "启动机械臂"),
         )
-        self.scene_widget.update_scene(simulation_snapshot)
-        self.scene_view.setPlainText(self._format_scene(simulation_snapshot))
+        self._set_button_enabled(self.robot_start_button, not robot.start_active)
+        self._set_button_text(self.robot_connect_button, "重连机器人" if robot.connected else "连接机器人")
+        self._set_button_enabled(self.robot_connect_button, not robot.start_active)
+        manual_enabled = bool(robot.connected)
+        self._set_button_enabled(self.pick_slot1_button, manual_enabled)
+        self._set_button_enabled(self.pick_slot2_button, manual_enabled)
+        self._set_button_enabled(self.pick_slot3_button, manual_enabled)
+        self._set_button_enabled(self.pick_slot4_button, manual_enabled)
+        self._set_button_enabled(self.place_now_button, manual_enabled)
+        self._set_button_enabled(self.pick_r_minus_1_button, manual_enabled)
+        self._set_button_enabled(self.pick_r_plus_1_button, manual_enabled)
+        self._set_button_enabled(self.pick_r_reset_button, manual_enabled)
+        self._set_button_enabled(self.pick_theta_minus_1_button, manual_enabled)
+        self._set_button_enabled(self.pick_theta_plus_1_button, manual_enabled)
+        self._set_button_enabled(self.pick_theta_reset_button, manual_enabled)
+
+        self.scene_widget.update_scene(robot.scene_snapshot)
+
+    def update_vision_payload(
+        self,
+        *,
+        frame_bgr=_UNCHANGED,
+        packet=_UNCHANGED,
+        flash_enabled: bool | None = None,
+        status_text: str | None = None,
+        force: bool = False,
+    ) -> None:
+        if frame_bgr is not _UNCHANGED:
+            self._vision_frame_cache = frame_bgr
+        if packet is not _UNCHANGED:
+            self._vision_packet_cache = packet
+        if flash_enabled is not None:
+            self._vision_flash_cache = bool(flash_enabled)
+        if status_text is not None:
+            self._vision_status_cache = str(status_text)
+
+        frame_obj_id = None if self._vision_frame_cache is None else id(self._vision_frame_cache)
+        packet_frame_id = None
+        if isinstance(self._vision_packet_cache, dict):
+            raw_frame_id = self._vision_packet_cache.get("frame_id")
+            if raw_frame_id is not None:
+                try:
+                    packet_frame_id = int(raw_frame_id)
+                except (TypeError, ValueError):
+                    packet_frame_id = None
+
+        changed = force
+        changed = changed or (frame_obj_id != self._vision_last_frame_obj_id)
+        changed = changed or (packet_frame_id != self._vision_last_packet_frame_id)
+        changed = changed or (self._vision_flash_cache != self._vision_last_flash)
+        changed = changed or (self._vision_status_cache != self._vision_last_status)
+        if not changed:
+            return
+
+        self._vision_last_frame_obj_id = frame_obj_id
+        self._vision_last_packet_frame_id = packet_frame_id
+        self._vision_last_flash = self._vision_flash_cache
+        self._vision_last_status = self._vision_status_cache
+        self.vision_widget.set_payload(
+            frame_bgr=self._vision_frame_cache,
+            packet=self._vision_packet_cache,
+            flash_enabled=self._vision_flash_cache,
+            status_text=self._vision_status_cache,
+        )
 
     def append_log(self, message: str) -> None:
         self.log_view.append(message)
 
+    def update_pick_bias_display(self, radius_bias_mm: float, theta_bias_deg: float) -> None:
+        self._set_label_text(self.pick_r_bias_label, "Pick r bias: {0:+.1f} mm".format(float(radius_bias_mm)))
+        self._set_label_text(self.pick_theta_bias_label, "Pick theta bias: {0:+.1f} deg".format(float(theta_bias_deg)))
+
+    def selected_ssvep_profile_path(self) -> str | None:
+        selected = self.ssvep_profile_combo.currentData()
+        if not selected or str(selected) == AUTO_PROFILE_VALUE:
+            return None
+        return str(selected)
+
+    def is_ssvep_profile_auto_selected(self) -> bool:
+        selected = self.ssvep_profile_combo.currentData()
+        return not selected or str(selected) == AUTO_PROFILE_VALUE
+
+    def _on_ssvep_recognition_toggled(self, enabled: bool) -> None:
+        if enabled:
+            self.ssvep_start_requested.emit()
+            return
+        self.ssvep_stop_requested.emit()
+
+    def _update_profile_combo(
+        self,
+        profiles: tuple[tuple[str, str], ...],
+        *,
+        selected_path: str,
+        auto_selected: bool = False,
+    ) -> None:
+        previous_path = self.selected_ssvep_profile_path() or ""
+        target_path = selected_path or previous_path
+        items = [("自动（最新训练）", AUTO_PROFILE_VALUE)]
+        items.extend(list(profiles))
+        if not profiles:
+            items.append(("暂无 Profile", ""))
+        self.ssvep_profile_combo.blockSignals(True)
+        self.ssvep_profile_combo.clear()
+        selected_index = 0
+        for index, (label, path) in enumerate(items):
+            self.ssvep_profile_combo.addItem(label, path)
+            if auto_selected and str(path) == AUTO_PROFILE_VALUE:
+                selected_index = index
+            elif path and path == target_path:
+                selected_index = index
+        self.ssvep_profile_combo.setCurrentIndex(selected_index)
+        self.ssvep_profile_combo.blockSignals(False)
+
     @staticmethod
-    def _format_scene(snapshot: dict[str, object] | None) -> str:
-        if not snapshot:
-            return "Simulation scene: unavailable"
-        lines = [
-            f"Scenario: {snapshot['scenario_name']}",
-            f"Revision: {snapshot['revision']}",
-            f"Robot XY: {snapshot['robot_xy']} z={snapshot.get('robot_z')}",
-            f"Robot Cyl: {snapshot.get('robot_cyl')}",
-            f"Limits: x={snapshot['limits_x']} y={snapshot['limits_y']}",
-            f"Limits Cyl: {snapshot.get('limits_cyl')}",
-            f"Home: {snapshot['home_pose']}",
-            f"Busy: {snapshot['busy_action']}",
-            f"Phase: {snapshot.get('action_phase')}",
-            f"Calibration ready: {snapshot.get('calibration_ready')}",
-            f"Auto Z: enabled={snapshot.get('auto_z_enabled')} current={snapshot.get('auto_z_current')}",
-            f"Control kernel: {snapshot.get('control_kernel')}",
-            f"IK: valid={snapshot.get('ik_valid')} error={snapshot.get('validation_error')}",
-            f"Carrying target: {snapshot['carrying_target_id']}",
-            f"Last ack: {snapshot.get('last_ack')}",
-            f"Last world error: {snapshot['last_error']}",
-            "Pick slots:",
-        ]
-        for target in snapshot.get("pick_slots", []):
-            lines.append(
-                f"  #{target['slot_id']} world={target['world_xy']} "
-                f"occupied={target['occupied']} selected={target.get('selected', False)}"
-            )
-        lines.append("Place slots:")
-        for target in snapshot.get("place_slots", []):
-            lines.append(
-                f"  #{target['slot_id']} world={target['world_xy']} occupied={target['occupied']}"
-            )
-        return "\n".join(lines)
+    def _set_label_text(widget: QLabel, text: str) -> None:
+        next_text = str(text)
+        if widget.text() == next_text:
+            return
+        widget.setText(next_text)
+
+    @staticmethod
+    def _set_button_text(widget: QPushButton, text: str) -> None:
+        next_text = str(text)
+        if widget.text() == next_text:
+            return
+        widget.setText(next_text)
+
+    @staticmethod
+    def _set_button_enabled(widget: QPushButton, enabled: bool) -> None:
+        next_enabled = bool(enabled)
+        if widget.isEnabled() == next_enabled:
+            return
+        widget.setEnabled(next_enabled)
+
+    @staticmethod
+    def _set_button_checked(widget: QPushButton, checked: bool) -> None:
+        next_checked = bool(checked)
+        if widget.isChecked() == next_checked:
+            return
+        widget.blockSignals(True)
+        widget.setChecked(next_checked)
+        widget.blockSignals(False)
+
+    @staticmethod
+    def _format_timer(deadline: object) -> str:
+        if not deadline:
+            return "--"
+        remaining = max(0.0, float(deadline) - time.time())
+        return f"{remaining:.1f}s"
+
+    @staticmethod
+    def _format_slot_summary(slot: dict[str, object]) -> str | None:
+        try:
+            slot_id = int(slot.get("slot_id", 0))
+            freq_hz = float(slot.get("freq_hz", 0.0))
+        except (TypeError, ValueError):
+            return None
+
+        actionable = bool(slot.get("actionable", False))
+        invalid_reason = str(slot.get("invalid_reason", "")).strip()
+        status_suffix = " OK" if actionable else (" X:" + invalid_reason if invalid_reason else " X")
+
+        cyl = slot.get("cylindrical_center")
+        if isinstance(cyl, (tuple, list)) and len(cyl) >= 2:
+            try:
+                theta = float(cyl[0])
+                radius = float(cyl[1])
+            except (TypeError, ValueError):
+                return "[{}] {}Hz{}".format(slot_id, freq_hz, status_suffix)
+            return "[{}] {}Hz theta={:.1f} r={:.1f}{}".format(slot_id, freq_hz, theta, radius, status_suffix)
+
+        return "[{}] {}Hz{}".format(slot_id, freq_hz, status_suffix)
 
     def keyPressEvent(self, event) -> None:  # noqa: N802
         if event.isAutoRepeat():
+            return
+        token = self._key_to_token(event.key())
+        if token is not None:
+            self.key_pressed.emit(token)
             event.accept()
             return
-        token = self._event_to_token(event)
-        if token:
-            self.key_pressed.emit(token)
-        event.accept()
+        super().keyPressEvent(event)
 
     def keyReleaseEvent(self, event) -> None:  # noqa: N802
         if event.isAutoRepeat():
+            return
+        token = self._key_to_token(event.key())
+        if token is not None:
+            self.key_released.emit(token)
             event.accept()
             return
-        token = self._event_to_token(event)
-        if token:
-            self.key_released.emit(token)
-        event.accept()
+        super().keyReleaseEvent(event)
 
     @staticmethod
-    def _event_to_token(event) -> str:
-        key = event.key()
-        token = ""
-        if key in (Qt.Key_Return, Qt.Key_Enter):
-            token = "enter"
-        elif key == Qt.Key_Escape:
-            token = "escape"
-        elif key == Qt.Key_Left:
-            token = "left"
-        elif key == Qt.Key_Right:
-            token = "right"
-        elif key == Qt.Key_Up:
-            token = "up"
-        elif key == Qt.Key_Down:
-            token = "down"
-        if not token:
-            token = event.text().lower()
-        return token
+    def _key_to_token(key: int) -> str | None:
+        key_map = {
+            Qt.Key_N: "n",
+            Qt.Key_R: "r",
+            Qt.Key_A: "a",
+            Qt.Key_D: "d",
+            Qt.Key_W: "w",
+            Qt.Key_S: "s",
+            Qt.Key_Left: "left",
+            Qt.Key_Right: "right",
+            Qt.Key_Up: "up",
+            Qt.Key_Down: "down",
+            Qt.Key_Return: "enter",
+            Qt.Key_Enter: "enter",
+            Qt.Key_C: "c",
+            Qt.Key_Escape: "esc",
+            Qt.Key_X: "x",
+            Qt.Key_1: "1",
+            Qt.Key_2: "2",
+            Qt.Key_3: "3",
+            Qt.Key_4: "4",
+        }
+        return key_map.get(key)

@@ -1,0 +1,12 @@
+# Local runtime/test artifacts
+.tmp_pytest/
+pytest_tmp_py/
+tmp_test_dir/
+pytest-cache-files-*/
+.pytest_tmp/
+.pytest_cache/
+logs/
+
+# Python cache
+__pycache__/
+*.pyc

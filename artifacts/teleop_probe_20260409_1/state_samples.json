@@ -1,0 +1,1010 @@
+[
+  {
+    "t": 1775664655.1978776,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_kernel"
+  },
+  {
+    "t": 1775664655.2988021,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_kernel"
+  },
+  {
+    "t": 1775664655.4011242,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_kernel"
+  },
+  {
+    "t": 1775664655.498315,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_kernel"
+  },
+  {
+    "t": 1775664655.5965748,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_kernel"
+  },
+  {
+    "t": 1775664655.698884,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_kernel"
+  },
+  {
+    "t": 1775664655.7973547,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_kernel"
+  },
+  {
+    "t": 1775664655.8958347,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_kernel"
+  },
+  {
+    "t": 1775664655.9953372,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_kernel"
+  },
+  {
+    "t": 1775664656.0971668,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_kernel"
+  },
+  {
+    "t": 1775664656.195955,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_kernel"
+  },
+  {
+    "t": 1775664656.2933772,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_kernel"
+  },
+  {
+    "t": 1775664656.3930721,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_kernel"
+  },
+  {
+    "t": 1775664656.4943552,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_kernel"
+  },
+  {
+    "t": 1775664656.601578,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_kernel"
+  },
+  {
+    "t": 1775664656.6936626,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_kernel"
+  },
+  {
+    "t": 1775664656.7943232,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_kernel"
+  },
+  {
+    "t": 1775664656.895791,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_kernel"
+  },
+  {
+    "t": 1775664656.9943426,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_kernel"
+  },
+  {
+    "t": 1775664657.0941093,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_kernel"
+  },
+  {
+    "t": 1775664657.1934917,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_kernel"
+  },
+  {
+    "t": 1775664657.3005428,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_kernel"
+  },
+  {
+    "t": 1775664657.3935964,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_kernel"
+  },
+  {
+    "t": 1775664657.4923599,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_kernel"
+  },
+  {
+    "t": 1775664657.5949025,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_kernel"
+  },
+  {
+    "t": 1775664657.6940737,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_kernel"
+  },
+  {
+    "t": 1775664657.7936363,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_kernel"
+  },
+  {
+    "t": 1775664657.892616,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_kernel"
+  },
+  {
+    "t": 1775664657.9920976,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_kernel"
+  },
+  {
+    "t": 1775664658.0965881,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_kernel"
+  },
+  {
+    "t": 1775664658.192229,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_kernel"
+  },
+  {
+    "t": 1775664658.292065,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_kernel"
+  },
+  {
+    "t": 1775664658.3983383,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_kernel"
+  },
+  {
+    "t": 1775664658.4956007,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_kernel"
+  },
+  {
+    "t": 1775664658.5929124,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_kernel"
+  },
+  {
+    "t": 1775664658.6915662,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_kernel"
+  },
+  {
+    "t": 1775664658.7920115,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_kernel"
+  },
+  {
+    "t": 1775664658.8942325,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_kernel"
+  },
+  {
+    "t": 1775664658.9921622,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_kernel"
+  },
+  {
+    "t": 1775664659.0913262,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_kernel"
+  },
+  {
+    "t": 1775664659.1923623,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_kernel"
+  },
+  {
+    "t": 1775664659.2942286,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_kernel"
+  },
+  {
+    "t": 1775664659.392185,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_kernel"
+  },
+  {
+    "t": 1775664659.4954648,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_kernel"
+  },
+  {
+    "t": 1775664659.5944223,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_kernel"
+  },
+  {
+    "t": 1775664659.695849,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_kernel"
+  },
+  {
+    "t": 1775664659.7924936,
+    "state": "MOVING_XY",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 163.49000549316406,
+    "z_mm": 205.0,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664659.8936749,
+    "state": "MOVING_XY",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 166.24000549316406,
+    "z_mm": 205.0,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664659.9958715,
+    "state": "MOVING_XY",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 169.74000549316406,
+    "z_mm": 205.0,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664660.09392,
+    "state": "MOVING_XY",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 173.24000549316406,
+    "z_mm": 205.0,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664660.1916924,
+    "state": "MOVING_XY",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 176.74000549316406,
+    "z_mm": 205.0,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664660.2912903,
+    "state": "MOVING_XY",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 180.24000549316406,
+    "z_mm": 205.0,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664660.3963044,
+    "state": "MOVING_XY",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 183.74000549316406,
+    "z_mm": 205.0,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664660.4978886,
+    "state": "MOVING_XY",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 187.24000549316406,
+    "z_mm": 205.0,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664660.5923216,
+    "state": "MOVING_XY",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 190.74000549316406,
+    "z_mm": 204.25999450683594,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664660.6921792,
+    "state": "MOVING_XY",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 194.24000549316406,
+    "z_mm": 200.75999450683594,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664660.7924402,
+    "state": "MOVING_XY",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 197.74000549316406,
+    "z_mm": 200.0,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664660.8926034,
+    "state": "MOVING_XY",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 201.24000549316406,
+    "z_mm": 198.75999450683594,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664660.9926026,
+    "state": "MOVING_XY",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 204.74000549316406,
+    "z_mm": 195.25999450683594,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664661.0920968,
+    "state": "MOVING_XY",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 208.24000549316406,
+    "z_mm": 195.0,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664661.1930735,
+    "state": "MOVING_XY",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 211.74000549316406,
+    "z_mm": 195.0,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664661.2924232,
+    "state": "MOVING_XY",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 213.58999633789062,
+    "z_mm": 195.0,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664661.3919668,
+    "state": "MOVING_XY",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 216.5399932861328,
+    "z_mm": 195.0,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664661.4914434,
+    "state": "MOVING_XY",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 220.0399932861328,
+    "z_mm": 195.0,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664661.592066,
+    "state": "MOVING_XY",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 223.5399932861328,
+    "z_mm": 195.0,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664661.6935344,
+    "state": "MOVING_XY",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 227.0399932861328,
+    "z_mm": 195.0,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664661.7925158,
+    "state": "MOVING_XY",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 228.88999938964844,
+    "z_mm": 195.0,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664661.8955762,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 228.99000549316406,
+    "z_mm": 195.0,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664661.9950194,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 228.99000549316406,
+    "z_mm": 195.0,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664662.091671,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 228.99000549316406,
+    "z_mm": 195.0,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664662.1920934,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 228.99000549316406,
+    "z_mm": 195.0,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664662.2932718,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 228.99000549316406,
+    "z_mm": 195.0,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664662.393288,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 228.99000549316406,
+    "z_mm": 195.0,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664662.491807,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 228.99000549316406,
+    "z_mm": 195.0,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664662.5924637,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 228.99000549316406,
+    "z_mm": 195.0,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664662.6923428,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 228.99000549316406,
+    "z_mm": 195.0,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664662.7927139,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 228.99000549316406,
+    "z_mm": 195.0,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664662.8914454,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 228.99000549316406,
+    "z_mm": 195.0,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664662.993223,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 228.99000549316406,
+    "z_mm": 195.0,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664663.095811,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664663.1937888,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664663.2933333,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664663.3918536,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664663.4933097,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664663.5925171,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664663.6918004,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664663.799856,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664663.8937192,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664663.9939113,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664664.093253,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664664.1990435,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664664.297621,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664664.3925543,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664664.4927905,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664664.593227,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664664.6978757,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664664.7924857,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664664.892437,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664664.9942966,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664665.0944617,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664665.1921122,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664665.2925348,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664665.393756,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664665.4951272,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664665.5924356,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664665.693963,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664665.7929053,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664665.893963,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664665.9931016,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664666.093681,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664666.1943905,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_ros_teleop"
+  },
+  {
+    "t": 1775664666.2932413,
+    "state": "IDLE",
+    "busy": false,
+    "theta_deg": 0.0,
+    "radius_mm": 162.94000244140625,
+    "z_mm": 212.8000030517578,
+    "control_kernel": "cylindrical_ros_teleop"
+  }
+]

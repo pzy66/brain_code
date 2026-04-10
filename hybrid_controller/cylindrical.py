@@ -1,33 +1,44 @@
-from __future__ import annotations
-
 import math
-from dataclasses import dataclass
-from typing import Callable, Iterable, List, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 
-ValidationResult = dict[str, object]
+ValidationResult = Dict[str, object]
 
 
-@dataclass(frozen=True, slots=True)
 class CylindricalPose:
-    theta_deg: float
-    radius_mm: float
-    z_mm: float
+    __slots__ = ("theta_deg", "radius_mm", "z_mm")
 
-    def normalized(self) -> "CylindricalPose":
+    def __init__(self, theta_deg, radius_mm, z_mm):
+        self.theta_deg = float(theta_deg)
+        self.radius_mm = float(radius_mm)
+        self.z_mm = float(z_mm)
+
+    def normalized(self):
         return CylindricalPose(
             theta_deg=normalize_theta_deg(self.theta_deg),
             radius_mm=float(self.radius_mm),
             z_mm=float(self.z_mm),
         )
 
-    def as_cartesian(self) -> tuple[float, float, float]:
+    def as_cartesian(self):
         return cylindrical_to_cartesian(self.theta_deg, self.radius_mm, self.z_mm)
 
     @classmethod
-    def from_cartesian(cls, x_mm: float, y_mm: float, z_mm: float) -> "CylindricalPose":
+    def from_cartesian(cls, x_mm: float, y_mm: float, z_mm: float):
         theta_deg, radius_mm, z_value = cartesian_to_cylindrical(x_mm, y_mm, z_mm)
         return cls(theta_deg=theta_deg, radius_mm=radius_mm, z_mm=z_value)
+
+    def __iter__(self):
+        yield self.theta_deg
+        yield self.radius_mm
+        yield self.z_mm
+
+    def __repr__(self):
+        return "CylindricalPose(theta_deg={!r}, radius_mm={!r}, z_mm={!r})".format(
+            self.theta_deg,
+            self.radius_mm,
+            self.z_mm,
+        )
 
 
 def normalize_theta_deg(theta_deg: float) -> float:
@@ -109,10 +120,10 @@ def build_auto_z_profile(
     validator: Callable[[float, float, float], ValidationResult],
     preferred_z_mm: float,
     profile_theta_deg: float = 0.0,
-    target_z_provider: Callable[[float], float] | None = None,
+    target_z_provider: Optional[Callable[[float], float]] = None,
     posture_tolerance: float = 0.0,
 ) -> Tuple[Tuple[float, float], ...]:
-    candidate_map: dict[float, list[tuple[float, float, float, float, float]]] = {}
+    candidate_map = {}  # type: Dict[float, List[Tuple[float, float, float, float, float]]]
     radii = sample_range(radius_limits[0], radius_limits[1], radius_step_mm)
     z_candidates = sample_range(z_limits[0], z_limits[1], z_step_mm)
     preferred_z = float(preferred_z_mm)
@@ -120,7 +131,7 @@ def build_auto_z_profile(
 
     for radius in radii:
         target_z_mm = float(target_z_provider(radius)) if target_z_provider is not None else preferred_z
-        valid_candidates: list[tuple[float, float, float, float, float]] = []
+        valid_candidates = []  # type: List[Tuple[float, float, float, float, float]]
         for z_value in z_candidates:
             report = validator(float(profile_theta_deg), float(radius), float(z_value))
             if not report.get("ok", False):
@@ -137,8 +148,8 @@ def build_auto_z_profile(
         raise ValueError("No valid auto-z profile points could be generated")
 
     def _filter_posture_candidates(
-        candidates: list[tuple[float, float, float, float, float]],
-    ) -> list[tuple[float, float, float, float, float]]:
+        candidates,  # type: List[Tuple[float, float, float, float, float]]
+    ):
         best_posture_distance = min(abs(entry[3]) for entry in candidates)
         return [
             entry
@@ -146,7 +157,7 @@ def build_auto_z_profile(
             if abs(entry[3]) <= best_posture_distance + posture_tolerance_value + 1e-6
         ]
 
-    def _pick_outermost(candidates: list[tuple[float, float, float, float, float]]) -> float:
+    def _pick_outermost(candidates):
         filtered_candidates = _filter_posture_candidates(candidates)
         z_value, _, _, _, _ = min(
             filtered_candidates,
@@ -160,7 +171,7 @@ def build_auto_z_profile(
         )
         return float(z_value)
 
-    def _pick_inward(candidates: list[tuple[float, float, float, float, float]], next_z: float) -> float:
+    def _pick_inward(candidates, next_z):
         filtered_candidates = _filter_posture_candidates(candidates)
         z_value, _, _, _, _ = min(
             filtered_candidates,
@@ -175,8 +186,8 @@ def build_auto_z_profile(
         )
         return float(z_value)
 
-    profile_desc: list[tuple[float, float]] = []
-    next_selected_z: float | None = None
+    profile_desc = []  # type: List[Tuple[float, float]]
+    next_selected_z = None  # type: Optional[float]
     for radius in sorted(candidate_map.keys(), reverse=True):
         candidates = candidate_map[radius]
         if next_selected_z is None:

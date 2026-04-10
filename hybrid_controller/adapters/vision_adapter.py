@@ -15,9 +15,16 @@ class VisionTarget:
     command_mode: str = "pixel"
     command_point: tuple[float, float] | None = None
     display_center: tuple[float, float] | None = None
+    slot_id: int | None = None
+    freq_hz: float | None = None
+    cylindrical_center: tuple[float, float, float] | None = None
+    world_xyz: tuple[float, float, float] | None = None
+    mapping_mode: str = "absolute_base"
+    actionable: bool = True
+    invalid_reason: str = ""
 
     def __post_init__(self) -> None:
-        if self.command_point is None:
+        if self.command_point is None and str(self.command_mode or "").strip().lower() == "pixel":
             object.__setattr__(self, "command_point", self.raw_center)
         if self.display_center is None:
             object.__setattr__(self, "display_center", self.center_px)
@@ -36,6 +43,13 @@ class VisionTarget:
             "command_mode": self.command_mode,
             "command_point": self.command_point,
             "display_center": self.display_center or self.center_px,
+            "slot_id": self.slot_id,
+            "freq_hz": self.freq_hz,
+            "cylindrical_center": self.cylindrical_center,
+            "world_xyz": self.world_xyz,
+            "mapping_mode": self.mapping_mode,
+            "actionable": self.actionable,
+            "invalid_reason": self.invalid_reason,
         }
 
 
@@ -50,7 +64,11 @@ def normalize_detections(detections: Iterable[object]) -> list[VisionTarget]:
             center_px = tuple(item.get("center_px") or _center_of_bbox(bbox))
             raw_center = tuple(item.get("raw_center") or center_px)
             command_mode = str(item.get("command_mode", "pixel"))
-            command_point = tuple(item.get("command_point") or raw_center)
+            command_point_raw = item.get("command_point")
+            if command_point_raw is None:
+                command_point = _as_xy(raw_center) if command_mode.strip().lower() == "pixel" else None
+            else:
+                command_point = _as_xy(tuple(command_point_raw))
             display_center = tuple(item.get("display_center") or center_px)
             normalized.append(
                 VisionTarget(
@@ -60,8 +78,23 @@ def normalize_detections(detections: Iterable[object]) -> list[VisionTarget]:
                     raw_center=_as_xy(raw_center),
                     confidence=float(item.get("confidence", 1.0)),
                     command_mode=command_mode,
-                    command_point=_as_xy(command_point),
+                    command_point=command_point,
                     display_center=_as_xy(display_center),
+                    slot_id=None if item.get("slot_id") is None else int(item.get("slot_id")),
+                    freq_hz=None if item.get("freq_hz") is None else float(item.get("freq_hz")),
+                    cylindrical_center=(
+                        None
+                        if item.get("cylindrical_center") is None
+                        else _as_xyz(item.get("cylindrical_center"))
+                    ),
+                    world_xyz=(
+                        None
+                        if item.get("world_xyz") is None
+                        else _as_xyz(item.get("world_xyz"))
+                    ),
+                    mapping_mode=str(item.get("mapping_mode", "absolute_base")),
+                    actionable=bool(item.get("actionable", True)),
+                    invalid_reason=str(item.get("invalid_reason", "")),
                 )
             )
             continue
@@ -111,3 +144,8 @@ def _as_box(values: object) -> tuple[float, float, float, float]:
 def _as_xy(values: object) -> tuple[float, float]:
     x, y = values
     return float(x), float(y)
+
+
+def _as_xyz(values: object) -> tuple[float, float, float]:
+    x, y, z = values
+    return float(x), float(y), float(z)
