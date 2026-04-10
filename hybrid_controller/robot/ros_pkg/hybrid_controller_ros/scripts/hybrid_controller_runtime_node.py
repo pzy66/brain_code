@@ -23,6 +23,8 @@ if RUNTIME_DIR not in sys.path:
 from robot_runtime_py36 import JetMaxExecutor, cylindrical_to_cartesian, interpolate_auto_z
 from hybrid_controller_ros.msg import CylindricalTeleop, RobotState
 from hybrid_controller_ros.srv import (
+    GetPickTuning,
+    GetPickTuningResponse,
     MoveCyl,
     MoveCylAuto,
     MoveCylAutoResponse,
@@ -31,6 +33,8 @@ from hybrid_controller_ros.srv import (
     PickCylResponse,
     PickWorld,
     PickWorldResponse,
+    SetPickTuning,
+    SetPickTuningResponse,
 )
 
 
@@ -168,6 +172,16 @@ class HybridControllerRuntimeNode(object):
                 "z_approach": 130.0,
                 "z_pick": 85.0,
                 "z_carry": 160.0,
+                "pick_approach_z_mm": 130.0,
+                "pick_descend_z_mm": 85.0,
+                "pick_pre_suction_sec": 0.25,
+                "pick_bottom_hold_sec": 0.15,
+                "pick_lift_sec": 0.8,
+                "place_descend_z_mm": 85.0,
+                "place_release_mode": "release",
+                "place_release_sec": 0.25,
+                "place_post_release_hold_sec": 0.10,
+                "z_carry_floor_mm": 160.0,
                 "move_speed_xy": 150.0,
                 "theta_limits": (-120.0, 120.0),
                 "radius_limits": (50.0, 280.0),
@@ -213,6 +227,8 @@ class HybridControllerRuntimeNode(object):
         rospy.Service("/hybrid_controller/move_cyl_auto", MoveCylAuto, self._handle_move_cyl_auto)
         rospy.Service("/hybrid_controller/pick_cyl", PickCyl, self._handle_pick_cyl)
         rospy.Service("/hybrid_controller/pick_world", PickWorld, self._handle_pick_world)
+        rospy.Service("/hybrid_controller/get_pick_tuning", GetPickTuning, self._handle_get_pick_tuning)
+        rospy.Service("/hybrid_controller/set_pick_tuning", SetPickTuning, self._handle_set_pick_tuning)
         rospy.Timer(rospy.Duration(0.05), self._on_teleop_tick)
         rospy.Timer(rospy.Duration(0.1), self._publish_state)
 
@@ -291,6 +307,42 @@ class HybridControllerRuntimeNode(object):
         ok, message = self._run_async_action(self.executor.start_pick_world, float(request.x_mm), float(request.y_mm), final_ack="ACK PICK_DONE")
         return PickWorldResponse(ok=ok, message=message)
 
+    def _handle_get_pick_tuning(self, _request):
+        tuning = self.executor.get_pick_tuning()
+        response = GetPickTuningResponse()
+        response.ok = True
+        response.message = "ok"
+        response.pick_approach_z_mm = float(tuning.get("pick_approach_z_mm", 0.0))
+        response.pick_descend_z_mm = float(tuning.get("pick_descend_z_mm", 0.0))
+        response.pick_pre_suction_sec = float(tuning.get("pick_pre_suction_sec", 0.0))
+        response.pick_bottom_hold_sec = float(tuning.get("pick_bottom_hold_sec", 0.0))
+        response.pick_lift_sec = float(tuning.get("pick_lift_sec", 0.0))
+        response.place_descend_z_mm = float(tuning.get("place_descend_z_mm", 0.0))
+        response.place_release_mode = str(tuning.get("place_release_mode", "release"))
+        response.place_release_sec = float(tuning.get("place_release_sec", 0.0))
+        response.place_post_release_hold_sec = float(tuning.get("place_post_release_hold_sec", 0.0))
+        response.z_carry_floor_mm = float(tuning.get("z_carry_floor_mm", 0.0))
+        return response
+
+    def _handle_set_pick_tuning(self, request):
+        payload = {
+            "pick_approach_z_mm": float(request.pick_approach_z_mm),
+            "pick_descend_z_mm": float(request.pick_descend_z_mm),
+            "pick_pre_suction_sec": float(request.pick_pre_suction_sec),
+            "pick_bottom_hold_sec": float(request.pick_bottom_hold_sec),
+            "pick_lift_sec": float(request.pick_lift_sec),
+            "place_descend_z_mm": float(request.place_descend_z_mm),
+            "place_release_mode": str(request.place_release_mode),
+            "place_release_sec": float(request.place_release_sec),
+            "place_post_release_hold_sec": float(request.place_post_release_hold_sec),
+            "z_carry_floor_mm": float(request.z_carry_floor_mm),
+        }
+        try:
+            self.executor.set_pick_tuning(payload)
+            return SetPickTuningResponse(ok=True, message="ok")
+        except Exception as error:
+            return SetPickTuningResponse(ok=False, message=str(error))
+
     def _handle_place(self, _request):
         ok, message = self._run_async_action(self.executor.start_place, final_ack="ACK PLACE_DONE")
         return TriggerResponse(success=ok, message=message)
@@ -356,6 +408,19 @@ class HybridControllerRuntimeNode(object):
         msg.calibration_ready = bool(snapshot.get("calibration_ready", False))
         msg.ik_valid = bool(snapshot.get("ik_valid", True))
         msg.validation_error = str(snapshot.get("validation_error", ""))
+        pick_tuning = snapshot.get("pick_tuning", {}) if isinstance(snapshot, dict) else {}
+        msg.pick_approach_z_mm = float(pick_tuning.get("pick_approach_z_mm", snapshot.get("approach_z", 0.0)))
+        msg.pick_descend_z_mm = float(pick_tuning.get("pick_descend_z_mm", snapshot.get("pick_z", 0.0)))
+        msg.pick_pre_suction_sec = float(pick_tuning.get("pick_pre_suction_sec", 0.0))
+        msg.pick_bottom_hold_sec = float(pick_tuning.get("pick_bottom_hold_sec", 0.0))
+        msg.pick_lift_sec = float(pick_tuning.get("pick_lift_sec", 0.0))
+        msg.place_descend_z_mm = float(pick_tuning.get("place_descend_z_mm", snapshot.get("pick_z", 0.0)))
+        msg.place_release_mode = str(pick_tuning.get("place_release_mode", "release"))
+        msg.place_release_sec = float(pick_tuning.get("place_release_sec", 0.0))
+        msg.place_post_release_hold_sec = float(pick_tuning.get("place_post_release_hold_sec", 0.0))
+        msg.z_carry_floor_mm = float(pick_tuning.get("z_carry_floor_mm", snapshot.get("carry_z", 0.0)))
+        msg.post_pick_settle_z = float(snapshot.get("post_pick_settle_z", 0.0) or 0.0)
+        msg.release_mode_effective = str(snapshot.get("release_mode_effective", ""))
         self._state_pub.publish(msg)
 
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import time
+from pathlib import Path
 
 try:
     from PyQt5.QtCore import QEvent, QPointF, Qt, pyqtSignal
@@ -10,10 +11,13 @@ try:
         QApplication,
         QComboBox,
         QFrame,
+        QGridLayout,
         QHBoxLayout,
         QLabel,
         QMainWindow,
         QPushButton,
+        QScrollArea,
+        QSizePolicy,
         QTextEdit,
         QVBoxLayout,
         QWidget,
@@ -32,7 +36,8 @@ class ControlSceneWidget(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._snapshot: dict[str, object] | None = None
-        self.setMinimumHeight(240)
+        self.setMinimumSize(240, 200)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
     def update_scene(self, snapshot: dict[str, object] | None) -> None:
         self._snapshot = snapshot
@@ -92,8 +97,10 @@ class ControlSceneWidget(QWidget):
         def map_point(world_xy: tuple[float, float]) -> tuple[float, float]:
             x_mm = float(world_xy[0])
             y_mm = float(world_xy[1])
-            px = offset_x + (x_mm - min_x) * scale
-            py = offset_y + (max_y - y_mm) * scale
+            # Mirror X for operator-facing view so left/right matches user perspective.
+            px = offset_x + (max_x - x_mm) * scale
+            # Render in operator-facing front view (vertical flipped against robot-world Y).
+            py = offset_y + (y_mm - min_y) * scale
             return (px, py)
 
         return map_point
@@ -218,11 +225,16 @@ class MainWindow(QMainWindow):
     pick_bias_reset_requested = pyqtSignal()
     pick_theta_bias_delta_requested = pyqtSignal(float)
     pick_theta_bias_reset_requested = pyqtSignal()
+    pick_tuning_delta_requested = pyqtSignal(str, float)
+    pick_release_mode_toggle_requested = pyqtSignal()
+    pick_tuning_apply_requested = pyqtSignal()
+    pick_tuning_reset_requested = pyqtSignal()
+    pick_tuning_save_requested = pyqtSignal()
 
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Hybrid Controller v1")
-        self.resize(1440, 920)
+        self.resize(1360, 860)
         self.setFocusPolicy(Qt.StrongFocus)
 
         root = QWidget(self)
@@ -233,6 +245,9 @@ class MainWindow(QMainWindow):
         self.top_status_label = QLabel("State: idle | Sources: --")
         self.top_status_label.setObjectName("topStatus")
         self.top_status_label.setStyleSheet("font: 12pt 'Consolas'; color: #E6E6E6;")
+        self.top_status_label.setWordWrap(True)
+        self.top_status_label.setMinimumWidth(0)
+        self.top_status_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         main_layout.addWidget(self.top_status_label)
 
         content_layout = QHBoxLayout()
@@ -250,30 +265,53 @@ class MainWindow(QMainWindow):
         self._vision_last_status: str | None = None
         content_layout.addWidget(self.vision_widget, stretch=5)
 
+        # Floating robot pose card anchored to top-right of the camera panel.
+        self.pose_overlay = QFrame(self.vision_widget)
+        self.pose_overlay.setObjectName("poseOverlay")
+        self.pose_overlay.setStyleSheet("QFrame#poseOverlay { background: rgba(23, 27, 34, 230); border: 1px solid #2E3540; border-radius: 6px; }")
+        pose_overlay_layout = QVBoxLayout(self.pose_overlay)
+        pose_overlay_layout.setContentsMargins(8, 8, 8, 8)
+        pose_overlay_layout.setSpacing(6)
+        self.pose_title_label = QLabel("Robot Pose")
+        self.pose_title_label.setStyleSheet("font: bold 11pt 'Arial'; color: #F0F4F8; border: none;")
+        pose_overlay_layout.addWidget(self.pose_title_label)
+        self.scene_widget = ControlSceneWidget(self.pose_overlay)
+        pose_overlay_layout.addWidget(self.scene_widget, stretch=1)
+        self.pose_overlay.show()
+        self.pose_overlay.raise_()
+
         right_panel = QFrame()
         right_panel.setFrameShape(QFrame.StyledPanel)
-        right_panel.setMinimumWidth(330)
-        right_panel.setMaximumWidth(380)
+        right_panel.setMinimumWidth(320)
+        right_panel.setMaximumWidth(440)
         right_panel.setStyleSheet("QFrame { background: #171B22; border: 1px solid #2E3540; }")
-        right_layout = QVBoxLayout(right_panel)
+        right_shell_layout = QVBoxLayout(right_panel)
+        right_shell_layout.setContentsMargins(0, 0, 0, 0)
+        right_shell_layout.setSpacing(0)
+        right_scroll = QScrollArea(right_panel)
+        right_scroll.setWidgetResizable(True)
+        right_scroll.setFrameShape(QFrame.NoFrame)
+        right_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        right_content = QWidget()
+        right_content.setMinimumWidth(0)
+        right_content.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        right_layout = QVBoxLayout(right_content)
         right_layout.setContentsMargins(10, 10, 10, 10)
         right_layout.setSpacing(8)
 
-        pose_title = QLabel("Robot Pose")
-        pose_title.setStyleSheet("font: bold 11pt 'Arial'; color: #F0F4F8;")
-        right_layout.addWidget(pose_title)
-        self.scene_widget = ControlSceneWidget()
-        right_layout.addWidget(self.scene_widget)
-
-        controls_row = QHBoxLayout()
+        controls_row = QGridLayout()
+        controls_row.setHorizontalSpacing(6)
+        controls_row.setVerticalSpacing(6)
         self.robot_start_button = QPushButton("启动机械臂")
         self.robot_connect_button = QPushButton("连接机器人")
         self.abort_button = QPushButton("Abort")
         self.reset_button = QPushButton("Reset")
-        controls_row.addWidget(self.robot_start_button)
-        controls_row.addWidget(self.robot_connect_button)
-        controls_row.addWidget(self.abort_button)
-        controls_row.addWidget(self.reset_button)
+        controls_row.addWidget(self.robot_start_button, 0, 0)
+        controls_row.addWidget(self.robot_connect_button, 0, 1)
+        controls_row.addWidget(self.abort_button, 1, 0)
+        controls_row.addWidget(self.reset_button, 1, 1)
+        controls_row.setColumnStretch(0, 1)
+        controls_row.setColumnStretch(1, 1)
         right_layout.addLayout(controls_row)
 
         self.robot_start_button.clicked.connect(self.robot_start_requested.emit)
@@ -285,15 +323,19 @@ class MainWindow(QMainWindow):
         pick_title.setStyleSheet("font: bold 11pt 'Arial'; color: #F0F4F8;")
         right_layout.addWidget(pick_title)
 
-        pick_row = QHBoxLayout()
+        pick_row = QGridLayout()
+        pick_row.setHorizontalSpacing(6)
+        pick_row.setVerticalSpacing(6)
         self.pick_slot1_button = QPushButton("Pick 1")
         self.pick_slot2_button = QPushButton("Pick 2")
         self.pick_slot3_button = QPushButton("Pick 3")
         self.pick_slot4_button = QPushButton("Pick 4")
-        pick_row.addWidget(self.pick_slot1_button)
-        pick_row.addWidget(self.pick_slot2_button)
-        pick_row.addWidget(self.pick_slot3_button)
-        pick_row.addWidget(self.pick_slot4_button)
+        pick_row.addWidget(self.pick_slot1_button, 0, 0)
+        pick_row.addWidget(self.pick_slot2_button, 0, 1)
+        pick_row.addWidget(self.pick_slot3_button, 1, 0)
+        pick_row.addWidget(self.pick_slot4_button, 1, 1)
+        pick_row.setColumnStretch(0, 1)
+        pick_row.setColumnStretch(1, 1)
         right_layout.addLayout(pick_row)
 
         pick_row2 = QHBoxLayout()
@@ -326,6 +368,70 @@ class MainWindow(QMainWindow):
         self.pick_theta_bias_label.setStyleSheet("font: 10pt 'Consolas'; color: #D8DEE9; border: none;")
         right_layout.addWidget(self.pick_theta_bias_label)
 
+        pick_tuning_title = QLabel("Pick Tuning")
+        pick_tuning_title.setStyleSheet("font: bold 10pt 'Arial'; color: #F0F4F8;")
+        right_layout.addWidget(pick_tuning_title)
+
+        self.pick_tuning_label = QLabel("approach=130.0 descend=85.0 pre=0.25 hold=0.15 lift=0.80\nplace_z=85.0 release=release rel=0.25 post=0.10 floor=160.0")
+        self.pick_tuning_label.setWordWrap(True)
+        self.pick_tuning_label.setStyleSheet("font: 9pt 'Consolas'; color: #D8DEE9; border: none;")
+        right_layout.addWidget(self.pick_tuning_label)
+
+        pick_tuning_buttons = QGridLayout()
+        pick_tuning_buttons.setHorizontalSpacing(6)
+        pick_tuning_buttons.setVerticalSpacing(6)
+        self.pick_tune_approach_minus_button = QPushButton("A-1")
+        self.pick_tune_approach_plus_button = QPushButton("A+1")
+        self.pick_tune_descend_minus_button = QPushButton("D-1")
+        self.pick_tune_descend_plus_button = QPushButton("D+1")
+        self.pick_tune_place_minus_button = QPushButton("P-1")
+        self.pick_tune_place_plus_button = QPushButton("P+1")
+        self.pick_tune_pre_minus_button = QPushButton("pre-0.05")
+        self.pick_tune_pre_plus_button = QPushButton("pre+0.05")
+        self.pick_tune_hold_minus_button = QPushButton("hold-0.05")
+        self.pick_tune_hold_plus_button = QPushButton("hold+0.05")
+        self.pick_tune_lift_minus_button = QPushButton("lift-0.05")
+        self.pick_tune_lift_plus_button = QPushButton("lift+0.05")
+        self.pick_tune_release_minus_button = QPushButton("rel-0.05")
+        self.pick_tune_release_plus_button = QPushButton("rel+0.05")
+        self.pick_tune_post_minus_button = QPushButton("post-0.05")
+        self.pick_tune_post_plus_button = QPushButton("post+0.05")
+        self.pick_tune_floor_minus_button = QPushButton("floor-1")
+        self.pick_tune_floor_plus_button = QPushButton("floor+1")
+        self.pick_tune_mode_button = QPushButton("mode: release")
+
+        pick_tuning_buttons.addWidget(self.pick_tune_approach_minus_button, 0, 0)
+        pick_tuning_buttons.addWidget(self.pick_tune_approach_plus_button, 0, 1)
+        pick_tuning_buttons.addWidget(self.pick_tune_descend_minus_button, 1, 0)
+        pick_tuning_buttons.addWidget(self.pick_tune_descend_plus_button, 1, 1)
+        pick_tuning_buttons.addWidget(self.pick_tune_place_minus_button, 2, 0)
+        pick_tuning_buttons.addWidget(self.pick_tune_place_plus_button, 2, 1)
+        pick_tuning_buttons.addWidget(self.pick_tune_pre_minus_button, 3, 0)
+        pick_tuning_buttons.addWidget(self.pick_tune_pre_plus_button, 3, 1)
+        pick_tuning_buttons.addWidget(self.pick_tune_hold_minus_button, 4, 0)
+        pick_tuning_buttons.addWidget(self.pick_tune_hold_plus_button, 4, 1)
+        pick_tuning_buttons.addWidget(self.pick_tune_lift_minus_button, 5, 0)
+        pick_tuning_buttons.addWidget(self.pick_tune_lift_plus_button, 5, 1)
+        pick_tuning_buttons.addWidget(self.pick_tune_release_minus_button, 6, 0)
+        pick_tuning_buttons.addWidget(self.pick_tune_release_plus_button, 6, 1)
+        pick_tuning_buttons.addWidget(self.pick_tune_post_minus_button, 7, 0)
+        pick_tuning_buttons.addWidget(self.pick_tune_post_plus_button, 7, 1)
+        pick_tuning_buttons.addWidget(self.pick_tune_floor_minus_button, 8, 0)
+        pick_tuning_buttons.addWidget(self.pick_tune_floor_plus_button, 8, 1)
+        pick_tuning_buttons.addWidget(self.pick_tune_mode_button, 9, 0, 1, 2)
+        pick_tuning_buttons.setColumnStretch(0, 1)
+        pick_tuning_buttons.setColumnStretch(1, 1)
+        right_layout.addLayout(pick_tuning_buttons)
+
+        pick_tuning_action_row = QHBoxLayout()
+        self.pick_tune_apply_button = QPushButton("应用到机器人")
+        self.pick_tune_reset_button = QPushButton("恢复默认")
+        self.pick_tune_save_button = QPushButton("保存配置")
+        pick_tuning_action_row.addWidget(self.pick_tune_apply_button)
+        pick_tuning_action_row.addWidget(self.pick_tune_reset_button)
+        pick_tuning_action_row.addWidget(self.pick_tune_save_button)
+        right_layout.addLayout(pick_tuning_action_row)
+
         self.pick_slot1_button.clicked.connect(lambda: self.manual_pick_slot_requested.emit(1))
         self.pick_slot2_button.clicked.connect(lambda: self.manual_pick_slot_requested.emit(2))
         self.pick_slot3_button.clicked.connect(lambda: self.manual_pick_slot_requested.emit(3))
@@ -337,6 +443,28 @@ class MainWindow(QMainWindow):
         self.pick_theta_minus_1_button.clicked.connect(lambda: self.pick_theta_bias_delta_requested.emit(-1.0))
         self.pick_theta_plus_1_button.clicked.connect(lambda: self.pick_theta_bias_delta_requested.emit(1.0))
         self.pick_theta_reset_button.clicked.connect(self.pick_theta_bias_reset_requested.emit)
+        self.pick_tune_approach_minus_button.clicked.connect(lambda: self.pick_tuning_delta_requested.emit("pick_approach_z_mm", -1.0))
+        self.pick_tune_approach_plus_button.clicked.connect(lambda: self.pick_tuning_delta_requested.emit("pick_approach_z_mm", 1.0))
+        self.pick_tune_descend_minus_button.clicked.connect(lambda: self.pick_tuning_delta_requested.emit("pick_descend_z_mm", -1.0))
+        self.pick_tune_descend_plus_button.clicked.connect(lambda: self.pick_tuning_delta_requested.emit("pick_descend_z_mm", 1.0))
+        self.pick_tune_place_minus_button.clicked.connect(lambda: self.pick_tuning_delta_requested.emit("place_descend_z_mm", -1.0))
+        self.pick_tune_place_plus_button.clicked.connect(lambda: self.pick_tuning_delta_requested.emit("place_descend_z_mm", 1.0))
+        self.pick_tune_pre_minus_button.clicked.connect(lambda: self.pick_tuning_delta_requested.emit("pick_pre_suction_sec", -0.05))
+        self.pick_tune_pre_plus_button.clicked.connect(lambda: self.pick_tuning_delta_requested.emit("pick_pre_suction_sec", 0.05))
+        self.pick_tune_hold_minus_button.clicked.connect(lambda: self.pick_tuning_delta_requested.emit("pick_bottom_hold_sec", -0.05))
+        self.pick_tune_hold_plus_button.clicked.connect(lambda: self.pick_tuning_delta_requested.emit("pick_bottom_hold_sec", 0.05))
+        self.pick_tune_lift_minus_button.clicked.connect(lambda: self.pick_tuning_delta_requested.emit("pick_lift_sec", -0.05))
+        self.pick_tune_lift_plus_button.clicked.connect(lambda: self.pick_tuning_delta_requested.emit("pick_lift_sec", 0.05))
+        self.pick_tune_release_minus_button.clicked.connect(lambda: self.pick_tuning_delta_requested.emit("place_release_sec", -0.05))
+        self.pick_tune_release_plus_button.clicked.connect(lambda: self.pick_tuning_delta_requested.emit("place_release_sec", 0.05))
+        self.pick_tune_post_minus_button.clicked.connect(lambda: self.pick_tuning_delta_requested.emit("place_post_release_hold_sec", -0.05))
+        self.pick_tune_post_plus_button.clicked.connect(lambda: self.pick_tuning_delta_requested.emit("place_post_release_hold_sec", 0.05))
+        self.pick_tune_floor_minus_button.clicked.connect(lambda: self.pick_tuning_delta_requested.emit("z_carry_floor_mm", -1.0))
+        self.pick_tune_floor_plus_button.clicked.connect(lambda: self.pick_tuning_delta_requested.emit("z_carry_floor_mm", 1.0))
+        self.pick_tune_mode_button.clicked.connect(self.pick_release_mode_toggle_requested.emit)
+        self.pick_tune_apply_button.clicked.connect(self.pick_tuning_apply_requested.emit)
+        self.pick_tune_reset_button.clicked.connect(self.pick_tuning_reset_requested.emit)
+        self.pick_tune_save_button.clicked.connect(self.pick_tuning_save_requested.emit)
 
         ssvep_title = QLabel("SSVEP")
         ssvep_title.setStyleSheet("font: bold 11pt 'Arial'; color: #F0F4F8;")
@@ -380,6 +508,56 @@ class MainWindow(QMainWindow):
         ssvep_row_4.addWidget(self.ssvep_recognition_toggle_button)
         right_layout.addLayout(ssvep_row_4)
 
+        for button in (
+            self.robot_start_button,
+            self.robot_connect_button,
+            self.abort_button,
+            self.reset_button,
+            self.pick_slot1_button,
+            self.pick_slot2_button,
+            self.pick_slot3_button,
+            self.pick_slot4_button,
+            self.place_now_button,
+            self.pick_r_minus_1_button,
+            self.pick_r_plus_1_button,
+            self.pick_r_reset_button,
+            self.pick_theta_minus_1_button,
+            self.pick_theta_plus_1_button,
+            self.pick_theta_reset_button,
+            self.pick_tune_approach_minus_button,
+            self.pick_tune_approach_plus_button,
+            self.pick_tune_descend_minus_button,
+            self.pick_tune_descend_plus_button,
+            self.pick_tune_place_minus_button,
+            self.pick_tune_place_plus_button,
+            self.pick_tune_pre_minus_button,
+            self.pick_tune_pre_plus_button,
+            self.pick_tune_hold_minus_button,
+            self.pick_tune_hold_plus_button,
+            self.pick_tune_lift_minus_button,
+            self.pick_tune_lift_plus_button,
+            self.pick_tune_release_minus_button,
+            self.pick_tune_release_plus_button,
+            self.pick_tune_post_minus_button,
+            self.pick_tune_post_plus_button,
+            self.pick_tune_floor_minus_button,
+            self.pick_tune_floor_plus_button,
+            self.pick_tune_mode_button,
+            self.pick_tune_apply_button,
+            self.pick_tune_reset_button,
+            self.pick_tune_save_button,
+            self.ssvep_connect_button,
+            self.ssvep_pretrain_button,
+            self.ssvep_load_profile_button,
+            self.ssvep_open_profile_dir_button,
+            self.ssvep_stim_toggle_button,
+            self.ssvep_recognition_toggle_button,
+        ):
+            button.setMinimumWidth(0)
+            button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.ssvep_profile_combo.setMinimumWidth(0)
+        self.ssvep_profile_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
         self.ssvep_connect_button.clicked.connect(self.ssvep_connect_requested.emit)
         self.ssvep_pretrain_button.clicked.connect(self.ssvep_pretrain_requested.emit)
         self.ssvep_load_profile_button.clicked.connect(self.ssvep_load_profile_requested.emit)
@@ -420,13 +598,20 @@ class MainWindow(QMainWindow):
             self.ssvep_result_label,
         ):
             label.setStyleSheet("font: 10pt 'Consolas'; color: #D8DEE9; border: none;")
+            label.setMinimumWidth(0)
+            label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
             right_layout.addWidget(label)
 
         right_layout.addStretch(1)
+        right_scroll.setWidget(right_content)
+        right_shell_layout.addWidget(right_scroll)
         content_layout.addWidget(right_panel, stretch=0)
 
         self.bottom_status_label = QLabel("Vision: --")
         self.bottom_status_label.setStyleSheet("font: 10pt 'Consolas'; color: #E6E6E6;")
+        self.bottom_status_label.setWordWrap(True)
+        self.bottom_status_label.setMinimumWidth(0)
+        self.bottom_status_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         main_layout.addWidget(self.bottom_status_label)
 
         self.log_view = QTextEdit()
@@ -436,6 +621,7 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(self.log_view)
 
         self.setCentralWidget(root)
+        self._position_pose_overlay()
         app = QApplication.instance()
         if app is not None:
             app.installEventFilter(self)
@@ -449,6 +635,30 @@ class MainWindow(QMainWindow):
                 pass
         self.vision_widget.shutdown()
 
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._position_pose_overlay()
+
+    def _position_pose_overlay(self) -> None:
+        if not hasattr(self, "pose_overlay") or not hasattr(self, "vision_widget"):
+            return
+        parent = self.vision_widget
+        margin = 12
+        max_width = max(180, parent.width() - margin * 2)
+        max_height = max(140, parent.height() - margin * 2)
+        width = min(320, max_width)
+        height = min(290, max_height)
+        x_pos = max(margin, parent.width() - width - margin)
+        y_pos = margin
+        self.pose_overlay.setGeometry(int(x_pos), int(y_pos), int(width), int(height))
+        self.pose_overlay.raise_()
+
+    def _toggle_fullscreen(self) -> None:
+        if self.isFullScreen():
+            self.showMaximized()
+            return
+        self.showFullScreen()
+
     def eventFilter(self, watched, event):  # noqa: N802
         event_type = event.type()
         if event_type not in (QEvent.KeyPress, QEvent.KeyRelease):
@@ -457,6 +667,10 @@ class MainWindow(QMainWindow):
             return super().eventFilter(watched, event)
         if event.isAutoRepeat():
             return False
+        if event_type == QEvent.KeyPress and event.key() in (Qt.Key_F11,):
+            self._toggle_fullscreen()
+            event.accept()
+            return True
         token = self._key_to_token(event.key())
         if token is None:
             return super().eventFilter(watched, event)
@@ -475,6 +689,11 @@ class MainWindow(QMainWindow):
         robot = snapshot.robot
         vision = snapshot.vision
         ssvep = snapshot.ssvep
+        vision_health_compact = self._compact_text(vision.health, max_len=120)
+        robot_status_compact = self._compact_text(snapshot.last_robot_status, max_len=72)
+        robot_error_compact = self._compact_text(snapshot.last_error, max_len=80)
+        profile_path_compact = self._compact_path(ssvep.profile_path)
+        latest_profile_compact = self._compact_path(ssvep.latest_profile_path)
 
         self._set_label_text(
             self.top_status_label,
@@ -541,10 +760,10 @@ class MainWindow(QMainWindow):
         self._set_label_text(
             self.status_label,
             "Status: robot={} error={} carrying={} vision={}".format(
-                snapshot.last_robot_status,
-                snapshot.last_error,
+                robot_status_compact,
+                robot_error_compact,
                 snapshot.carrying,
-                vision.health,
+                vision_health_compact,
             )
         )
         self._set_label_text(
@@ -554,8 +773,8 @@ class MainWindow(QMainWindow):
                 ssvep.profile_source,
                 ssvep.debug_keyboard,
                 ssvep.profile_count,
-                ssvep.profile_path,
-                ssvep.latest_profile_path,
+                profile_path_compact,
+                latest_profile_compact,
                 ssvep.last_pretrain_time,
             )
         )
@@ -566,8 +785,8 @@ class MainWindow(QMainWindow):
                 ssvep.busy,
                 ssvep.connected,
                 ssvep.mode,
-                ssvep.runtime_status,
-                ssvep.last_error,
+                self._compact_text(ssvep.runtime_status, max_len=72),
+                self._compact_text(ssvep.last_error, max_len=72),
             )
         )
         self._set_label_text(
@@ -583,9 +802,9 @@ class MainWindow(QMainWindow):
         self._set_label_text(
             self.bottom_status_label,
             "Vision: {} | SSVEP mode={} | target_freq_map={}".format(
-                vision.health,
+                vision_health_compact,
                 ssvep.mode,
-                list(snapshot.target_frequency_map),
+                self._compact_text(list(snapshot.target_frequency_map), max_len=72),
             )
         )
 
@@ -634,6 +853,28 @@ class MainWindow(QMainWindow):
         self._set_button_enabled(self.pick_theta_minus_1_button, manual_enabled)
         self._set_button_enabled(self.pick_theta_plus_1_button, manual_enabled)
         self._set_button_enabled(self.pick_theta_reset_button, manual_enabled)
+        self._set_button_enabled(self.pick_tune_approach_minus_button, manual_enabled)
+        self._set_button_enabled(self.pick_tune_approach_plus_button, manual_enabled)
+        self._set_button_enabled(self.pick_tune_descend_minus_button, manual_enabled)
+        self._set_button_enabled(self.pick_tune_descend_plus_button, manual_enabled)
+        self._set_button_enabled(self.pick_tune_place_minus_button, manual_enabled)
+        self._set_button_enabled(self.pick_tune_place_plus_button, manual_enabled)
+        self._set_button_enabled(self.pick_tune_pre_minus_button, manual_enabled)
+        self._set_button_enabled(self.pick_tune_pre_plus_button, manual_enabled)
+        self._set_button_enabled(self.pick_tune_hold_minus_button, manual_enabled)
+        self._set_button_enabled(self.pick_tune_hold_plus_button, manual_enabled)
+        self._set_button_enabled(self.pick_tune_lift_minus_button, manual_enabled)
+        self._set_button_enabled(self.pick_tune_lift_plus_button, manual_enabled)
+        self._set_button_enabled(self.pick_tune_release_minus_button, manual_enabled)
+        self._set_button_enabled(self.pick_tune_release_plus_button, manual_enabled)
+        self._set_button_enabled(self.pick_tune_post_minus_button, manual_enabled)
+        self._set_button_enabled(self.pick_tune_post_plus_button, manual_enabled)
+        self._set_button_enabled(self.pick_tune_floor_minus_button, manual_enabled)
+        self._set_button_enabled(self.pick_tune_floor_plus_button, manual_enabled)
+        self._set_button_enabled(self.pick_tune_mode_button, manual_enabled)
+        self._set_button_enabled(self.pick_tune_apply_button, manual_enabled)
+        self._set_button_enabled(self.pick_tune_reset_button, True)
+        self._set_button_enabled(self.pick_tune_save_button, True)
 
         self.scene_widget.update_scene(robot.scene_snapshot)
 
@@ -691,6 +932,36 @@ class MainWindow(QMainWindow):
         self._set_label_text(self.pick_r_bias_label, "Pick r bias: {0:+.1f} mm".format(float(radius_bias_mm)))
         self._set_label_text(self.pick_theta_bias_label, "Pick theta bias: {0:+.1f} deg".format(float(theta_bias_deg)))
 
+    def update_pick_tuning_display(self, tuning: dict[str, object] | None) -> None:
+        values = dict(tuning or {})
+        approach = float(values.get("pick_approach_z_mm", 0.0))
+        descend = float(values.get("pick_descend_z_mm", 0.0))
+        pre = float(values.get("pick_pre_suction_sec", 0.0))
+        hold = float(values.get("pick_bottom_hold_sec", 0.0))
+        lift = float(values.get("pick_lift_sec", 0.0))
+        place_z = float(values.get("place_descend_z_mm", 0.0))
+        release_mode = str(values.get("place_release_mode", "release"))
+        release_sec = float(values.get("place_release_sec", 0.0))
+        post = float(values.get("place_post_release_hold_sec", 0.0))
+        floor = float(values.get("z_carry_floor_mm", 0.0))
+        self._set_label_text(
+            self.pick_tuning_label,
+            "approach={0:.1f} descend={1:.1f} pre={2:.2f} hold={3:.2f} lift={4:.2f}\n"
+            "place_z={5:.1f} mode={6} rel={7:.2f} post={8:.2f} floor={9:.1f}".format(
+                approach,
+                descend,
+                pre,
+                hold,
+                lift,
+                place_z,
+                release_mode,
+                release_sec,
+                post,
+                floor,
+            ),
+        )
+        self._set_button_text(self.pick_tune_mode_button, f"mode: {release_mode}")
+
     def selected_ssvep_profile_path(self) -> str | None:
         selected = self.ssvep_profile_combo.currentData()
         if not selected or str(selected) == AUTO_PROFILE_VALUE:
@@ -731,6 +1002,27 @@ class MainWindow(QMainWindow):
                 selected_index = index
         self.ssvep_profile_combo.setCurrentIndex(selected_index)
         self.ssvep_profile_combo.blockSignals(False)
+
+    @staticmethod
+    def _compact_text(value: object, *, max_len: int = 96) -> str:
+        text = str(value)
+        limit = max(8, int(max_len))
+        if len(text) <= limit:
+            return text
+        return text[: limit - 1] + "…"
+
+    @staticmethod
+    def _compact_path(value: object, *, max_len: int = 80) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return "--"
+        try:
+            name = Path(text).name
+        except Exception:
+            name = text
+        if name:
+            return MainWindow._compact_text(name, max_len=max_len)
+        return MainWindow._compact_text(text, max_len=max_len)
 
     @staticmethod
     def _set_label_text(widget: QLabel, text: str) -> None:

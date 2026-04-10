@@ -9,21 +9,23 @@ from typing import Sequence
 
 THIS_DIR = Path(__file__).resolve().parent
 ASYNC_DIR = THIS_DIR / "2026-04_async_fbcca_idle_decoder"
-TARGET_SCRIPT = ASYNC_DIR / "ssvep_single_model_ui.py"
+TARGET_SCRIPT = ASYNC_DIR / "ssvep_realtime_online_ui.py"
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Direct entry: single-model pretrain + online UI (default FBCCA)."
+        description="Direct entry: realtime online UI (model-select + profile decode)."
     )
     parser.add_argument("--serial-port", type=str, default="auto", help="serial port, e.g. COM4, or auto")
     parser.add_argument("--board-id", type=int, default=0)
     parser.add_argument("--freqs", type=str, default="8,10,12,15")
+    parser.add_argument("--profile", type=str, default=str(ASYNC_DIR / "profiles" / "default_profile.json"))
+    parser.add_argument("--model", type=str, default="fbcca")
     parser.add_argument(
         "--extra-args",
         nargs=argparse.REMAINDER,
         default=[],
-        help="forward remaining args to ssvep_single_model_ui.py",
+        help="forward remaining args to ssvep_realtime_online_ui.py",
     )
     return parser
 
@@ -42,6 +44,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         str(int(args.board_id)),
         "--freqs",
         str(args.freqs),
+        "--profile",
+        str(args.profile),
+        "--model",
+        str(args.model),
     ]
     if args.extra_args:
         cmd.extend(list(args.extra_args))

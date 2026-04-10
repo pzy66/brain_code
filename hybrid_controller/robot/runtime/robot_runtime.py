@@ -101,6 +101,34 @@ class RobotLimits:
 
 
 @dataclass(frozen=True)
+class PickTuning:
+    pick_approach_z_mm: float
+    pick_descend_z_mm: float
+    pick_pre_suction_sec: float
+    pick_bottom_hold_sec: float
+    pick_lift_sec: float
+    place_descend_z_mm: float
+    place_release_mode: str
+    place_release_sec: float
+    place_post_release_hold_sec: float
+    z_carry_floor_mm: float
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "pick_approach_z_mm": float(self.pick_approach_z_mm),
+            "pick_descend_z_mm": float(self.pick_descend_z_mm),
+            "pick_pre_suction_sec": float(self.pick_pre_suction_sec),
+            "pick_bottom_hold_sec": float(self.pick_bottom_hold_sec),
+            "pick_lift_sec": float(self.pick_lift_sec),
+            "place_descend_z_mm": float(self.place_descend_z_mm),
+            "place_release_mode": str(self.place_release_mode),
+            "place_release_sec": float(self.place_release_sec),
+            "place_post_release_hold_sec": float(self.place_post_release_hold_sec),
+            "z_carry_floor_mm": float(self.z_carry_floor_mm),
+        }
+
+
+@dataclass(frozen=True)
 class PickPlan:
     pixel_x: float
     pixel_y: float
@@ -171,6 +199,13 @@ class ActuatorAdapter:
 
     def set_sucker(self, state: bool) -> None:
         self._hardware.set_sucker(bool(state))
+
+    def release_sucker(self, duration_sec: float) -> bool:
+        release = getattr(self._hardware, "release_sucker", None)
+        if not callable(release):
+            return False
+        release(float(duration_sec))
+        return True
 
 
 class LegacyCartesianKernel:
@@ -376,6 +411,13 @@ class _HardwareBridge:
     def set_sucker(self, state: bool) -> None:  # pragma: no cover - hardware-only branch
         self.sucker.set_state(bool(state))
 
+    def release_sucker(self, duration_sec: float) -> None:  # pragma: no cover - hardware-only branch
+        release = getattr(self.sucker, "release", None)
+        if callable(release):
+            release(float(duration_sec))
+            return
+        self.sucker.set_state(False)
+
 
 class RobotExecutor:
     def __init__(
@@ -404,6 +446,9 @@ class RobotExecutor:
         self._reference_pulses: tuple[float, float, float] | None = None
         self._reference_forearm_pitch_deg: float | None = None
         self._auto_z_profile = self._build_auto_z_profile()
+        self._pick_tuning = self._default_pick_tuning()
+        self._last_post_pick_settle_z = float(self._pick_tuning.z_carry_floor_mm)
+        self._last_release_mode_effective = "off"
         self.legacy_kernel = LegacyCartesianKernel(self)
         self.cylindrical_kernel = CylindricalKernel(self)
 
@@ -430,6 +475,7 @@ class RobotExecutor:
                 enforce_workspace=self.limits.cylindrical_xy_workspace_enabled,
             )
             effective_radius_limits = nearest_profile_radius_limits(self._auto_z_profile)
+            pick_tuning = self._pick_tuning
             return {
                 "revision": self._revision,
                 "state": self._state.value,
@@ -465,9 +511,9 @@ class RobotExecutor:
                     "z_mm": (self.limits.z_min_mm, self.limits.z_max_mm),
                 },
                 "cylindrical_xy_workspace_enabled": self.limits.cylindrical_xy_workspace_enabled,
-                "travel_z": self.limits.z_approach,
-                "approach_z": self.limits.z_approach,
-                "pick_z": self.limits.z_pick,
+                "travel_z": pick_tuning.pick_approach_z_mm,
+                "approach_z": pick_tuning.pick_approach_z_mm,
+                "pick_z": pick_tuning.pick_descend_z_mm,
                 "carry_z": self.limits.z_carry,
                 "auto_z_enabled": True,
                 "auto_z_current": round(interpolate_auto_z(self._auto_z_profile, radius_mm), 3),
@@ -479,7 +525,20 @@ class RobotExecutor:
                 "calibration_ready": self.calibration.is_ready(),
                 "pick_slots": [],
                 "place_slots": [],
+                "pick_tuning": pick_tuning.to_dict(),
+                "post_pick_settle_z": float(self._last_post_pick_settle_z),
+                "release_mode_effective": str(self._last_release_mode_effective),
             }
+
+    def get_pick_tuning(self) -> dict[str, object]:
+        with self._lock:
+            return self._pick_tuning.to_dict()
+
+    def set_pick_tuning(self, payload: dict[str, object]) -> dict[str, object]:
+        with self._lock:
+            self._pick_tuning = self._normalize_pick_tuning(payload)
+            self._revision += 1
+            return self._pick_tuning.to_dict()
 
     def move_xy(self, x: float, y: float) -> tuple[float, float, float]:
         return self.legacy_kernel.move_xy(x, y)
@@ -707,29 +766,38 @@ class RobotExecutor:
             self._log(f"PICK_WORLD target=({plan.target_x:.2f}, {plan.target_y:.2f})")
         target_x = float(plan.target_x)
         target_y = float(plan.target_y)
+        tuning = self._pick_tuning_snapshot()
+        settle_z = self._compute_settle_z_for_xy(
+            target_x,
+            target_y,
+            carry_floor_mm=tuning.z_carry_floor_mm,
+        )
         self._raise_if_abort_requested()
-        self.actuator.move_xyz(target_x, target_y, self.limits.z_approach, 1.0)
+        self.actuator.move_xyz(target_x, target_y, tuning.pick_approach_z_mm, 1.0)
         self._sleep_with_abort(1.0)
 
         with self._lock:
             self._set_state(RobotExecutorState.PICK_SUCTION_ON)
         self._raise_if_abort_requested()
         self.actuator.set_sucker(True)
+        self._sleep_with_abort(tuning.pick_pre_suction_sec)
 
         with self._lock:
             self._set_state(RobotExecutorState.PICK_DESCEND)
         self._raise_if_abort_requested()
-        self.actuator.move_xyz(target_x, target_y, self.limits.z_pick, 0.8)
-        self._sleep_with_abort(0.9)
+        descend_duration_sec = 0.8
+        self.actuator.move_xyz(target_x, target_y, tuning.pick_descend_z_mm, descend_duration_sec)
+        self._sleep_with_abort(descend_duration_sec + tuning.pick_bottom_hold_sec)
 
         with self._lock:
             self._set_state(RobotExecutorState.PICK_LIFT)
         self._raise_if_abort_requested()
-        self.actuator.move_xyz(target_x, target_y, self.limits.z_carry, 0.8)
-        self._sleep_with_abort(0.8)
+        self.actuator.move_xyz(target_x, target_y, settle_z, tuning.pick_lift_sec)
+        self._sleep_with_abort(tuning.pick_lift_sec)
 
         with self._lock:
             self._carrying = True
+            self._last_post_pick_settle_z = float(settle_z)
             self._set_state(RobotExecutorState.CARRY_READY)
             self._clear_last_error()
 
@@ -745,24 +813,40 @@ class RobotExecutor:
             return PlacePlan(target_x=float(cur_x), target_y=float(cur_y))
 
     def complete_place(self, plan: PlacePlan) -> None:
+        tuning = self._pick_tuning_snapshot()
+        settle_z = self._compute_settle_z_for_xy(
+            plan.target_x,
+            plan.target_y,
+            carry_floor_mm=tuning.z_carry_floor_mm,
+        )
+        current_x, current_y, current_z = self.actuator.get_position()
+        if float(current_z) < float(tuning.z_carry_floor_mm):
+            self._raise_if_abort_requested()
+            self.actuator.move_xyz(current_x, current_y, settle_z, 0.5)
+            self._sleep_with_abort(0.5)
+
         self._raise_if_abort_requested()
-        self.actuator.move_xyz(plan.target_x, plan.target_y, self.limits.z_pick, 0.8)
+        self.actuator.move_xyz(plan.target_x, plan.target_y, tuning.place_descend_z_mm, 0.8)
         self._sleep_with_abort(0.8)
 
         with self._lock:
             self._set_state(RobotExecutorState.PLACE_RELEASE)
         self._raise_if_abort_requested()
-        self.actuator.set_sucker(False)
-        self._sleep_with_abort(0.2)
+        release_mode = self._apply_place_release(
+            mode=tuning.place_release_mode,
+            release_sec=tuning.place_release_sec,
+        )
+        self._sleep_with_abort(tuning.place_post_release_hold_sec)
 
         with self._lock:
             self._set_state(RobotExecutorState.PLACE_LIFT)
         self._raise_if_abort_requested()
-        self.actuator.move_xyz(plan.target_x, plan.target_y, self.limits.z_carry, 0.6)
+        self.actuator.move_xyz(plan.target_x, plan.target_y, settle_z, 0.6)
         self._sleep_with_abort(0.6)
 
         with self._lock:
             self._carrying = False
+            self._last_release_mode_effective = str(release_mode)
             self._set_state(RobotExecutorState.IDLE)
             self._clear_last_error()
 
@@ -881,6 +965,30 @@ class RobotExecutor:
         self.actuator.move_xyz(cur_x, cur_y, self.limits.z_carry, 0.6)
         self._sleep_with_abort(0.6, allow_abort=False)
 
+    def _pick_tuning_snapshot(self) -> PickTuning:
+        with self._lock:
+            return self._pick_tuning
+
+    def _compute_settle_z_for_xy(self, x_mm: float, y_mm: float, *, carry_floor_mm: float) -> float:
+        _, radius_mm, _ = cartesian_to_cylindrical(float(x_mm), float(y_mm), float(self.limits.z_pick))
+        auto_z = float(interpolate_auto_z(self._auto_z_profile, float(radius_mm)))
+        settle_z = max(float(carry_floor_mm), auto_z)
+        settle_z = self._clamp(settle_z, float(self.limits.z_min_mm), float(self.limits.z_max_mm))
+        return float(settle_z)
+
+    def _apply_place_release(self, *, mode: str, release_sec: float) -> str:
+        normalized_mode = str(mode or "release").strip().lower()
+        release_duration = max(0.0, float(release_sec))
+        if normalized_mode == "release":
+            used_release = self.actuator.release_sucker(release_duration)
+            if used_release:
+                return "release"
+        self.actuator.set_sucker(False)
+        self._sleep_with_abort(release_duration)
+        if normalized_mode == "release":
+            return "off_fallback"
+        return "off"
+
     def _build_cylindrical_move_plan(self, pose: CylindricalPose) -> CylindricalMovePlan:
         pose = pose.normalized()
         validation = self._validate_cylindrical_target(pose.theta_deg, pose.radius_mm, pose.z_mm)
@@ -911,6 +1019,58 @@ class RobotExecutor:
         except Exception:
             self._reference_forearm_pitch_deg = None
             return None
+
+    def _default_pick_tuning(self) -> PickTuning:
+        return PickTuning(
+            pick_approach_z_mm=float(self.limits.z_approach),
+            pick_descend_z_mm=float(self.limits.z_pick),
+            pick_pre_suction_sec=0.25,
+            pick_bottom_hold_sec=0.15,
+            pick_lift_sec=0.8,
+            place_descend_z_mm=float(self.limits.z_pick),
+            place_release_mode="release",
+            place_release_sec=0.25,
+            place_post_release_hold_sec=0.10,
+            z_carry_floor_mm=float(self.limits.z_carry),
+        )
+
+    def _normalize_pick_tuning(self, payload: dict[str, object] | None) -> PickTuning:
+        current = self._pick_tuning if hasattr(self, "_pick_tuning") else self._default_pick_tuning()
+        data = current.to_dict()
+        if isinstance(payload, dict):
+            data.update(payload)
+
+        z_min = float(self.limits.z_min_mm)
+        z_max = float(self.limits.z_max_mm)
+
+        def _to_float(name: str, lower: float, upper: float) -> float:
+            value = data.get(name, getattr(current, name))
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError):
+                numeric = float(getattr(current, name))
+            return self._clamp(numeric, float(lower), float(upper))
+
+        def _to_sec(name: str, upper: float = 3.0) -> float:
+            value = data.get(name, getattr(current, name))
+            return self._clamp(float(value), 0.0, float(upper))
+
+        release_mode = str(data.get("place_release_mode", current.place_release_mode) or "release").strip().lower()
+        if release_mode not in {"release", "off"}:
+            release_mode = "release"
+
+        return PickTuning(
+            pick_approach_z_mm=_to_float("pick_approach_z_mm", z_min, z_max),
+            pick_descend_z_mm=_to_float("pick_descend_z_mm", z_min, z_max),
+            pick_pre_suction_sec=_to_sec("pick_pre_suction_sec"),
+            pick_bottom_hold_sec=_to_sec("pick_bottom_hold_sec"),
+            pick_lift_sec=_to_sec("pick_lift_sec"),
+            place_descend_z_mm=_to_float("place_descend_z_mm", z_min, z_max),
+            place_release_mode=release_mode,
+            place_release_sec=_to_sec("place_release_sec"),
+            place_post_release_hold_sec=_to_sec("place_post_release_hold_sec"),
+            z_carry_floor_mm=_to_float("z_carry_floor_mm", z_min, z_max),
+        )
 
     def _build_auto_z_profile(self) -> tuple[tuple[float, float], ...]:
         self._reference_pulses = self._build_reference_pulses()

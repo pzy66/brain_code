@@ -33,7 +33,7 @@ def test_benchmark_rank_key_penalizes_near_zero_recall() -> None:
 def test_benchmark_rank_key_keeps_idle_priority_within_valid_recall() -> None:
     better_idle = {
         "idle_fp_per_min": 0.3,
-        "control_recall": 0.20,
+        "control_recall": 0.70,
         "switch_detect_rate": 0.2,
         "switch_latency_s": 4.0,
         "itr_bpm": 8.0,

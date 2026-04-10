@@ -32,6 +32,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ready-timeout-sec", type=float, default=90.0)
     parser.add_argument("--no-sync", action="store_true")
     parser.add_argument("--skip-camera-check", action="store_true")
+    parser.add_argument(
+        "--require-tcp-check",
+        action="store_true",
+        help="Require legacy TCP runtime port 8888 to be reachable before reporting success.",
+    )
     parser.add_argument("--skip-tcp-check", action="store_true")
     return parser
 
@@ -84,10 +89,11 @@ def main(argv: list[str] | None = None) -> int:
 
     checks = [PortCheck(name="rosbridge", port=9091, required=True)]
     checks.append(PortCheck(name="web_video_server", port=8080, required=not args.skip_camera_check))
-    checks.append(PortCheck(name="tcp_runtime", port=8888, required=not args.skip_tcp_check))
+    require_tcp_check = bool(args.require_tcp_check) and not bool(args.skip_tcp_check)
+    checks.append(PortCheck(name="tcp_runtime", port=8888, required=require_tcp_check))
 
     wait_for_ports(args.host, checks, timeout_sec=float(args.ready_timeout_sec))
-    if not args.skip_tcp_check:
+    if require_tcp_check:
         status_payload = query_status(args.host, 8888, timeout_sec=5.0)
         print(status_payload)
     print("JetMax ROS runtime ready.")

@@ -6,7 +6,8 @@ This package provides:
 
 - `/hybrid_controller/teleop_cyl_cmd` topic for continuous cylindrical teleop input
 - `/hybrid_controller/state` topic for continuous robot state streaming
-- ROS services for `move_cyl`, `move_cyl_auto`, `pick_cyl`, `pick_world`, `place`, `abort`, and `reset`
+- ROS services for `move_cyl`, `move_cyl_auto`, `pick_cyl`, `pick_world`, `place`, `abort`, `reset`,
+  `get_pick_tuning`, and `set_pick_tuning`
 
 The node is designed to run on JetMax after the package is copied into a catkin workspace and built.
 

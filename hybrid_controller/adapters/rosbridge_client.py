@@ -121,6 +121,29 @@ class RosbridgeClient:
     def send_pick_world(self, x_mm: float, y_mm: float, *, callback: Optional[Callable[[RosServiceResult], None]] = None) -> None:
         self._call_service("pick_world", {"x_mm": float(x_mm), "y_mm": float(y_mm)}, callback=callback)
 
+    def get_pick_tuning(self, *, callback: Optional[Callable[[RosServiceResult], None]] = None) -> None:
+        self._call_service("get_pick_tuning", {}, callback=callback)
+
+    def set_pick_tuning(
+        self,
+        tuning: dict[str, object],
+        *,
+        callback: Optional[Callable[[RosServiceResult], None]] = None,
+    ) -> None:
+        payload = {
+            "pick_approach_z_mm": float(tuning.get("pick_approach_z_mm", 0.0)),
+            "pick_descend_z_mm": float(tuning.get("pick_descend_z_mm", 0.0)),
+            "pick_pre_suction_sec": float(tuning.get("pick_pre_suction_sec", 0.0)),
+            "pick_bottom_hold_sec": float(tuning.get("pick_bottom_hold_sec", 0.0)),
+            "pick_lift_sec": float(tuning.get("pick_lift_sec", 0.0)),
+            "place_descend_z_mm": float(tuning.get("place_descend_z_mm", 0.0)),
+            "place_release_mode": str(tuning.get("place_release_mode", "release")),
+            "place_release_sec": float(tuning.get("place_release_sec", 0.0)),
+            "place_post_release_hold_sec": float(tuning.get("place_post_release_hold_sec", 0.0)),
+            "z_carry_floor_mm": float(tuning.get("z_carry_floor_mm", 0.0)),
+        }
+        self._call_service("set_pick_tuning", payload, callback=callback)
+
     def send_place(self, *, callback: Optional[Callable[[RosServiceResult], None]] = None) -> None:
         self._call_trigger("place", callback=callback)
 
@@ -218,6 +241,8 @@ class RosbridgeClient:
             "move_cyl_auto": roslibpy.Service(self._ros, "/hybrid_controller/move_cyl_auto", "hybrid_controller_ros/MoveCylAuto"),
             "pick_cyl": roslibpy.Service(self._ros, "/hybrid_controller/pick_cyl", "hybrid_controller_ros/PickCyl"),
             "pick_world": roslibpy.Service(self._ros, "/hybrid_controller/pick_world", "hybrid_controller_ros/PickWorld"),
+            "get_pick_tuning": roslibpy.Service(self._ros, "/hybrid_controller/get_pick_tuning", "hybrid_controller_ros/GetPickTuning"),
+            "set_pick_tuning": roslibpy.Service(self._ros, "/hybrid_controller/set_pick_tuning", "hybrid_controller_ros/SetPickTuning"),
             "rosapi_get_param": roslibpy.Service(self._ros, "/rosapi/get_param", "rosapi/GetParam"),
         }
         self._emit_status("ROS bridge connected.")
@@ -287,6 +312,20 @@ class RosbridgeClient:
             "calibration_ready": bool(message.get("calibration_ready", False)),
             "ik_valid": bool(message.get("ik_valid", True)),
             "validation_error": str(message.get("validation_error", "")),
+            "pick_tuning": {
+                "pick_approach_z_mm": float(message.get("pick_approach_z_mm", 0.0)),
+                "pick_descend_z_mm": float(message.get("pick_descend_z_mm", 0.0)),
+                "pick_pre_suction_sec": float(message.get("pick_pre_suction_sec", 0.0)),
+                "pick_bottom_hold_sec": float(message.get("pick_bottom_hold_sec", 0.0)),
+                "pick_lift_sec": float(message.get("pick_lift_sec", 0.0)),
+                "place_descend_z_mm": float(message.get("place_descend_z_mm", 0.0)),
+                "place_release_mode": str(message.get("place_release_mode", "release")),
+                "place_release_sec": float(message.get("place_release_sec", 0.0)),
+                "place_post_release_hold_sec": float(message.get("place_post_release_hold_sec", 0.0)),
+                "z_carry_floor_mm": float(message.get("z_carry_floor_mm", 0.0)),
+            },
+            "post_pick_settle_z": float(message.get("post_pick_settle_z", 0.0)),
+            "release_mode_effective": str(message.get("release_mode_effective", "")),
         }
 
     def _emit_status(self, message: str) -> None:

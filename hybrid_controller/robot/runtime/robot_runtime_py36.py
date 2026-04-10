@@ -181,6 +181,13 @@ class ActuatorAdapter(object):
     def set_sucker(self, state):
         self._sucker.set_state(bool(state))
 
+    def release_sucker(self, duration_sec):
+        release = getattr(self._sucker, "release", None)
+        if callable(release):
+            release(float(duration_sec))
+            return True
+        return False
+
 
 class LegacyCartesianKernel(object):
     name = "legacy_cartesian"
@@ -244,6 +251,16 @@ class JetMaxExecutor(object):
         self.z_approach = float(limits["z_approach"])
         self.z_pick = float(limits["z_pick"])
         self.z_carry = float(limits["z_carry"])
+        self.pick_approach_z_mm = float(limits.get("pick_approach_z_mm", self.z_approach))
+        self.pick_descend_z_mm = float(limits.get("pick_descend_z_mm", self.z_pick))
+        self.pick_pre_suction_sec = float(limits.get("pick_pre_suction_sec", 0.25))
+        self.pick_bottom_hold_sec = float(limits.get("pick_bottom_hold_sec", 0.15))
+        self.pick_lift_sec = float(limits.get("pick_lift_sec", 0.8))
+        self.place_descend_z_mm = float(limits.get("place_descend_z_mm", self.z_pick))
+        self.place_release_mode = str(limits.get("place_release_mode", "release"))
+        self.place_release_sec = float(limits.get("place_release_sec", 0.25))
+        self.place_post_release_hold_sec = float(limits.get("place_post_release_hold_sec", 0.10))
+        self.z_carry_floor_mm = float(limits.get("z_carry_floor_mm", self.z_carry))
         self.move_speed_xy = float(limits["move_speed_xy"])
         self.theta_limits = tuple(float(value) for value in limits.get("theta_limits", (-120.0, 120.0)))
         self.radius_limits = tuple(float(value) for value in limits.get("radius_limits", (50.0, 280.0)))
@@ -301,6 +318,8 @@ class JetMaxExecutor(object):
         self._reference_forearm_pitch_deg = None
         self._reference_pulses = self._build_reference_pulses()
         self._auto_z_profile = self._build_auto_z_profile()
+        self._last_post_pick_settle_z = float(self.z_carry_floor_mm)
+        self._last_release_mode_effective = "off"
         self.legacy_kernel = LegacyCartesianKernel(self)
         self.cylindrical_kernel = CylindricalKernel(self)
 
@@ -336,8 +355,8 @@ class JetMaxExecutor(object):
                     "z_mm": [self.z_limits[0], self.z_limits[1]],
                 },
                 "cylindrical_xy_workspace_enabled": self.cylindrical_xy_workspace_enabled,
-                "approach_z": self.z_approach,
-                "pick_z": self.z_pick,
+                "approach_z": self.pick_approach_z_mm,
+                "pick_z": self.pick_descend_z_mm,
                 "carry_z": self.z_carry,
                 "auto_z_enabled": True,
                 "auto_z_current": round(interpolate_auto_z(self._auto_z_profile, radius_mm), 3),
@@ -347,7 +366,45 @@ class JetMaxExecutor(object):
                 "last_error": self._last_error,
                 "last_ack": self._last_ack,
                 "calibration_ready": self._has_calibration(),
+                "pick_tuning": self.get_pick_tuning(),
+                "post_pick_settle_z": float(self._last_post_pick_settle_z),
+                "release_mode_effective": str(self._last_release_mode_effective),
             }
+
+    def get_pick_tuning(self):
+        with self._lock:
+            return {
+                "pick_approach_z_mm": float(self.pick_approach_z_mm),
+                "pick_descend_z_mm": float(self.pick_descend_z_mm),
+                "pick_pre_suction_sec": float(self.pick_pre_suction_sec),
+                "pick_bottom_hold_sec": float(self.pick_bottom_hold_sec),
+                "pick_lift_sec": float(self.pick_lift_sec),
+                "place_descend_z_mm": float(self.place_descend_z_mm),
+                "place_release_mode": str(self.place_release_mode),
+                "place_release_sec": float(self.place_release_sec),
+                "place_post_release_hold_sec": float(self.place_post_release_hold_sec),
+                "z_carry_floor_mm": float(self.z_carry_floor_mm),
+            }
+
+    def set_pick_tuning(self, payload):
+        with self._lock:
+            data = self.get_pick_tuning()
+            if isinstance(payload, dict):
+                data.update(payload)
+            z_min = float(self.z_limits[0])
+            z_max = float(self.z_limits[1])
+            self.pick_approach_z_mm = self._clamp(float(data["pick_approach_z_mm"]), z_min, z_max)
+            self.pick_descend_z_mm = self._clamp(float(data["pick_descend_z_mm"]), z_min, z_max)
+            self.pick_pre_suction_sec = self._clamp(float(data["pick_pre_suction_sec"]), 0.0, 3.0)
+            self.pick_bottom_hold_sec = self._clamp(float(data["pick_bottom_hold_sec"]), 0.0, 3.0)
+            self.pick_lift_sec = self._clamp(float(data["pick_lift_sec"]), 0.0, 3.0)
+            self.place_descend_z_mm = self._clamp(float(data["place_descend_z_mm"]), z_min, z_max)
+            release_mode = str(data.get("place_release_mode", "release") or "release").strip().lower()
+            self.place_release_mode = "release" if release_mode not in {"release", "off"} else release_mode
+            self.place_release_sec = self._clamp(float(data["place_release_sec"]), 0.0, 3.0)
+            self.place_post_release_hold_sec = self._clamp(float(data["place_post_release_hold_sec"]), 0.0, 3.0)
+            self.z_carry_floor_mm = self._clamp(float(data["z_carry_floor_mm"]), z_min, z_max)
+            return self.get_pick_tuning()
 
     def start_move(self, sender, target_x, target_y):
         return self.legacy_kernel.start_move(sender, target_x, target_y)
@@ -538,6 +595,23 @@ class JetMaxExecutor(object):
             "PICK pixel mode is not enabled in the JetMax python3.6 runtime.",
         )
 
+    def _compute_settle_z(self, x_mm, y_mm, carry_floor_mm):
+        _, radius_mm, _ = cartesian_to_cylindrical(float(x_mm), float(y_mm), float(self.pick_descend_z_mm))
+        auto_z = float(interpolate_auto_z(self._auto_z_profile, float(radius_mm)))
+        settle_z = max(float(carry_floor_mm), auto_z)
+        return self._clamp(float(settle_z), float(self.z_limits[0]), float(self.z_limits[1]))
+
+    def _apply_place_release(self):
+        mode = str(self.place_release_mode or "release").strip().lower()
+        if mode == "release":
+            if self.actuator.release_sucker(float(self.place_release_sec)):
+                return "release"
+        self.actuator.set_sucker(False)
+        self._sleep_with_abort(float(self.place_release_sec))
+        if mode == "release":
+            return "off_fallback"
+        return "off"
+
     def _run_move(self, sender, target_x, target_y):
         try:
             current_x, current_y, current_z = self._get_position()
@@ -611,20 +685,22 @@ class JetMaxExecutor(object):
     def _run_pick_world(self, sender, target_x, target_y):
         try:
             current_x, current_y, current_z = self._get_position()
-            if abs(current_z - self.z_carry) > 2.0:
-                self._move_to(current_x, current_y, self.z_carry, None, True)
+            settle_z = self._compute_settle_z(target_x, target_y, self.z_carry_floor_mm)
+            if abs(current_z - settle_z) > 2.0:
+                self._move_to(current_x, current_y, settle_z, None, True)
             self._set_state(STATE_PICK_APPROACH, True, "pick")
-            self._move_to(target_x, target_y, self.z_approach, None, True)
+            self._move_to(target_x, target_y, self.pick_approach_z_mm, None, True)
             self._set_state(STATE_PICK_SUCTION_ON, True, "pick")
             self.actuator.set_sucker(True)
-            self._sleep_with_abort(0.25)
+            self._sleep_with_abort(float(self.pick_pre_suction_sec))
             self._set_state(STATE_PICK_DESCEND, True, "pick")
-            self._move_to(target_x, target_y, self.z_pick, 0.6, True)
-            self._sleep_with_abort(0.15)
+            self._move_to(target_x, target_y, self.pick_descend_z_mm, 0.6, True)
+            self._sleep_with_abort(float(self.pick_bottom_hold_sec))
             self._set_state(STATE_PICK_LIFT, True, "pick")
-            self._move_to(target_x, target_y, self.z_carry, 0.8, True)
+            self._move_to(target_x, target_y, settle_z, self.pick_lift_sec, True)
             with self._lock:
                 self._carrying = True
+                self._last_post_pick_settle_z = float(settle_z)
                 self._state = STATE_CARRY_READY
                 self._busy = False
                 self._busy_action = ""
@@ -638,21 +714,23 @@ class JetMaxExecutor(object):
     def _run_place(self, sender):
         try:
             current_x, current_y, current_z = self._get_position()
-            if abs(current_z - self.z_carry) > 2.0:
-                self._move_to(current_x, current_y, self.z_carry, None, True)
+            settle_z = self._compute_settle_z(current_x, current_y, self.z_carry_floor_mm)
+            if current_z < float(self.z_carry_floor_mm):
+                self._move_to(current_x, current_y, settle_z, None, True)
             self._set_state(STATE_PLACE_DESCEND, True, "place")
-            self._move_to(current_x, current_y, self.z_pick, 0.6, True)
+            self._move_to(current_x, current_y, self.place_descend_z_mm, 0.6, True)
             self._set_state(STATE_PLACE_RELEASE, True, "place")
-            self.actuator.set_sucker(False)
-            self._sleep_with_abort(0.25)
+            release_mode = self._apply_place_release()
+            self._sleep_with_abort(float(self.place_post_release_hold_sec))
             self._set_state(STATE_PLACE_LIFT, True, "place")
-            self._move_to(current_x, current_y, self.z_carry, 0.8, True)
+            self._move_to(current_x, current_y, settle_z, 0.8, True)
             with self._lock:
                 self._carrying = False
                 self._state = STATE_IDLE
                 self._busy = False
                 self._busy_action = ""
                 self._last_ack = "PLACE_DONE"
+                self._last_release_mode_effective = str(release_mode)
             sender.send_line("ACK PLACE_DONE")
         except AbortRequested:
             self._recover_after_abort()

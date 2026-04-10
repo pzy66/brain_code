@@ -96,8 +96,15 @@ DEFAULT_TDCA_COMPONENTS = 3
 DEFAULT_BENCHMARK_DATASET_ROOT = Path(__file__).resolve().parent / "profiles" / "datasets"
 DATA_SCHEMA_VERSION = "1.0"
 SWITCH_LATENCY_MODE = "penalized_median"
-DEFAULT_BENCHMARK_RANK_MIN_CONTROL_RECALL = 0.10
+DEFAULT_BENCHMARK_RANK_MIN_CONTROL_RECALL = DEFAULT_BALANCED_MIN_CONTROL_RECALL
 DEFAULT_CALIBRATION_MIN_DETECTION_RECALL = 0.05
+DEFAULT_METRIC_SCOPE = "dual"
+DEFAULT_METRIC_SCOPES = ("dual", "4class", "5class")
+DEFAULT_DECISION_TIME_MODE = "first-correct"
+DEFAULT_DECISION_TIME_MODES = ("first-correct", "first-any", "fixed-window")
+DEFAULT_RANKING_POLICY = "async-first"
+DEFAULT_RANKING_POLICIES = ("async-first", "paper-first", "dual-board")
+DEFAULT_EXPORT_FIGURES = True
 MODEL_IMPLEMENTATION_LEVELS = {
     "cca": "paper-faithful",
     "fbcca": "paper-faithful",
@@ -1840,6 +1847,27 @@ def parse_gate_policy(raw: str) -> str:
     return value
 
 
+def parse_metric_scope(raw: str) -> str:
+    value = str(raw).strip().lower()
+    if value not in set(DEFAULT_METRIC_SCOPES):
+        raise ValueError(f"unsupported metric scope: {raw}")
+    return value
+
+
+def parse_decision_time_mode(raw: str) -> str:
+    value = str(raw).strip().lower()
+    if value not in set(DEFAULT_DECISION_TIME_MODES):
+        raise ValueError(f"unsupported decision time mode: {raw}")
+    return value
+
+
+def parse_ranking_policy(raw: str) -> str:
+    value = str(raw).strip().lower()
+    if value not in set(DEFAULT_RANKING_POLICIES):
+        raise ValueError(f"unsupported ranking policy: {raw}")
+    return value
+
+
 def parse_channel_weight_mode(raw: Optional[str]) -> Optional[str]:
     if raw is None:
         return None
@@ -2458,6 +2486,7 @@ def evaluate_profile_on_feature_rows(
     gate.reset()
     idle_windows = 0
     idle_selected_windows = 0
+    idle_selected_events = 0
     control_trials = 0
     control_detected_trials = 0
     switch_trials = 0
@@ -2473,6 +2502,7 @@ def evaluate_profile_on_feature_rows(
         row.get("expected_freq") is not None and str(row.get("label", "")).startswith("switch_to_")
         for row in rows
     )
+    selected_active_prev = False
 
     for _index, (_label, _trial_id), trial_rows in trial_entries:
         if not trial_rows:
@@ -2489,15 +2519,19 @@ def evaluate_profile_on_feature_rows(
         for row in trial_rows:
             decision = gate.update(row)
             selected = decision.get("selected_freq")
+            selected_active = selected is not None
             window_index = int(row.get("window_index", 0))
             latency_value = float(profile.win_sec + window_index * profile.step_sec)
 
             if expected_numeric is None:
                 idle_windows += 1
-                if selected is not None:
+                if selected_active:
                     idle_selected_windows += 1
+                    if not selected_active_prev:
+                        idle_selected_events += 1
                 if previous_trial_expected_freq is not None and first_release_latency is None and selected is None:
                     first_release_latency = latency_value
+                selected_active_prev = selected_active
                 continue
 
             if (
@@ -2506,6 +2540,7 @@ def evaluate_profile_on_feature_rows(
                 and abs(float(selected) - float(expected_numeric)) < 1e-8
             ):
                 first_correct_latency = latency_value
+            selected_active_prev = selected_active
 
         if expected_numeric is None:
             if previous_trial_expected_freq is not None:
@@ -2539,7 +2574,8 @@ def evaluate_profile_on_feature_rows(
         previous_trial_expected_freq = float(expected_numeric)
 
     idle_minutes = float(idle_windows) * float(profile.step_sec) / 60.0
-    idle_fp_per_min = float(idle_selected_windows / idle_minutes) if idle_minutes > 1e-12 else 0.0
+    idle_fp_per_min = float(idle_selected_events / idle_minutes) if idle_minutes > 1e-12 else 0.0
+    idle_selected_windows_per_min = float(idle_selected_windows / idle_minutes) if idle_minutes > 1e-12 else 0.0
     control_recall = float(control_detected_trials / control_trials) if control_trials else 0.0
     switch_detect_rate = float(switch_detected_trials / switch_trials) if switch_trials else 0.0
     release_detect_rate = float(release_detected_trials / release_trials) if release_trials else 0.0
@@ -2552,6 +2588,7 @@ def evaluate_profile_on_feature_rows(
     )
     return {
         "idle_fp_per_min": idle_fp_per_min,
+        "idle_selected_windows_per_min": idle_selected_windows_per_min,
         "control_recall": control_recall,
         "switch_detect_rate": switch_detect_rate,
         "release_detect_rate": release_detect_rate,
@@ -2559,6 +2596,8 @@ def evaluate_profile_on_feature_rows(
         "release_latency_s": release_latency,
         "detection_latency_s": detection_latency,
         "idle_windows": float(idle_windows),
+        "idle_selected_windows": float(idle_selected_windows),
+        "idle_selected_events": float(idle_selected_events),
         "control_trials": float(control_trials),
         "switch_trials": float(switch_trials),
         "release_trials": float(release_trials),
@@ -3575,13 +3614,116 @@ def compute_itr_bits_per_minute(
     return float(bits_per_trial * 60.0 / t)
 
 
-def evaluate_decoder_on_trials(
+def _freq_label(freq: float) -> str:
+    return f"{float(freq):g}"
+
+
+def _nearest_freq(freq: float, freqs: Sequence[float]) -> float:
+    candidates = [float(item) for item in freqs]
+    if not candidates:
+        raise ValueError("freq list is empty")
+    return min(candidates, key=lambda item: abs(float(item) - float(freq)))
+
+
+def compute_confusion_matrix_counts(
+    y_true: Sequence[str],
+    y_pred: Sequence[str],
+    labels: Sequence[str],
+) -> list[list[int]]:
+    index = {str(label): idx for idx, label in enumerate(labels)}
+    matrix = [[0 for _ in labels] for _ in labels]
+    for true_label, pred_label in zip(y_true, y_pred):
+        true_key = str(true_label)
+        pred_key = str(pred_label)
+        if true_key not in index or pred_key not in index:
+            continue
+        matrix[index[true_key]][index[pred_key]] += 1
+    return matrix
+
+
+def compute_macro_f1_from_confusion(confusion: Sequence[Sequence[int]]) -> float:
+    matrix = np.asarray(confusion, dtype=float)
+    if matrix.size == 0 or matrix.shape[0] == 0:
+        return 0.0
+    f1_values: list[float] = []
+    for idx in range(matrix.shape[0]):
+        tp = float(matrix[idx, idx])
+        fp = float(np.sum(matrix[:, idx]) - tp)
+        fn = float(np.sum(matrix[idx, :]) - tp)
+        precision = tp / (tp + fp) if (tp + fp) > 1e-12 else 0.0
+        recall = tp / (tp + fn) if (tp + fn) > 1e-12 else 0.0
+        if (precision + recall) <= 1e-12:
+            f1_values.append(0.0)
+        else:
+            f1_values.append(float(2.0 * precision * recall / (precision + recall)))
+    return float(np.mean(np.asarray(f1_values, dtype=float))) if f1_values else 0.0
+
+
+def compute_classification_metrics(
+    *,
+    y_true: Sequence[str],
+    y_pred: Sequence[str],
+    labels: Sequence[str],
+    decision_time_samples_s: Sequence[float],
+    itr_class_count: int,
+    decision_time_fallback_s: float,
+) -> dict[str, Any]:
+    ordered_labels = [str(item) for item in labels]
+    confusion = compute_confusion_matrix_counts(y_true, y_pred, ordered_labels)
+    total = int(sum(sum(row) for row in confusion))
+    correct = int(sum(confusion[idx][idx] for idx in range(len(confusion))))
+    accuracy = float(correct / total) if total > 0 else 0.0
+    macro_f1 = compute_macro_f1_from_confusion(confusion)
+    times = [float(item) for item in decision_time_samples_s if np.isfinite(float(item))]
+    mean_decision_time_s = float(np.mean(np.asarray(times, dtype=float))) if times else float("inf")
+    itr_reference_time = (
+        mean_decision_time_s if np.isfinite(mean_decision_time_s) else float(max(decision_time_fallback_s, 1e-3))
+    )
+    itr_bpm = compute_itr_bits_per_minute(
+        accuracy=accuracy,
+        class_count=max(int(itr_class_count), 2),
+        decision_time_sec=itr_reference_time,
+    )
+    return {
+        "acc": accuracy,
+        "macro_f1": macro_f1,
+        "confusion_matrix": [[int(item) for item in row] for row in confusion],
+        "labels": ordered_labels,
+        "mean_decision_time_s": mean_decision_time_s,
+        "itr_bpm": itr_bpm,
+        "n_total": int(total),
+        "n_correct": int(correct),
+        "decision_time_samples_s": [float(item) for item in times],
+    }
+
+
+def _decision_latency_with_mode(
+    *,
+    mode: str,
+    first_correct_latency: Optional[float],
+    first_any_latency: Optional[float],
+    trial_duration_sec: float,
+    win_sec: float,
+) -> float:
+    penalty = float(trial_duration_sec + win_sec)
+    if mode == "fixed-window":
+        return float(win_sec)
+    if mode == "first-any":
+        return float(first_any_latency) if first_any_latency is not None else penalty
+    return float(first_correct_latency) if first_correct_latency is not None else penalty
+
+
+def evaluate_decoder_on_trials_v2(
     decoder: BaseSSVEPDecoder,
     profile: ThresholdProfile,
     trial_segments: Sequence[tuple[TrialSpec, np.ndarray]],
     *,
     dynamic_stop_enabled: Optional[bool] = None,
-) -> dict[str, float]:
+    metric_scope: str = DEFAULT_METRIC_SCOPE,
+    decision_time_mode: str = DEFAULT_DECISION_TIME_MODE,
+) -> dict[str, Any]:
+    scope = parse_metric_scope(metric_scope)
+    decision_mode = parse_decision_time_mode(decision_time_mode)
     gate_profile = profile
     if dynamic_stop_enabled is not None:
         payload = dict(profile.dynamic_stop or {})
@@ -3590,6 +3732,7 @@ def evaluate_decoder_on_trials(
     gate = AsyncDecisionGate.from_profile(gate_profile)
     gate.reset()
     idle_selected_windows = 0
+    idle_selected_events = 0
     idle_windows = 0
     control_trials = 0
     control_detected_trials = 0
@@ -3605,17 +3748,22 @@ def evaluate_decoder_on_trials(
     release_trials = 0
     release_detected_trials = 0
     release_penalty_trials = 0
+    trial_rows: list[dict[str, Any]] = []
     has_explicit_switch_trials = any(
         trial.expected_freq is not None and str(trial.label).startswith("switch_to_")
         for trial, _segment in trial_segments
     )
+    selected_active_prev = False
 
     for trial, segment in trial_segments:
         segment_matrix = np.asarray(segment, dtype=float)
         if segment_matrix.shape[0] < decoder.win_samples:
             continue
         first_correct_latency: Optional[float] = None
+        first_selected_any_latency: Optional[float] = None
+        first_selected_any_freq: Optional[float] = None
         first_release_latency: Optional[float] = None
+        last_pred_freq: Optional[float] = None
         is_switch_trial = False
         if trial.expected_freq is not None:
             if has_explicit_switch_trials:
@@ -3633,26 +3781,54 @@ def evaluate_decoder_on_trials(
             decision = gate.update(features)
             decoder.update_online(decision, window)
             inference_latencies_ms.append((infer_t1 - infer_t0) * 1000.0)
+            predicted = decision.get("pred_freq")
+            if predicted is not None:
+                last_pred_freq = float(predicted)
+            selected = decision.get("selected_freq")
+            selected_active = selected is not None
+            if selected is not None and first_selected_any_latency is None:
+                first_selected_any_latency = float(decoder.win_sec + window_index * decoder.step_sec)
+                first_selected_any_freq = float(selected)
             if trial.expected_freq is None:
                 idle_windows += 1
-                if decision.get("selected_freq") is not None:
+                if selected_active:
                     idle_selected_windows += 1
-                if prev_trial_expected_freq is not None and first_release_latency is None and decision.get("selected_freq") is None:
+                    if not selected_active_prev:
+                        idle_selected_events += 1
+                if prev_trial_expected_freq is not None and first_release_latency is None and selected is None:
                     first_release_latency = float(decoder.win_sec + window_index * decoder.step_sec)
             else:
-                selected = decision.get("selected_freq")
                 if (
                     first_correct_latency is None
                     and selected is not None
                     and abs(float(selected) - float(trial.expected_freq)) < 1e-8
                 ):
                     first_correct_latency = float(decoder.win_sec + window_index * decoder.step_sec)
+            selected_active_prev = selected_active
             window_index += 1
+
+        trial_duration_sec = float(segment_matrix.shape[0]) / max(float(decoder.fs), 1.0)
+        had_selected = bool(first_selected_any_latency is not None)
+        trial_rows.append(
+            {
+                "label": str(trial.label),
+                "expected_freq": None if trial.expected_freq is None else float(trial.expected_freq),
+                "trial_duration_sec": float(trial_duration_sec),
+                "first_selected_any_latency_s": None
+                if first_selected_any_latency is None
+                else float(first_selected_any_latency),
+                "first_selected_any_freq": None if first_selected_any_freq is None else float(first_selected_any_freq),
+                "first_correct_latency_s": None if first_correct_latency is None else float(first_correct_latency),
+                "first_release_latency_s": None if first_release_latency is None else float(first_release_latency),
+                "last_pred_freq": None if last_pred_freq is None else float(last_pred_freq),
+                "had_selected": bool(had_selected),
+                "is_switch_trial": bool(is_switch_trial),
+            }
+        )
 
         if trial.expected_freq is None:
             if prev_trial_expected_freq is not None:
                 release_trials += 1
-                trial_duration_sec = float(segment_matrix.shape[0]) / max(float(decoder.fs), 1.0)
                 penalty_latency = float(trial_duration_sec + decoder.win_sec)
                 if first_release_latency is None:
                     release_penalty_trials += 1
@@ -3667,7 +3843,6 @@ def evaluate_decoder_on_trials(
             control_detected_trials += 1
             detection_latencies.append(float(first_correct_latency))
         if is_switch_trial:
-            trial_duration_sec = float(segment_matrix.shape[0]) / max(float(decoder.fs), 1.0)
             penalty_latency = float(trial_duration_sec + decoder.win_sec)
             if first_correct_latency is None:
                 switch_penalty_trials += 1
@@ -3679,7 +3854,8 @@ def evaluate_decoder_on_trials(
         prev_trial_expected_freq = float(trial.expected_freq)
 
     idle_minutes = float(idle_windows) * float(decoder.step_sec) / 60.0
-    idle_fp_per_min = float(idle_selected_windows / idle_minutes) if idle_minutes > 1e-12 else 0.0
+    idle_fp_per_min = float(idle_selected_events / idle_minutes) if idle_minutes > 1e-12 else 0.0
+    idle_selected_windows_per_min = float(idle_selected_windows / idle_minutes) if idle_minutes > 1e-12 else 0.0
     control_recall = float(control_detected_trials / control_trials) if control_trials else 0.0
     control_miss_rate = float(1.0 - control_recall) if control_trials else 1.0
     median_detection_latency = (
@@ -3693,13 +3869,14 @@ def evaluate_decoder_on_trials(
     )
     switch_detect_rate = float(switch_detected_trials / switch_trials) if switch_trials else 0.0
     release_detect_rate = float(release_detected_trials / release_trials) if release_trials else 0.0
-    itr_bpm = compute_itr_bits_per_minute(
+    async_itr = compute_itr_bits_per_minute(
         accuracy=control_recall,
         class_count=len(decoder.freqs),
         decision_time_sec=median_detection_latency if np.isfinite(median_detection_latency) else decoder.win_sec,
     )
-    return {
+    async_metrics = {
         "idle_fp_per_min": idle_fp_per_min,
+        "idle_selected_windows_per_min": idle_selected_windows_per_min,
         "control_recall": control_recall,
         "control_miss_rate": control_miss_rate,
         "switch_detect_rate": switch_detect_rate,
@@ -3707,10 +3884,12 @@ def evaluate_decoder_on_trials(
         "release_detect_rate": release_detect_rate,
         "release_latency_s": median_release_latency,
         "detection_latency_s": median_detection_latency,
-        "itr_bpm": itr_bpm,
+        "itr_bpm": async_itr,
         "inference_ms": float(np.mean(inference_latencies_ms)) if inference_latencies_ms else float("inf"),
         "control_trials": float(control_trials),
         "idle_windows": float(idle_windows),
+        "idle_selected_windows": float(idle_selected_windows),
+        "idle_selected_events": float(idle_selected_events),
         "switch_trials": float(switch_trials),
         "switch_detected_trials": float(switch_detected_trials),
         "switch_penalty_trials": float(switch_penalty_trials),
@@ -3719,19 +3898,240 @@ def evaluate_decoder_on_trials(
         "release_penalty_trials": float(release_penalty_trials),
     }
 
+    freq_labels = [_freq_label(freq) for freq in decoder.freqs]
+    y4_true: list[str] = []
+    y4_pred: list[str] = []
+    times4: list[float] = []
+    y2_true: list[str] = []
+    y2_pred: list[str] = []
+    times2: list[float] = []
+    y5_true: list[str] = []
+    y5_pred: list[str] = []
+    times5: list[float] = []
+    labels2 = ("idle", "control")
+    labels5 = ("idle", *freq_labels)
 
-def benchmark_rank_key(metrics: dict[str, float]) -> tuple[float, float, float, float, float, float, float, float]:
+    for row in trial_rows:
+        expected = row["expected_freq"]
+        trial_duration_sec = float(row["trial_duration_sec"])
+        first_correct_latency = row["first_correct_latency_s"]
+        first_any_latency = row["first_selected_any_latency_s"]
+        first_any_freq = row["first_selected_any_freq"]
+        last_pred_freq = row["last_pred_freq"]
+        had_selected = bool(row["had_selected"])
+
+        true_2 = "idle" if expected is None else "control"
+        if expected is None:
+            pred_2 = "control" if had_selected else "idle"
+        elif decision_mode == "first-correct":
+            pred_2 = "control" if first_correct_latency is not None else "idle"
+        elif decision_mode == "first-any":
+            pred_2 = "control" if first_any_latency is not None else "idle"
+        else:
+            pred_2 = "control" if had_selected else "idle"
+        y2_true.append(true_2)
+        y2_pred.append(pred_2)
+        if expected is None:
+            if decision_mode == "first-any" and first_any_latency is not None:
+                times2.append(float(first_any_latency))
+            else:
+                times2.append(float(decoder.win_sec))
+        else:
+            times2.append(
+                _decision_latency_with_mode(
+                    mode=decision_mode,
+                    first_correct_latency=(None if first_correct_latency is None else float(first_correct_latency)),
+                    first_any_latency=(None if first_any_latency is None else float(first_any_latency)),
+                    trial_duration_sec=trial_duration_sec,
+                    win_sec=decoder.win_sec,
+                )
+            )
+
+        if expected is not None:
+            true_label = _freq_label(float(expected))
+            if decision_mode == "first-correct" and first_correct_latency is not None:
+                pred_label = true_label
+            else:
+                if decision_mode == "fixed-window":
+                    candidate_freq = last_pred_freq if last_pred_freq is not None else first_any_freq
+                else:
+                    candidate_freq = first_any_freq if first_any_freq is not None else last_pred_freq
+                if candidate_freq is None:
+                    candidate_freq = float(decoder.freqs[0])
+                pred_label = _freq_label(_nearest_freq(float(candidate_freq), decoder.freqs))
+            y4_true.append(true_label)
+            y4_pred.append(pred_label)
+            times4.append(
+                _decision_latency_with_mode(
+                    mode=decision_mode,
+                    first_correct_latency=(None if first_correct_latency is None else float(first_correct_latency)),
+                    first_any_latency=(None if first_any_latency is None else float(first_any_latency)),
+                    trial_duration_sec=trial_duration_sec,
+                    win_sec=decoder.win_sec,
+                )
+            )
+
+        if scope == "5class":
+            if expected is None:
+                true_5 = "idle"
+                if decision_mode == "first-any" and first_any_latency is not None:
+                    times5.append(float(first_any_latency))
+                else:
+                    times5.append(float(decoder.win_sec))
+            else:
+                true_5 = _freq_label(float(expected))
+                times5.append(
+                    _decision_latency_with_mode(
+                        mode=decision_mode,
+                        first_correct_latency=(None if first_correct_latency is None else float(first_correct_latency)),
+                        first_any_latency=(None if first_any_latency is None else float(first_any_latency)),
+                        trial_duration_sec=trial_duration_sec,
+                        win_sec=decoder.win_sec,
+                    )
+                )
+            if expected is not None and decision_mode == "first-correct" and first_correct_latency is not None:
+                pred_5 = _freq_label(float(expected))
+            else:
+                if decision_mode == "fixed-window":
+                    candidate_freq = last_pred_freq if last_pred_freq is not None else first_any_freq
+                else:
+                    candidate_freq = first_any_freq if first_any_freq is not None else last_pred_freq
+                if candidate_freq is None:
+                    pred_5 = "idle"
+                else:
+                    pred_5 = _freq_label(_nearest_freq(float(candidate_freq), decoder.freqs))
+            y5_true.append(true_5)
+            y5_pred.append(pred_5)
+
+    metrics_4class = compute_classification_metrics(
+        y_true=y4_true,
+        y_pred=y4_pred,
+        labels=freq_labels,
+        decision_time_samples_s=times4,
+        itr_class_count=4,
+        decision_time_fallback_s=float(decoder.win_sec),
+    )
+    metrics_2class = compute_classification_metrics(
+        y_true=y2_true,
+        y_pred=y2_pred,
+        labels=labels2,
+        decision_time_samples_s=times2,
+        itr_class_count=2,
+        decision_time_fallback_s=float(decoder.win_sec),
+    )
+    metrics_5class: Optional[dict[str, Any]]
+    if scope == "5class":
+        metrics_5class = compute_classification_metrics(
+            y_true=y5_true,
+            y_pred=y5_pred,
+            labels=labels5,
+            decision_time_samples_s=times5,
+            itr_class_count=5,
+            decision_time_fallback_s=float(decoder.win_sec),
+        )
+    else:
+        metrics_5class = None
+
+    return {
+        "async_metrics": async_metrics,
+        "metrics_4class": metrics_4class,
+        "metrics_2class": metrics_2class,
+        "metrics_5class": metrics_5class,
+        "metric_scope": scope,
+        "decision_time_mode": decision_mode,
+        "trial_events": trial_rows,
+    }
+
+
+def pack_evaluation_metrics_for_ranking(
+    evaluation_bundle: dict[str, Any],
+    *,
+    metric_scope: str = DEFAULT_METRIC_SCOPE,
+) -> dict[str, float]:
+    scope = parse_metric_scope(metric_scope)
+    async_metrics = dict(evaluation_bundle.get("async_metrics", {}))
+    metrics_4 = dict(evaluation_bundle.get("metrics_4class", {}))
+    metrics_5 = dict(evaluation_bundle.get("metrics_5class") or {})
+    ranking_metrics = dict(async_metrics)
+    ranking_metrics["acc_4class"] = float(metrics_4.get("acc", 0.0))
+    ranking_metrics["macro_f1_4class"] = float(metrics_4.get("macro_f1", 0.0))
+    ranking_metrics["itr_bpm_4class"] = float(metrics_4.get("itr_bpm", 0.0))
+    ranking_metrics["mean_decision_time_s_4class"] = float(metrics_4.get("mean_decision_time_s", float("inf")))
+    if scope == "5class":
+        ranking_metrics["acc_5class"] = float(metrics_5.get("acc", 0.0))
+        ranking_metrics["macro_f1_5class"] = float(metrics_5.get("macro_f1", 0.0))
+        ranking_metrics["itr_bpm_5class"] = float(metrics_5.get("itr_bpm", 0.0))
+    return ranking_metrics
+
+
+def evaluate_decoder_on_trials(
+    decoder: BaseSSVEPDecoder,
+    profile: ThresholdProfile,
+    trial_segments: Sequence[tuple[TrialSpec, np.ndarray]],
+    *,
+    dynamic_stop_enabled: Optional[bool] = None,
+) -> dict[str, float]:
+    bundle = evaluate_decoder_on_trials_v2(
+        decoder,
+        profile,
+        trial_segments,
+        dynamic_stop_enabled=dynamic_stop_enabled,
+        metric_scope=DEFAULT_METRIC_SCOPE,
+        decision_time_mode=DEFAULT_DECISION_TIME_MODE,
+    )
+    return dict(bundle.get("async_metrics", {}))
+
+
+def benchmark_rank_key(
+    metrics: dict[str, float],
+    *,
+    ranking_policy: str = DEFAULT_RANKING_POLICY,
+) -> tuple[float, ...]:
+    policy = parse_ranking_policy(ranking_policy)
     control_recall = float(metrics.get("control_recall", 0.0))
-    low_recall_penalty = 1.0 if control_recall < float(DEFAULT_BENCHMARK_RANK_MIN_CONTROL_RECALL) else 0.0
+    recall_threshold = float(DEFAULT_BENCHMARK_RANK_MIN_CONTROL_RECALL)
+    low_recall_penalty = max(0.0, recall_threshold - control_recall)
+    idle_fp = float(metrics.get("idle_fp_per_min", float("inf")))
+    switch_latency = float(metrics.get("switch_latency_s", float("inf")))
+    release_latency = float(metrics.get("release_latency_s", float("inf")))
+    acc_4class = float(metrics.get("acc_4class", 0.0))
+    macro_f1_4class = float(metrics.get("macro_f1_4class", 0.0))
+    itr_4class = float(metrics.get("itr_bpm_4class", 0.0))
+    inference_ms = float(metrics.get("inference_ms", float("inf")))
+    if policy == "paper-first":
+        return (
+            low_recall_penalty,
+            -acc_4class,
+            -macro_f1_4class,
+            -itr_4class,
+            idle_fp,
+            -control_recall,
+            switch_latency,
+            release_latency,
+            inference_ms,
+        )
+    if policy == "dual-board":
+        return (
+            low_recall_penalty,
+            idle_fp,
+            -control_recall,
+            switch_latency,
+            release_latency,
+            -acc_4class,
+            -macro_f1_4class,
+            -itr_4class,
+            inference_ms,
+        )
     return (
         low_recall_penalty,
-        float(metrics.get("idle_fp_per_min", float("inf"))),
+        idle_fp,
         -control_recall,
-        -float(metrics.get("switch_detect_rate", 0.0)),
-        float(metrics.get("switch_latency_s", float("inf"))),
-        float(metrics.get("release_latency_s", float("inf"))),
-        -float(metrics.get("itr_bpm", 0.0)),
-        float(metrics.get("inference_ms", float("inf"))),
+        switch_latency,
+        release_latency,
+        -acc_4class,
+        -macro_f1_4class,
+        -itr_4class,
+        inference_ms,
     )
 
 
@@ -3745,24 +4145,52 @@ def profile_meets_acceptance(metrics: dict[str, float]) -> bool:
     )
 
 
-def benchmark_metric_definition_payload() -> dict[str, Any]:
+def benchmark_metric_definition_payload(
+    *,
+    ranking_policy: str = DEFAULT_RANKING_POLICY,
+    metric_scope: str = DEFAULT_METRIC_SCOPE,
+    decision_time_mode: str = DEFAULT_DECISION_TIME_MODE,
+) -> dict[str, Any]:
+    policy = parse_ranking_policy(ranking_policy)
+    scope = parse_metric_scope(metric_scope)
+    time_mode = parse_decision_time_mode(decision_time_mode)
+    if policy == "paper-first":
+        ranking_priority = [
+            "low_recall_penalty",
+            "acc_4class",
+            "macro_f1_4class",
+            "itr_bpm_4class",
+            "idle_fp_per_min",
+            "control_recall",
+            "switch_latency_s",
+            "release_latency_s",
+            "inference_ms",
+        ]
+    else:
+        ranking_priority = [
+            "low_recall_penalty",
+            "idle_fp_per_min",
+            "control_recall",
+            "switch_latency_s",
+            "release_latency_s",
+            "acc_4class",
+            "macro_f1_4class",
+            "itr_bpm_4class",
+            "inference_ms",
+        ]
     return {
         "ranking_policy": {
             "description": (
-                "Constrained lexicographic ranking for asynchronous control-state decoding."
-                " Models below the minimum control recall are down-ranked before idle FP ordering."
+                "Constrained lexicographic ranking for asynchronous control-state decoding with "
+                "classification quality tie-breakers."
             ),
+            "policy": policy,
             "min_control_recall_for_ranking": float(DEFAULT_BENCHMARK_RANK_MIN_CONTROL_RECALL),
-            "priority": [
-                "low_recall_penalty",
-                "idle_fp_per_min",
-                "control_recall",
-                "switch_detect_rate",
-                "switch_latency_s",
-                "release_latency_s",
-                "itr_bpm",
-                "inference_ms",
-            ],
+            "priority": ranking_priority,
+        },
+        "evaluation_scope": {
+            "metric_scope": scope,
+            "decision_time_mode": time_mode,
         },
         "acceptance_policy": {
             "idle_fp_per_min_max": float(DEFAULT_ACCEPTANCE_IDLE_FP_PER_MIN),
@@ -3821,12 +4249,38 @@ def benchmark_metric_definition_payload() -> dict[str, Any]:
             ),
             "penalty_formula": "trial_duration_sec + win_sec",
         },
+        "idle_fp_per_min": {
+            "description": (
+                "Idle false-positive events per minute (event-based). "
+                "One event is counted when selected_freq transitions from None to a target during idle."
+            ),
+            "count_rule": "count rising edges of selected state on idle windows",
+            "time_base": "idle_window_count * step_sec / 60",
+        },
+        "formula_definitions": {
+            "acc_ssvep": "Acc_SSVEP = N_correct / N_total * 100%",
+            "macro_f1": "Macro-F1 = (1/C) * sum(F1_i)",
+            "itr": "ITR = [log2(N)+P*log2(P)+(1-P)*log2((1-P)/(N-1))] * 60 / T",
+        },
+        "method_references": [
+            {"name": "CCA baseline", "pmid": "17549911"},
+            {"name": "FBCCA", "pmid": "26035476"},
+            {"name": "TRCA", "pmid": "28436836"},
+            {"name": "TRCA-R framework", "pmid": "32091986"},
+            {"name": "TDCA", "pmid": "34543200"},
+            {"name": "Async control-state detection", "pmid": "26246229"},
+            {"name": "Dynamic stopping", "pmid": "26736447"},
+            {"name": "Pseudo-online evaluation", "pmid": "38113535"},
+        ],
     }
 
 
 def summarize_benchmark_robustness(
     run_items: Sequence[dict[str, Any]],
+    *,
+    ranking_policy: str = DEFAULT_RANKING_POLICY,
 ) -> dict[str, Any]:
+    policy = parse_ranking_policy(ranking_policy)
     runs: list[dict[str, Any]] = [dict(item) for item in run_items]
     grouped_indices: dict[tuple[str, int], list[int]] = defaultdict(list)
     for idx, item in enumerate(runs):
@@ -3836,7 +4290,9 @@ def summarize_benchmark_robustness(
 
     for key, indices in grouped_indices.items():
         successful_indices = [idx for idx in indices if "metrics" in runs[idx]]
-        successful_indices.sort(key=lambda idx: benchmark_rank_key(dict(runs[idx]["metrics"])))
+        successful_indices.sort(
+            key=lambda idx: benchmark_rank_key(dict(runs[idx]["metrics"]), ranking_policy=policy)
+        )
         for rank, idx in enumerate(successful_indices, start=1):
             runs[idx]["run_rank"] = int(rank)
         for idx in indices:
@@ -3852,6 +4308,9 @@ def summarize_benchmark_robustness(
         "release_latency_s",
         "detection_latency_s",
         "itr_bpm",
+        "acc_4class",
+        "macro_f1_4class",
+        "itr_bpm_4class",
         "inference_ms",
     )
     mode_model_rows: dict[tuple[str, str], dict[str, Any]] = {}
@@ -3961,7 +4420,7 @@ def summarize_benchmark_robustness(
         ranked_models = [dict(item) for item in payload["ranked_models"]]
         ranked_models.sort(
             key=lambda item: (
-                benchmark_rank_key(item.get("metrics_mean", {})),
+                benchmark_rank_key(item.get("metrics_mean", {}), ranking_policy=policy),
                 float(item.get("mean_rank", float("inf"))),
                 float(item.get("std_rank", float("inf"))),
             )
@@ -3976,6 +4435,7 @@ def summarize_benchmark_robustness(
     modes = sorted(by_mode.keys())
     seeds = sorted({int(item.get("eval_seed", -1)) for item in runs})
     return {
+        "ranking_policy": policy,
         "channel_modes": modes,
         "seeds": seeds,
         "runs": runs,
@@ -4088,6 +4548,56 @@ def save_benchmark_dataset_bundle(
         "dataset_manifest": str(manifest_path),
         "dataset_npz": str(npz_path),
         "data_schema_version": DATA_SCHEMA_VERSION,
+    }
+
+
+def save_collection_dataset_bundle(
+    *,
+    dataset_root: Path,
+    session_id: str,
+    subject_id: str,
+    serial_port: str,
+    board_id: int,
+    sampling_rate: int,
+    freqs: Sequence[float],
+    board_eeg_channels: Sequence[int],
+    protocol_config: dict[str, Any],
+    collection_segments: Sequence[tuple[TrialSpec, np.ndarray]],
+) -> dict[str, Any]:
+    dataset_root = Path(dataset_root).expanduser().resolve()
+    session_dir = dataset_root / str(session_id)
+    session_dir.mkdir(parents=True, exist_ok=True)
+    npz_arrays: dict[str, np.ndarray] = {}
+    trial_records = _build_trial_dataset_entries(
+        stage="collection",
+        segments=collection_segments,
+        target_samples=int(round(float(protocol_config.get("active_sec", 0.0)) * float(sampling_rate))),
+        npz_arrays=npz_arrays,
+    )
+    npz_path = session_dir / "raw_trials.npz"
+    np.savez_compressed(npz_path, **npz_arrays)
+    manifest_payload = {
+        "data_schema_version": "2.0",
+        "session_id": str(session_id),
+        "subject_id": str(subject_id),
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "serial_port": str(serial_port),
+        "board_id": int(board_id),
+        "sampling_rate": int(sampling_rate),
+        "freqs": [float(freq) for freq in freqs],
+        "board_eeg_channels": [int(channel) for channel in board_eeg_channels],
+        "protocol_config": json_safe(protocol_config),
+        "trials": json_safe(trial_records),
+        "splits": {"train": [], "gate": [], "holdout": []},
+        "files": {"raw_trials_npz": str(npz_path)},
+    }
+    manifest_path = session_dir / "session_manifest.json"
+    manifest_path.write_text(json_dumps(json_safe(manifest_payload)) + "\n", encoding="utf-8")
+    return {
+        "dataset_dir": str(session_dir),
+        "dataset_manifest": str(manifest_path),
+        "dataset_npz": str(npz_path),
+        "data_schema_version": "2.0",
     }
 
 
@@ -4269,6 +4779,163 @@ class CalibrationRunner:
                 pass
 
 
+class CollectionRunner:
+    def __init__(
+        self,
+        *,
+        serial_port: str,
+        board_id: int,
+        freqs: Sequence[float],
+        dataset_dir: Path,
+        subject_id: str,
+        session_id: str,
+        protocol: str = "enhanced_45m",
+        sampling_rate: int = 250,
+        prepare_sec: float = 1.0,
+        active_sec: float = 4.0,
+        rest_sec: float = 1.0,
+        target_repeats: int = 24,
+        idle_repeats: int = 48,
+        switch_trials: int = 32,
+        seed: int = DEFAULT_CALIBRATION_SEED,
+    ) -> None:
+        self.requested_serial_port = normalize_serial_port(serial_port)
+        self.serial_port = self.requested_serial_port
+        self.board_id = int(board_id)
+        self.freqs = tuple(float(freq) for freq in freqs)
+        self.dataset_dir = Path(dataset_dir)
+        self.subject_id = str(subject_id).strip() or "subject001"
+        self.session_id = str(session_id).strip()
+        self.protocol = str(protocol).strip().lower()
+        self.sampling_rate = int(sampling_rate)
+        self.prepare_sec = float(prepare_sec)
+        self.active_sec = float(active_sec)
+        self.rest_sec = float(rest_sec)
+        self.target_repeats = int(target_repeats)
+        self.idle_repeats = int(idle_repeats)
+        self.switch_trials = int(switch_trials)
+        self.seed = int(seed)
+
+    def run(self) -> dict[str, Any]:
+        if self.protocol != "enhanced_45m":
+            raise ValueError(f"unsupported protocol: {self.protocol}")
+        validate_calibration_plan(
+            target_repeats=max(self.target_repeats, 2),
+            idle_repeats=max(self.idle_repeats, 2),
+            active_sec=self.active_sec,
+            preferred_win_sec=min(float(DEFAULT_WIN_SEC), float(self.active_sec)),
+            step_sec=float(DEFAULT_STEP_SEC),
+        )
+        require_brainflow()
+        board = None
+        try:
+            board, resolved_port, attempted_ports = prepare_board_session(self.board_id, self.requested_serial_port)
+            self.serial_port = resolved_port
+            if serial_port_is_auto(self.requested_serial_port):
+                attempts = ", ".join(attempted_ports)
+                print(
+                    f"Serial auto-select: requested={self.requested_serial_port} -> using {resolved_port} "
+                    f"(attempted: {attempts})",
+                    flush=True,
+                )
+            actual_fs = int(BoardShim.get_sampling_rate(self.board_id))
+            eeg_channels = tuple(int(channel) for channel in BoardShim.get_eeg_channels(self.board_id))
+            board.start_stream(450000)
+            ready_samples = ensure_stream_ready(board, actual_fs)
+            print(
+                f"Collection started | fs={actual_fs}Hz | stream_ready={ready_samples} | eeg_channels={list(eeg_channels)}",
+                flush=True,
+            )
+            time.sleep(max(2.0, DEFAULT_STREAM_WARMUP_SEC))
+            board.get_board_data()
+
+            helper = BenchmarkRunner(
+                serial_port=self.serial_port,
+                board_id=self.board_id,
+                freqs=self.freqs,
+                output_profile_path=self.dataset_dir / "_unused_profile.json",
+                report_path=self.dataset_dir / "_unused_report.json",
+                dataset_dir=self.dataset_dir,
+                sampling_rate=self.sampling_rate,
+                prepare_sec=self.prepare_sec,
+                active_sec=self.active_sec,
+                rest_sec=self.rest_sec,
+                calibration_target_repeats=1,
+                calibration_idle_repeats=1,
+                eval_target_repeats=1,
+                eval_idle_repeats=1,
+                eval_switch_trials=1,
+                step_sec=DEFAULT_STEP_SEC,
+                model_names=(DEFAULT_MODEL_NAME,),
+                channel_modes=("all8",),
+                multi_seed_count=1,
+                seed_step=1,
+                win_candidates=(min(float(DEFAULT_WIN_SEC), float(self.active_sec)),),
+                gate_policy=DEFAULT_GATE_POLICY,
+                channel_weight_mode=DEFAULT_CHANNEL_WEIGHT_MODE,
+                dynamic_stop_enabled=DEFAULT_DYNAMIC_STOP_ENABLED,
+                dynamic_stop_alpha=DEFAULT_DYNAMIC_STOP_ALPHA,
+                seed=self.seed,
+            )
+
+            trials = build_benchmark_eval_trials(
+                self.freqs,
+                target_repeats=self.target_repeats,
+                idle_repeats=self.idle_repeats,
+                switch_trials=self.switch_trials,
+                seed=self.seed,
+            )
+            collection_segments = helper._collect_segments(
+                board=board,
+                eeg_channels=eeg_channels,
+                actual_fs=actual_fs,
+                trials=trials,
+                title="Collection",
+                include_transition_idle=False,
+            )
+            if not self.session_id:
+                stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                self.session_id = f"{self.subject_id}_session_{stamp}"
+            protocol_config = {
+                "protocol_name": str(self.protocol),
+                "prepare_sec": float(self.prepare_sec),
+                "active_sec": float(self.active_sec),
+                "rest_sec": float(self.rest_sec),
+                "target_repeats": int(self.target_repeats),
+                "idle_repeats": int(self.idle_repeats),
+                "switch_trials": int(self.switch_trials),
+                "seed": int(self.seed),
+            }
+            metadata = save_collection_dataset_bundle(
+                dataset_root=self.dataset_dir,
+                session_id=self.session_id,
+                subject_id=self.subject_id,
+                serial_port=self.serial_port,
+                board_id=self.board_id,
+                sampling_rate=actual_fs,
+                freqs=self.freqs,
+                board_eeg_channels=eeg_channels,
+                protocol_config=protocol_config,
+                collection_segments=collection_segments,
+            )
+            print(f"Collection dataset manifest saved to: {metadata['dataset_manifest']}", flush=True)
+            return {
+                "session_id": self.session_id,
+                "subject_id": self.subject_id,
+                "collected_trials": int(len(collection_segments)),
+                **metadata,
+            }
+        finally:
+            try:
+                board.stop_stream()
+            except Exception:
+                pass
+            try:
+                board.release_session()
+            except Exception:
+                pass
+
+
 class BenchmarkRunner:
     def __init__(
         self,
@@ -4298,6 +4965,9 @@ class BenchmarkRunner:
         channel_weight_mode: Optional[str] = DEFAULT_CHANNEL_WEIGHT_MODE,
         dynamic_stop_enabled: bool = DEFAULT_DYNAMIC_STOP_ENABLED,
         dynamic_stop_alpha: float = DEFAULT_DYNAMIC_STOP_ALPHA,
+        metric_scope: str = DEFAULT_METRIC_SCOPE,
+        decision_time_mode: str = DEFAULT_DECISION_TIME_MODE,
+        ranking_policy: str = DEFAULT_RANKING_POLICY,
         seed: int = DEFAULT_CALIBRATION_SEED,
     ) -> None:
         self.requested_serial_port = normalize_serial_port(serial_port)
@@ -4329,6 +4999,9 @@ class BenchmarkRunner:
         self.channel_weight_mode = parse_channel_weight_mode(channel_weight_mode)
         self.dynamic_stop_enabled = bool(dynamic_stop_enabled)
         self.dynamic_stop_alpha = float(dynamic_stop_alpha)
+        self.metric_scope = parse_metric_scope(metric_scope)
+        self.decision_time_mode = parse_decision_time_mode(decision_time_mode)
+        self.ranking_policy = parse_ranking_policy(ranking_policy)
         self._sampling_rate_hint = int(sampling_rate)
 
     def _countdown(self, message: str, duration_sec: float) -> None:
@@ -4580,12 +5253,51 @@ class BenchmarkRunner:
             dynamic_stop_enabled=self.dynamic_stop_enabled,
             dynamic_stop_alpha=self.dynamic_stop_alpha,
         )
-        eval_metrics = evaluate_decoder_on_trials(final_decoder, final_profile, eval_segments)
-        fixed_metrics = evaluate_decoder_on_trials(
-            final_decoder,
+        trained_state = json_safe(final_decoder.get_state())
+        base_model_params = dict(final_decoder.model_params)
+        base_model_params["state"] = trained_state
+        base_channel_weights = base_model_params.get("channel_weights")
+        base_profile = replace(
             final_profile,
+            model_name=normalize_model_name(model_name),
+            model_params=base_model_params,
+            channel_weight_mode=(
+                str(base_model_params.get("channel_weight_mode"))
+                if base_model_params.get("channel_weight_mode") is not None
+                else None
+            ),
+            channel_weights=(
+                tuple(float(value) for value in base_channel_weights)
+                if isinstance(base_channel_weights, (list, tuple))
+                else None
+            ),
+        )
+        eval_decoder = load_decoder_from_profile(base_profile, sampling_rate=fs)
+        fixed_decoder = load_decoder_from_profile(base_profile, sampling_rate=fs)
+        eval_bundle = evaluate_decoder_on_trials_v2(
+            eval_decoder,
+            base_profile,
+            eval_segments,
+            metric_scope=self.metric_scope,
+            decision_time_mode=self.decision_time_mode,
+        )
+        fixed_bundle = evaluate_decoder_on_trials_v2(
+            fixed_decoder,
+            base_profile,
             eval_segments,
             dynamic_stop_enabled=False,
+            metric_scope=self.metric_scope,
+            decision_time_mode=self.decision_time_mode,
+        )
+        eval_async_metrics = dict(eval_bundle.get("async_metrics", {}))
+        fixed_async_metrics = dict(fixed_bundle.get("async_metrics", {}))
+        eval_metrics = pack_evaluation_metrics_for_ranking(
+            eval_bundle,
+            metric_scope=self.metric_scope,
+        )
+        fixed_metrics = pack_evaluation_metrics_for_ranking(
+            fixed_bundle,
+            metric_scope=self.metric_scope,
         )
         dynamic_delta: dict[str, float] = {}
         for metric_name in (
@@ -4597,13 +5309,11 @@ class BenchmarkRunner:
             "detection_latency_s",
             "itr_bpm",
         ):
-            dynamic_value = float(eval_metrics.get(metric_name, 0.0))
-            fixed_value = float(fixed_metrics.get(metric_name, 0.0))
+            dynamic_value = float(eval_async_metrics.get(metric_name, 0.0))
+            fixed_value = float(fixed_async_metrics.get(metric_name, 0.0))
             if np.isfinite(dynamic_value) and np.isfinite(fixed_value):
                 dynamic_delta[metric_name] = float(dynamic_value - fixed_value)
-        state = json_safe(final_decoder.get_state())
-        model_params = dict(final_decoder.model_params)
-        model_params["state"] = state
+        model_params = dict(base_model_params)
         profile_channel_weights = model_params.get("channel_weights")
         profile_weight_tuple = (
             tuple(float(value) for value in profile_channel_weights)
@@ -4638,11 +5348,11 @@ class BenchmarkRunner:
                 "channel_weight_mode": self.channel_weight_mode,
                 "channel_weight_training": best_config.get("channel_weight_training"),
                 "dynamic_comparison": {
-                    "dynamic": eval_metrics,
-                    "fixed": fixed_metrics,
+                    "dynamic": eval_bundle,
+                    "fixed": fixed_bundle,
                     "delta": dynamic_delta,
                 },
-                "has_stat_model": profile_has_stat_model(final_profile),
+                "has_stat_model": profile_has_stat_model(base_profile),
             },
         )
         return final_profile, {
@@ -4650,9 +5360,25 @@ class BenchmarkRunner:
             "implementation_level": model_implementation_level(model_name),
             "method_note": model_method_note(model_name),
             "metrics": eval_metrics,
+            "async_metrics": eval_async_metrics,
+            "metrics_4class": dict(eval_bundle.get("metrics_4class", {})),
+            "metrics_2class": dict(eval_bundle.get("metrics_2class", {})),
+            "metrics_5class": (
+                None
+                if eval_bundle.get("metrics_5class") is None
+                else dict(eval_bundle.get("metrics_5class", {}))
+            ),
             "fixed_window_metrics": fixed_metrics,
+            "fixed_window_async_metrics": fixed_async_metrics,
+            "fixed_window_metrics_4class": dict(fixed_bundle.get("metrics_4class", {})),
+            "fixed_window_metrics_2class": dict(fixed_bundle.get("metrics_2class", {})),
+            "fixed_window_metrics_5class": (
+                None
+                if fixed_bundle.get("metrics_5class") is None
+                else dict(fixed_bundle.get("metrics_5class", {}))
+            ),
             "dynamic_delta": dynamic_delta,
-            "rank_key": benchmark_rank_key(eval_metrics),
+            "rank_key": benchmark_rank_key(eval_metrics, ranking_policy=self.ranking_policy),
             "rank_constraints": {
                 "min_control_recall_for_ranking": float(DEFAULT_BENCHMARK_RANK_MIN_CONTROL_RECALL),
                 "control_recall_pass": bool(
@@ -4828,6 +5554,9 @@ class BenchmarkRunner:
                 "channel_weight_mode": self.channel_weight_mode,
                 "dynamic_stop_enabled": bool(self.dynamic_stop_enabled),
                 "dynamic_stop_alpha": float(self.dynamic_stop_alpha),
+                "metric_scope": str(self.metric_scope),
+                "decision_time_mode": str(self.decision_time_mode),
+                "ranking_policy": str(self.ranking_policy),
             }
 
             model_results: list[dict[str, Any]] = []
@@ -4874,7 +5603,9 @@ class BenchmarkRunner:
                             if include_details:
                                 model_results.append(dict(failed_item))
 
-                    seed_mode_success.sort(key=lambda item: benchmark_rank_key(item["metrics"]))
+                    seed_mode_success.sort(
+                        key=lambda item: benchmark_rank_key(item["metrics"], ranking_policy=self.ranking_policy)
+                    )
                     rank_by_model = {
                         str(item["model_name"]): int(rank) for rank, item in enumerate(seed_mode_success, start=1)
                     }
@@ -4886,7 +5617,7 @@ class BenchmarkRunner:
             successful = [item for item in model_results if "metrics" in item]
             if not successful:
                 raise RuntimeError("all model benchmarks failed")
-            successful.sort(key=lambda item: benchmark_rank_key(item["metrics"]))
+            successful.sort(key=lambda item: benchmark_rank_key(item["metrics"], ranking_policy=self.ranking_policy))
             accepted = [item for item in successful if bool(item.get("meets_acceptance"))]
             chosen_result = accepted[0] if accepted else successful[0]
             chosen_profile = best_profiles[str(chosen_result["model_name"])]
@@ -4900,7 +5631,10 @@ class BenchmarkRunner:
             )
             now_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             session_id = f"benchmark_session_{now_stamp}"
-            robustness_summary = summarize_benchmark_robustness(robustness_runs)
+            robustness_summary = summarize_benchmark_robustness(
+                robustness_runs,
+                ranking_policy=self.ranking_policy,
+            )
             robust_recommendation = None
             robust_auto = dict(robustness_summary.get("by_mode", {})).get("auto")
             if isinstance(robust_auto, dict):
@@ -4957,14 +5691,29 @@ class BenchmarkRunner:
                 "chosen_profile_path": str(self.output_profile_path),
                 "chosen_meets_acceptance": bool(chosen_result.get("meets_acceptance", False)),
                 "chosen_metrics": dict(chosen_result.get("metrics", {})),
+                "chosen_async_metrics": dict(chosen_result.get("async_metrics", {})),
+                "chosen_metrics_4class": dict(chosen_result.get("metrics_4class", {})),
+                "chosen_metrics_2class": dict(chosen_result.get("metrics_2class", {})),
+                "chosen_metrics_5class": (
+                    None
+                    if chosen_result.get("metrics_5class") is None
+                    else dict(chosen_result.get("metrics_5class", {}))
+                ),
                 "chosen_fixed_window_metrics": dict(chosen_result.get("fixed_window_metrics", {})),
                 "chosen_dynamic_delta": dict(chosen_result.get("dynamic_delta", {})),
                 "gate_policy": str(self.gate_policy),
                 "channel_weight_mode": self.channel_weight_mode,
                 "dynamic_stop_enabled": bool(self.dynamic_stop_enabled),
                 "dynamic_stop_alpha": float(self.dynamic_stop_alpha),
+                "metric_scope": str(self.metric_scope),
+                "decision_time_mode": str(self.decision_time_mode),
+                "ranking_policy": str(self.ranking_policy),
                 "model_method_mapping": method_mapping,
-                "metric_definition": benchmark_metric_definition_payload(),
+                "metric_definition": benchmark_metric_definition_payload(
+                    ranking_policy=self.ranking_policy,
+                    metric_scope=self.metric_scope,
+                    decision_time_mode=self.decision_time_mode,
+                ),
                 "robustness": robustness_summary,
                 "robust_recommendation": robust_recommendation,
                 **dataset_metadata,
@@ -4999,6 +5748,7 @@ class OnlineRunner:
         result_callback: Optional[callable] = None,
         allow_default_profile: bool = False,
         model_name: Optional[str] = None,
+        stop_event: Optional[Any] = None,
     ) -> None:
         self.requested_serial_port = normalize_serial_port(serial_port)
         self.serial_port = self.requested_serial_port
@@ -5007,6 +5757,7 @@ class OnlineRunner:
         self.profile_path = Path(profile_path)
         self.emit_all = bool(emit_all)
         self.result_callback = result_callback
+        self.stop_event = stop_event
         loaded_profile = load_profile(
             self.profile_path,
             fallback_freqs=self.freqs,
@@ -5083,6 +5834,8 @@ class OnlineRunner:
             emitted = 0
             consecutive_errors = 0
             while True:
+                if self.stop_event is not None and bool(getattr(self.stop_event, "is_set", lambda: False)()):
+                    break
                 try:
                     if board.get_board_data_count() < self.decoder.win_samples:
                         time.sleep(0.05)
@@ -5215,6 +5968,83 @@ def build_parser() -> argparse.ArgumentParser:
     online.add_argument("--emit-all", action="store_true", help="emit every update instead of only state changes")
     online.add_argument("--max-updates", type=int, default=None)
 
+    realtime = subparsers.add_parser("realtime", help="alias of online mode (model-select realtime decode)")
+    realtime.add_argument(
+        "--serial-port",
+        type=str,
+        default=DEFAULT_SERIAL_PORT,
+        help="serial port name (e.g., COM4). default=auto",
+    )
+    realtime.add_argument("--board-id", type=int, default=DEFAULT_BOARD_ID)
+    realtime.add_argument("--sampling-rate", type=int, default=250)
+    realtime.add_argument("--freqs", type=str, default="8,10,12,15")
+    realtime.add_argument("--profile", type=Path, default=DEFAULT_PROFILE_PATH)
+    realtime.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        help="optional model override; defaults to model_name inside profile",
+    )
+    realtime.add_argument(
+        "--allow-default-profile",
+        action="store_true",
+        help="allow running realtime with built-in fallback thresholds when the profile file is missing",
+    )
+    realtime.add_argument("--emit-all", action="store_true", help="emit every update instead of only state changes")
+    realtime.add_argument("--max-updates", type=int, default=None)
+
+    collect = subparsers.add_parser(
+        "collect",
+        help="collect SSVEP dataset only (no model training), save NPZ + manifest",
+    )
+    collect.add_argument(
+        "--serial-port",
+        type=str,
+        default=DEFAULT_SERIAL_PORT,
+        help="serial port name (e.g., COM4). default=auto",
+    )
+    collect.add_argument("--board-id", type=int, default=DEFAULT_BOARD_ID)
+    collect.add_argument("--sampling-rate", type=int, default=250)
+    collect.add_argument("--freqs", type=str, default="8,10,12,15")
+    collect.add_argument("--dataset-dir", type=Path, default=DEFAULT_BENCHMARK_DATASET_ROOT)
+    collect.add_argument("--subject-id", type=str, default="subject001")
+    collect.add_argument("--session-id", type=str, default="")
+    collect.add_argument("--protocol", type=str, default="enhanced_45m")
+    collect.add_argument("--prepare-sec", type=float, default=1.0)
+    collect.add_argument("--active-sec", type=float, default=4.0)
+    collect.add_argument("--rest-sec", type=float, default=1.0)
+    collect.add_argument("--target-repeats", type=int, default=24)
+    collect.add_argument("--idle-repeats", type=int, default=48)
+    collect.add_argument("--switch-trials", type=int, default=32)
+    collect.add_argument("--seed", type=int, default=DEFAULT_CALIBRATION_SEED)
+
+    train_eval = subparsers.add_parser(
+        "train-eval",
+        help="offline training/evaluation from collected dataset manifests",
+    )
+    train_eval.add_argument("--dataset-manifest", type=Path, required=True)
+    train_eval.add_argument("--dataset-manifest-session2", type=Path, default=None)
+    train_eval.add_argument("--output-profile", type=Path, default=DEFAULT_PROFILE_PATH)
+    train_eval.add_argument("--report-path", type=Path, default=None)
+    train_eval.add_argument("--models", type=str, default=",".join(DEFAULT_BENCHMARK_MODELS))
+    train_eval.add_argument("--channel-modes", type=str, default=",".join(DEFAULT_BENCHMARK_CHANNEL_MODES))
+    train_eval.add_argument("--multi-seed-count", type=int, default=DEFAULT_BENCHMARK_MULTI_SEED_COUNT)
+    train_eval.add_argument("--seed-step", type=int, default=DEFAULT_BENCHMARK_SEED_STEP)
+    train_eval.add_argument("--win-candidates", type=str, default=",".join(f"{value:g}" for value in DEFAULT_WIN_SEC_CANDIDATES))
+    train_eval.add_argument("--gate-policy", type=str, default=DEFAULT_GATE_POLICY)
+    train_eval.add_argument("--channel-weight-mode", type=str, default=DEFAULT_CHANNEL_WEIGHT_MODE)
+    train_eval.add_argument("--metric-scope", type=str, default=DEFAULT_METRIC_SCOPE)
+    train_eval.add_argument("--decision-time-mode", type=str, default=DEFAULT_DECISION_TIME_MODE)
+    train_eval.add_argument("--export-figures", type=int, default=1)
+    train_eval.add_argument("--ranking-policy", type=str, default=DEFAULT_RANKING_POLICY)
+    train_eval.add_argument(
+        "--disable-dynamic-stop",
+        action="store_true",
+        help="disable accumulated-evidence dynamic stopping in gate fitting",
+    )
+    train_eval.add_argument("--dynamic-stop-alpha", type=float, default=DEFAULT_DYNAMIC_STOP_ALPHA)
+    train_eval.add_argument("--seed", type=int, default=DEFAULT_CALIBRATION_SEED)
+
     benchmark = subparsers.add_parser(
         "benchmark",
         help="collect benchmark data, compare multiple decoders, and save best profile",
@@ -5271,7 +6101,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    freqs = parse_freqs(args.freqs)
+    freqs = parse_freqs(args.freqs) if hasattr(args, "freqs") else DEFAULT_FREQS
 
     if args.command == "calibrate":
         try:
@@ -5303,7 +6133,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return 1
         return 0
 
-    if args.command == "online":
+    if args.command in ("online", "realtime"):
         try:
             runner = OnlineRunner(
                 serial_port=args.serial_port,
@@ -5319,6 +6149,79 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         except Exception as exc:
             print(
                 f"Online decode failed: {describe_runtime_error(exc, serial_port=args.serial_port)}",
+                file=sys.stderr,
+                flush=True,
+            )
+            return 1
+        return 0
+
+    if args.command == "collect":
+        try:
+            runner = CollectionRunner(
+                serial_port=args.serial_port,
+                board_id=args.board_id,
+                freqs=freqs,
+                dataset_dir=args.dataset_dir,
+                subject_id=args.subject_id,
+                session_id=args.session_id,
+                protocol=args.protocol,
+                sampling_rate=args.sampling_rate,
+                prepare_sec=args.prepare_sec,
+                active_sec=args.active_sec,
+                rest_sec=args.rest_sec,
+                target_repeats=args.target_repeats,
+                idle_repeats=args.idle_repeats,
+                switch_trials=args.switch_trials,
+                seed=args.seed,
+            )
+            payload = runner.run()
+            print(json_dumps(json_safe(payload)), flush=True)
+        except Exception as exc:
+            print(
+                f"Collection failed: {describe_runtime_error(exc, serial_port=args.serial_port)}",
+                file=sys.stderr,
+                flush=True,
+            )
+            return 1
+        return 0
+
+    if args.command == "train-eval":
+        try:
+            from ssvep_core.train_eval import OfflineTrainEvalConfig, run_offline_train_eval
+
+            output_report = args.report_path
+            if output_report is None:
+                stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                output_report = args.output_profile.parent / f"offline_train_eval_{stamp}.json"
+            config = OfflineTrainEvalConfig(
+                dataset_manifest_session1=Path(args.dataset_manifest).expanduser().resolve(),
+                dataset_manifest_session2=(
+                    None
+                    if args.dataset_manifest_session2 is None
+                    else Path(args.dataset_manifest_session2).expanduser().resolve()
+                ),
+                output_profile_path=Path(args.output_profile).expanduser().resolve(),
+                report_path=Path(output_report).expanduser().resolve(),
+                model_names=tuple(parse_model_list(args.models)),
+                channel_modes=tuple(parse_channel_mode_list(args.channel_modes)),
+                multi_seed_count=int(args.multi_seed_count),
+                seed_step=int(args.seed_step),
+                win_candidates=tuple(float(item.strip()) for item in str(args.win_candidates).split(",") if item.strip()),
+                gate_policy=parse_gate_policy(args.gate_policy),
+                channel_weight_mode=parse_channel_weight_mode(args.channel_weight_mode),
+                metric_scope=parse_metric_scope(args.metric_scope),
+                decision_time_mode=parse_decision_time_mode(args.decision_time_mode),
+                export_figures=bool(int(args.export_figures)),
+                ranking_policy=parse_ranking_policy(args.ranking_policy),
+                dynamic_stop_enabled=not bool(args.disable_dynamic_stop),
+                dynamic_stop_alpha=float(args.dynamic_stop_alpha),
+                seed=int(args.seed),
+            )
+            report = run_offline_train_eval(config, log_fn=lambda text: print(text, flush=True))
+            print(json_dumps(json_safe(report)), flush=True)
+        except Exception as exc:
+            print(
+                f"Train-eval failed: {exc}",
                 file=sys.stderr,
                 flush=True,
             )

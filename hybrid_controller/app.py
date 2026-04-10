@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -19,7 +20,7 @@ from hybrid_controller.adapters.sim_input import SimInputAdapter
 from hybrid_controller.adapters.ssvep_adapter import SSVEPAdapter
 from hybrid_controller.adapters.teleop_fallback import RosTeleopFallbackController
 from hybrid_controller.adapters.teleop_ros_channel import RosTeleopPublishPlanner
-from hybrid_controller.cylindrical import cartesian_to_cylindrical
+from hybrid_controller.cylindrical import cartesian_to_cylindrical, cylindrical_to_cartesian
 from hybrid_controller.coordinators import RobotCoordinator, SSVEPCoordinator, UiCoordinator, VisionCoordinator
 from hybrid_controller.config import AppConfig
 from hybrid_controller.controller.events import Effect, Event
@@ -92,6 +93,8 @@ class HybridControllerApplication:
         self._last_teleop_warn_ts = 0.0
         self._pick_cyl_radius_bias_mm = float(self.config.pick_cyl_radius_bias_mm)
         self._pick_cyl_theta_bias_deg = float(self.config.pick_cyl_theta_bias_deg)
+        self._pick_tuning_defaults = self._build_pick_tuning_defaults()
+        self._pick_tuning_state = self._load_pick_tuning_profile()
         self._active_pick_trace: dict[str, object] | None = None
         self._teleop_ros_planner = RosTeleopPublishPlanner(
             keepalive_interval_sec=max(float(self.config.teleop_ros_keepalive_interval_ms) / 1000.0, 0.02)
@@ -172,6 +175,9 @@ class HybridControllerApplication:
             "ssvep_last_error": "--",
             "ssvep_model_name": config.ssvep_model_name,
             "ssvep_debug_keyboard": config.ssvep_keyboard_debug_enabled,
+            "pick_tuning": dict(self._pick_tuning_state),
+            "post_pick_settle_z": self._pick_tuning_state.get("z_carry_floor_mm"),
+            "release_mode_effective": "--",
         }
         self.runtime_store = RuntimeStore.from_config(config)
         self.runtime_store.dispatch(RuntimeAction.update(runtime_seed))
@@ -204,7 +210,13 @@ class HybridControllerApplication:
         self.main_window.pick_bias_reset_requested.connect(self._on_pick_bias_reset_requested)
         self.main_window.pick_theta_bias_delta_requested.connect(self._on_pick_theta_bias_delta_requested)
         self.main_window.pick_theta_bias_reset_requested.connect(self._on_pick_theta_bias_reset_requested)
+        self.main_window.pick_tuning_delta_requested.connect(self._on_pick_tuning_delta_requested)
+        self.main_window.pick_release_mode_toggle_requested.connect(self._on_pick_release_mode_toggle_requested)
+        self.main_window.pick_tuning_apply_requested.connect(self._on_pick_tuning_apply_requested)
+        self.main_window.pick_tuning_reset_requested.connect(self._on_pick_tuning_reset_requested)
+        self.main_window.pick_tuning_save_requested.connect(self._on_pick_tuning_save_requested)
         self.main_window.update_pick_bias_display(self._pick_cyl_radius_bias_mm, self._pick_cyl_theta_bias_deg)
+        self.main_window.update_pick_tuning_display(self._pick_tuning_state)
         self._report_runtime_environment()
         self._start_ui_refresh_timer()
         self._start_teleop_timer()
@@ -467,6 +479,72 @@ class HybridControllerApplication:
                 return candidate
         return None
 
+    def _build_pick_tuning_defaults(self) -> dict[str, object]:
+        return {
+            "pick_approach_z_mm": float(self.config.robot_approach_z),
+            "pick_descend_z_mm": float(self.config.robot_pick_z),
+            "pick_pre_suction_sec": 0.25,
+            "pick_bottom_hold_sec": 0.15,
+            "pick_lift_sec": 0.8,
+            "place_descend_z_mm": float(self.config.robot_pick_z),
+            "place_release_mode": "release",
+            "place_release_sec": 0.25,
+            "place_post_release_hold_sec": 0.10,
+            "z_carry_floor_mm": float(self.config.robot_carry_z),
+        }
+
+    def _sanitize_pick_tuning(self, payload: dict[str, object] | None) -> dict[str, object]:
+        data = dict(self._pick_tuning_defaults)
+        if isinstance(payload, dict):
+            data.update(payload)
+        z_min = float(self.config.robot_height_limits_mm[0])
+        z_max = float(self.config.robot_height_limits_mm[1])
+
+        def _to_float(name: str, lower: float, upper: float) -> float:
+            raw = data.get(name, self._pick_tuning_defaults[name])
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                value = float(self._pick_tuning_defaults[name])
+            return max(float(lower), min(float(upper), value))
+
+        def _to_sec(name: str) -> float:
+            return _to_float(name, 0.0, 3.0)
+
+        release_mode = str(data.get("place_release_mode", "release") or "release").strip().lower()
+        if release_mode not in {"release", "off"}:
+            release_mode = "release"
+
+        return {
+            "pick_approach_z_mm": _to_float("pick_approach_z_mm", z_min, z_max),
+            "pick_descend_z_mm": _to_float("pick_descend_z_mm", z_min, z_max),
+            "pick_pre_suction_sec": _to_sec("pick_pre_suction_sec"),
+            "pick_bottom_hold_sec": _to_sec("pick_bottom_hold_sec"),
+            "pick_lift_sec": _to_sec("pick_lift_sec"),
+            "place_descend_z_mm": _to_float("place_descend_z_mm", z_min, z_max),
+            "place_release_mode": release_mode,
+            "place_release_sec": _to_sec("place_release_sec"),
+            "place_post_release_hold_sec": _to_sec("place_post_release_hold_sec"),
+            "z_carry_floor_mm": _to_float("z_carry_floor_mm", z_min, z_max),
+        }
+
+    def _load_pick_tuning_profile(self) -> dict[str, object]:
+        path = Path(self.config.pick_tuning_profile_path)
+        if not path.exists():
+            return dict(self._pick_tuning_defaults)
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as error:
+            self._log_runtime("robot", f"Pick tuning profile load failed: {error}")
+            return dict(self._pick_tuning_defaults)
+        return self._sanitize_pick_tuning(payload if isinstance(payload, dict) else None)
+
+    def _save_pick_tuning_profile(self) -> Path:
+        path = Path(self.config.pick_tuning_profile_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(self._pick_tuning_state, ensure_ascii=False, indent=2), encoding="utf-8")
+        return path
+
     def _report_runtime_environment(self) -> None:
         current_python = Path(sys.executable).resolve()
         self._log_runtime("system", f"Desktop interpreter: {current_python}")
@@ -657,6 +735,9 @@ class HybridControllerApplication:
             "snapshot_age_ms": self.runtime_info.get("vision_snapshot_age_ms"),
             "robot_pose": None if not isinstance(snapshot, dict) else snapshot.get("robot_cyl") or snapshot.get("robot_xy"),
             "robot_xy": None if not isinstance(snapshot, dict) else snapshot.get("robot_xy"),
+            "pick_tuning": dict(self._pick_tuning_state),
+            "post_pick_settle_z": self.runtime_info.get("post_pick_settle_z"),
+            "release_mode_effective": self.runtime_info.get("release_mode_effective"),
             "transport": "ros" if self._uses_ros_transport() else "tcp",
         }
 
@@ -672,21 +753,33 @@ class HybridControllerApplication:
     def _rewrite_outgoing_robot_command(self, command: str) -> str:
         text = str(command or "").strip()
         parts = text.split()
-        if len(parts) != 3 or parts[0].upper() != "PICK_CYL":
+        if len(parts) != 3:
+            return text
+        opcode = str(parts[0]).upper()
+        if opcode not in {"PICK_CYL", "PICK_WORLD"}:
             return text
         try:
-            theta_deg = float(parts[1])
-            radius_mm = float(parts[2])
+            raw_a = float(parts[1])
+            raw_b = float(parts[2])
         except (TypeError, ValueError):
             return text
+        if abs(float(self._pick_cyl_theta_bias_deg)) < 1e-6 and abs(float(self._pick_cyl_radius_bias_mm)) < 1e-6:
+            return text
+
+        if opcode == "PICK_CYL":
+            adjusted_theta_deg = float(raw_a) + float(self._pick_cyl_theta_bias_deg)
+            adjusted_radius_mm = float(raw_b) + float(self._pick_cyl_radius_bias_mm)
+            return "PICK_CYL {0:.2f} {1:.2f}".format(float(adjusted_theta_deg), float(adjusted_radius_mm))
+
+        theta_deg, radius_mm, _ = cartesian_to_cylindrical(float(raw_a), float(raw_b), float(self.config.robot_pick_z))
         adjusted_theta_deg = float(theta_deg) + float(self._pick_cyl_theta_bias_deg)
         adjusted_radius_mm = float(radius_mm) + float(self._pick_cyl_radius_bias_mm)
-        if (
-            abs(adjusted_theta_deg - float(theta_deg)) < 1e-6
-            and abs(adjusted_radius_mm - float(radius_mm)) < 1e-6
-        ):
-            return text
-        return "PICK_CYL {0:.2f} {1:.2f}".format(float(adjusted_theta_deg), float(adjusted_radius_mm))
+        adjusted_x_mm, adjusted_y_mm, _ = cylindrical_to_cartesian(
+            float(adjusted_theta_deg),
+            float(adjusted_radius_mm),
+            float(self.config.robot_pick_z),
+        )
+        return "PICK_WORLD {0:.2f} {1:.2f}".format(float(adjusted_x_mm), float(adjusted_y_mm))
 
     def _send_robot_command_via_ros(self, command: str) -> bool:
         if self.ros_client is None:
@@ -838,6 +931,7 @@ class HybridControllerApplication:
                 ssvep_state=self.ssvep_coordinator.get_state(),
             )
         )
+        self.main_window.update_pick_tuning_display(self._pick_tuning_state)
         elapsed_ms = (time.perf_counter() - refresh_start) * 1000.0
         previous_ema = float(self.runtime_info.get("ui_refresh_ms_ema", 0.0))
         if previous_ema <= 0.0:
@@ -1067,6 +1161,65 @@ class HybridControllerApplication:
                 self._pick_cyl_theta_bias_deg,
             ),
         )
+
+    def _on_pick_tuning_delta_requested(self, field: str, delta: float) -> None:
+        name = str(field or "").strip()
+        if not name or name not in self._pick_tuning_state:
+            return
+        current = self._pick_tuning_state.get(name)
+        if name == "place_release_mode":
+            return
+        try:
+            next_value = float(current) + float(delta)
+        except (TypeError, ValueError):
+            return
+        self._pick_tuning_state[name] = next_value
+        self._pick_tuning_state = self._sanitize_pick_tuning(self._pick_tuning_state)
+        self.runtime_info["pick_tuning"] = dict(self._pick_tuning_state)
+        self.main_window.update_pick_tuning_display(self._pick_tuning_state)
+
+    def _on_pick_release_mode_toggle_requested(self) -> None:
+        current_mode = str(self._pick_tuning_state.get("place_release_mode", "release")).strip().lower()
+        self._pick_tuning_state["place_release_mode"] = "off" if current_mode == "release" else "release"
+        self._pick_tuning_state = self._sanitize_pick_tuning(self._pick_tuning_state)
+        self.runtime_info["pick_tuning"] = dict(self._pick_tuning_state)
+        self.main_window.update_pick_tuning_display(self._pick_tuning_state)
+
+    def _on_pick_tuning_apply_requested(self) -> None:
+        if not self._uses_ros_transport() or self.ros_client is None:
+            self._handle_runtime_status("robot", "Pick tuning apply requires ROS transport.")
+            return
+        payload = dict(self._sanitize_pick_tuning(self._pick_tuning_state))
+        self._pick_tuning_state = dict(payload)
+        self.runtime_info["pick_tuning"] = dict(payload)
+
+        def callback(result: RosServiceResult) -> None:
+            if result.ok:
+                self._queue_runtime_status("robot", "Pick tuning applied.")
+                self._request_remote_snapshot()
+            else:
+                self._queue_runtime_status("robot", f"Pick tuning apply failed: {result.message}")
+
+        try:
+            self.ros_client.set_pick_tuning(payload, callback=callback)
+        except Exception as error:
+            self._handle_runtime_status("robot", f"Pick tuning apply failed: {error}")
+
+    def _on_pick_tuning_reset_requested(self) -> None:
+        self._pick_tuning_state = dict(self._pick_tuning_defaults)
+        self.runtime_info["pick_tuning"] = dict(self._pick_tuning_state)
+        self.main_window.update_pick_tuning_display(self._pick_tuning_state)
+        self._handle_runtime_status("robot", "Pick tuning reset to defaults (click Apply to send).")
+
+    def _on_pick_tuning_save_requested(self) -> None:
+        self._pick_tuning_state = self._sanitize_pick_tuning(self._pick_tuning_state)
+        self.runtime_info["pick_tuning"] = dict(self._pick_tuning_state)
+        try:
+            saved_path = self._save_pick_tuning_profile()
+        except Exception as error:
+            self._handle_runtime_status("robot", f"Pick tuning save failed: {error}")
+            return
+        self._handle_runtime_status("robot", f"Pick tuning saved: {saved_path}")
 
     def _build_manual_pick_command(self, slot_id: int) -> str | None:
         packet = self._latest_vision_packet
@@ -1482,6 +1635,9 @@ class HybridControllerApplication:
             "last_error_code",
             "calibration_ready",
             "carrying",
+            "pick_tuning",
+            "post_pick_settle_z",
+            "release_mode_effective",
         ):
             if key in remote_snapshot:
                 merged[key] = remote_snapshot[key]
@@ -1527,6 +1683,11 @@ class HybridControllerApplication:
         self.runtime_info["limits_cyl"] = snapshot.get("limits_cyl")
         self.runtime_info["auto_z_current"] = snapshot.get("auto_z_current")
         self.runtime_info["control_kernel"] = snapshot.get("control_kernel")
+        if isinstance(snapshot.get("pick_tuning"), dict):
+            self._pick_tuning_state = self._sanitize_pick_tuning(snapshot.get("pick_tuning"))
+            self.runtime_info["pick_tuning"] = dict(self._pick_tuning_state)
+        self.runtime_info["post_pick_settle_z"] = snapshot.get("post_pick_settle_z")
+        self.runtime_info["release_mode_effective"] = snapshot.get("release_mode_effective")
         if snapshot.get("state") == "ERROR":
             self.controller.context.last_error = str(snapshot.get("last_error") or self.controller.context.last_error)
 
@@ -2130,7 +2291,7 @@ def main(argv: list[str] | None = None) -> int:
     config = build_config_from_args(args)
     qt_app = QApplication(sys.argv if argv is None else argv)
     runtime = HybridControllerApplication(config)
-    runtime.main_window.show()
+    runtime.main_window.showMaximized()
     if args.smoke_test_ms > 0:
         QTimer.singleShot(args.smoke_test_ms, lambda: (runtime.shutdown(), qt_app.quit()))
     exit_code = 0

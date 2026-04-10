@@ -16,10 +16,12 @@ add_message_files(
 
 add_service_files(
   FILES
+  GetPickTuning.srv
   MoveCyl.srv
   MoveCylAuto.srv
   PickCyl.srv
   PickWorld.srv
+  SetPickTuning.srv
 )
 
 generate_messages(

@@ -37,10 +37,15 @@ class _DummyController:
 class _DummyRosClient:
     def __init__(self) -> None:
         self.pick_world_calls: list[tuple[float, float]] = []
+        self.pick_tuning_calls: list[dict[str, object]] = []
 
     def send_pick_world(self, x_mm: float, y_mm: float, *, callback) -> None:  # noqa: ANN001
         self.pick_world_calls.append((float(x_mm), float(y_mm)))
         callback(RosServiceResult(ok=True, message="ACK PICK_DONE", raw={}))
+
+    def set_pick_tuning(self, tuning: dict[str, object], *, callback) -> None:  # noqa: ANN001
+        self.pick_tuning_calls.append(dict(tuning))
+        callback(RosServiceResult(ok=True, message="ok", raw={}))
 
 
 def _make_ros_app_stub() -> HybridControllerApplication:
@@ -52,6 +57,18 @@ def _make_ros_app_stub() -> HybridControllerApplication:
     app.controller = _DummyController()
     app._pick_cyl_radius_bias_mm = 0.0
     app._pick_cyl_theta_bias_deg = 0.0
+    app._pick_tuning_state = {
+        "pick_approach_z_mm": 130.0,
+        "pick_descend_z_mm": 85.0,
+        "pick_pre_suction_sec": 0.25,
+        "pick_bottom_hold_sec": 0.15,
+        "pick_lift_sec": 0.8,
+        "place_descend_z_mm": 85.0,
+        "place_release_mode": "release",
+        "place_release_sec": 0.25,
+        "place_post_release_hold_sec": 0.1,
+        "z_carry_floor_mm": 160.0,
+    }
     app._active_pick_trace = None
     app._latest_vision_packet = None
     app.slot_catalog = None
@@ -69,6 +86,7 @@ def _make_ros_app_stub() -> HybridControllerApplication:
     app.dispatch_event = lambda event: app._queued_events.append(event)
     app._handle_runtime_status = lambda component, message: app._status_lines.append((str(component), str(message)))
     app.logger = types.SimpleNamespace(write=lambda *args, **kwargs: app._pick_traces.append((args, kwargs)))
+    app._request_remote_snapshot = lambda: None
     return app
 
 
@@ -119,3 +137,14 @@ def test_manual_pick_in_robot_camera_detection_mode_does_not_fallback_to_slot_ca
     command = app._build_manual_pick_command(1)
 
     assert command is None
+
+
+def test_pick_world_bias_rewrite_applies_theta_and_radius_bias() -> None:
+    app = _make_ros_app_stub()
+    app._pick_cyl_radius_bias_mm = -5.0
+    app._pick_cyl_theta_bias_deg = 3.0
+
+    rewritten = app._rewrite_outgoing_robot_command("PICK_WORLD 0 -120")
+
+    assert rewritten.startswith("PICK_WORLD ")
+    assert rewritten != "PICK_WORLD 0 -120"

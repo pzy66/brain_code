@@ -31,6 +31,15 @@ class FakeHardware:
         self.sucker_states.append(bool(state))
 
 
+class FakeHardwareWithRelease(FakeHardware):
+    def __init__(self) -> None:
+        super().__init__()
+        self.release_calls: list[float] = []
+
+    def release_sucker(self, duration_sec: float) -> None:
+        self.release_calls.append(float(duration_sec))
+
+
 class ReadyCalibration:
     def __init__(self, *, offset: tuple[float, float, float] = (10.0, -20.0, 0.0)) -> None:
         self.offset = offset
@@ -274,6 +283,52 @@ def test_move_cyl_and_move_cyl_auto_ack(monkeypatch) -> None:
     assert status["state"] == RobotExecutorState.IDLE.value
     assert status["control_kernel"] == "cylindrical_kernel"
     assert len(runtime._hardware.moves) == 2
+
+
+def test_pick_world_uses_settle_pose_for_post_pick_state(monkeypatch) -> None:
+    _patch_executor_sleep(monkeypatch)
+    runtime = _runtime()
+    stream = FakeStream()
+
+    runtime.dispatch_command("PICK_WORLD 0 -170", stream)
+
+    assert wait_for(lambda: "ACK PICK_DONE" in stream.lines())
+    status = runtime.healthcheck()
+    assert float(status["post_pick_settle_z"]) >= float(status["pick_tuning"]["z_carry_floor_mm"])
+    assert status["state"] == RobotExecutorState.CARRY_READY.value
+
+
+def test_place_release_prefers_release_api_when_available(monkeypatch) -> None:
+    _patch_executor_sleep(monkeypatch)
+    hardware = FakeHardwareWithRelease()
+    runtime = _runtime(hardware=hardware)
+    stream = FakeStream()
+    runtime._initialize_executor()
+    runtime._executor._carrying = True  # type: ignore[attr-defined]
+    runtime._executor._state = RobotExecutorState.CARRY_READY  # type: ignore[attr-defined]
+    runtime._executor.set_pick_tuning({"place_release_mode": "release", "place_release_sec": 0.35})  # type: ignore[attr-defined]
+
+    runtime.dispatch_command("PLACE", stream)
+
+    assert wait_for(lambda: "ACK PLACE_DONE" in stream.lines())
+    assert hardware.release_calls and abs(hardware.release_calls[-1] - 0.35) < 1e-6
+    assert runtime.healthcheck()["release_mode_effective"] == "release"
+
+
+def test_place_release_falls_back_to_set_state_when_release_unavailable(monkeypatch) -> None:
+    _patch_executor_sleep(monkeypatch)
+    runtime = _runtime()
+    stream = FakeStream()
+    runtime._initialize_executor()
+    runtime._executor._carrying = True  # type: ignore[attr-defined]
+    runtime._executor._state = RobotExecutorState.CARRY_READY  # type: ignore[attr-defined]
+    runtime._executor.set_pick_tuning({"place_release_mode": "release", "place_release_sec": 0.2})  # type: ignore[attr-defined]
+
+    runtime.dispatch_command("PLACE", stream)
+
+    assert wait_for(lambda: "ACK PLACE_DONE" in stream.lines())
+    assert runtime._hardware.sucker_states[-1] is False
+    assert runtime.healthcheck()["release_mode_effective"] == "off_fallback"
 
 
 def test_legacy_move_marks_legacy_cartesian_kernel() -> None:

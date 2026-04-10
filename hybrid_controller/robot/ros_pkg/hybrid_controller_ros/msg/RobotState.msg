@@ -20,3 +20,15 @@ string last_error_message
 bool calibration_ready
 bool ik_valid
 string validation_error
+float32 pick_approach_z_mm
+float32 pick_descend_z_mm
+float32 pick_pre_suction_sec
+float32 pick_bottom_hold_sec
+float32 pick_lift_sec
+float32 place_descend_z_mm
+string place_release_mode
+float32 place_release_sec
+float32 place_post_release_hold_sec
+float32 z_carry_floor_mm
+float32 post_pick_settle_z
+string release_mode_effective

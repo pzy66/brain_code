@@ -53,6 +53,26 @@ bash run_hybrid_controller_ros_runtime.sh
 4. 确保 `rosbridge` 使用主线端口
 5. 启动 `hybrid_controller_runtime_node.py`
 
+默认只要求 ROS 主链端口就绪（`9091` + `8080`），不再因为 `8888` 未开启而判启动失败。  
+如需强制同时检查 TCP 兼容端口，再使用 `--require-tcp-check`。
+
+## 远程一键启动与探针
+
+桌面端可直接通过以下工具启动/检查 JetMax：
+
+- [jetmax_start_ros_runtime.py](C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\robot\tools\jetmax_start_ros_runtime.py)
+  - SSH 启动 JetMax ROS runtime
+- [ros_service_probe.py](C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\robot\tools\ros_service_probe.py)
+  - 调用 ROS 服务探针（`status / pick_world / place / reset / abort`）
+
+示例（桌面端执行）：
+
+```powershell
+C:\Users\P1233\miniconda3\envs\brain-vision\python.exe C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\robot\tools\jetmax_start_ros_runtime.py --host 192.168.149.1 --user hiwonder --password hiwonder --remote-root /home/hiwonder/brain_code
+
+C:\Users\P1233\miniconda3\envs\brain-vision\python.exe C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\robot\tools\ros_service_probe.py --host 192.168.149.1 --port 9091 --action status
+```
+
 ## 兼容 TCP 入口
 
 如果只想起旧的 TCP 兼容 runtime：

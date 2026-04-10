@@ -99,7 +99,7 @@ class VisionFeedWidget(QWidget):
         self._clock = StimClockThread(self._resolve_refresh_rate(refresh_rate_hz))
         self._clock.tick.connect(self._on_tick)
         self._clock.start()
-        self.setMinimumSize(760, 520)
+        self.setMinimumSize(640, 420)
 
     @staticmethod
     def _resolve_refresh_rate(requested_refresh_hz: float) -> float:

@@ -159,6 +159,7 @@ class AppConfig:
     vision_action_requires_calibration: bool = True
     pick_cyl_radius_bias_mm: float = 0.0
     pick_cyl_theta_bias_deg: float = 0.0
+    pick_tuning_profile_path: Path = DATASET_ROOT / "robot_pick_tuning" / "current_pick_tuning.json"
     ssvep_backend: str = "async_fbcca_idle"
     ssvep_serial_port: str = "auto"
     ssvep_board_id: int = 0
