@@ -50,6 +50,27 @@
   - 新增抓取 trace 字段：`mapping_mode / resolved_base_xy / resolved_cyl / snapshot_age_ms / robot_pose / response`
   - 视觉状态文本增加 `resolved_xy / resolved_cyl`
 
+### 6) 抓取调参与姿态收敛（本轮新增）
+
+- `C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\robot\runtime\robot_runtime.py`
+  - 抓后抬升改为 `z_settle=max(z_carry_floor, z_auto(r))`
+  - 放置释放支持 `release` 优先 + `off` 回退
+  - 新增 `get_pick_tuning()/set_pick_tuning()`
+- `C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\robot\runtime\robot_runtime_py36.py`
+  - 同步实现上述抓放调参与 `z_settle` 行为
+  - `snapshot/STATUS` 新增 `pick_tuning/post_pick_settle_z/release_mode_effective`
+- `C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\robot\ros_pkg\hybrid_controller_ros\srv\GetPickTuning.srv`
+- `C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\robot\ros_pkg\hybrid_controller_ros\srv\SetPickTuning.srv`
+- `C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\robot\ros_pkg\hybrid_controller_ros\msg\RobotState.msg`
+  - 增加调参字段与 `post_pick_settle_z/release_mode_effective`
+- `C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\adapters\rosbridge_client.py`
+  - 新增 `get_pick_tuning/set_pick_tuning` ROS 调用
+- `C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\app.py`
+  - 右侧 `Pick Tuning` 微调入口接入 ROS 生效与本地保存
+  - `PICK_WORLD` 也应用 `r/theta` 偏置（不再只影响 `PICK_CYL`）
+- `C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\ui\main_window.py`
+  - 新增调参按钮与 `应用/恢复默认/保存配置` 操作
+
 ## 启动与验证建议（最小闭环）
 
 1. JetMax 端启动：
@@ -65,6 +86,7 @@
 
 - `C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\tests\test_pick_world_ros_routing.py`
 - `C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\tests\test_robot_runtime_py36_gateway.py`
+- `C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\tests\test_robot_runtime.py`
 
 以上测试用于保证：
 
