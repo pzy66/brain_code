@@ -4,14 +4,12 @@ from dataclasses import replace
 from typing import Any
 
 from hybrid_controller.config import AppConfig
+from hybrid_controller.runtime_state import RobotRuntimeState, SsvEpRuntimeState, VisionRuntimeState
 from hybrid_controller.snapshot import (
     AppSnapshot,
     RobotPanelState,
-    RobotRuntimeState,
     SsvEpPanelState,
-    SsvEpRuntimeState,
     VisionPanelState,
-    VisionRuntimeState,
 )
 
 

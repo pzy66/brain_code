@@ -38,9 +38,13 @@ from async_fbcca_idle_standalone import (
     DEFAULT_DYNAMIC_STOP_ALPHA,
     DEFAULT_DYNAMIC_STOP_ENABLED,
     DEFAULT_GATE_POLICY,
+    DEFAULT_JOINT_WEIGHT_ITERS,
     DEFAULT_MODEL_NAME,
     DEFAULT_NH,
     DEFAULT_PROFILE_PATH,
+    DEFAULT_SPATIAL_FILTER_MODE,
+    DEFAULT_SPATIAL_RANK_CANDIDATES,
+    DEFAULT_SPATIAL_SOURCE_MODEL,
     DEFAULT_STEP_SEC,
     DEFAULT_STREAM_WARMUP_SEC,
     DEFAULT_WIN_SEC,
@@ -88,9 +92,9 @@ DEFAULT_SINGLE_PROFILE_PATH = THIS_DIR / "profiles" / "single_model_profile.json
 MODEL_OPTIONS = (DEFAULT_MODEL_NAME,) + tuple(
     item for item in DEFAULT_BENCHMARK_MODELS if item != DEFAULT_MODEL_NAME
 )
-DEFAULT_ACTIVE_SEC = 4.0
+DEFAULT_ACTIVE_SEC = 5.0
 DEFAULT_PREPARE_SEC = 1.0
-DEFAULT_REST_SEC = 1.0
+DEFAULT_REST_SEC = 4.0
 DEFAULT_TARGET_REPEATS = 5
 DEFAULT_IDLE_REPEATS = 10
 DEFAULT_MAX_TRANSIENT_READ_ERRORS = 5
@@ -210,9 +214,22 @@ def fit_single_model_profile_from_segments(
             gate_policy=resolved_gate_policy,
             dynamic_stop_enabled=bool(dynamic_stop_enabled),
             dynamic_stop_alpha=float(dynamic_stop_alpha),
+            spatial_filter_mode=DEFAULT_SPATIAL_FILTER_MODE,
+            spatial_rank_candidates=DEFAULT_SPATIAL_RANK_CANDIDATES,
+            joint_weight_iters=DEFAULT_JOINT_WEIGHT_ITERS,
+            spatial_source_model=DEFAULT_SPATIAL_SOURCE_MODEL,
         )
-        model_params["channel_weight_mode"] = "fbcca_diag"
-        model_params["channel_weights"] = [float(value) for value in optimized_weights]
+        optimized_model_params = (
+            channel_weight_training.get("optimized_model_params")
+            if isinstance(channel_weight_training, dict)
+            else None
+        )
+        if isinstance(optimized_model_params, dict) and optimized_model_params:
+            model_params = dict(optimized_model_params)
+            model_params.setdefault("Nh", DEFAULT_NH)
+        else:
+            model_params["channel_weight_mode"] = "fbcca_diag"
+            model_params["channel_weights"] = [float(value) for value in optimized_weights]
 
     decoder = create_decoder(
         normalized_model,
@@ -256,6 +273,10 @@ def fit_single_model_profile_from_segments(
         "channel_selection": channel_scores,
         "channel_weight_mode": resolved_weight_mode,
         "channel_weight_training": channel_weight_training,
+        "spatial_filter_mode": DEFAULT_SPATIAL_FILTER_MODE,
+        "spatial_rank_candidates": [int(value) for value in DEFAULT_SPATIAL_RANK_CANDIDATES],
+        "joint_weight_iters": int(DEFAULT_JOINT_WEIGHT_ITERS),
+        "spatial_source_model": DEFAULT_SPATIAL_SOURCE_MODEL,
         "gate_policy": resolved_gate_policy,
         "quality_summary": quality_summary,
         "quality_summary_gate": gate_summary,
@@ -282,6 +303,11 @@ def fit_single_model_profile_from_segments(
         if isinstance(channel_weights, (list, tuple))
         else None
     )
+    profile_spatial_state = (
+        dict(model_params.get("spatial_filter_state"))
+        if isinstance(model_params.get("spatial_filter_state"), dict)
+        else None
+    )
     fitted_profile = replace(
         profile,
         model_name=normalized_model,
@@ -293,6 +319,20 @@ def fit_single_model_profile_from_segments(
         dynamic_stop=dict(profile.dynamic_stop or {}),
         channel_weight_mode=resolved_weight_mode,
         channel_weights=profile_channel_weights,
+        spatial_filter_mode=(
+            str(model_params.get("spatial_filter_mode"))
+            if model_params.get("spatial_filter_mode") is not None
+            else None
+        ),
+        spatial_filter_rank=(
+            None
+            if model_params.get("spatial_filter_rank") is None
+            else int(model_params.get("spatial_filter_rank"))
+        ),
+        spatial_filter_state=profile_spatial_state,
+        joint_weight_training=(
+            dict(channel_weight_training) if isinstance(channel_weight_training, dict) else None
+        ),
         metadata=metadata,
     )
     return fitted_profile, metadata

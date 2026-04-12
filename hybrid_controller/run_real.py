@@ -72,11 +72,33 @@ def _enforce_brain_vision_interpreter() -> None:
     )
 
 
+def _normalize_legacy_rosbridge_port(args: list[str]) -> list[str]:
+    allow_9092 = str(os.environ.get("HYBRID_ALLOW_ROSBRIDGE_9092", "")).strip().lower() in {"1", "true", "yes", "on"}
+    if allow_9092:
+        return list(args)
+    normalized = list(args)
+    replaced = False
+    index = 0
+    while index < len(normalized):
+        token = str(normalized[index])
+        if token == "--rosbridge-port" and (index + 1) < len(normalized):
+            if str(normalized[index + 1]).strip() == "9092":
+                normalized[index + 1] = "9091"
+                replaced = True
+            index += 2
+            continue
+        index += 1
+    if replaced:
+        print("[compat] --rosbridge-port 9092 is deprecated; auto-switched to 9091.", flush=True)
+    return normalized
+
+
 def main(argv: list[str] | None = None) -> int:
     _enforce_brain_vision_interpreter()
     from hybrid_controller.app import main as app_main
 
     extra_args = sys.argv[1:] if argv is None else list(argv)
+    extra_args = _normalize_legacy_rosbridge_port(extra_args)
     if "--robot-mode" in extra_args:
         try:
             mode = extra_args[extra_args.index("--robot-mode") + 1]

@@ -13,6 +13,8 @@ DEFAULT_HOST = "192.168.149.1"
 DEFAULT_USER = "hiwonder"
 DEFAULT_PASSWORD = "hiwonder"
 DEFAULT_REMOTE_ROOT = "/home/hiwonder/brain_code"
+DEFAULT_ROSBRIDGE_PORT = 9091
+DEFAULT_WEB_VIDEO_PORT = 8080
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +32,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--remote-root", default=DEFAULT_REMOTE_ROOT)
     parser.add_argument("--ssh-timeout-sec", type=float, default=10.0)
     parser.add_argument("--ready-timeout-sec", type=float, default=90.0)
+    parser.add_argument("--rosbridge-port", type=int, default=DEFAULT_ROSBRIDGE_PORT)
+    parser.add_argument("--web-video-port", type=int, default=DEFAULT_WEB_VIDEO_PORT)
+    parser.add_argument("--disable-autostart-rosbridge", action="store_true", default=True)
+    parser.add_argument("--keep-autostart-rosbridge", action="store_false", dest="disable_autostart_rosbridge")
     parser.add_argument("--no-sync", action="store_true")
     parser.add_argument("--skip-camera-check", action="store_true")
     parser.add_argument(
@@ -60,10 +66,20 @@ def main(argv: list[str] | None = None) -> int:
             sync_robot_bundle(ssh, local_robot_dir=local_robot_dir, remote_robot_dir=remote_robot_dir)
         run_remote_command(ssh, f"test -d {remote_robot_dir}")
         run_remote_command(ssh, f"test -f {remote_robot_dir}/run_hybrid_controller_ros_runtime.sh")
+        if args.disable_autostart_rosbridge:
+            run_remote_command(
+                ssh,
+                f"echo '{args.password}' | sudo -S systemctl stop rosbridge.service >/dev/null 2>&1 || true",
+            )
+            run_remote_command(
+                ssh,
+                f"echo '{args.password}' | sudo -S systemctl disable rosbridge.service >/dev/null 2>&1 || true",
+            )
         run_remote_command(
             ssh,
             "pkill -f hybrid_controller_runtime_node.py >/dev/null 2>&1 || true; "
-            "pkill -f rosbridge_websocket.launch >/dev/null 2>&1 || true; "
+            "pkill -f run_hybrid_controller_ros_runtime.sh >/dev/null 2>&1 || true; "
+            "pkill -f rosbridge_websocket >/dev/null 2>&1 || true; "
             "pkill -f web_video_server >/dev/null 2>&1 || true; "
             "pkill -f robot_runtime_py36.py >/dev/null 2>&1 || true",
         )
@@ -71,6 +87,7 @@ def main(argv: list[str] | None = None) -> int:
         run_remote_command(
             ssh,
             f"cd {remote_robot_dir}; "
+            f"ROSBRIDGE_PORT={int(args.rosbridge_port)} WEB_VIDEO_PORT={int(args.web_video_port)} "
             f"nohup bash run_hybrid_controller_ros_runtime.sh > {remote_log} 2>&1 < /dev/null &",
         )
         time.sleep(2.0)
@@ -87,12 +104,18 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         ssh.close()
 
-    checks = [PortCheck(name="rosbridge", port=9091, required=True)]
-    checks.append(PortCheck(name="web_video_server", port=8080, required=not args.skip_camera_check))
+    checks = [PortCheck(name="rosbridge", port=int(args.rosbridge_port), required=True)]
+    checks.append(PortCheck(name="web_video_server", port=int(args.web_video_port), required=not args.skip_camera_check))
     require_tcp_check = bool(args.require_tcp_check) and not bool(args.skip_tcp_check)
     checks.append(PortCheck(name="tcp_runtime", port=8888, required=require_tcp_check))
 
     wait_for_ports(args.host, checks, timeout_sec=float(args.ready_timeout_sec))
+    verify_runtime_services(
+        host=args.host,
+        user=args.user,
+        password=args.password,
+        timeout_sec=float(args.ssh_timeout_sec),
+    )
     if require_tcp_check:
         status_payload = query_status(args.host, 8888, timeout_sec=5.0)
         print(status_payload)
@@ -104,7 +127,6 @@ def sync_robot_bundle(ssh: paramiko.SSHClient, *, local_robot_dir: Path, remote_
     local_robot_dir = local_robot_dir.resolve()
     sync_paths = [
         local_robot_dir / "run_hybrid_controller_ros_runtime.sh",
-        local_robot_dir / "run_jetmax_robot_runtime.sh",
         local_robot_dir / "requirements-jetmax-robot-python.txt",
         local_robot_dir / "runtime",
         local_robot_dir / "ros_pkg",
@@ -181,6 +203,41 @@ def query_status(host: str, port: int, *, timeout_sec: float) -> str:
         sock.sendall(b"STATUS\n")
         payload = sock.recv(4096).decode("utf-8", errors="ignore").strip()
     return payload
+
+
+def verify_runtime_services(*, host: str, user: str, password: str, timeout_sec: float) -> None:
+    ssh = paramiko.SSHClient()
+    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    ssh.connect(host, username=user, password=password, timeout=float(timeout_sec))
+    try:
+        process_info = run_remote_command(
+            ssh,
+            "pgrep -af hybrid_controller_runtime_node.py || true",
+            capture=True,
+        )
+        if not process_info:
+            raise RuntimeError("hybrid_controller_runtime_node.py is not running on JetMax.")
+        required = {
+            "/hybrid_controller/move_cyl",
+            "/hybrid_controller/move_cyl_auto",
+            "/hybrid_controller/pick_world",
+            "/hybrid_controller/place",
+            "/hybrid_controller/reset",
+            "/hybrid_controller/abort",
+        }
+        listed = run_remote_command(
+            ssh,
+            "source /opt/ros/melodic/setup.bash; "
+            "source ~/catkin_ws/devel/setup.bash; "
+            "rosservice list 2>/dev/null | grep -E \"^/hybrid_controller/\" || true",
+            capture=True,
+        )
+        available = {line.strip() for line in str(listed).splitlines() if line.strip()}
+        missing = sorted(required - available)
+        if missing:
+            raise RuntimeError("Missing ROS services: {0}".format(", ".join(missing)))
+    finally:
+        ssh.close()
 
 
 def ensure_remote_dir(sftp: paramiko.SFTPClient, remote_dir: str) -> None:

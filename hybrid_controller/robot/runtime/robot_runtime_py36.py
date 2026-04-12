@@ -65,8 +65,10 @@ def format_error_line(code, message):
 def cylindrical_to_cartesian(theta_deg, radius_mm, z_mm):
     theta_rad = math.radians(float(theta_deg))
     radius = float(radius_mm)
+    # Coordinate contract: theta=0 faces forward, theta>0 means robot-right.
+    # In this base frame, positive X points to robot-left, so negate X projection.
     return (
-        radius * math.sin(theta_rad),
+        -radius * math.sin(theta_rad),
         -radius * math.cos(theta_rad),
         float(z_mm),
     )
@@ -74,7 +76,7 @@ def cylindrical_to_cartesian(theta_deg, radius_mm, z_mm):
 
 def cartesian_to_cylindrical(x_mm, y_mm, z_mm):
     radius = math.hypot(float(x_mm), float(y_mm))
-    theta_deg = math.degrees(math.atan2(float(x_mm), -float(y_mm)))
+    theta_deg = math.degrees(math.atan2(-float(x_mm), -float(y_mm)))
     return (float(theta_deg), float(radius), float(z_mm))
 
 
@@ -320,13 +322,23 @@ class JetMaxExecutor(object):
         self._auto_z_profile = self._build_auto_z_profile()
         self._last_post_pick_settle_z = float(self.z_carry_floor_mm)
         self._last_release_mode_effective = "off"
+        self._validation_cache_pose = None
+        self._validation_cache_report = None
+        self._validation_cache_ts = 0.0
+        self._validation_cache_ttl_sec = 0.25
+        self._validation_cache_pose_eps_mm = 2.0
         self.legacy_kernel = LegacyCartesianKernel(self)
         self.cylindrical_kernel = CylindricalKernel(self)
 
     def snapshot(self):
         x, y, z = self._get_position()
         theta_deg, radius_mm, z_mm = cartesian_to_cylindrical(x, y, z)
-        validation = self._validate_pose_xyz(x, y, z, enforce_workspace=self.cylindrical_xy_workspace_enabled)
+        validation = self._get_validation_report_cached(
+            x,
+            y,
+            z,
+            enforce_workspace=self.cylindrical_xy_workspace_enabled,
+        )
         with self._lock:
             return {
                 "state": self._state,
@@ -614,6 +626,7 @@ class JetMaxExecutor(object):
 
     def _run_move(self, sender, target_x, target_y):
         try:
+            self._sync_from_hardware_position()
             current_x, current_y, current_z = self._get_position()
             move_z = current_z if current_z >= self.z_carry else self.z_carry
             if move_z - current_z > 2.0:
@@ -634,6 +647,7 @@ class JetMaxExecutor(object):
 
     def _run_move_cyl(self, sender, theta_deg, radius_mm, target_x, target_y, target_z):
         try:
+            self._sync_from_hardware_position()
             current_x, current_y, current_z = self._get_position()
             self._set_state(STATE_MOVING_XY, True, "move")
             duration_xyz = max(
@@ -659,6 +673,7 @@ class JetMaxExecutor(object):
 
     def _run_move_cyl_auto(self, sender, theta_deg, radius_mm, target_x, target_y, target_z):
         try:
+            self._sync_from_hardware_position()
             current_x, current_y, current_z = self._get_position()
             self._set_state(STATE_MOVING_XY, True, "move")
             duration_xyz = max(
@@ -684,6 +699,7 @@ class JetMaxExecutor(object):
 
     def _run_pick_world(self, sender, target_x, target_y):
         try:
+            self._sync_from_hardware_position()
             current_x, current_y, current_z = self._get_position()
             settle_z = self._compute_settle_z(target_x, target_y, self.z_carry_floor_mm)
             if abs(current_z - settle_z) > 2.0:
@@ -713,6 +729,7 @@ class JetMaxExecutor(object):
 
     def _run_place(self, sender):
         try:
+            self._sync_from_hardware_position()
             current_x, current_y, current_z = self._get_position()
             settle_z = self._compute_settle_z(current_x, current_y, self.z_carry_floor_mm)
             if current_z < float(self.z_carry_floor_mm):
@@ -774,6 +791,7 @@ class JetMaxExecutor(object):
         self._commanded_cyl = cartesian_to_cylindrical(float(x), float(y), float(z))
         settle = self.motion_settle_sec if settle_sec is None else float(settle_sec)
         self._sleep_with_abort(float(duration) + settle, allow_abort)
+        self._sync_from_hardware_position()
 
     def _go_home(self, duration, allow_abort):
         self.actuator.go_home(float(duration))
@@ -783,6 +801,7 @@ class JetMaxExecutor(object):
             float(self.home_pose[2]),
         )
         self._sleep_with_abort(float(duration) + 0.1, allow_abort)
+        self._sync_from_hardware_position()
 
     def _sleep_with_abort(self, seconds, allow_abort=True):
         deadline = time.time() + max(0.0, float(seconds))
@@ -992,6 +1011,34 @@ class JetMaxExecutor(object):
     def _get_position(self):
         position = self._commanded_pose
         return (float(position[0]), float(position[1]), float(position[2]))
+
+    def _sync_from_hardware_position(self):
+        try:
+            x_mm, y_mm, z_mm = self.actuator.get_position()
+        except Exception:
+            return
+        with self._lock:
+            self._commanded_pose = (float(x_mm), float(y_mm), float(z_mm))
+            self._commanded_cyl = cartesian_to_cylindrical(float(x_mm), float(y_mm), float(z_mm))
+
+    def _get_validation_report_cached(self, x_mm, y_mm, z_mm, enforce_workspace=True):
+        now = time.monotonic()
+        with self._lock:
+            cached_pose = self._validation_cache_pose
+            cached_report = self._validation_cache_report
+            cache_age = now - float(self._validation_cache_ts)
+            if cached_pose is not None and cached_report is not None and cache_age <= float(self._validation_cache_ttl_sec):
+                dx = float(x_mm) - float(cached_pose[0])
+                dy = float(y_mm) - float(cached_pose[1])
+                dz = float(z_mm) - float(cached_pose[2])
+                if math.sqrt(dx * dx + dy * dy + dz * dz) <= float(self._validation_cache_pose_eps_mm):
+                    return dict(cached_report)
+        report = self._validate_pose_xyz(x_mm, y_mm, z_mm, enforce_workspace=enforce_workspace)
+        with self._lock:
+            self._validation_cache_pose = (float(x_mm), float(y_mm), float(z_mm))
+            self._validation_cache_report = dict(report)
+            self._validation_cache_ts = now
+        return report
 
     def _has_calibration(self):
         try:

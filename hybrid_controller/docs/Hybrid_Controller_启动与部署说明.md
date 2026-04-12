@@ -40,6 +40,7 @@ bash run_hybrid_controller_ros_runtime.sh
 - `8888`：TCP 兼容/诊断（可选）
 
 `robot/tools/jetmax_start_ros_runtime.py` 默认只校验 `9091+8080`。  
+脚本会自动 `stop/disable` JetMax 自带的 `rosbridge.service`，避免旧消息定义冲突。  
 如需强制校验 `8888`，加 `--require-tcp-check`。
 
 ## 路由契约（ROS 模式）

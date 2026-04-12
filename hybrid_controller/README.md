@@ -1,8 +1,8 @@
 # hybrid_controller 主线说明
 
-`hybrid_controller` 是当前真机主线目录（ROS 主链 + TCP 兼容 + 圆柱坐标控制）。
+`hybrid_controller` 是当前真机主线目录（ROS 主链 + TCP 兼容 + 圆柱坐标控制 + 视觉/SSVEP UI）。
 
-## 唯一解释器
+## 1. 唯一解释器
 
 - `C:\Users\P1233\miniconda3\envs\brain-vision\python.exe`
 
@@ -11,86 +11,62 @@
 - `run_real.py`
 - `run_real_ssvep.py`
 
-若误用其他解释器（例如 `.venv`），会报 `Interpreter mismatch` 并退出。
+如果误用其他解释器（如 `.venv`），会直接报 `Interpreter mismatch` 并退出。
 
-## 启动方式
+## 2. 启动方式
 
-推荐：在 PyCharm 中从仓库根目录 `C:\Users\P1233\Desktop\brain` 打开，并运行共享配置：
+推荐在 PyCharm 里从仓库根目录 `C:\Users\P1233\Desktop\brain` 打开，然后运行：
 
 - `Hybrid_Controller_Real_GUI`
 - `Hybrid_Controller_Real_SSVEP_GUI`
 
-命令行也可直接启动：
+命令行启动：
 
 ```powershell
 C:\Users\P1233\miniconda3\envs\brain-vision\python.exe C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\run_real.py
 C:\Users\P1233\miniconda3\envs\brain-vision\python.exe C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\run_real_ssvep.py
 ```
 
-## 统一解释器解析脚本
+## 3. 机器人与ROS入口
 
-以下脚本供 Windows 启动入口统一解析解释器：
+- JetMax 侧 ROS 运行入口：`robot/run_hybrid_controller_ros_runtime.sh`
+- JetMax 侧 TCP 兼容入口：`robot/run_jetmax_robot_runtime.sh`
+- 桌面端远程启动工具：`robot/tools/jetmax_start_ros_runtime.py`
 
-- `C:\Users\P1233\Desktop\brain\brain_code\tools\resolve_brain_python.cmd`
-- `C:\Users\P1233\Desktop\brain\brain_code\tools\resolve_brain_python.ps1`
+## 4. 关键功能状态
 
-可选覆盖变量：
+- UI 主布局：主相机画面 + 右上角 Robot Pose + 右侧控制区（可滚动）。
+- 右上角方位图：已按正视图语义翻转，随窗口大小自动重定位。
+- 抓取链路：
+  - 视觉主路径默认 `PICK_WORLD`（ROS 主链）。
+  - `PICK_WORLD` 与 `PICK_CYL` 共用 `r/theta bias`。
+  - 抓后稳定姿态采用 `z_settle = clamp(max(z_carry_floor, z_auto(r)))`。
+- 抓放调参：
+  - ROS 服务：`/hybrid_controller/get_pick_tuning`、`/hybrid_controller/set_pick_tuning`
+  - 落盘：`dataset/robot_pick_tuning/current_pick_tuning.json`
 
-- `BRAIN_PYTHON_EXE`（显式指定 `python.exe` 绝对路径）
+## 5. 维护脚本
 
-默认不再回退 `.venv\Scripts\python.exe`。
+- 清理临时文件：`tools/clean_hybrid_temp.ps1`
+- 一键检查（编译 + 测试）：`tools/run_hybrid_checks.ps1`
 
-## 机械臂改动留档
+示例：
 
-机械臂主链改动与落盘路径清单见：
+```powershell
+powershell -ExecutionPolicy Bypass -File C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\tools\clean_hybrid_temp.ps1
+powershell -ExecutionPolicy Bypass -File C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\tools\run_hybrid_checks.ps1
+```
 
-- [JetMax_机械臂改动与落盘清单.md](C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\docs\JetMax_机械臂改动与落盘清单.md)
+## 6. 文档入口
 
-## UI 方位窗说明
+- 总文档索引：`docs/README.md`
+- 真机联动：`docs/JetMax_真机联动说明.md`
+- 抓取链路：`docs/JetMax_抓取流程确认说明.md`
+- 圆柱坐标：`docs/JetMax_圆柱坐标改造说明.md`
+- 历史报告归档：`docs/archive/`
 
-最新 UI 中，`Robot Pose` 已改为相机区域右上角悬浮窗：
+## 7. 当前已知风险
 
-- 上下方向已按正视图翻转显示
-- 窗口 resize 时自动重定位
-- 右侧控制区改为可滚动，避免挤压导致方位图显示不全
-- 程序启动默认最大化；按 `F11` 可在全屏/最大化之间切换
-
-## 抓取调参与稳定姿态（本轮新增）
-
-抓放链路已新增“抓后姿态对齐 + 下探/吸盘时序可调”：
-
-- 抓取抬升终点不再固定 `z_carry`，而是：
-  - `z_settle = clamp(max(z_carry_floor, z_auto(current_r)))`
-- 放置释放优先使用硬件 `release()`，若不可用自动回退：
-  - `set_state(False) + release_sec`
-- `PICK_WORLD` 与 `PICK_CYL` 都会应用同一套 `r/theta bias`（避免只调到手动入口）。
-
-### UI 调参入口
-
-右侧 `Pick Tuning` 区支持实时微调：
-
-- 深度参数：`±1 mm`
-- 时序参数：`±0.05 s`
-- 释放模式切换：`mode: release/off`
-- 控制按钮：
-  - `应用到机器人`（调用 ROS 服务）
-  - `恢复默认`
-  - `保存配置`
-
-### 调参落盘路径
-
-- 当前调参配置文件：
-  - `C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\dataset\robot_pick_tuning\current_pick_tuning.json`
-
-### ROS 服务（抓放调参）
-
-- `/hybrid_controller/get_pick_tuning`
-- `/hybrid_controller/set_pick_tuning`
-
-`/hybrid_controller/state` 额外返回：
-
-- `pick_tuning`
-- `post_pick_settle_z`
-- `release_mode_effective`
-
-用于现场核对“UI 参数是否已实际生效”。
+- `app.py` 仍较大，`runtime_info` 兼容层字段较多（正在逐步下沉到 typed state）。
+- 目录中可能出现被外部进程占用的临时测试目录（`tmp_pytest*`、`pytest-cache-files-*`）；建议先关闭占用进程，再运行清理脚本。
+- `numpy.matrix` 的 PendingDeprecationWarning 来自历史视觉处理路径，功能正常，但建议后续改成 `ndarray`。

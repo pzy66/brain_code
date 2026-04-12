@@ -9,6 +9,12 @@ RUNTIME_NODE="${ROS_PACKAGE_ROOT}/scripts/hybrid_controller_runtime_node.py"
 CATKIN_WS="${CATKIN_WS:-${HOME}/catkin_ws}"
 ROSBRIDGE_PORT="${ROSBRIDGE_PORT:-9091}"
 WEB_VIDEO_PORT="${WEB_VIDEO_PORT:-8080}"
+ROSBRIDGE_PING_INTERVAL="${ROSBRIDGE_PING_INTERVAL:-10}"
+ROSBRIDGE_PING_TIMEOUT="${ROSBRIDGE_PING_TIMEOUT:-30}"
+ROSBRIDGE_RETRY_STARTUP_DELAY="${ROSBRIDGE_RETRY_STARTUP_DELAY:-2.0}"
+ROSBRIDGE_USE_COMPRESSION="${ROSBRIDGE_USE_COMPRESSION:-false}"
+HYBRID_FORCE_RESTART_ROSBRIDGE="${HYBRID_FORCE_RESTART_ROSBRIDGE:-1}"
+HYBRID_FORCE_RESTART_WEB_VIDEO="${HYBRID_FORCE_RESTART_WEB_VIDEO:-1}"
 
 if command -v hostname >/dev/null 2>&1; then
     DEFAULT_ROS_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
@@ -58,8 +64,19 @@ PY
 ROSBRIDGE_RUNNING=$?
 set -e
 
+if [ "${HYBRID_FORCE_RESTART_ROSBRIDGE}" = "1" ]; then
+    pkill -f rosbridge_websocket >/dev/null 2>&1 || true
+    ROSBRIDGE_RUNNING=1
+fi
+
 if [ "${ROSBRIDGE_RUNNING}" -ne 0 ]; then
-    nohup /opt/ros/melodic/bin/roslaunch rosbridge_server rosbridge_websocket.launch port:="${ROSBRIDGE_PORT}" >/tmp/hybrid_rosbridge.log 2>&1 &
+    nohup /opt/ros/melodic/bin/roslaunch rosbridge_server rosbridge_websocket.launch \
+        port:="${ROSBRIDGE_PORT}" \
+        websocket_ping_interval:="${ROSBRIDGE_PING_INTERVAL}" \
+        websocket_ping_timeout:="${ROSBRIDGE_PING_TIMEOUT}" \
+        retry_startup_delay:="${ROSBRIDGE_RETRY_STARTUP_DELAY}" \
+        use_compression:="${ROSBRIDGE_USE_COMPRESSION}" \
+        >/tmp/hybrid_rosbridge.log 2>&1 &
     sleep 2
 fi
 
@@ -79,6 +96,11 @@ finally:
 PY
 WEB_VIDEO_RUNNING=$?
 set -e
+
+if [ "${HYBRID_FORCE_RESTART_WEB_VIDEO}" = "1" ]; then
+    pkill -f web_video_server >/dev/null 2>&1 || true
+    WEB_VIDEO_RUNNING=1
+fi
 
 if [ "${WEB_VIDEO_RUNNING}" -ne 0 ]; then
     if command -v rosrun >/dev/null 2>&1; then

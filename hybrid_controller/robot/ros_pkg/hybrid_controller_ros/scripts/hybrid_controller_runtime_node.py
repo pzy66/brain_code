@@ -5,6 +5,7 @@ import sys
 import threading
 import time
 import math
+from collections import deque
 
 import rospy
 from std_srvs.srv import Trigger, TriggerResponse
@@ -160,6 +161,19 @@ class _BufferedSender(object):
                 self.condition.wait(timeout=remaining)
 
 
+class _NoopSender(object):
+    def send_line(self, _line):
+        return None
+
+
+class _QueuedAction(object):
+    def __init__(self, name, start_fn, args):
+        self.name = str(name)
+        self.start_fn = start_fn
+        self.args = tuple(args)
+        self.enqueued_ts = float(time.time())
+
+
 class HybridControllerRuntimeNode(object):
     def __init__(self):
         self.executor = JetMaxExecutor(
@@ -210,7 +224,7 @@ class HybridControllerRuntimeNode(object):
             theta_limits_deg=self.executor.theta_limits,
             radius_limits_mm=self.executor.auto_radius_limits,
             auto_z_profile=self.executor._auto_z_profile,
-            validator=self.executor._validate_cyl_target,
+            validator=self._validate_cyl_target_for_teleop,
             tick_hz=20.0,
             deadman_timeout_sec=0.6,
             theta_accel_deg_s2=180.0,
@@ -218,8 +232,28 @@ class HybridControllerRuntimeNode(object):
         )
         self._teleop_command_duration_sec = 0.08
         self._teleop_active = False
-        self._state_pub = rospy.Publisher("/hybrid_controller/state", RobotState, queue_size=5)
-        rospy.Subscriber("/hybrid_controller/teleop_cyl_cmd", CylindricalTeleop, self._on_teleop_cmd, queue_size=20)
+        self._teleop_validate_counter = 0
+        self._teleop_full_validate_every_ticks = 6
+        self._teleop_last_cmd_seq = 0
+        self._teleop_last_client_ts = 0.0
+        self._state_seq = 0
+        self._last_state_signature = None
+        self._null_sender = _NoopSender()
+        self._action_submit_lock = threading.Lock()
+        self._action_queue = deque()
+        self._action_queue_lock = threading.Lock()
+        self._action_queue_event = threading.Event()
+        self._action_worker_stop = threading.Event()
+        self._action_worker_thread = threading.Thread(
+            target=self._action_worker_loop,
+            name="hybrid-controller-action-queue",
+            daemon=True,
+        )
+        self._action_worker_thread.start()
+        # Keep ROS queues minimal so we always process freshest state/teleop data
+        # under Wi-Fi jitter instead of draining stale backlog.
+        self._state_pub = rospy.Publisher("/hybrid_controller/state", RobotState, queue_size=1)
+        rospy.Subscriber("/hybrid_controller/teleop_cyl_cmd", CylindricalTeleop, self._on_teleop_cmd, queue_size=1)
         rospy.Service("/hybrid_controller/reset", Trigger, self._handle_reset)
         rospy.Service("/hybrid_controller/abort", Trigger, self._handle_abort)
         rospy.Service("/hybrid_controller/place", Trigger, self._handle_place)
@@ -230,9 +264,21 @@ class HybridControllerRuntimeNode(object):
         rospy.Service("/hybrid_controller/get_pick_tuning", GetPickTuning, self._handle_get_pick_tuning)
         rospy.Service("/hybrid_controller/set_pick_tuning", SetPickTuning, self._handle_set_pick_tuning)
         rospy.Timer(rospy.Duration(0.05), self._on_teleop_tick)
-        rospy.Timer(rospy.Duration(0.1), self._publish_state)
+        rospy.Timer(rospy.Duration(1.0 / 15.0), self._publish_state)
 
     def _on_teleop_cmd(self, message):
+        cmd_seq = int(getattr(message, "cmd_seq", 0) or 0)
+        if cmd_seq > 0 and self._teleop_last_cmd_seq > 0 and cmd_seq <= self._teleop_last_cmd_seq:
+            return
+        if cmd_seq > 0:
+            self._teleop_last_cmd_seq = int(cmd_seq)
+        client_ts = float(getattr(message, "client_ts", 0.0) or 0.0)
+        if client_ts > 0.0:
+            if self._teleop_last_client_ts > 0.0 and client_ts < self._teleop_last_client_ts:
+                return
+            if (time.time() - client_ts) > 2.0:
+                return
+            self._teleop_last_client_ts = float(client_ts)
         self.teleop_kernel.update_command(
             theta_rate_deg_s=float(message.theta_rate_deg_s),
             radius_rate_mm_s=float(message.radius_rate_mm_s),
@@ -240,17 +286,37 @@ class HybridControllerRuntimeNode(object):
             timestamp=time.monotonic(),
         )
 
+    def _validate_cyl_target_for_teleop(self, theta_deg, radius_mm, z_mm):
+        theta_value = float(theta_deg)
+        radius_value = float(radius_mm)
+        z_value = float(z_mm)
+        if not (float(self.executor.theta_limits[0]) <= theta_value <= float(self.executor.theta_limits[1])):
+            return {"ok": False, "message": "theta_out_of_limits"}
+        if not (float(self.executor.auto_radius_limits[0]) <= radius_value <= float(self.executor.auto_radius_limits[1])):
+            return {"ok": False, "message": "radius_out_of_limits"}
+        if not (float(self.executor.z_limits[0]) <= z_value <= float(self.executor.z_limits[1])):
+            return {"ok": False, "message": "z_out_of_limits"}
+        if bool(self.executor.cylindrical_xy_workspace_enabled):
+            x_mm, y_mm, _ = cylindrical_to_cartesian(theta_value, radius_value, z_value)
+            if not bool(self.executor._within_workspace(float(x_mm), float(y_mm))):
+                return {"ok": False, "message": "workspace_out_of_limits"}
+        self._teleop_validate_counter += 1
+        if self._teleop_validate_counter >= int(self._teleop_full_validate_every_ticks):
+            self._teleop_validate_counter = 0
+            return self.executor._validate_cyl_target(theta_value, radius_value, z_value)
+        return {"ok": True, "message": None, "margin": 0.0, "neutral_distance": 0.0, "posture_distance": 0.0}
+
     def _on_teleop_tick(self, _event):
-        snapshot = self.executor.snapshot()
-        state = str(snapshot.get("state", ""))
+        with self.executor._lock:
+            state = str(self.executor._state)
+            current_commanded_cyl = tuple(self.executor._commanded_cyl)
         if state.startswith("PICK") or state.startswith("PLACE") or state in {"ERROR", "RECOVERING"}:
             self._stop_teleop()
             return
-        current_cyl = snapshot.get("robot_cyl", {})
         current_pose = CylindricalPose(
-            theta_deg=float(current_cyl.get("theta_deg", 0.0)),
-            radius_mm=float(current_cyl.get("radius_mm", 0.0)),
-            z_mm=float(current_cyl.get("z_mm", snapshot.get("robot_z", 0.0))),
+            theta_deg=float(current_commanded_cyl[0]),
+            radius_mm=float(current_commanded_cyl[1]),
+            z_mm=float(current_commanded_cyl[2]),
         )
         step = self.teleop_kernel.step(current_pose, now=time.monotonic())
         if step is None:
@@ -292,19 +358,40 @@ class HybridControllerRuntimeNode(object):
         self._teleop_active = False
 
     def _handle_move_cyl(self, request):
-        ok, message = self._run_async_action(self.executor.start_move_cyl, float(request.theta_deg), float(request.radius_mm), float(request.z_mm), final_ack="ACK MOVE")
+        ok, message = self._submit_or_queue_action(
+            "move_cyl",
+            self.executor.start_move_cyl,
+            float(request.theta_deg),
+            float(request.radius_mm),
+            float(request.z_mm),
+        )
         return MoveCylResponse(ok=ok, message=message)
 
     def _handle_move_cyl_auto(self, request):
-        ok, message = self._run_async_action(self.executor.start_move_cyl_auto, float(request.theta_deg), float(request.radius_mm), final_ack="ACK MOVE")
+        ok, message = self._submit_or_queue_action(
+            "move_cyl_auto",
+            self.executor.start_move_cyl_auto,
+            float(request.theta_deg),
+            float(request.radius_mm),
+        )
         return MoveCylAutoResponse(ok=ok, message=message)
 
     def _handle_pick_cyl(self, request):
-        ok, message = self._run_async_action(self.executor.start_pick_cyl, float(request.theta_deg), float(request.radius_mm), final_ack="ACK PICK_DONE")
+        ok, message = self._submit_or_queue_action(
+            "pick_cyl",
+            self.executor.start_pick_cyl,
+            float(request.theta_deg),
+            float(request.radius_mm),
+        )
         return PickCylResponse(ok=ok, message=message)
 
     def _handle_pick_world(self, request):
-        ok, message = self._run_async_action(self.executor.start_pick_world, float(request.x_mm), float(request.y_mm), final_ack="ACK PICK_DONE")
+        ok, message = self._submit_or_queue_action(
+            "pick_world",
+            self.executor.start_pick_world,
+            float(request.x_mm),
+            float(request.y_mm),
+        )
         return PickWorldResponse(ok=ok, message=message)
 
     def _handle_get_pick_tuning(self, _request):
@@ -344,45 +431,93 @@ class HybridControllerRuntimeNode(object):
             return SetPickTuningResponse(ok=False, message=str(error))
 
     def _handle_place(self, _request):
-        ok, message = self._run_async_action(self.executor.start_place, final_ack="ACK PLACE_DONE")
-        return TriggerResponse(success=ok, message=message)
+        ok, message = self._submit_or_queue_action("place", self.executor.start_place)
+        return TriggerResponse(success=bool(ok), message=str(message))
 
     def _handle_abort(self, _request):
         self._stop_teleop()
+        self._clear_action_queue()
         response = self.executor.abort()
         ok = str(response).strip().upper().startswith("ACK")
         return TriggerResponse(success=ok, message=str(response))
 
     def _handle_reset(self, _request):
         self._stop_teleop()
+        self._clear_action_queue()
         response = self.executor.reset()
         ok = str(response).strip().upper().startswith("ACK")
         return TriggerResponse(success=ok, message=str(response))
 
-    def _run_async_action(self, start_fn, *args, **kwargs):
-        final_ack = kwargs.pop("final_ack")
+    def _submit_or_queue_action(self, action_name, start_fn, *args):
         self._stop_teleop()
-        sender = _BufferedSender()
-        immediate = start_fn(sender, *args)
-        if immediate == "BUSY":
-            return False, "BUSY"
-        if isinstance(immediate, str) and immediate.startswith("ERR"):
-            return False, immediate
-        deadline = time.time() + 20.0
-        while time.time() < deadline:
-            line = sender.wait_for_line(timeout=0.25)
-            if line is None:
+        with self._action_submit_lock:
+            immediate = start_fn(self._null_sender, *args)
+            if immediate == "BUSY":
+                self._enqueue_action(_QueuedAction(action_name, start_fn, args))
+                return True, "ACCEPTED queued:{0}".format(str(action_name))
+            if isinstance(immediate, str) and str(immediate).startswith("ERR"):
+                return False, str(immediate)
+            if isinstance(immediate, str) and str(immediate).startswith("ACK"):
+                return True, str(immediate)
+            return True, "ACCEPTED {0}".format(str(action_name))
+
+    def _enqueue_action(self, action):
+        with self._action_queue_lock:
+            self._action_queue.append(action)
+            self._action_queue_event.set()
+
+    def _clear_action_queue(self):
+        with self._action_queue_lock:
+            self._action_queue.clear()
+            self._action_queue_event.clear()
+
+    def _action_worker_loop(self):
+        while not rospy.is_shutdown() and not self._action_worker_stop.is_set():
+            self._action_queue_event.wait(timeout=0.2)
+            if rospy.is_shutdown() or self._action_worker_stop.is_set():
+                return
+            action = None
+            with self._action_queue_lock:
+                if self._action_queue:
+                    action = self._action_queue.popleft()
+                if not self._action_queue:
+                    self._action_queue_event.clear()
+            if action is None:
                 continue
-            if line.startswith("ERR"):
-                return False, line
-            if line == final_ack:
-                return True, line
-        return False, "Timed out waiting for robot action to finish."
+            self._run_queued_action(action)
+
+    def _run_queued_action(self, action):
+        while not rospy.is_shutdown() and not self._action_worker_stop.is_set():
+            immediate = action.start_fn(self._null_sender, *action.args)
+            if immediate == "BUSY":
+                time.sleep(0.03)
+                continue
+            if isinstance(immediate, str) and str(immediate).startswith("ERR"):
+                rospy.logwarn("Queued action %s rejected: %s", action.name, immediate)
+                return
+            rospy.loginfo("Queued action %s started.", action.name)
+            return
 
     def _publish_state(self, _event):
         snapshot = self.executor.snapshot()
+        signature = (
+            str(snapshot.get("state", "")),
+            bool(snapshot.get("busy", False)),
+            str(snapshot.get("busy_action", "")),
+            bool(snapshot.get("carrying", False)),
+            str(snapshot.get("last_ack", "")),
+            str(snapshot.get("last_error_code", "")),
+            str(snapshot.get("last_error", "")),
+            tuple(snapshot.get("robot_xy", [0.0, 0.0])),
+            float(snapshot.get("robot_z", 0.0) or 0.0),
+        )
+        if signature != self._last_state_signature:
+            self._state_seq += 1
+            self._last_state_signature = signature
         msg = RobotState()
         msg.state = str(snapshot.get("state", ""))
+        msg.state_seq = int(self._state_seq)
+        msg.robot_ts = float(time.time())
         msg.busy = bool(snapshot.get("busy", False))
         msg.carrying = bool(snapshot.get("carrying", False))
         robot_cyl = snapshot.get("robot_cyl", {})
@@ -421,6 +556,7 @@ class HybridControllerRuntimeNode(object):
         msg.z_carry_floor_mm = float(pick_tuning.get("z_carry_floor_mm", snapshot.get("carry_z", 0.0)))
         msg.post_pick_settle_z = float(snapshot.get("post_pick_settle_z", 0.0) or 0.0)
         msg.release_mode_effective = str(snapshot.get("release_mode_effective", ""))
+        msg.last_ack = str(snapshot.get("last_ack", ""))
         self._state_pub.publish(msg)
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import json
 import threading
+import time
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -48,12 +49,20 @@ class RosbridgeClient:
         self._connected = False
         self._last_state: dict[str, object] | None = None
         self._state_lock = threading.Lock()
+        self._last_state_seq: int = 0
+        self._last_robot_ts: float = 0.0
 
     def connect(self) -> None:
         if roslibpy is None:
             raise RuntimeError("roslibpy is not installed in the current environment.")
         if self._ros is not None and self.is_connected():
             return
+        if self._ros is not None:
+            try:
+                self._ros.close()
+            except Exception:
+                pass
+            self._ros = None
         self._ros = roslibpy.Ros(host=self.host, port=self.port)
         self._ros.on_ready(self._on_ready, run_in_thread=False)
         self._ros.on("error", self._on_error)
@@ -79,6 +88,8 @@ class RosbridgeClient:
         self._connected = False
         with self._state_lock:
             self._last_state = None
+            self._last_state_seq = 0
+            self._last_robot_ts = 0.0
         if ros is not None:
             try:
                 # Do not terminate the underlying Twisted reactor here.
@@ -92,7 +103,15 @@ class RosbridgeClient:
         ros = self._ros
         return bool(self._connected and ros is not None and ros.is_connected)
 
-    def publish_teleop(self, *, theta_rate_deg_s: float, radius_rate_mm_s: float, enabled: bool) -> None:
+    def publish_teleop(
+        self,
+        *,
+        theta_rate_deg_s: float,
+        radius_rate_mm_s: float,
+        enabled: bool,
+        cmd_seq: int = 0,
+        client_ts: float = 0.0,
+    ) -> None:
         if self._teleop_topic is None:
             raise RuntimeError("ROS teleop topic is not ready.")
         message = roslibpy.Message(
@@ -100,6 +119,8 @@ class RosbridgeClient:
                 "theta_rate_deg_s": float(theta_rate_deg_s),
                 "radius_rate_mm_s": float(radius_rate_mm_s),
                 "enabled": bool(enabled),
+                "cmd_seq": int(max(0, int(cmd_seq))),
+                "client_ts": float(client_ts),
             }
         )
         self._teleop_topic.publish(message)
@@ -225,12 +246,14 @@ class RosbridgeClient:
             self._ros,
             "/hybrid_controller/teleop_cyl_cmd",
             "hybrid_controller_ros/CylindricalTeleop",
+            queue_size=1,
         )
         self._teleop_topic.advertise()
         self._state_topic = roslibpy.Topic(
             self._ros,
             "/hybrid_controller/state",
             "hybrid_controller_ros/RobotState",
+            queue_length=1,
         )
         self._state_topic.subscribe(self._handle_state)
         self._services = {
@@ -254,25 +277,43 @@ class RosbridgeClient:
         self._connected = False
         self._emit_status("ROS bridge closed.")
         if self.event_callback is not None:
-            self.event_callback(Event(source="robot", type="robot_error", value="ROS bridge connection lost"))
+            self.event_callback(Event(source="robot", type="robot_disconnected", value="ROS bridge connection lost"))
 
     def _handle_state(self, message: dict[str, object]) -> None:
         snapshot = self._message_to_snapshot(message)
+        current_seq = int(snapshot.get("state_seq", 0) or 0)
+        current_robot_ts = float(snapshot.get("robot_ts", 0.0) or 0.0)
         with self._state_lock:
             previous = None if self._last_state is None else dict(self._last_state)
+            if current_seq > 0 and self._last_state_seq > 0:
+                if current_seq < self._last_state_seq:
+                    return
+                # Runtime node publishes a heartbeat at fixed rate and only increments
+                # state_seq when the semantic state changes.
+                # Accept equal-seq heartbeats when robot_ts moves forward.
+                if current_seq == self._last_state_seq:
+                    if current_robot_ts <= 0.0:
+                        return
+                    if self._last_robot_ts > 0.0 and current_robot_ts <= self._last_robot_ts:
+                        return
+            if current_seq <= 0 and current_robot_ts > 0.0 and self._last_robot_ts > 0.0 and current_robot_ts < self._last_robot_ts:
+                return
             self._last_state = dict(snapshot)
+            if current_seq > 0:
+                self._last_state_seq = int(current_seq)
+            if current_robot_ts > 0.0:
+                self._last_robot_ts = float(current_robot_ts)
         if self.state_callback is not None:
             self.state_callback(snapshot)
         if self.event_callback is None or previous is None:
             return
-        previous_state = str(previous.get("state") or "")
+        previous_ack = str(previous.get("last_ack") or "").strip().upper()
+        current_ack = str(snapshot.get("last_ack") or "").strip().upper()
         current_state = str(snapshot.get("state") or "")
         previous_error = str(previous.get("last_error_code") or "")
         current_error = str(snapshot.get("last_error_code") or "")
-        if current_state == "CARRY_READY" and previous_state.startswith("PICK"):
-            self.event_callback(Event(source="robot", type="robot_ack", value="PICK_DONE"))
-        elif current_state == "IDLE" and previous_state.startswith("PLACE"):
-            self.event_callback(Event(source="robot", type="robot_ack", value="PLACE_DONE"))
+        if current_ack and current_ack != previous_ack:
+            self.event_callback(Event(source="robot", type="robot_ack", value=current_ack))
         if current_state == "ERROR" and current_error and current_error != previous_error:
             self.event_callback(Event(source="robot", type="robot_error", value=str(snapshot.get("last_error") or current_error)))
 
@@ -291,6 +332,8 @@ class RosbridgeClient:
         y_mm = float(message.get("y_mm", 0.0))
         return {
             "state": str(message.get("state", "")),
+            "state_seq": int(message.get("state_seq", 0) or 0),
+            "robot_ts": float(message.get("robot_ts", time.time()) or time.time()),
             "busy": bool(message.get("busy", False)),
             "busy_action": str(message.get("busy_action", "")),
             "carrying": bool(message.get("carrying", False)),
@@ -312,6 +355,7 @@ class RosbridgeClient:
             "calibration_ready": bool(message.get("calibration_ready", False)),
             "ik_valid": bool(message.get("ik_valid", True)),
             "validation_error": str(message.get("validation_error", "")),
+            "last_ack": str(message.get("last_ack", "")),
             "pick_tuning": {
                 "pick_approach_z_mm": float(message.get("pick_approach_z_mm", 0.0)),
                 "pick_descend_z_mm": float(message.get("pick_descend_z_mm", 0.0)),

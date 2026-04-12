@@ -53,8 +53,11 @@ def normalize_theta_deg(theta_deg: float) -> float:
 def cylindrical_to_cartesian(theta_deg: float, radius_mm: float, z_mm: float) -> Tuple[float, float, float]:
     theta_rad = math.radians(float(theta_deg))
     radius = float(radius_mm)
+    # Coordinate contract: theta=0 faces forward, theta>0 means robot-right.
+    # In this workspace's base frame, positive X points to robot-left,
+    # so we negate the X projection.
     return (
-        radius * math.sin(theta_rad),
+        -radius * math.sin(theta_rad),
         -radius * math.cos(theta_rad),
         float(z_mm),
     )
@@ -62,7 +65,7 @@ def cylindrical_to_cartesian(theta_deg: float, radius_mm: float, z_mm: float) ->
 
 def cartesian_to_cylindrical(x_mm: float, y_mm: float, z_mm: float) -> Tuple[float, float, float]:
     radius = math.hypot(float(x_mm), float(y_mm))
-    theta_deg = math.degrees(math.atan2(float(x_mm), -float(y_mm)))
+    theta_deg = math.degrees(math.atan2(-float(x_mm), -float(y_mm)))
     return (normalize_theta_deg(theta_deg), radius, float(z_mm))
 
 

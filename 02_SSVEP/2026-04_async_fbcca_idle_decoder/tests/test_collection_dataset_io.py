@@ -41,6 +41,11 @@ def test_collection_dataset_bundle_roundtrip() -> None:
             board_eeg_channels=(0, 1, 2, 3),
             protocol_config={"protocol_name": "enhanced_45m", "active_sec": 4.0},
             trial_segments=segments,
+            quality_rows=[
+                {"order_index": 0, "target_samples": 1000, "retry_count": 0},
+                {"order_index": 1, "target_samples": 1000, "retry_count": 2},
+                {"order_index": 2, "target_samples": 1000, "retry_count": 1},
+            ],
         )
         loaded = load_collection_dataset(Path(payload["dataset_manifest"]))
         assert loaded.session_id == "session_test_001"
@@ -49,6 +54,19 @@ def test_collection_dataset_bundle_roundtrip() -> None:
         assert loaded.freqs == (8.0, 10.0, 12.0, 15.0)
         assert loaded.board_eeg_channels == (0, 1, 2, 3)
         assert len(loaded.trial_segments) == len(segments)
+        trial_rows = list(loaded.manifest.get("trials", []))
+        assert len(trial_rows) == len(segments)
+        assert isinstance(loaded.manifest.get("protocol_signature", ""), str)
+        assert str(loaded.manifest.get("protocol_signature", "")).startswith("sha1:")
+        assert str(loaded.manifest.get("protocol_config", {}).get("protocol_signature", "")).startswith("sha1:")
+        quality_summary = dict(loaded.manifest.get("quality_summary", {}))
+        assert int(quality_summary.get("valid_trial_count", 0)) == len(segments)
+        assert int(quality_summary.get("short_segment_excluded", -1)) == 0
+        for row in trial_rows:
+            assert int(row.get("target_samples", 0)) == 1000
+            assert float(row.get("shortfall_ratio", 0.0)) >= 0.0
+            assert int(row.get("retry_count", 0)) >= 0
+        assert int(trial_rows[1].get("retry_count", 0)) == 2
         for (trial_a, seg_a), (trial_b, seg_b) in zip(segments, loaded.trial_segments):
             assert trial_a.label == trial_b.label
             assert trial_a.expected_freq == trial_b.expected_freq

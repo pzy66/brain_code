@@ -72,6 +72,8 @@ def _make_ros_app_stub() -> HybridControllerApplication:
     app._active_pick_trace = None
     app._latest_vision_packet = None
     app.slot_catalog = None
+    app._next_pending_command_seq = 1
+    app._pending_command = None
     app.runtime_info = {
         "vision_mapping_mode": "delta_servo",
         "vision_last_resolved_base_xy": [10.0, -120.0],
@@ -83,6 +85,7 @@ def _make_ros_app_stub() -> HybridControllerApplication:
     app._pick_traces: list[tuple[tuple[object, ...], dict[str, object]]] = []
     app._fetch_remote_robot_snapshot = lambda: {"robot_xy": [0.0, -120.0], "robot_cyl": {"theta_deg": 0.0, "radius_mm": 120.0, "z_mm": 160.0}}
     app._queue_event = lambda event: app._queued_events.append(event)
+    app._queue_runtime_status = lambda component, message: app._status_lines.append((str(component), str(message)))
     app.dispatch_event = lambda event: app._queued_events.append(event)
     app._handle_runtime_status = lambda component, message: app._status_lines.append((str(component), str(message)))
     app.logger = types.SimpleNamespace(write=lambda *args, **kwargs: app._pick_traces.append((args, kwargs)))
@@ -97,8 +100,8 @@ def test_pick_world_routes_through_ros_without_tcp_fallback() -> None:
 
     assert app.ros_client.pick_world_calls == [(10.0, -120.0)]
     assert app.robot_client.commands == []
-    assert app._pick_traces
-    assert app._pick_traces[-1][1]["response"] == "ACK PICK_DONE"
+    assert app._rt_get("pending_command_seq", 0) == 1
+    assert str(app._rt_get("pending_command", "")) == "PICK_WORLD 10 -120"
 
 
 def test_pick_world_ros_mode_without_ros_client_rejects_instead_of_tcp_fallback() -> None:

@@ -205,13 +205,32 @@ def test_idle_false_positive_rate_is_event_based() -> None:
     trials = [(TrialSpec(label="idle", expected_freq=None, trial_id=1, block_index=0), segment)]
     bundle = evaluate_decoder_on_trials_v2(decoder, profile, trials, decision_time_mode="first-correct")
     async_metrics = dict(bundle["async_metrics"])
-    idle_windows = float(async_metrics["idle_windows"])
-    idle_minutes = idle_windows * profile.step_sec / 60.0
+    idle_minutes = float(async_metrics["idle_time_min"])
     expected_fp_per_min = 1.0 / idle_minutes
     assert int(async_metrics["idle_selected_events"]) == 1
     assert int(async_metrics["idle_selected_windows"]) > 1
     assert abs(float(async_metrics["idle_fp_per_min"]) - expected_fp_per_min) < 1e-9
     assert float(async_metrics["idle_selected_windows_per_min"]) > float(async_metrics["idle_fp_per_min"])
+
+
+def test_dual_lens_outputs_have_independent_decision_modes() -> None:
+    decoder = _Constant8Decoder()
+    profile = _test_profile(min_enter_windows=1, min_exit_windows=1)
+    segment = np.zeros((80, 1), dtype=np.float64)
+    trials = [(TrialSpec(label="10Hz", expected_freq=10.0, trial_id=1, block_index=0), segment)]
+    bundle = evaluate_decoder_on_trials_v2(
+        decoder,
+        profile,
+        trials,
+        paper_decision_time_mode="fixed-window",
+        async_decision_time_mode="first-correct",
+    )
+    paper_4 = dict(bundle.get("paper_lens_metrics_4class", {}))
+    async_4 = dict(bundle.get("async_lens_metrics_4class", {}))
+    assert str(bundle.get("paper_lens_decision_time_mode", "")) == "fixed-window"
+    assert str(bundle.get("async_lens_decision_time_mode", "")) == "first-correct"
+    assert abs(float(paper_4.get("mean_decision_time_s", 0.0)) - float(profile.win_sec)) < 1e-9
+    assert float(async_4.get("mean_decision_time_s", 0.0)) >= float(profile.win_sec)
 
 
 def test_binary_metrics_follow_first_correct_definition() -> None:
@@ -242,3 +261,27 @@ def test_four_class_prediction_uses_first_correct_when_available() -> None:
     metrics_4 = dict(bundle["metrics_4class"])
     assert abs(float(metrics_4["acc"]) - 1.0) < 1e-9
     assert metrics_4["confusion_matrix"] == [[0, 0, 0, 0], [0, 1, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]]
+
+
+def test_async_deadline_metrics_are_reported() -> None:
+    decoder = _SequenceDecoder(
+        [
+            np.asarray([3.0, 1.0, 0.3, 0.1]),  # trial1 8Hz
+            np.asarray([3.0, 1.0, 0.3, 0.1]),
+            np.asarray([3.0, 1.0, 0.3, 0.1]),
+            np.asarray([1.0, 3.0, 0.3, 0.1]),  # trial2 switch_to_10Hz
+            np.asarray([1.0, 3.0, 0.3, 0.1]),
+            np.asarray([1.0, 3.0, 0.3, 0.1]),
+        ]
+    )
+    profile = _test_profile(min_enter_windows=1, min_exit_windows=1)
+    segment = np.zeros((40, 1), dtype=np.float64)
+    trials = [
+        (TrialSpec(label="8Hz", expected_freq=8.0, trial_id=1, block_index=0), segment),
+        (TrialSpec(label="switch_to_10Hz", expected_freq=10.0, trial_id=2, block_index=0), segment),
+    ]
+    bundle = evaluate_decoder_on_trials_v2(decoder, profile, trials, decision_time_mode="first-correct")
+    async_metrics = dict(bundle["async_metrics"])
+    assert abs(float(async_metrics["control_recall_at_2s"]) - 1.0) < 1e-9
+    assert abs(float(async_metrics["control_recall_at_3s"]) - 1.0) < 1e-9
+    assert abs(float(async_metrics["switch_detect_rate_at_2.8s"]) - 1.0) < 1e-9

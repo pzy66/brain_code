@@ -1,64 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
-
-
-@dataclass(slots=True)
-class RobotRuntimeState:
-    connected: bool = False
-    start_active: bool = False
-    health: str = "unknown"
-    last_ack: str = "--"
-    last_error: str = "--"
-    preflight_ok: bool = True
-    preflight_message: str = "not_required"
-    calibration_ready: bool | None = None
-    robot_cyl: dict[str, object] | None = None
-    limits_cyl: dict[str, object] | None = None
-    limits_cyl_auto: dict[str, object] | None = None
-    auto_z_current: float | None = None
-    control_kernel: str = "cylindrical_kernel"
-    scene_snapshot: dict[str, object] | None = None
-    remote_snapshot: dict[str, object] | None = None
-
-
-@dataclass(slots=True)
-class VisionRuntimeState:
-    mode: str = "slots"
-    health: str = "unknown"
-    packet: dict[str, object] | None = None
-    frame: object | None = None
-    flash_enabled: bool = False
-
-
-@dataclass(slots=True)
-class SsvEpRuntimeState:
-    running: bool = False
-    stim_enabled: bool = False
-    busy: bool = False
-    connected: bool = False
-    connect_active: bool = False
-    pretrain_active: bool = False
-    online_active: bool = False
-    mode: str = "idle"
-    runtime_status: str = "stopped"
-    profile_path: str = "--"
-    profile_source: str = "fallback"
-    last_pretrain_time: str = "--"
-    latest_profile_path: str = "--"
-    profile_count: int = 0
-    available_profiles: tuple[tuple[str, str], ...] = ()
-    allow_fallback_profile: bool = True
-    status_hint: str = "--"
-    last_error: str = "--"
-    model_name: str = "fbcca"
-    debug_keyboard: bool = True
-    last_state: str = "--"
-    last_selected_freq: str = "--"
-    last_margin: str = "--"
-    last_ratio: str = "--"
-    last_stable_windows: str = "--"
+from hybrid_controller.runtime_state import RobotRuntimeState, SsvEpRuntimeState, VisionRuntimeState
 
 
 @dataclass(frozen=True, slots=True)

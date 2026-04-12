@@ -1,4 +1,6 @@
 string state
+uint32 state_seq
+float64 robot_ts
 bool busy
 bool carrying
 float32 theta_deg
@@ -32,3 +34,4 @@ float32 place_post_release_hold_sec
 float32 z_carry_floor_mm
 float32 post_pick_settle_z
 string release_mode_effective
+string last_ack

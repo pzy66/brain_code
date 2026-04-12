@@ -37,6 +37,12 @@ class RuntimeState:
     scenario_name: str = "basic"
     move_source: str = "sim"
     decision_source: str = "sim"
+    mi_backend: str = "brainflow"
+    mi_enabled: bool = False
+    mi_status: str = "--"
+    mi_connected: bool = False
+    mi_running: bool = False
+    mi_last_error: str = "--"
     robot_mode: str = "real"
     robot_transport: str = "tcp"
     vision_mode: str = "robot_camera_detection"
@@ -83,6 +89,63 @@ class RuntimeState:
     perf: PerfState = field(default_factory=PerfState)
 
 
+@dataclass(slots=True)
+class RobotRuntimeState:
+    connected: bool = False
+    start_active: bool = False
+    health: str = "unknown"
+    last_ack: str = "--"
+    last_error: str = "--"
+    preflight_ok: bool = True
+    preflight_message: str = "not_required"
+    calibration_ready: bool | None = None
+    robot_cyl: dict[str, object] | None = None
+    limits_cyl: dict[str, object] | None = None
+    limits_cyl_auto: dict[str, object] | None = None
+    auto_z_current: float | None = None
+    control_kernel: str = "cylindrical_kernel"
+    scene_snapshot: dict[str, object] | None = None
+    remote_snapshot: dict[str, object] | None = None
+
+
+@dataclass(slots=True)
+class VisionRuntimeState:
+    mode: str = "slots"
+    health: str = "unknown"
+    packet: dict[str, object] | None = None
+    frame: object | None = None
+    flash_enabled: bool = False
+
+
+@dataclass(slots=True)
+class SsvEpRuntimeState:
+    running: bool = False
+    stim_enabled: bool = False
+    busy: bool = False
+    connected: bool = False
+    connect_active: bool = False
+    pretrain_active: bool = False
+    online_active: bool = False
+    mode: str = "idle"
+    runtime_status: str = "stopped"
+    profile_path: str = "--"
+    profile_source: str = "fallback"
+    last_pretrain_time: str = "--"
+    latest_profile_path: str = "--"
+    profile_count: int = 0
+    available_profiles: tuple[tuple[str, str], ...] = ()
+    allow_fallback_profile: bool = True
+    status_hint: str = "--"
+    last_error: str = "--"
+    model_name: str = "fbcca"
+    debug_keyboard: bool = True
+    last_state: str = "--"
+    last_selected_freq: str = "--"
+    last_margin: str = "--"
+    last_ratio: str = "--"
+    last_stable_windows: str = "--"
+
+
 @dataclass(frozen=True, slots=True)
 class RobotSnapshotEnvelope:
     payload: dict[str, object] | None
@@ -120,6 +183,8 @@ class RuntimeStore:
                 scenario_name=str(getattr(config, "scenario_name", "basic")),
                 move_source=str(getattr(config, "move_source", "sim")),
                 decision_source=str(getattr(config, "decision_source", "sim")),
+                mi_backend=str(getattr(config, "mi_backend", "brainflow")),
+                mi_enabled=bool(getattr(config, "mi_enabled", False)),
                 robot_mode=str(getattr(config, "robot_mode", "real")),
                 robot_transport=str(getattr(config, "robot_transport", "tcp")),
                 vision_mode=str(getattr(config, "vision_mode", "robot_camera_detection")),
@@ -238,4 +303,3 @@ class RuntimeInfoCompat(MutableMapping[str, Any]):
 
     def get(self, key: str, default: Any = None) -> Any:
         return self._store.get_value(str(key), default)
-

@@ -12,7 +12,7 @@ if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
 from async_fbcca_idle_standalone import DEFAULT_PROFILE_PATH, TrialSpec
-from ssvep_core.dataset import LoadedDataset
+from ssvep_core.dataset import LoadedDataset, build_protocol_signature
 from ssvep_core.train_eval import OfflineTrainEvalConfig, run_offline_train_eval
 from ssvep_realtime_online_ui import DEFAULT_REALTIME_PROFILE_PATH
 
@@ -31,6 +31,14 @@ def test_train_eval_does_not_save_profile_when_no_model_meets_acceptance(
     try:
         trial = TrialSpec(label="idle", expected_freq=None, trial_id=1, block_index=0)
         segment = np.zeros((1200, 8), dtype=np.float64)
+        protocol_config = {"prepare_sec": 1.0, "active_sec": 4.0, "rest_sec": 1.0, "step_sec": 0.25}
+        protocol_signature = build_protocol_signature(
+            sampling_rate=250,
+            protocol_config=protocol_config,
+            freqs=(8.0, 10.0, 12.0, 15.0),
+            board_eeg_channels=(0, 1, 2, 3, 4, 5, 6, 7),
+        )
+        protocol_config["protocol_signature"] = protocol_signature
         dataset = LoadedDataset(
             manifest_path=tmp_root / "session_manifest.json",
             npz_path=tmp_root / "raw_trials.npz",
@@ -39,9 +47,9 @@ def test_train_eval_does_not_save_profile_when_no_model_meets_acceptance(
             sampling_rate=250,
             freqs=(8.0, 10.0, 12.0, 15.0),
             board_eeg_channels=(0, 1, 2, 3, 4, 5, 6, 7),
-            protocol_config={"prepare_sec": 1.0, "active_sec": 4.0, "rest_sec": 1.0, "step_sec": 0.25},
+            protocol_config=protocol_config,
             trial_segments=[(trial, segment)],
-            manifest={},
+            manifest={"protocol_signature": protocol_signature},
         )
 
         monkeypatch.setattr(module, "load_collection_dataset", lambda _path: dataset)
@@ -112,7 +120,18 @@ def test_train_eval_does_not_save_profile_when_no_model_meets_acceptance(
         assert payload["profile_saved"] is False
         assert payload["chosen_meets_acceptance"] is False
         assert payload["chosen_profile_path"] is None
-        assert save_calls == []
+        assert payload["default_profile_saved"] is False
+        assert payload["best_candidate_profile_saved"] is True
+        assert payload["best_candidate_profile_path"] is not None
+        expected_paths = [Path(payload["best_candidate_profile_path"])]
+        if payload.get("best_fbcca_weighted_profile_saved"):
+            expected_paths.append(Path(payload["best_fbcca_weighted_profile_path"]))
+        assert save_calls == expected_paths
+        assert config.output_profile_path not in save_calls
+        assert "ranking_boards" in payload
+        assert isinstance(payload["ranking_boards"].get("end_to_end", []), list)
+        assert isinstance(payload["ranking_boards"].get("classifier_only", []), list)
+        assert "stats_baseline_model" in payload
         assert config.report_path.exists()
     finally:
         shutil.rmtree(tmp_root, ignore_errors=True)

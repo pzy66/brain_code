@@ -1,9 +1,13 @@
 # Local runtime/test artifacts
 .tmp_pytest/
+.tmp_pytest*/
 pytest_tmp_py/
 tmp_test_dir/
+tmp_pytest*/
+tmp_pytest_*/
 pytest-cache-files-*/
 .pytest_tmp/
+.pytest_tmp_run/
 .pytest_cache/
 logs/
 

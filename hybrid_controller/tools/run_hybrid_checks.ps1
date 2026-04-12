@@ -16,7 +16,9 @@ $skipDirs = @(
     "pytest-cache-files-",
     "pytest_tmp_py",
     "tmp_test_dir",
+    "tmp_pytest",
     ".pytest_tmp",
+    ".pytest_tmp_run",
     ".pytest_cache",
     "__pycache__"
 )
@@ -39,7 +41,7 @@ foreach ($file in $pyFiles) {
     }
 }
 
-& $PythonExe -m pytest "$resolvedRoot" -q
+& $PythonExe -m pytest "$resolvedRoot\\tests" -q -o addopts= --basetemp "$resolvedRoot\\tmp_pytest_checks"
 if ($LASTEXITCODE -ne 0) {
     throw "pytest failed"
 }

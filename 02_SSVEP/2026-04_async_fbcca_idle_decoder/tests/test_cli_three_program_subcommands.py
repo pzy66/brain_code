@@ -21,8 +21,27 @@ def test_parser_supports_realtime_collect_train_eval() -> None:
     assert args_collect.subject_id == "s01"
 
     args_train_eval = parser.parse_args(
-        ["train-eval", "--dataset-manifest", str(PROJECT_DIR / "profiles" / "dummy.json")]
+        [
+            "train-eval",
+            "--dataset-manifest",
+            str(PROJECT_DIR / "profiles" / "dummy.json"),
+            "--spatial-filter-mode",
+            "trca_shared",
+            "--spatial-rank-candidates",
+            "1,2,3",
+            "--joint-weight-iters",
+            "2",
+            "--spatial-source-model",
+            "trca",
+            "--async-decision-time-mode",
+            "first-correct",
+            "--data-policy",
+            "new-only",
+        ]
     )
     assert args_train_eval.command == "train-eval"
     assert str(args_train_eval.dataset_manifest).endswith("dummy.json")
-
+    assert str(args_train_eval.spatial_filter_mode) == "trca_shared"
+    assert str(args_train_eval.spatial_rank_candidates) == "1,2,3"
+    assert str(args_train_eval.async_decision_time_mode) == "first-correct"
+    assert str(args_train_eval.data_policy) == "new-only"

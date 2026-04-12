@@ -32,7 +32,7 @@ python run_real_ssvep.py
 
 ## 主链端口
 
-- `9091`：ROS bridge（必须）
+- `9091`：ROS bridge（必须，默认主链端口）
 - `8080`：视频流（必须）
 - `8888`：TCP 兼容链路（可选）
 

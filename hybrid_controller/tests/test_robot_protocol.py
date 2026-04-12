@@ -147,3 +147,29 @@ def test_build_config_from_args_applies_modes() -> None:
     assert config.control_sim_enabled is True
     assert config.stage_motion_sec == 2.0
     assert config.sim_pick_delay_sec == 0.2
+
+
+def test_build_config_from_args_supports_mi_placeholder_flags() -> None:
+    args = Namespace(
+        timing_profile="formal",
+        scenario_name="basic",
+        slot_profile="default",
+        robot_mode="real",
+        vision_mode="robot_camera_detection",
+        move_source="mi",
+        decision_source="ssvep",
+        mi_backend="brainflow",
+        mi_enabled=True,
+        mi_poll_interval_ms=60,
+        mi_command_cooldown_ms=140,
+        robot_host="192.168.1.9",
+        robot_port=9999,
+        vision_stream_url="",
+        smoke_test_ms=0,
+    )
+    config = build_config_from_args(args)
+    assert config.move_source == "mi"
+    assert config.mi_backend == "brainflow"
+    assert config.mi_enabled is True
+    assert config.mi_poll_interval_ms == 60
+    assert config.mi_command_cooldown_ms == 140

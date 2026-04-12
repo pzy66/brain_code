@@ -1,23 +1,47 @@
 ﻿from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
+import os
 import random
 import re
 import sys
 import time
+import uuid
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from dataclasses import asdict, dataclass, fields, replace
 from datetime import datetime
 from itertools import product
 from pathlib import Path
-from typing import Any, Iterable, Optional, Sequence
+from typing import Any, Callable, Iterable, Optional, Sequence
 
 import numpy as np
 import scipy.linalg
-from scipy.signal import butter, filtfilt, iirnotch
+from scipy.signal import sosfiltfilt
+
+from ssvep_core.compute_backend import (
+    DEFAULT_COMPUTE_BACKEND,
+    DEFAULT_GPU_CACHE_POLICY,
+    DEFAULT_GPU_DEVICE,
+    DEFAULT_GPU_PRECISION,
+    parse_compute_backend_name,
+    parse_gpu_cache_policy,
+    parse_gpu_precision,
+    resolve_compute_backend,
+)
+from ssvep_core.compute_kernels import (
+    benchmark_fbcca_batch_path,
+    build_reference_tensor,
+    cca_scores_batch,
+    design_sos_bandpass,
+    design_sos_lowpass,
+    design_sos_notch,
+    fbcca_subband_scores_batch,
+    fbcca_scores_batch,
+)
 
 try:
     from brainflow.board_shim import BoardIds, BoardShim, BrainFlowInputParams
@@ -51,20 +75,50 @@ DEFAULT_AUTO_CHANNEL_COUNT = 4
 DEFAULT_WIN_SEC_CANDIDATES = (1.5, 2.0, 2.5, 3.0)
 DEFAULT_MIN_ENTER_CANDIDATES = (1, 2)
 DEFAULT_MIN_EXIT_CANDIDATES = (1, 2, 3)
+DEFAULT_SPEED_WIN_SEC_CANDIDATES = (1.0, 1.25, 1.5, 2.0, 2.5)
+DEFAULT_SPEED_MIN_ENTER_CANDIDATES = (1, 2)
+DEFAULT_SPEED_MIN_EXIT_CANDIDATES = (1, 2, 3)
 DEFAULT_MODEL_NAME = "fbcca"
 DEFAULT_SERIAL_PORT = "auto"
 DEFAULT_GATE_POLICY = "balanced"
-DEFAULT_GATE_POLICIES = ("conservative", "balanced")
+DEFAULT_GATE_POLICIES = ("conservative", "balanced", "speed")
 DEFAULT_CHANNEL_WEIGHT_MODE = "fbcca_diag"
 DEFAULT_CHANNEL_WEIGHT_RANGE = (0.3, 2.5)
+DEFAULT_SUBBAND_WEIGHT_MODE = "chen_fixed"
+DEFAULT_SUBBAND_WEIGHT_MODES = ("chen_fixed", "chen_ab_subject", "simplex_subject")
+DEFAULT_SUBBAND_WEIGHT_RANGE = (0.02, 1.0)
+DEFAULT_FBCCA_SUBBAND_WEIGHT_A = 1.25
+DEFAULT_FBCCA_SUBBAND_WEIGHT_B = 0.25
+DEFAULT_FBCCA_SUBBAND_WEIGHT_A_GRID = (0.50, 0.75, 1.00, 1.25, 1.50, 1.75, 2.00, 2.25, 2.50)
+DEFAULT_FBCCA_SUBBAND_WEIGHT_B_GRID = (0.00, 0.10, 0.25, 0.40, 0.55, 0.70, 0.85, 1.00)
+DEFAULT_FBCCA_WEIGHT_CV_FOLDS = 3
+DEFAULT_SPATIAL_FILTER_MODE = "trca_shared"
+DEFAULT_SPATIAL_FILTER_MODES = ("none", "trca_shared")
+DEFAULT_SPATIAL_RANK_CANDIDATES = (1, 2, 3)
+DEFAULT_JOINT_WEIGHT_ITERS = 2
+DEFAULT_SPATIAL_SOURCE_MODEL = "trca"
+DEFAULT_SPATIAL_SOURCE_MODELS = ("trca",)
 DEFAULT_DYNAMIC_STOP_ALPHA = 0.7
 DEFAULT_DYNAMIC_STOP_ENABLED = True
+DEFAULT_COMPUTE_BACKEND_NAME = DEFAULT_COMPUTE_BACKEND
+DEFAULT_GPU_DEVICE_ID = DEFAULT_GPU_DEVICE
+DEFAULT_GPU_PRECISION_NAME = DEFAULT_GPU_PRECISION
+DEFAULT_GPU_CACHE_MODE = DEFAULT_GPU_CACHE_POLICY
 DEFAULT_BALANCED_IDLE_FP_MAX = 3.0
 DEFAULT_BALANCED_MIN_CONTROL_RECALL = 0.60
 DEFAULT_BALANCED_OBJECTIVE_IDLE_WEIGHT = 0.45
 DEFAULT_BALANCED_OBJECTIVE_RECALL_WEIGHT = 0.35
 DEFAULT_BALANCED_OBJECTIVE_SWITCH_WEIGHT = 0.10
 DEFAULT_BALANCED_OBJECTIVE_RELEASE_WEIGHT = 0.10
+DEFAULT_SPEED_IDLE_FP_MAX = 1.5
+DEFAULT_SPEED_MIN_CONTROL_RECALL = 0.65
+DEFAULT_SPEED_OBJECTIVE_IDLE_WEIGHT = 0.35
+DEFAULT_SPEED_OBJECTIVE_RECALL_WEIGHT = 0.25
+DEFAULT_SPEED_OBJECTIVE_SWITCH_WEIGHT = 0.25
+DEFAULT_SPEED_OBJECTIVE_RELEASE_WEIGHT = 0.15
+DEFAULT_CONTROL_RECALL_AT_2S_DEADLINE = 2.0
+DEFAULT_CONTROL_RECALL_AT_3S_DEADLINE = 3.0
+DEFAULT_SWITCH_DETECT_AT_2P8S_DEADLINE = 2.8
 DEFAULT_ACCEPTANCE_IDLE_FP_PER_MIN = 1.5
 DEFAULT_ACCEPTANCE_CONTROL_RECALL = 0.75
 DEFAULT_ACCEPTANCE_SWITCH_LATENCY_S = 2.8
@@ -80,6 +134,7 @@ DEFAULT_BENCHMARK_MODELS = (
     "ecca",
     "msetcca",
     "fbcca",
+    "legacy_fbcca_202603",
     "trca",
     "trca_r",
     "sscor",
@@ -102,12 +157,22 @@ DEFAULT_METRIC_SCOPE = "dual"
 DEFAULT_METRIC_SCOPES = ("dual", "4class", "5class")
 DEFAULT_DECISION_TIME_MODE = "first-correct"
 DEFAULT_DECISION_TIME_MODES = ("first-correct", "first-any", "fixed-window")
+DEFAULT_PAPER_DECISION_TIME_MODE = "fixed-window"
+DEFAULT_ASYNC_DECISION_TIME_MODE = "first-correct"
+DEFAULT_DATA_POLICY = "new-only"
+DEFAULT_DATA_POLICIES = ("new-only", "legacy-compatible")
 DEFAULT_RANKING_POLICY = "async-first"
-DEFAULT_RANKING_POLICIES = ("async-first", "paper-first", "dual-board")
+DEFAULT_RANKING_POLICIES = ("async-first", "paper-first", "dual-board", "async-speed")
 DEFAULT_EXPORT_FIGURES = True
 MODEL_IMPLEMENTATION_LEVELS = {
     "cca": "paper-faithful",
     "fbcca": "paper-faithful",
+    "legacy_fbcca_202603": "paper-faithful",
+    "fbcca_fixed_all8": "paper-faithful",
+    "fbcca_cw_all8": "engineering-approx",
+    "fbcca_sw_all8": "engineering-approx",
+    "fbcca_cw_sw_all8": "engineering-approx",
+    "fbcca_cw_sw_trca_shared": "engineering-approx",
     "itcca": "engineering-approx",
     "ecca": "engineering-approx",
     "msetcca": "engineering-approx",
@@ -120,6 +185,21 @@ MODEL_IMPLEMENTATION_LEVELS = {
 MODEL_METHOD_NOTES = {
     "cca": "Reference-signal CCA baseline consistent with the canonical SSVEP formulation.",
     "fbcca": "Filterbank CCA with harmonic fusion follows the FBCCA baseline formulation.",
+    "legacy_fbcca_202603": (
+        "Legacy FBCCA scorer compatible with the 2026-03 implementation "
+        "(fixed FBCCA score path without channel/spatial weighting frontend)."
+    ),
+    "fbcca_fixed_all8": "Pure FBCCA on all EEG channels with fixed Chen-style subband weights.",
+    "fbcca_cw_all8": "Pure FBCCA on all EEG channels with learned diagonal channel weights and fixed subband weights.",
+    "fbcca_sw_all8": (
+        "Pure FBCCA on all EEG channels with learned subject-specific global subband fusion weights "
+        "shared by all channels."
+    ),
+    "fbcca_cw_sw_all8": (
+        "Pure FBCCA on all EEG channels with separable learned weights: 8 channel weights plus "
+        "5 global subband fusion weights, not a full channel-by-subband matrix."
+    ),
+    "fbcca_cw_sw_trca_shared": "FBCCA with jointly learned channel/subband weights plus TRCA-shared spatial frontend.",
     "itcca": "Template-assisted CCA approximation for personalized reference matching.",
     "ecca": "Extended CCA approximation using template + reference correlation fusion.",
     "msetcca": "Template-based multiset CCA approximation with simplified fusion weights.",
@@ -128,6 +208,33 @@ MODEL_METHOD_NOTES = {
     "sscor": "SSCOR-inspired multi-component correlation scoring built on TRCA-style filters.",
     "tdca": "TDCA-inspired delay-embedding + discriminant projection approximation.",
     "oacca": "Online adaptive CCA approximation with selected-class template updates.",
+}
+FBCCA_VARIANT_SPECS = {
+    "fbcca_fixed_all8": {
+        "channel_weight_mode": None,
+        "subband_weight_mode": "chen_fixed",
+        "spatial_filter_mode": None,
+    },
+    "fbcca_cw_all8": {
+        "channel_weight_mode": "fbcca_diag",
+        "subband_weight_mode": "chen_fixed",
+        "spatial_filter_mode": None,
+    },
+    "fbcca_sw_all8": {
+        "channel_weight_mode": None,
+        "subband_weight_mode": "chen_ab_subject",
+        "spatial_filter_mode": None,
+    },
+    "fbcca_cw_sw_all8": {
+        "channel_weight_mode": "fbcca_diag",
+        "subband_weight_mode": "chen_ab_subject",
+        "spatial_filter_mode": None,
+    },
+    "fbcca_cw_sw_trca_shared": {
+        "channel_weight_mode": "fbcca_diag",
+        "subband_weight_mode": "chen_ab_subject",
+        "spatial_filter_mode": "trca_shared",
+    },
 }
 
 
@@ -417,9 +524,23 @@ class ThresholdProfile:
     idle_feature_stds: Optional[dict[str, float]] = None
     eeg_channels: Optional[tuple[int, ...]] = None
     gate_policy: str = DEFAULT_GATE_POLICY
+    min_switch_windows: int = 1
+    switch_enter_score_th: Optional[float] = None
+    switch_enter_ratio_th: Optional[float] = None
+    switch_enter_margin_th: Optional[float] = None
+    speed_objective_weights: Optional[dict[str, float]] = None
     dynamic_stop: Optional[dict[str, Any]] = None
     channel_weight_mode: Optional[str] = None
     channel_weights: Optional[tuple[float, ...]] = None
+    subband_weight_mode: Optional[str] = None
+    subband_weights: Optional[tuple[float, ...]] = None
+    subband_weight_params: Optional[dict[str, Any]] = None
+    spatial_filter_mode: Optional[str] = None
+    spatial_filter_rank: Optional[int] = None
+    spatial_filter_state: Optional[dict[str, Any]] = None
+    joint_weight_training: Optional[dict[str, Any]] = None
+    runtime_backend_preference: Optional[str] = None
+    runtime_precision_preference: Optional[str] = None
     metadata: Optional[dict[str, Any]] = None
 
     @classmethod
@@ -432,10 +553,39 @@ class ThresholdProfile:
             data["eeg_channels"] = tuple(int(value) for value in data["eeg_channels"])
         if "gate_policy" in data and data["gate_policy"] is not None:
             data["gate_policy"] = str(data["gate_policy"]).strip().lower()
+        if "min_switch_windows" in data and data["min_switch_windows"] is not None:
+            data["min_switch_windows"] = max(1, int(data["min_switch_windows"]))
+        for name in ("switch_enter_score_th", "switch_enter_ratio_th", "switch_enter_margin_th"):
+            if name in data and data[name] is not None:
+                data[name] = float(data[name])
+        if "speed_objective_weights" in data and data["speed_objective_weights"] is not None:
+            raw = dict(data["speed_objective_weights"])
+            data["speed_objective_weights"] = {str(key): float(value) for key, value in raw.items()}
         if "channel_weight_mode" in data and data["channel_weight_mode"] is not None:
             data["channel_weight_mode"] = str(data["channel_weight_mode"]).strip().lower()
         if "channel_weights" in data and data["channel_weights"] is not None:
             data["channel_weights"] = tuple(float(value) for value in data["channel_weights"])
+        if "subband_weight_mode" in data and data["subband_weight_mode"] is not None:
+            data["subband_weight_mode"] = str(data["subband_weight_mode"]).strip().lower()
+        if "subband_weights" in data and data["subband_weights"] is not None:
+            data["subband_weights"] = tuple(float(value) for value in data["subband_weights"])
+        if "subband_weight_params" in data and data["subband_weight_params"] is not None:
+            raw = dict(data["subband_weight_params"])
+            data["subband_weight_params"] = {
+                str(key): float(value) if isinstance(value, (int, float)) else value for key, value in raw.items()
+            }
+        if "spatial_filter_mode" in data and data["spatial_filter_mode"] is not None:
+            data["spatial_filter_mode"] = str(data["spatial_filter_mode"]).strip().lower()
+        if "spatial_filter_rank" in data and data["spatial_filter_rank"] is not None:
+            data["spatial_filter_rank"] = max(1, int(data["spatial_filter_rank"]))
+        if "spatial_filter_state" in data and data["spatial_filter_state"] is not None:
+            data["spatial_filter_state"] = dict(data["spatial_filter_state"])
+        if "joint_weight_training" in data and data["joint_weight_training"] is not None:
+            data["joint_weight_training"] = dict(data["joint_weight_training"])
+        if "runtime_backend_preference" in data and data["runtime_backend_preference"] is not None:
+            data["runtime_backend_preference"] = str(data["runtime_backend_preference"]).strip().lower()
+        if "runtime_precision_preference" in data and data["runtime_precision_preference"] is not None:
+            data["runtime_precision_preference"] = str(data["runtime_precision_preference"]).strip().lower()
         if "dynamic_stop" in data and data["dynamic_stop"] is not None:
             payload = dict(data["dynamic_stop"])
             if "enabled" in payload:
@@ -475,6 +625,11 @@ def default_profile(freqs: Sequence[float] = DEFAULT_FREQS) -> ThresholdProfile:
         idle_feature_stds=None,
         eeg_channels=None,
         gate_policy=DEFAULT_GATE_POLICY,
+        min_switch_windows=1,
+        switch_enter_score_th=None,
+        switch_enter_ratio_th=None,
+        switch_enter_margin_th=None,
+        speed_objective_weights=None,
         dynamic_stop={
             "enabled": bool(DEFAULT_DYNAMIC_STOP_ENABLED),
             "alpha": float(DEFAULT_DYNAMIC_STOP_ALPHA),
@@ -483,12 +638,39 @@ def default_profile(freqs: Sequence[float] = DEFAULT_FREQS) -> ThresholdProfile:
         },
         channel_weight_mode=None,
         channel_weights=None,
+        subband_weight_mode=None,
+        subband_weights=None,
+        subband_weight_params=None,
+        spatial_filter_mode=None,
+        spatial_filter_rank=None,
+        spatial_filter_state=None,
+        joint_weight_training=None,
         metadata={
             "source": "default_fallback",
             "has_stat_model": False,
             "requires_calibration": True,
         },
     )
+
+def atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> None:
+    target = Path(path).expanduser().resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = target.parent / f".atomic_{uuid.uuid4().hex[:8]}.tmp"
+    try:
+        tmp_path.write_text(str(text), encoding=encoding)
+        os.replace(str(tmp_path), str(target))
+    except Exception:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
+
+
+def atomic_copy_text_file(source: Path, destination: Path, *, encoding: str = "utf-8") -> None:
+    src = Path(source).expanduser().resolve()
+    dst = Path(destination).expanduser().resolve()
+    atomic_write_text(dst, src.read_text(encoding=encoding), encoding=encoding)
 
 
 def save_profile(profile: ThresholdProfile, path: Path) -> None:
@@ -499,8 +681,10 @@ def save_profile(profile: ThresholdProfile, path: Path) -> None:
         payload["eeg_channels"] = list(profile.eeg_channels)
     if profile.channel_weights is not None:
         payload["channel_weights"] = [float(value) for value in profile.channel_weights]
+    if profile.subband_weights is not None:
+        payload["subband_weights"] = [float(value) for value in profile.subband_weights]
     payload["saved_at"] = datetime.now().isoformat(timespec="seconds")
-    path.write_text(json_dumps(payload) + "\n", encoding="utf-8")
+    atomic_write_text(path, json_dumps(payload) + "\n")
 
 
 def load_profile(
@@ -633,11 +817,21 @@ def build_calibration_trials(
     return trials
 
 
-def calibration_search_win_candidates(active_sec: float, preferred_win_sec: float) -> list[float]:
+def calibration_search_win_candidates(
+    active_sec: float,
+    preferred_win_sec: float,
+    *,
+    gate_policy: str = DEFAULT_GATE_POLICY,
+) -> list[float]:
+    policy = parse_gate_policy(gate_policy)
+    if policy == "speed":
+        candidates = tuple(DEFAULT_SPEED_WIN_SEC_CANDIDATES)
+    else:
+        candidates = (*DEFAULT_WIN_SEC_CANDIDATES, float(preferred_win_sec))
     return sorted(
         {
             round(float(candidate), 3)
-            for candidate in (*DEFAULT_WIN_SEC_CANDIDATES, float(preferred_win_sec))
+            for candidate in candidates
             if 0.5 < float(candidate) <= float(active_sec)
         }
     )
@@ -659,6 +853,7 @@ def validate_calibration_plan(
     active_sec: float,
     preferred_win_sec: float,
     step_sec: float,
+    gate_policy: str = DEFAULT_GATE_POLICY,
 ) -> None:
     problems: list[str] = []
     if int(target_repeats) < 2:
@@ -666,7 +861,8 @@ def validate_calibration_plan(
     if int(idle_repeats) < 2:
         problems.append("idle_repeats must be at least 2 so idle has both train and validation trials")
 
-    win_candidates = calibration_search_win_candidates(active_sec, preferred_win_sec)
+    policy = parse_gate_policy(gate_policy)
+    win_candidates = calibration_search_win_candidates(active_sec, preferred_win_sec, gate_policy=policy)
     min_required_windows = min(DEFAULT_MIN_ENTER_CANDIDATES)
     if not any(calibration_window_count(active_sec, win_sec, step_sec) >= min_required_windows for win_sec in win_candidates):
         problems.append(
@@ -689,6 +885,13 @@ class FBCCAEngine:
         notch_q: float = 30.0,
         Nh: int = DEFAULT_NH,
         subbands: Sequence[tuple[float, float]] = DEFAULT_SUBBANDS,
+        subband_weight_mode: Optional[str] = DEFAULT_SUBBAND_WEIGHT_MODE,
+        subband_weights: Optional[Sequence[float]] = None,
+        subband_weight_params: Optional[dict[str, Any]] = None,
+        compute_backend: str = DEFAULT_COMPUTE_BACKEND_NAME,
+        gpu_device: int = DEFAULT_GPU_DEVICE_ID,
+        gpu_precision: str = DEFAULT_GPU_PRECISION_NAME,
+        gpu_warmup: bool = True,
     ) -> None:
         self.freqs = tuple(float(freq) for freq in freqs)
         if len(self.freqs) != 4:
@@ -699,18 +902,40 @@ class FBCCAEngine:
         self.notch_q = float(notch_q)
         self.Nh = int(Nh)
         self.base_subbands = tuple((float(low), float(high)) for low, high in subbands)
+        self.subband_weight_mode = parse_subband_weight_mode(subband_weight_mode) or DEFAULT_SUBBAND_WEIGHT_MODE
+        self._requested_subband_weights = None if subband_weights is None else tuple(float(value) for value in subband_weights)
+        self.subband_weight_params = dict(subband_weight_params or {})
+        self.compute_backend_requested = parse_compute_backend_name(compute_backend)
+        self.gpu_device = int(gpu_device)
+        self.gpu_precision = parse_gpu_precision(gpu_precision)
+        self.gpu_warmup = bool(gpu_warmup)
+        self.backend = resolve_compute_backend(
+            self.compute_backend_requested,
+            gpu_device=self.gpu_device,
+            precision=self.gpu_precision,
+        )
+        self.backend_name = str(self.backend.backend_name)
 
         self.fs = 0
         self.win_samples = 0
         self.step_samples = 0
         self.subbands: list[tuple[float, float]] = []
-        self.subband_filters: list[tuple[np.ndarray, np.ndarray]] = []
+        self.subband_sos: list[np.ndarray] = []
         self.weights: np.ndarray | None = None
         self.Y_refs: dict[float, np.ndarray] = {}
-        self._baseline_b: Optional[np.ndarray] = None
-        self._baseline_a: Optional[np.ndarray] = None
-        self._notch_b: Optional[np.ndarray] = None
-        self._notch_a: Optional[np.ndarray] = None
+        self._baseline_sos: Optional[np.ndarray] = None
+        self._notch_sos: Optional[np.ndarray] = None
+        self._y_refs_host: Optional[np.ndarray] = None
+        self._y_refs_device: Any = None
+        self.last_timing_breakdown: dict[str, float] = {
+            "host_to_device_ms": 0.0,
+            "preprocess_ms": 0.0,
+            "score_ms": 0.0,
+            "device_to_host_ms": 0.0,
+            "synchronize_ms": 0.0,
+            "warmup_overhead_ms": 0.0,
+        }
+        self.backend_timing_summary: dict[str, Any] = {}
         self.configure_runtime(sampling_rate)
 
     def configure_runtime(self, sampling_rate: int) -> None:
@@ -722,60 +947,158 @@ class FBCCAEngine:
         if self.win_samples < 64:
             raise ValueError("win_sec is too short for stable FBCCA")
 
-        nyq = self.fs / 2.0
-        self._baseline_b, self._baseline_a = butter(1, 3.0 / nyq, btype="low")
-        if self.notch_freq < nyq - 1e-6:
-            self._notch_b, self._notch_a = iirnotch(self.notch_freq, self.notch_q, self.fs)
-        else:
-            self._notch_b, self._notch_a = None, None
-
+        self._baseline_sos = design_sos_lowpass(self.fs, 3.0, order=1)
+        self._notch_sos = design_sos_notch(self.fs, self.notch_freq, self.notch_q)
         self.subbands = []
-        self.subband_filters = []
+        self.subband_sos = []
         for low, high in self.base_subbands:
-            clipped_high = min(high, nyq - 1e-3)
-            if low >= clipped_high:
+            sos = design_sos_bandpass(self.fs, low, high, order=2)
+            if sos is None:
                 continue
-            coeff_b, coeff_a = butter(2, [low / nyq, clipped_high / nyq], btype="band")
-            self.subbands.append((low, clipped_high))
-            self.subband_filters.append((coeff_b, coeff_a))
-        if not self.subband_filters:
+            clipped_high = min(float(high), self.fs / 2.0 - 1e-3)
+            self.subbands.append((float(low), clipped_high))
+            self.subband_sos.append(np.asarray(sos, dtype=np.float64))
+        if not self.subband_sos:
             raise ValueError(f"sampling_rate={self.fs} is too low for configured subbands")
-
-        a_w, b_w = 1.25, 0.25
-        self.weights = np.array(
-            [(index + 1) ** (-a_w) + b_w for index in range(len(self.subband_filters))],
-            dtype=float,
+        weights, resolved_mode, resolved_params = resolve_fbcca_subband_weight_spec(
+            len(self.subband_sos),
+            mode=self.subband_weight_mode,
+            explicit_weights=self._requested_subband_weights,
+            params=self.subband_weight_params,
         )
-        self.weights = self.weights / self.weights.sum()
+        self.weights = np.asarray(weights, dtype=np.float64)
+        self.subband_weight_mode = str(resolved_mode)
+        self.subband_weight_params = None if resolved_params is None else dict(resolved_params)
+        self._y_refs_host = build_reference_tensor(
+            self.fs,
+            self.win_samples,
+            self.freqs,
+            self.Nh,
+            dtype=np.float64,
+        )
         self.Y_refs = {
-            freq: self.build_ref_matrix(self.fs, self.win_samples, freq, self.Nh)
-            for freq in self.freqs
+            float(freq): np.asarray(self._y_refs_host[index], dtype=np.float64)
+            for index, freq in enumerate(self.freqs)
         }
+        self._y_refs_device = None
+        warmup_ms = 0.0
+        if self.backend.uses_cuda:
+            self._y_refs_device, _ = self.backend.to_device(self._y_refs_host)
+            if self.gpu_warmup:
+                warmup_ms = float(self.backend.benchmark_warmup())
+        self.last_timing_breakdown = {
+            "host_to_device_ms": 0.0,
+            "preprocess_ms": 0.0,
+            "score_ms": 0.0,
+            "device_to_host_ms": 0.0,
+            "synchronize_ms": 0.0,
+            "warmup_overhead_ms": float(warmup_ms),
+        }
+        self.backend_timing_summary = {}
+
+    def benchmark_backend_path(
+        self,
+        sample_window: Optional[np.ndarray] = None,
+        *,
+        repeats: int = 3,
+        batch_size: int = 2,
+        default_channels: int = 8,
+    ) -> dict[str, Any]:
+        if self._baseline_sos is None or self.weights is None:
+            raise RuntimeError("FBCCAEngine runtime is not configured")
+        refs = self._y_refs_device if self.backend.uses_cuda and self._y_refs_device is not None else self._y_refs_host
+        if refs is None:
+            raise RuntimeError("FBCCAEngine reference tensors are not configured")
+        if sample_window is not None:
+            window = np.asarray(sample_window, dtype=np.float64)
+            if window.ndim != 2:
+                raise ValueError("sample_window must have shape (samples, channels)")
+            if int(window.shape[0]) != int(self.win_samples):
+                raise ValueError(
+                    f"sample_window length mismatch: expected {self.win_samples}, got {window.shape[0]}"
+                )
+            channel_count = int(window.shape[1])
+        else:
+            channel_count = max(1, int(default_channels))
+            template = self.backend.alloc_pinned_host_array(
+                (self.win_samples, channel_count),
+                dtype=np.float64,
+            )
+            template.fill(0.0)
+            t = np.arange(self.win_samples, dtype=np.float64) / float(self.fs)
+            for channel_index in range(channel_count):
+                freq = float(self.freqs[channel_index % len(self.freqs)])
+                template[:, channel_index] = np.sin(2.0 * np.pi * freq * t + float(channel_index) * 0.1)
+            window = np.asarray(template, dtype=np.float64)
+        batch_count = max(1, int(batch_size))
+        windows = self.backend.alloc_pinned_host_array(
+            (batch_count, self.win_samples, channel_count),
+            dtype=np.float64,
+        )
+        for batch_index in range(batch_count):
+            windows[batch_index, :, :] = window
+        transfer_summary = self.backend.microbenchmark_transfer(
+            sample_shape=tuple(int(value) for value in windows.shape),
+            repeats=max(1, int(repeats)),
+        )
+        kernel_summary = benchmark_fbcca_batch_path(
+            self.backend,
+            windows,
+            y_refs=refs,
+            baseline_sos=np.asarray(self._baseline_sos, dtype=np.float64),
+            notch_sos=None if self._notch_sos is None else np.asarray(self._notch_sos, dtype=np.float64),
+            subband_sos=[np.asarray(item, dtype=np.float64) for item in self.subband_sos],
+            subband_weights=np.asarray(self.weights, dtype=np.float64),
+            reg=1e-6 if self.gpu_precision == "float32" else 1e-8,
+            repeats=max(1, int(repeats)),
+        )
+        self.backend_timing_summary = {
+            "requested_backend": str(self.compute_backend_requested),
+            "used_backend": str(self.backend_name),
+            "precision": str(self.gpu_precision),
+            "gpu_device": int(self.gpu_device),
+            "uses_cuda": bool(self.backend.uses_cuda),
+            "transfer_benchmark": dict(transfer_summary),
+            "kernel_benchmark": dict(kernel_summary),
+        }
+        return dict(self.backend_timing_summary)
 
     @staticmethod
     def build_ref_matrix(fs: int, T: int, freq: float, Nh: int) -> np.ndarray:
-        t = np.arange(T) / float(fs)
-        cols = []
-        for harmonic in range(1, Nh + 1):
-            cols.append(np.sin(2.0 * np.pi * harmonic * freq * t))
-            cols.append(np.cos(2.0 * np.pi * harmonic * freq * t))
-        Y = np.stack(cols, axis=1)
-        return Y - Y.mean(axis=0, keepdims=True)
+        return np.asarray(build_reference_tensor(fs, T, (float(freq),), Nh, dtype=np.float64)[0], dtype=np.float64)
 
     def detrend_and_notch(self, x_raw: np.ndarray) -> np.ndarray:
-        if self._baseline_b is None or self._baseline_a is None:
+        if self._baseline_sos is None:
             raise RuntimeError("FBCCAEngine runtime is not configured")
-        base = filtfilt(self._baseline_b, self._baseline_a, x_raw)
-        filtered = x_raw - base
-        if self._notch_b is not None and self._notch_a is not None:
-            filtered = filtfilt(self._notch_b, self._notch_a, filtered)
-        return filtered
+        filtered = np.asarray(x_raw, dtype=np.float64)
+        baseline = sosfiltfilt(np.asarray(self._baseline_sos, dtype=np.float64), filtered, axis=0)
+        filtered = filtered - baseline
+        if self._notch_sos is not None:
+            filtered = sosfiltfilt(np.asarray(self._notch_sos, dtype=np.float64), filtered, axis=0)
+        return np.asarray(filtered, dtype=np.float64)
 
     def preprocess_window(self, X_raw: np.ndarray) -> np.ndarray:
-        X0 = np.zeros_like(X_raw, dtype=float)
-        for channel_index in range(X_raw.shape[1]):
-            X0[:, channel_index] = self.detrend_and_notch(X_raw[:, channel_index])
-        return X0 - X0.mean(axis=0, keepdims=True)
+        return self.preprocess_windows_batch(np.asarray(X_raw, dtype=np.float64)[None, :, :])[0]
+
+    def preprocess_windows_batch(self, windows: np.ndarray) -> np.ndarray:
+        if self._baseline_sos is None:
+            raise RuntimeError("FBCCAEngine runtime is not configured")
+        values = preprocess_windows_batch(
+            self.backend,
+            np.asarray(windows, dtype=np.float64),
+            baseline_sos=np.asarray(self._baseline_sos, dtype=np.float64),
+            notch_sos=None if self._notch_sos is None else np.asarray(self._notch_sos, dtype=np.float64),
+        )
+        host_values, device_to_host_ms = self.backend.to_host(values)
+        self.last_timing_breakdown = {
+            "host_to_device_ms": 0.0,
+            "preprocess_ms": 0.0,
+            "score_ms": 0.0,
+            "device_to_host_ms": float(device_to_host_ms),
+            "synchronize_ms": float(self.backend.synchronize()),
+            "warmup_overhead_ms": float(self.last_timing_breakdown.get("warmup_overhead_ms", 0.0)),
+        }
+        return np.asarray(host_values, dtype=np.float64)
 
     @staticmethod
     def cca_multi_channel_svd(X: np.ndarray, Y: np.ndarray, reg: float = 1e-8) -> float:
@@ -798,56 +1121,81 @@ class FBCCAEngine:
         singular_values = np.linalg.svd(Tmat, compute_uv=False)
         return float(np.max(singular_values))
 
-    @staticmethod
-    def bandpass_filter_multichannel(X_in: np.ndarray, coeffs: tuple[np.ndarray, np.ndarray]) -> np.ndarray:
-        coeff_b, coeff_a = coeffs
-        X_out = np.zeros_like(X_in, dtype=float)
-        for channel_index in range(X_in.shape[1]):
-            X_out[:, channel_index] = filtfilt(coeff_b, coeff_a, X_in[:, channel_index])
-        return X_out - X_out.mean(axis=0, keepdims=True)
+    def score_windows_batch(self, windows: np.ndarray) -> np.ndarray:
+        if self._baseline_sos is None or self.weights is None:
+            raise RuntimeError("FBCCAEngine runtime is not configured")
+        refs = self._y_refs_device if self.backend.uses_cuda and self._y_refs_device is not None else self._y_refs_host
+        if refs is None:
+            raise RuntimeError("FBCCAEngine reference tensors are not configured")
+        score_matrix, timings = fbcca_scores_batch(
+            self.backend,
+            np.asarray(windows, dtype=np.float64),
+            y_refs=refs,
+            baseline_sos=np.asarray(self._baseline_sos, dtype=np.float64),
+            notch_sos=None if self._notch_sos is None else np.asarray(self._notch_sos, dtype=np.float64),
+            subband_sos=[np.asarray(item, dtype=np.float64) for item in self.subband_sos],
+            subband_weights=np.asarray(self.weights, dtype=np.float64),
+            reg=1e-6 if self.gpu_precision == "float32" else 1e-8,
+        )
+        scores_host, device_to_host_ms = self.backend.to_host(score_matrix)
+        timings["device_to_host_ms"] = float(device_to_host_ms)
+        self.last_timing_breakdown = {str(key): float(value) for key, value in timings.items()}
+        return np.asarray(scores_host, dtype=np.float64)
+
+    def score_subbands_batch(self, windows: np.ndarray) -> np.ndarray:
+        if self._baseline_sos is None:
+            raise RuntimeError("FBCCAEngine runtime is not configured")
+        refs = self._y_refs_device if self.backend.uses_cuda and self._y_refs_device is not None else self._y_refs_host
+        if refs is None:
+            raise RuntimeError("FBCCAEngine reference tensors are not configured")
+        tensor, timings = fbcca_subband_scores_batch(
+            self.backend,
+            np.asarray(windows, dtype=np.float64),
+            y_refs=refs,
+            baseline_sos=np.asarray(self._baseline_sos, dtype=np.float64),
+            notch_sos=None if self._notch_sos is None else np.asarray(self._notch_sos, dtype=np.float64),
+            subband_sos=[np.asarray(item, dtype=np.float64) for item in self.subband_sos],
+            reg=1e-6 if self.gpu_precision == "float32" else 1e-8,
+        )
+        tensor_host, device_to_host_ms = self.backend.to_host(tensor)
+        timings["device_to_host_ms"] = float(device_to_host_ms)
+        self.last_timing_breakdown = {str(key): float(value) for key, value in timings.items()}
+        return np.asarray(tensor_host, dtype=np.float64)
 
     def score_window(self, X_window: np.ndarray) -> np.ndarray:
-        if X_window.shape[0] != self.win_samples:
-            raise ValueError(f"expected {self.win_samples} samples, got {X_window.shape[0]}")
-        X0 = self.preprocess_window(np.asarray(X_window, dtype=float))
-        X_subbands = [self.bandpass_filter_multichannel(X0, coeffs) for coeffs in self.subband_filters]
+        window = np.asarray(X_window, dtype=np.float64)
+        if window.shape[0] != self.win_samples:
+            raise ValueError(f"expected {self.win_samples} samples, got {window.shape[0]}")
+        return self.score_windows_batch(window[None, :, :])[0]
 
-        scores = np.zeros(len(self.freqs), dtype=float)
-        for freq_index, freq in enumerate(self.freqs):
-            ref = self.Y_refs[freq]
-            score_value = 0.0
-            for subband_index, X_subband in enumerate(X_subbands):
-                rho = self.cca_multi_channel_svd(X_subband, ref)
-                score_value += float(self.weights[subband_index]) * (rho ** 2)
-            scores[freq_index] = score_value
-        return scores
+    def set_subband_weights(
+        self,
+        weights: Optional[Sequence[float]],
+        *,
+        mode: Optional[str] = None,
+        params: Optional[dict[str, Any]] = None,
+    ) -> None:
+        resolved_weights, resolved_mode, resolved_params = resolve_fbcca_subband_weight_spec(
+            len(self.subband_sos),
+            mode=mode or self.subband_weight_mode,
+            explicit_weights=weights,
+            params=params or self.subband_weight_params,
+        )
+        self.weights = np.asarray(resolved_weights, dtype=np.float64)
+        self.subband_weight_mode = str(resolved_mode)
+        self.subband_weight_params = None if resolved_params is None else dict(resolved_params)
+
+    def get_subband_weights(self) -> Optional[np.ndarray]:
+        if self.weights is None:
+            return None
+        return np.asarray(self.weights, dtype=float)
 
     def analyze_window(self, X_window: np.ndarray) -> dict[str, Any]:
-        scores = self.score_window(X_window)
-        order = np.argsort(scores)[::-1]
-        top1_index = int(order[0])
-        top2_index = int(order[1]) if len(order) > 1 else top1_index
-        top1_score = float(scores[top1_index])
-        top2_score = float(scores[top2_index]) if len(order) > 1 else 0.0
-        margin = top1_score - top2_score
-        ratio = float(top1_score / max(top2_score, 1e-12))
-        score_sum = float(np.sum(scores))
-        safe_sum = max(score_sum, 1e-12)
-        score_probs = np.clip(scores / safe_sum, 1e-12, None)
-        score_probs = score_probs / score_probs.sum()
-        score_entropy = float(-np.sum(score_probs * np.log(score_probs)) / np.log(len(score_probs)))
-        normalized_top1 = float(top1_score / safe_sum)
-        return {
-            "scores": scores,
-            "pred_freq": float(self.freqs[top1_index]),
-            "top1_score": top1_score,
-            "top2_score": top2_score,
-            "margin": float(margin),
-            "ratio": float(ratio),
-            "score_sum": score_sum,
-            "normalized_top1": normalized_top1,
-            "score_entropy": score_entropy,
-        }
+        return scores_to_feature_dict(self.score_window(X_window), self.freqs)
+
+    def analyze_windows_batch(self, windows: np.ndarray) -> list[dict[str, Any]]:
+        score_matrix = self.score_windows_batch(np.asarray(windows, dtype=np.float64))
+        return [scores_to_feature_dict(row, self.freqs) for row in score_matrix]
 
     def iter_window_features(
         self,
@@ -858,35 +1206,20 @@ class FBCCAEngine:
         trial_id: int = -1,
         block_index: int = -1,
     ) -> list[dict[str, Any]]:
-        segment = np.asarray(segment, dtype=float)
-        if segment.ndim != 2:
-            raise ValueError("segment must have shape (samples, channels)")
-        if segment.shape[0] < self.win_samples:
-            raise ValueError("segment is shorter than the analysis window")
-
-        rows: list[dict[str, Any]] = []
-        for window_index, start in enumerate(range(0, segment.shape[0] - self.win_samples + 1, self.step_samples)):
-            window = segment[start : start + self.win_samples]
-            result = self.analyze_window(window)
-            correct = expected_freq is not None and abs(float(result["pred_freq"]) - float(expected_freq)) < 1e-8
-            rows.append(
-                {
-                    "label": label,
-                    "expected_freq": expected_freq,
-                    "pred_freq": result["pred_freq"],
-                    "top1_score": result["top1_score"],
-                    "top2_score": result["top2_score"],
-                    "margin": result["margin"],
-                    "ratio": result["ratio"],
-                    "normalized_top1": result["normalized_top1"],
-                    "score_entropy": result["score_entropy"],
-                    "correct": bool(correct),
-                    "trial_id": int(trial_id),
-                    "block_index": int(block_index),
-                    "window_index": int(window_index),
-                }
-            )
-        return rows
+        window_batch = extract_window_batch(
+            np.asarray(segment, dtype=np.float64),
+            win_samples=self.win_samples,
+            step_samples=self.step_samples,
+        )
+        score_matrix = self.score_windows_batch(window_batch)
+        return build_feature_rows_from_score_matrix(
+            score_matrix,
+            freqs=self.freqs,
+            expected_freq=expected_freq,
+            label=label,
+            trial_id=trial_id,
+            block_index=block_index,
+        )
 
 
 def scores_to_feature_dict(scores: np.ndarray, freqs: Sequence[float]) -> dict[str, Any]:
@@ -918,6 +1251,55 @@ def scores_to_feature_dict(scores: np.ndarray, freqs: Sequence[float]) -> dict[s
         "normalized_top1": float(top1_score / safe_sum),
         "score_entropy": entropy,
     }
+
+
+def extract_window_batch(segment: np.ndarray, *, win_samples: int, step_samples: int) -> np.ndarray:
+    matrix = np.ascontiguousarray(np.asarray(segment, dtype=np.float64))
+    if matrix.ndim != 2:
+        raise ValueError("segment must have shape (samples, channels)")
+    if int(matrix.shape[0]) < int(win_samples):
+        raise ValueError("segment is shorter than the analysis window")
+    windows = np.lib.stride_tricks.sliding_window_view(matrix, window_shape=int(win_samples), axis=0)
+    windows = np.asarray(windows[:: max(1, int(step_samples))], dtype=np.float64)
+    if windows.ndim != 3:
+        raise ValueError(f"unexpected window batch shape: {windows.shape}")
+    return np.ascontiguousarray(np.swapaxes(windows, 1, 2), dtype=np.float64)
+
+
+def build_feature_rows_from_score_matrix(
+    scores: np.ndarray,
+    *,
+    freqs: Sequence[float],
+    expected_freq: Optional[float],
+    label: str,
+    trial_id: int,
+    block_index: int,
+) -> list[dict[str, Any]]:
+    score_matrix = np.asarray(scores, dtype=np.float64)
+    if score_matrix.ndim != 2:
+        raise ValueError("scores must have shape (windows, freqs)")
+    rows: list[dict[str, Any]] = []
+    for window_index, score_row in enumerate(score_matrix):
+        result = scores_to_feature_dict(np.asarray(score_row, dtype=np.float64), freqs)
+        correct = expected_freq is not None and abs(float(result["pred_freq"]) - float(expected_freq)) < 1e-8
+        rows.append(
+            {
+                "label": label,
+                "expected_freq": expected_freq,
+                "pred_freq": result["pred_freq"],
+                "top1_score": result["top1_score"],
+                "top2_score": result["top2_score"],
+                "margin": result["margin"],
+                "ratio": result["ratio"],
+                "normalized_top1": result["normalized_top1"],
+                "score_entropy": result["score_entropy"],
+                "correct": bool(correct),
+                "trial_id": int(trial_id),
+                "block_index": int(block_index),
+                "window_index": int(window_index),
+            }
+        )
+    return rows
 
 
 def _safe_corrcoef(a: np.ndarray, b: np.ndarray) -> float:
@@ -988,6 +1370,28 @@ class BaseSSVEPDecoder(ABC):
         self.win_samples = max(1, int(round(self.win_sec * self.fs)))
         self.step_samples = max(1, int(round(self.step_sec * self.fs)))
         self._channel_weights = normalize_channel_weights(self.model_params.get("channel_weights"))
+        self.compute_backend_requested = parse_compute_backend_name(
+            self.model_params.get("compute_backend", DEFAULT_COMPUTE_BACKEND_NAME)
+        )
+        self.gpu_device = int(self.model_params.get("gpu_device", DEFAULT_GPU_DEVICE_ID) or DEFAULT_GPU_DEVICE_ID)
+        self.gpu_precision = parse_gpu_precision(
+            self.model_params.get("gpu_precision", DEFAULT_GPU_PRECISION_NAME)
+        )
+        self.gpu_cache_policy = parse_gpu_cache_policy(
+            self.model_params.get("gpu_cache_policy", DEFAULT_GPU_CACHE_MODE)
+        )
+        self.gpu_warmup = bool(int(self.model_params.get("gpu_warmup", 1)))
+        self.compute_backend_used = "cpu"
+        self._runtime_timing_breakdown: dict[str, float] = {
+            "host_to_device_ms": 0.0,
+            "preprocess_ms": 0.0,
+            "score_ms": 0.0,
+            "gate_ms": 0.0,
+            "device_to_host_ms": 0.0,
+            "synchronize_ms": 0.0,
+            "warmup_overhead_ms": 0.0,
+        }
+        self._backend_timing_summary: dict[str, Any] = {}
 
     @property
     def requires_fit(self) -> bool:
@@ -1085,6 +1489,29 @@ class BaseSSVEPDecoder(ABC):
         _ = decision
         _ = window
 
+    def run_backend_microbenchmark(
+        self,
+        sample_window: Optional[np.ndarray] = None,
+        *,
+        repeats: int = 3,
+    ) -> dict[str, Any]:
+        self._backend_timing_summary = {}
+        return {}
+
+    def get_compute_backend_summary(self) -> dict[str, Any]:
+        return {
+            "requested_backend": str(self.compute_backend_requested),
+            "used_backend": str(self.compute_backend_used),
+            "compute_backend_requested": str(self.compute_backend_requested),
+            "compute_backend_used": str(self.compute_backend_used),
+            "gpu_device": int(self.gpu_device),
+            "precision": str(self.gpu_precision),
+            "gpu_cache_policy": str(self.gpu_cache_policy),
+            "gpu_warmup": bool(self.gpu_warmup),
+            "timing_breakdown": {str(key): float(value) for key, value in self._runtime_timing_breakdown.items()},
+            "backend_timing_summary": dict(self._backend_timing_summary),
+        }
+
 
 class FBCCADecoder(BaseSSVEPDecoder):
     def __init__(
@@ -1097,10 +1524,11 @@ class FBCCADecoder(BaseSSVEPDecoder):
         model_params: Optional[dict[str, Any]] = None,
     ) -> None:
         params = dict(model_params or {})
+        decoder_model_name = str(params.pop("_decoder_model_name", "fbcca"))
         nh = int(params.get("Nh", DEFAULT_NH))
         subbands = tuple(params.get("subbands", DEFAULT_SUBBANDS))
         super().__init__(
-            model_name="fbcca",
+            model_name=decoder_model_name,
             sampling_rate=sampling_rate,
             freqs=freqs,
             win_sec=win_sec,
@@ -1114,17 +1542,231 @@ class FBCCADecoder(BaseSSVEPDecoder):
             step_sec=step_sec,
             Nh=nh,
             subbands=subbands,
+            subband_weight_mode=parse_subband_weight_mode(params.get("subband_weight_mode")) or DEFAULT_SUBBAND_WEIGHT_MODE,
+            subband_weights=params.get("subband_weights"),
+            subband_weight_params=(
+                dict(params.get("subband_weight_params"))
+                if isinstance(params.get("subband_weight_params"), dict)
+                else None
+            ),
+            compute_backend=self.compute_backend_requested,
+            gpu_device=self.gpu_device,
+            gpu_precision=self.gpu_precision,
+            gpu_warmup=self.gpu_warmup,
         )
+        self.compute_backend_used = str(self.engine.backend_name)
+        self._backend_timing_summary = dict(self.engine.backend_timing_summary)
+        self._spatial_filter_mode: Optional[str] = None
+        self._spatial_filter_rank: Optional[int] = None
+        self._spatial_source_model: str = DEFAULT_SPATIAL_SOURCE_MODEL
+        self._spatial_projection: Optional[np.ndarray] = None
+        self._sync_subband_model_params()
+        self._load_spatial_frontend_from_params()
+
+    def _sync_subband_model_params(self) -> None:
+        self.model_params["subband_weight_mode"] = str(self.engine.subband_weight_mode)
+        weights = self.engine.get_subband_weights()
+        if weights is None:
+            self.model_params.pop("subband_weights", None)
+        else:
+            self.model_params["subband_weights"] = [float(value) for value in weights]
+        if self.engine.subband_weight_params is None:
+            self.model_params.pop("subband_weight_params", None)
+        else:
+            self.model_params["subband_weight_params"] = json_safe(dict(self.engine.subband_weight_params))
+
+    def run_backend_microbenchmark(
+        self,
+        sample_window: Optional[np.ndarray] = None,
+        *,
+        repeats: int = 3,
+    ) -> dict[str, Any]:
+        summary = self.engine.benchmark_backend_path(sample_window=sample_window, repeats=max(1, int(repeats)))
+        self._backend_timing_summary = dict(summary)
+        return dict(summary)
+
+    def _load_spatial_frontend_from_params(self) -> None:
+        mode = parse_spatial_filter_mode(self.model_params.get("spatial_filter_mode"))
+        self._spatial_filter_mode = mode
+        self._spatial_filter_rank = None
+        self._spatial_source_model = parse_spatial_source_model(
+            self.model_params.get("spatial_source_model", DEFAULT_SPATIAL_SOURCE_MODEL)
+        )
+        self._spatial_projection = None
+        if mode != "trca_shared":
+            self.model_params.pop("spatial_filter_mode", None)
+            self.model_params.pop("spatial_filter_rank", None)
+            self.model_params.pop("spatial_filter_state", None)
+            return
+        rank_raw = self.model_params.get("spatial_filter_rank")
+        if rank_raw is not None:
+            self._spatial_filter_rank = max(1, int(rank_raw))
+        state_raw = dict(self.model_params.get("spatial_filter_state") or {})
+        source_raw = state_raw.get("source_model")
+        if source_raw is not None:
+            self._spatial_source_model = parse_spatial_source_model(source_raw)
+        projection_raw = (
+            state_raw.get("projection")
+            if "projection" in state_raw
+            else state_raw.get("projection_matrix", state_raw.get("basis"))
+        )
+        if projection_raw is not None:
+            projection = np.asarray(projection_raw, dtype=float)
+            if projection.ndim != 2:
+                raise ValueError("spatial_filter_state.projection must be a 2D matrix")
+            rank = int(self._spatial_filter_rank or projection.shape[1])
+            rank = max(1, min(rank, int(projection.shape[1])))
+            self._spatial_filter_rank = rank
+            self._spatial_projection = np.asarray(projection[:, :rank], dtype=float)
+            state_payload = dict(state_raw)
+            state_payload["source_model"] = str(self._spatial_source_model)
+            state_payload["projection"] = np.asarray(self._spatial_projection, dtype=float).tolist()
+            state_payload["rank"] = int(rank)
+            self.model_params["spatial_filter_state"] = state_payload
+            self.model_params["spatial_filter_mode"] = str(mode)
+            self.model_params["spatial_filter_rank"] = int(rank)
+            self.model_params["spatial_source_model"] = str(self._spatial_source_model)
+        else:
+            self.model_params["spatial_filter_mode"] = str(mode)
+            if self._spatial_filter_rank is not None:
+                self.model_params["spatial_filter_rank"] = int(self._spatial_filter_rank)
+            self.model_params["spatial_source_model"] = str(self._spatial_source_model)
+
+    def _apply_frontend(self, matrix: np.ndarray) -> np.ndarray:
+        weighted = self._apply_channel_weights(np.asarray(matrix, dtype=float))
+        if self._spatial_projection is None:
+            return np.asarray(weighted, dtype=float)
+        if weighted.shape[1] != int(self._spatial_projection.shape[0]):
+            raise ValueError(
+                "spatial projection shape mismatch: "
+                f"window channels={weighted.shape[1]}, projection input={self._spatial_projection.shape[0]}"
+            )
+        transformed = weighted @ np.asarray(self._spatial_projection, dtype=float)
+        return np.asarray(transformed, dtype=float)
 
     def configure_runtime(self, sampling_rate: int) -> None:
         super().configure_runtime(sampling_rate)
         self.engine.configure_runtime(self.fs)
+        self._sync_subband_model_params()
+        self.compute_backend_used = str(self.engine.backend_name)
 
     def score_window(self, X_window: np.ndarray) -> np.ndarray:
-        return self.engine.score_window(X_window)
+        front = self._apply_frontend(np.asarray(X_window, dtype=float))
+        scores = self.engine.score_window(front)
+        self._runtime_timing_breakdown = dict(self.engine.last_timing_breakdown)
+        return scores
 
     def analyze_window(self, X_window: np.ndarray) -> dict[str, Any]:
-        return self.engine.analyze_window(X_window)
+        front = self._apply_frontend(np.asarray(X_window, dtype=float))
+        result = self.engine.analyze_window(front)
+        self._runtime_timing_breakdown = dict(self.engine.last_timing_breakdown)
+        return result
+
+    def iter_window_features(
+        self,
+        segment: np.ndarray,
+        *,
+        expected_freq: Optional[float],
+        label: str,
+        trial_id: int = -1,
+        block_index: int = -1,
+    ) -> list[dict[str, Any]]:
+        front = self._apply_frontend(np.asarray(segment, dtype=np.float64))
+        rows = self.engine.iter_window_features(
+            front,
+            expected_freq=expected_freq,
+            label=label,
+            trial_id=trial_id,
+            block_index=block_index,
+        )
+        self._runtime_timing_breakdown = dict(self.engine.last_timing_breakdown)
+        return rows
+
+    def set_subband_weights(
+        self,
+        weights: Optional[Sequence[float]],
+        *,
+        mode: Optional[str] = None,
+        params: Optional[dict[str, Any]] = None,
+    ) -> None:
+        self.engine.set_subband_weights(weights, mode=mode, params=params)
+        self._sync_subband_model_params()
+
+
+class LegacyFBCCA202603Decoder(BaseSSVEPDecoder):
+    def __init__(
+        self,
+        *,
+        sampling_rate: int,
+        freqs: Sequence[float],
+        win_sec: float,
+        step_sec: float,
+        model_params: Optional[dict[str, Any]] = None,
+    ) -> None:
+        params = dict(model_params or {})
+        params.pop("channel_weights", None)
+        params.pop("channel_weight_mode", None)
+        params.pop("spatial_filter_mode", None)
+        params.pop("spatial_filter_rank", None)
+        params.pop("spatial_filter_state", None)
+        params.pop("joint_weight_training", None)
+        nh = int(params.get("Nh", DEFAULT_NH))
+        subbands = tuple(params.get("subbands", DEFAULT_SUBBANDS))
+        super().__init__(
+            model_name="legacy_fbcca_202603",
+            sampling_rate=sampling_rate,
+            freqs=freqs,
+            win_sec=win_sec,
+            step_sec=step_sec,
+            model_params=params,
+        )
+        self.engine = FBCCAEngine(
+            sampling_rate=sampling_rate,
+            freqs=freqs,
+            win_sec=win_sec,
+            step_sec=step_sec,
+            Nh=nh,
+            subbands=subbands,
+            compute_backend=self.compute_backend_requested,
+            gpu_device=self.gpu_device,
+            gpu_precision=self.gpu_precision,
+            gpu_warmup=self.gpu_warmup,
+        )
+        self.compute_backend_used = str(self.engine.backend_name)
+
+    def configure_runtime(self, sampling_rate: int) -> None:
+        super().configure_runtime(sampling_rate)
+        self.engine.configure_runtime(self.fs)
+        self.compute_backend_used = str(self.engine.backend_name)
+
+    def score_window(self, X_window: np.ndarray) -> np.ndarray:
+        scores = self.engine.score_window(np.asarray(X_window, dtype=float))
+        self._runtime_timing_breakdown = dict(self.engine.last_timing_breakdown)
+        return scores
+
+    def analyze_window(self, X_window: np.ndarray) -> dict[str, Any]:
+        result = self.engine.analyze_window(np.asarray(X_window, dtype=float))
+        self._runtime_timing_breakdown = dict(self.engine.last_timing_breakdown)
+        return result
+
+    def iter_window_features(
+        self,
+        segment: np.ndarray,
+        *,
+        expected_freq: Optional[float],
+        label: str,
+        trial_id: int = -1,
+        block_index: int = -1,
+    ) -> list[dict[str, Any]]:
+        rows = self.engine.iter_window_features(
+            np.asarray(segment, dtype=np.float64),
+            expected_freq=expected_freq,
+            label=label,
+            trial_id=trial_id,
+            block_index=block_index,
+        )
+        self._runtime_timing_breakdown = dict(self.engine.last_timing_breakdown)
+        return rows
 
 
 class CCADecoder(BaseSSVEPDecoder):
@@ -1153,19 +1795,72 @@ class CCADecoder(BaseSSVEPDecoder):
             step_sec=step_sec,
             Nh=nh,
             subbands=((6.0, 50.0),),
+            compute_backend=self.compute_backend_requested,
+            gpu_device=self.gpu_device,
+            gpu_precision=self.gpu_precision,
+            gpu_warmup=self.gpu_warmup,
         )
+        self.compute_backend_used = str(self._core.backend_name)
 
     def configure_runtime(self, sampling_rate: int) -> None:
         super().configure_runtime(sampling_rate)
         self._core.configure_runtime(self.fs)
+        self.compute_backend_used = str(self._core.backend_name)
 
     def score_window(self, X_window: np.ndarray) -> np.ndarray:
-        X0 = self._core.preprocess_window(np.asarray(X_window, dtype=float))
-        scores = np.zeros(len(self.freqs), dtype=float)
-        for freq_index, freq in enumerate(self.freqs):
-            rho = self._core.cca_multi_channel_svd(X0, self._core.Y_refs[freq])
-            scores[freq_index] = float(max(rho, 0.0) ** 2)
-        return scores
+        windows = np.asarray(X_window, dtype=np.float64)[None, :, :]
+        refs = self._core._y_refs_device if self._core.backend.uses_cuda and self._core._y_refs_device is not None else self._core._y_refs_host
+        if refs is None or self._core._baseline_sos is None:
+            raise RuntimeError("CCA runtime is not configured")
+        score_matrix, timings = cca_scores_batch(
+            self._core.backend,
+            windows,
+            y_refs=refs,
+            baseline_sos=np.asarray(self._core._baseline_sos, dtype=np.float64),
+            notch_sos=None if self._core._notch_sos is None else np.asarray(self._core._notch_sos, dtype=np.float64),
+            reg=1e-6 if self.gpu_precision == "float32" else 1e-8,
+        )
+        scores, device_to_host_ms = self._core.backend.to_host(score_matrix)
+        timings["device_to_host_ms"] = float(device_to_host_ms)
+        self._runtime_timing_breakdown = {str(key): float(value) for key, value in timings.items()}
+        return np.asarray(scores[0], dtype=np.float64)
+
+    def iter_window_features(
+        self,
+        segment: np.ndarray,
+        *,
+        expected_freq: Optional[float],
+        label: str,
+        trial_id: int = -1,
+        block_index: int = -1,
+    ) -> list[dict[str, Any]]:
+        window_batch = extract_window_batch(
+            np.asarray(segment, dtype=np.float64),
+            win_samples=self.win_samples,
+            step_samples=self.step_samples,
+        )
+        refs = self._core._y_refs_device if self._core.backend.uses_cuda and self._core._y_refs_device is not None else self._core._y_refs_host
+        if refs is None or self._core._baseline_sos is None:
+            raise RuntimeError("CCA runtime is not configured")
+        score_matrix, timings = cca_scores_batch(
+            self._core.backend,
+            window_batch,
+            y_refs=refs,
+            baseline_sos=np.asarray(self._core._baseline_sos, dtype=np.float64),
+            notch_sos=None if self._core._notch_sos is None else np.asarray(self._core._notch_sos, dtype=np.float64),
+            reg=1e-6 if self.gpu_precision == "float32" else 1e-8,
+        )
+        scores, device_to_host_ms = self._core.backend.to_host(score_matrix)
+        timings["device_to_host_ms"] = float(device_to_host_ms)
+        self._runtime_timing_breakdown = {str(key): float(value) for key, value in timings.items()}
+        return build_feature_rows_from_score_matrix(
+            np.asarray(scores, dtype=np.float64),
+            freqs=self.freqs,
+            expected_freq=expected_freq,
+            label=label,
+            trial_id=trial_id,
+            block_index=block_index,
+        )
 
 
 class TemplateCCADecoder(BaseSSVEPDecoder):
@@ -1797,6 +2492,15 @@ class OACCADecoder(CCADecoder):
 
 MODEL_ALIASES = {
     "fbcca": "fbcca",
+    "legacy_fbcca_202603": "legacy_fbcca_202603",
+    "legacy-fbcca-202603": "legacy_fbcca_202603",
+    "legacy_fbcca": "legacy_fbcca_202603",
+    "fbcca_202603": "legacy_fbcca_202603",
+    "fbcca_fixed_all8": "fbcca_fixed_all8",
+    "fbcca_cw_all8": "fbcca_cw_all8",
+    "fbcca_sw_all8": "fbcca_sw_all8",
+    "fbcca_cw_sw_all8": "fbcca_cw_sw_all8",
+    "fbcca_cw_sw_trca_shared": "fbcca_cw_sw_trca_shared",
     "cca": "cca",
     "itcca": "itcca",
     "ecca": "ecca",
@@ -1824,6 +2528,46 @@ def parse_model_list(raw: str) -> tuple[str, ...]:
         raise ValueError("models must contain at least one model name")
     normalized = [normalize_model_name(item) for item in values]
     return tuple(dict.fromkeys(normalized))
+
+
+def resolve_fbcca_variant_modes(
+    model_name: str,
+    *,
+    channel_weight_mode: Optional[str],
+    subband_weight_mode: Optional[str],
+    spatial_filter_mode: Optional[str],
+) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    name = normalize_model_name(model_name)
+    if name in FBCCA_VARIANT_SPECS:
+        spec = FBCCA_VARIANT_SPECS[name]
+        return (
+            parse_channel_weight_mode(spec.get("channel_weight_mode")),
+            parse_subband_weight_mode(spec.get("subband_weight_mode")),
+            parse_spatial_filter_mode(spec.get("spatial_filter_mode")),
+        )
+    if name != "fbcca":
+        return None, None, None
+    return (
+        parse_channel_weight_mode(channel_weight_mode),
+        parse_subband_weight_mode(subband_weight_mode),
+        parse_spatial_filter_mode(spatial_filter_mode),
+    )
+
+
+def fbcca_weight_learning_requires_all8(
+    model_name: str,
+    *,
+    channel_weight_mode: Optional[str],
+    subband_weight_mode: Optional[str],
+) -> bool:
+    name = normalize_model_name(model_name)
+    if name in FBCCA_VARIANT_SPECS:
+        return True
+    if name != "fbcca":
+        return False
+    return parse_channel_weight_mode(channel_weight_mode) is not None or (
+        parse_subband_weight_mode(subband_weight_mode) not in {None, "chen_fixed"}
+    )
 
 
 def parse_channel_mode_list(raw: str) -> tuple[str, ...]:
@@ -1868,6 +2612,13 @@ def parse_ranking_policy(raw: str) -> str:
     return value
 
 
+def parse_data_policy(raw: str) -> str:
+    value = str(raw).strip().lower()
+    if value not in set(DEFAULT_DATA_POLICIES):
+        raise ValueError(f"unsupported data policy: {raw}")
+    return value
+
+
 def parse_channel_weight_mode(raw: Optional[str]) -> Optional[str]:
     if raw is None:
         return None
@@ -1877,6 +2628,53 @@ def parse_channel_weight_mode(raw: Optional[str]) -> Optional[str]:
     if value != "fbcca_diag":
         raise ValueError(f"unsupported channel weight mode: {raw}")
     return value
+
+
+def parse_subband_weight_mode(raw: Optional[str]) -> Optional[str]:
+    if raw is None:
+        return None
+    value = str(raw).strip().lower()
+    if value in {"", "none", "off", "disabled"}:
+        return None
+    if value not in set(DEFAULT_SUBBAND_WEIGHT_MODES):
+        raise ValueError(f"unsupported subband weight mode: {raw}")
+    return value
+
+
+def parse_spatial_filter_mode(raw: Optional[str]) -> Optional[str]:
+    if raw is None:
+        return None
+    value = str(raw).strip().lower()
+    if value in {"", "none", "off", "disabled"}:
+        return None
+    if value not in set(DEFAULT_SPATIAL_FILTER_MODES):
+        raise ValueError(f"unsupported spatial filter mode: {raw}")
+    if value == "none":
+        return None
+    return value
+
+
+def parse_spatial_source_model(raw: Optional[str]) -> str:
+    if raw is None:
+        return DEFAULT_SPATIAL_SOURCE_MODEL
+    value = str(raw).strip().lower()
+    if value not in set(DEFAULT_SPATIAL_SOURCE_MODELS):
+        raise ValueError(f"unsupported spatial source model: {raw}")
+    return value
+
+
+def parse_spatial_rank_candidates(raw: Optional[str]) -> tuple[int, ...]:
+    if raw is None:
+        return tuple(DEFAULT_SPATIAL_RANK_CANDIDATES)
+    values = [
+        int(float(item.strip()))
+        for item in str(raw).split(",")
+        if str(item).strip()
+    ]
+    cleaned = sorted({max(1, int(value)) for value in values})
+    if not cleaned:
+        return tuple(DEFAULT_SPATIAL_RANK_CANDIDATES)
+    return tuple(cleaned)
 
 
 def normalize_channel_weights(
@@ -1902,6 +2700,82 @@ def normalize_channel_weights(
     return np.asarray(clipped, dtype=float)
 
 
+def normalize_subband_weights(
+    weights: Optional[Sequence[float]],
+    *,
+    subbands: Optional[int] = None,
+    min_value: float = DEFAULT_SUBBAND_WEIGHT_RANGE[0],
+) -> Optional[np.ndarray]:
+    if weights is None:
+        return None
+    vector = np.asarray(list(weights), dtype=float).reshape(-1)
+    if vector.size == 0:
+        return None
+    if subbands is not None and int(vector.size) != int(subbands):
+        raise ValueError(f"subband weights length mismatch: got {vector.size}, expected {subbands}")
+    clipped = np.clip(vector, float(min_value), None)
+    total = float(np.sum(clipped))
+    if total <= 1e-12:
+        clipped = np.ones_like(clipped, dtype=float)
+        total = float(np.sum(clipped))
+    return np.asarray(clipped / total, dtype=float)
+
+
+def fbcca_subband_weights_from_ab(
+    subband_count: int,
+    *,
+    a: float = DEFAULT_FBCCA_SUBBAND_WEIGHT_A,
+    b: float = DEFAULT_FBCCA_SUBBAND_WEIGHT_B,
+) -> np.ndarray:
+    weights = np.asarray(
+        [(index + 1) ** (-float(a)) + float(b) for index in range(int(subband_count))],
+        dtype=float,
+    )
+    normalized = normalize_subband_weights(weights, subbands=int(subband_count), min_value=0.0)
+    if normalized is None:
+        return np.ones(int(subband_count), dtype=float) / max(int(subband_count), 1)
+    return np.asarray(normalized, dtype=float)
+
+
+def resolve_fbcca_subband_weight_spec(
+    subband_count: int,
+    *,
+    mode: Optional[str],
+    explicit_weights: Optional[Sequence[float]] = None,
+    params: Optional[dict[str, Any]] = None,
+) -> tuple[np.ndarray, str, Optional[dict[str, Any]]]:
+    resolved_mode = parse_subband_weight_mode(mode) or DEFAULT_SUBBAND_WEIGHT_MODE
+    param_payload = dict(params or {})
+    if explicit_weights is not None:
+        normalized = normalize_subband_weights(explicit_weights, subbands=int(subband_count))
+        if normalized is None:
+            normalized = fbcca_subband_weights_from_ab(int(subband_count))
+        return np.asarray(normalized, dtype=float), str(resolved_mode), (dict(param_payload) or None)
+    if resolved_mode == "chen_fixed":
+        return (
+            fbcca_subband_weights_from_ab(int(subband_count)),
+            "chen_fixed",
+            {"a": float(DEFAULT_FBCCA_SUBBAND_WEIGHT_A), "b": float(DEFAULT_FBCCA_SUBBAND_WEIGHT_B)},
+        )
+    if resolved_mode == "chen_ab_subject":
+        a_value = float(param_payload.get("a", DEFAULT_FBCCA_SUBBAND_WEIGHT_A))
+        b_value = float(param_payload.get("b", DEFAULT_FBCCA_SUBBAND_WEIGHT_B))
+        return (
+            fbcca_subband_weights_from_ab(int(subband_count), a=a_value, b=b_value),
+            "chen_ab_subject",
+            {"a": float(a_value), "b": float(b_value)},
+        )
+    if resolved_mode == "simplex_subject":
+        fallback = normalize_subband_weights(
+            param_payload.get("weights"),
+            subbands=int(subband_count),
+        )
+        if fallback is None:
+            fallback = fbcca_subband_weights_from_ab(int(subband_count))
+        return np.asarray(fallback, dtype=float), "simplex_subject", None
+    raise ValueError(f"unsupported subband weight mode: {mode}")
+
+
 def softmax(values: np.ndarray) -> np.ndarray:
     vector = np.asarray(values, dtype=float).reshape(-1)
     if vector.size == 0:
@@ -1922,11 +2796,74 @@ def create_decoder(
     win_sec: float,
     step_sec: float,
     model_params: Optional[dict[str, Any]] = None,
+    compute_backend: Optional[str] = None,
+    gpu_device: int = DEFAULT_GPU_DEVICE_ID,
+    gpu_precision: str = DEFAULT_GPU_PRECISION_NAME,
+    gpu_warmup: bool = True,
+    gpu_cache_policy: str = DEFAULT_GPU_CACHE_MODE,
 ) -> BaseSSVEPDecoder:
     name = normalize_model_name(model_name)
     params = dict(model_params or {})
+    if name in {
+        "fbcca_fixed_all8",
+        "fbcca_cw_all8",
+        "fbcca_sw_all8",
+        "fbcca_cw_sw_all8",
+        "fbcca_cw_sw_trca_shared",
+    }:
+        params["_decoder_model_name"] = name
+        if name == "fbcca_fixed_all8":
+            params.pop("channel_weight_mode", None)
+            params.pop("channel_weights", None)
+            params.pop("spatial_filter_mode", None)
+            params.pop("spatial_filter_rank", None)
+            params.pop("spatial_filter_state", None)
+            params["subband_weight_mode"] = "chen_fixed"
+            params.pop("subband_weights", None)
+            params.pop("subband_weight_params", None)
+        elif name == "fbcca_cw_all8":
+            params["channel_weight_mode"] = "fbcca_diag"
+            params["subband_weight_mode"] = "chen_fixed"
+            params.pop("spatial_filter_mode", None)
+            params.pop("spatial_filter_rank", None)
+            params.pop("spatial_filter_state", None)
+            params.pop("subband_weights", None)
+            params.pop("subband_weight_params", None)
+        elif name == "fbcca_sw_all8":
+            params.pop("channel_weight_mode", None)
+            params.pop("channel_weights", None)
+            params["subband_weight_mode"] = "chen_ab_subject"
+            params.pop("spatial_filter_mode", None)
+            params.pop("spatial_filter_rank", None)
+            params.pop("spatial_filter_state", None)
+        elif name == "fbcca_cw_sw_all8":
+            params["channel_weight_mode"] = "fbcca_diag"
+            params["subband_weight_mode"] = "chen_ab_subject"
+            params.pop("spatial_filter_mode", None)
+            params.pop("spatial_filter_rank", None)
+            params.pop("spatial_filter_state", None)
+        elif name == "fbcca_cw_sw_trca_shared":
+            params["channel_weight_mode"] = "fbcca_diag"
+            params["subband_weight_mode"] = "chen_ab_subject"
+            params["spatial_filter_mode"] = "trca_shared"
+        name = "fbcca"
+    if compute_backend is not None:
+        params["compute_backend"] = parse_compute_backend_name(compute_backend)
+    params.setdefault("compute_backend", DEFAULT_COMPUTE_BACKEND_NAME)
+    params.setdefault("gpu_device", int(gpu_device))
+    params.setdefault("gpu_precision", parse_gpu_precision(gpu_precision))
+    params.setdefault("gpu_warmup", bool(gpu_warmup))
+    params.setdefault("gpu_cache_policy", parse_gpu_cache_policy(gpu_cache_policy))
     if name == "fbcca":
         return FBCCADecoder(
+            sampling_rate=sampling_rate,
+            freqs=freqs,
+            win_sec=win_sec,
+            step_sec=step_sec,
+            model_params=params,
+        )
+    if name == "legacy_fbcca_202603":
+        return LegacyFBCCA202603Decoder(
             sampling_rate=sampling_rate,
             freqs=freqs,
             win_sec=win_sec,
@@ -2001,12 +2938,49 @@ def create_decoder(
     raise ValueError(f"unsupported model: {model_name}")
 
 
-def load_decoder_from_profile(profile: ThresholdProfile, *, sampling_rate: int) -> BaseSSVEPDecoder:
+def load_decoder_from_profile(
+    profile: ThresholdProfile,
+    *,
+    sampling_rate: int,
+    compute_backend: Optional[str] = None,
+    gpu_device: int = DEFAULT_GPU_DEVICE_ID,
+    gpu_precision: Optional[str] = None,
+    gpu_warmup: bool = True,
+    gpu_cache_policy: str = DEFAULT_GPU_CACHE_MODE,
+) -> BaseSSVEPDecoder:
+    if profile.channel_weights is not None and profile.eeg_channels is not None:
+        if len(profile.channel_weights) != len(profile.eeg_channels):
+            raise ValueError(
+                "profile channel_weights mismatch: "
+                f"weights={len(profile.channel_weights)} eeg_channels={len(profile.eeg_channels)}"
+            )
     model_params = dict(profile.model_params or {})
     if profile.channel_weight_mode is not None and "channel_weight_mode" not in model_params:
         model_params["channel_weight_mode"] = str(profile.channel_weight_mode)
     if profile.channel_weights is not None and "channel_weights" not in model_params:
         model_params["channel_weights"] = [float(value) for value in profile.channel_weights]
+    if profile.subband_weight_mode is not None and "subband_weight_mode" not in model_params:
+        model_params["subband_weight_mode"] = str(profile.subband_weight_mode)
+    if profile.subband_weights is not None and "subband_weights" not in model_params:
+        model_params["subband_weights"] = [float(value) for value in profile.subband_weights]
+    if profile.subband_weight_params is not None and "subband_weight_params" not in model_params:
+        model_params["subband_weight_params"] = dict(profile.subband_weight_params)
+    if profile.spatial_filter_mode is not None and "spatial_filter_mode" not in model_params:
+        model_params["spatial_filter_mode"] = str(profile.spatial_filter_mode)
+    if profile.spatial_filter_rank is not None and "spatial_filter_rank" not in model_params:
+        model_params["spatial_filter_rank"] = int(profile.spatial_filter_rank)
+    if profile.spatial_filter_state is not None and "spatial_filter_state" not in model_params:
+        model_params["spatial_filter_state"] = dict(profile.spatial_filter_state)
+    if profile.joint_weight_training is not None and "joint_weight_training" not in model_params:
+        model_params["joint_weight_training"] = dict(profile.joint_weight_training)
+    requested_backend = (
+        parse_compute_backend_name(compute_backend)
+        if compute_backend is not None
+        else parse_compute_backend_name(profile.runtime_backend_preference or model_params.get("compute_backend"))
+    )
+    requested_precision = parse_gpu_precision(
+        gpu_precision or profile.runtime_precision_preference or model_params.get("gpu_precision")
+    )
     decoder = create_decoder(
         profile.model_name,
         sampling_rate=sampling_rate,
@@ -2014,6 +2988,11 @@ def load_decoder_from_profile(profile: ThresholdProfile, *, sampling_rate: int) 
         win_sec=profile.win_sec,
         step_sec=profile.step_sec,
         model_params=model_params,
+        compute_backend=requested_backend,
+        gpu_device=int(gpu_device),
+        gpu_precision=requested_precision,
+        gpu_warmup=bool(gpu_warmup),
+        gpu_cache_policy=parse_gpu_cache_policy(gpu_cache_policy),
     )
     state = None
     if isinstance(profile.model_params, dict):
@@ -2025,6 +3004,13 @@ def load_decoder_from_profile(profile: ThresholdProfile, *, sampling_rate: int) 
             f"profile model '{profile.model_name}' requires fitted state; run benchmark and save a profile "
             f"that includes model_params.state"
         )
+    if profile.subband_weights is not None and hasattr(decoder, "engine") and hasattr(decoder.engine, "subband_sos"):
+        subband_count = len(getattr(decoder.engine, "subband_sos", []) or [])
+        if subband_count and len(profile.subband_weights) != int(subband_count):
+            raise ValueError(
+                "profile subband_weights mismatch: "
+                f"weights={len(profile.subband_weights)} subbands={int(subband_count)}"
+            )
     return decoder
 
 
@@ -2039,6 +3025,11 @@ class AsyncDecisionGate:
         exit_ratio_th: float,
         min_enter_windows: int = 2,
         min_exit_windows: int = 2,
+        gate_policy: str = DEFAULT_GATE_POLICY,
+        min_switch_windows: int = 1,
+        switch_enter_score_th: Optional[float] = None,
+        switch_enter_ratio_th: Optional[float] = None,
+        switch_enter_margin_th: Optional[float] = None,
         enter_log_lr_th: Optional[float] = None,
         exit_log_lr_th: Optional[float] = None,
         control_feature_means: Optional[dict[str, float]] = None,
@@ -2057,6 +3048,23 @@ class AsyncDecisionGate:
         self.exit_ratio_th = float(exit_ratio_th)
         self.min_enter_windows = max(1, int(min_enter_windows))
         self.min_exit_windows = max(1, int(min_exit_windows))
+        self.gate_policy = parse_gate_policy(gate_policy)
+        self.min_switch_windows = max(1, int(min_switch_windows))
+        self.switch_enter_score_th = (
+            0.95 * self.enter_score_th
+            if switch_enter_score_th is None
+            else float(switch_enter_score_th)
+        )
+        self.switch_enter_ratio_th = (
+            self.enter_ratio_th
+            if switch_enter_ratio_th is None
+            else float(switch_enter_ratio_th)
+        )
+        self.switch_enter_margin_th = (
+            0.80 * self.enter_margin_th
+            if switch_enter_margin_th is None
+            else float(switch_enter_margin_th)
+        )
         self.enter_log_lr_th = None if enter_log_lr_th is None else float(enter_log_lr_th)
         self.exit_log_lr_th = None if exit_log_lr_th is None else float(exit_log_lr_th)
         self.control_feature_means = control_feature_means
@@ -2100,6 +3108,11 @@ class AsyncDecisionGate:
             exit_ratio_th=profile.exit_ratio_th,
             min_enter_windows=profile.min_enter_windows,
             min_exit_windows=profile.min_exit_windows,
+            gate_policy=profile.gate_policy,
+            min_switch_windows=profile.min_switch_windows,
+            switch_enter_score_th=profile.switch_enter_score_th,
+            switch_enter_ratio_th=profile.switch_enter_ratio_th,
+            switch_enter_margin_th=profile.switch_enter_margin_th,
             enter_log_lr_th=profile.enter_log_lr_th,
             exit_log_lr_th=profile.exit_log_lr_th,
             control_feature_means=profile.control_feature_means,
@@ -2116,7 +3129,9 @@ class AsyncDecisionGate:
         self.state = "idle"
         self._candidate_freq: Optional[float] = None
         self._selected_freq: Optional[float] = None
+        self._switch_candidate_freq: Optional[float] = None
         self._candidate_windows = 0
+        self._switch_candidate_windows = 0
         self._support_windows = 0
         self._exit_windows = 0
         self._acc_log_lr = 0.0
@@ -2138,6 +3153,22 @@ class AsyncDecisionGate:
             acc_log_lr = features.get("acc_log_lr")
             return acc_log_lr is not None and float(acc_log_lr) >= self.enter_acc_th
         return True
+
+    def _switch_pass(self, features: dict[str, Any]) -> bool:
+        if self.gate_policy != "speed":
+            return False
+        if self._selected_freq is None:
+            return False
+        pred_freq = features.get("pred_freq")
+        if pred_freq is None:
+            return False
+        if abs(float(pred_freq) - float(self._selected_freq)) <= 1e-8:
+            return False
+        return (
+            float(features["top1_score"]) >= self.switch_enter_score_th
+            and float(features["ratio"]) >= self.switch_enter_ratio_th
+            and float(features["margin"]) >= self.switch_enter_margin_th
+        )
 
     def _exit_fail(self, features: dict[str, Any]) -> bool:
         if self._selected_freq is None:
@@ -2197,6 +3228,7 @@ class AsyncDecisionGate:
 
         pred_freq = features.get("pred_freq")
         enter_pass = pred_freq is not None and self._enter_pass(features)
+        switch_pass = pred_freq is not None and self._switch_pass(features)
 
         if self.state == "idle":
             if enter_pass:
@@ -2204,10 +3236,16 @@ class AsyncDecisionGate:
                 self._candidate_freq = float(pred_freq)
                 self._candidate_windows = 1
                 self._support_windows = 1
+                if self.min_enter_windows <= 1:
+                    self.state = "selected"
+                    self._selected_freq = float(pred_freq)
+                    self._exit_windows = 0
             else:
                 self._candidate_freq = None
                 self._candidate_windows = 0
                 self._support_windows = 0
+            self._switch_candidate_freq = None
+            self._switch_candidate_windows = 0
         elif self.state == "candidate":
             if enter_pass and abs(float(pred_freq) - float(self._candidate_freq)) < 1e-8:
                 self._candidate_windows += 1
@@ -2225,19 +3263,36 @@ class AsyncDecisionGate:
                 self._candidate_freq = None
                 self._candidate_windows = 0
                 self._support_windows = 0
+            self._switch_candidate_freq = None
+            self._switch_candidate_windows = 0
         else:
-            if self._exit_fail(features):
-                self._exit_windows += 1
-                if self._exit_windows >= self.min_exit_windows:
-                    self.state = "idle"
-                    self._selected_freq = None
-                    self._candidate_freq = None
-                    self._candidate_windows = 0
-                    self._support_windows = 0
-                    self._exit_windows = 0
-            else:
+            if switch_pass:
+                if self._switch_candidate_freq is None or abs(float(pred_freq) - float(self._switch_candidate_freq)) > 1e-8:
+                    self._switch_candidate_freq = float(pred_freq)
+                    self._switch_candidate_windows = 1
+                else:
+                    self._switch_candidate_windows += 1
                 self._exit_windows = 0
-                self._support_windows += 1
+                if self._switch_candidate_windows >= self.min_switch_windows:
+                    self._selected_freq = float(pred_freq)
+                    self._switch_candidate_freq = None
+                    self._switch_candidate_windows = 0
+                    self._support_windows = 1
+            else:
+                self._switch_candidate_freq = None
+                self._switch_candidate_windows = 0
+                if self._exit_fail(features):
+                    self._exit_windows += 1
+                    if self._exit_windows >= self.min_exit_windows:
+                        self.state = "idle"
+                        self._selected_freq = None
+                        self._candidate_freq = None
+                        self._candidate_windows = 0
+                        self._support_windows = 0
+                        self._exit_windows = 0
+                else:
+                    self._exit_windows = 0
+                    self._support_windows += 1
 
         selected_freq = self._selected_freq if self.state == "selected" else None
         stable_windows = self._support_windows if self.state != "idle" else 0
@@ -2247,6 +3302,9 @@ class AsyncDecisionGate:
             "selected_freq": selected_freq,
             "stable_windows": int(stable_windows),
             "enter_pass": bool(enter_pass),
+            "switch_pass": bool(switch_pass),
+            "switch_candidate_freq": self._switch_candidate_freq,
+            "switch_candidate_windows": int(self._switch_candidate_windows),
             "exit_windows": int(self._exit_windows),
         }
 
@@ -2487,15 +3545,19 @@ def evaluate_profile_on_feature_rows(
     idle_windows = 0
     idle_selected_windows = 0
     idle_selected_events = 0
+    idle_duration_sec = 0.0
     control_trials = 0
     control_detected_trials = 0
     switch_trials = 0
     switch_detected_trials = 0
+    switch_detected_trials_at_2p8s = 0
     release_trials = 0
     release_detected_trials = 0
     detection_latencies: list[float] = []
     switch_latencies: list[float] = []
     release_latencies: list[float] = []
+    control_detected_trials_at_2s = 0
+    control_detected_trials_at_3s = 0
     last_control_freq: Optional[float] = None
     previous_trial_expected_freq: Optional[float] = None
     has_explicit_switch = any(
@@ -2543,6 +3605,7 @@ def evaluate_profile_on_feature_rows(
             selected_active_prev = selected_active
 
         if expected_numeric is None:
+            idle_duration_sec += float(max(trial_duration, 0.0))
             if previous_trial_expected_freq is not None:
                 release_trials += 1
                 if first_release_latency is None:
@@ -2557,6 +3620,10 @@ def evaluate_profile_on_feature_rows(
         if first_correct_latency is not None:
             control_detected_trials += 1
             detection_latencies.append(float(first_correct_latency))
+            if float(first_correct_latency) <= float(DEFAULT_CONTROL_RECALL_AT_2S_DEADLINE):
+                control_detected_trials_at_2s += 1
+            if float(first_correct_latency) <= float(DEFAULT_CONTROL_RECALL_AT_3S_DEADLINE):
+                control_detected_trials_at_3s += 1
 
         is_switch_trial = False
         if has_explicit_switch:
@@ -2570,15 +3637,22 @@ def evaluate_profile_on_feature_rows(
             else:
                 switch_detected_trials += 1
                 switch_latencies.append(float(first_correct_latency))
+                if float(first_correct_latency) <= float(DEFAULT_SWITCH_DETECT_AT_2P8S_DEADLINE):
+                    switch_detected_trials_at_2p8s += 1
         last_control_freq = float(expected_numeric)
         previous_trial_expected_freq = float(expected_numeric)
 
-    idle_minutes = float(idle_windows) * float(profile.step_sec) / 60.0
+    idle_minutes = float(max(idle_duration_sec, 0.0)) / 60.0
     idle_fp_per_min = float(idle_selected_events / idle_minutes) if idle_minutes > 1e-12 else 0.0
     idle_selected_windows_per_min = float(idle_selected_windows / idle_minutes) if idle_minutes > 1e-12 else 0.0
     control_recall = float(control_detected_trials / control_trials) if control_trials else 0.0
     switch_detect_rate = float(switch_detected_trials / switch_trials) if switch_trials else 0.0
+    switch_detect_rate_at_2p8s = (
+        float(switch_detected_trials_at_2p8s / switch_trials) if switch_trials else 0.0
+    )
     release_detect_rate = float(release_detected_trials / release_trials) if release_trials else 0.0
+    control_recall_at_2s = float(control_detected_trials_at_2s / control_trials) if control_trials else 0.0
+    control_recall_at_3s = float(control_detected_trials_at_3s / control_trials) if control_trials else 0.0
     switch_latency = float(np.median(np.asarray(switch_latencies, dtype=float))) if switch_latencies else float("inf")
     release_latency = (
         float(np.median(np.asarray(release_latencies, dtype=float))) if release_latencies else float("inf")
@@ -2590,7 +3664,10 @@ def evaluate_profile_on_feature_rows(
         "idle_fp_per_min": idle_fp_per_min,
         "idle_selected_windows_per_min": idle_selected_windows_per_min,
         "control_recall": control_recall,
+        "control_recall_at_2s": control_recall_at_2s,
+        "control_recall_at_3s": control_recall_at_3s,
         "switch_detect_rate": switch_detect_rate,
+        "switch_detect_rate_at_2.8s": switch_detect_rate_at_2p8s,
         "release_detect_rate": release_detect_rate,
         "switch_latency_s": switch_latency,
         "release_latency_s": release_latency,
@@ -2598,8 +3675,12 @@ def evaluate_profile_on_feature_rows(
         "idle_windows": float(idle_windows),
         "idle_selected_windows": float(idle_selected_windows),
         "idle_selected_events": float(idle_selected_events),
+        "idle_fp_event_count": float(idle_selected_events),
+        "idle_time_sec": float(idle_duration_sec),
+        "idle_time_min": float(idle_minutes),
         "control_trials": float(control_trials),
         "switch_trials": float(switch_trials),
+        "switch_detected_trials_at_2.8s": float(switch_detected_trials_at_2p8s),
         "release_trials": float(release_trials),
     }
 
@@ -2616,6 +3697,31 @@ def _balanced_gate_objective(metrics: dict[str, float]) -> tuple[float, float, f
         + float(DEFAULT_BALANCED_OBJECTIVE_RECALL_WEIGHT) * (1.0 - control_recall)
         + float(DEFAULT_BALANCED_OBJECTIVE_SWITCH_WEIGHT) * switch_latency
         + float(DEFAULT_BALANCED_OBJECTIVE_RELEASE_WEIGHT) * release_latency
+    )
+    return (
+        idle_violation + recall_violation,
+        idle_violation,
+        recall_violation,
+        float(cost),
+        idle_fp,
+        -control_recall,
+        switch_latency,
+        release_latency,
+    )
+
+
+def _speed_gate_objective(metrics: dict[str, float]) -> tuple[float, float, float, float, float, float, float, float]:
+    idle_fp = float(metrics.get("idle_fp_per_min", float("inf")))
+    control_recall = float(metrics.get("control_recall", 0.0))
+    switch_latency = _latency_or_penalty(float(metrics.get("switch_latency_s", float("inf"))))
+    release_latency = _latency_or_penalty(float(metrics.get("release_latency_s", float("inf"))))
+    idle_violation = 1.0 if idle_fp > float(DEFAULT_SPEED_IDLE_FP_MAX) else 0.0
+    recall_violation = 1.0 if control_recall < float(DEFAULT_SPEED_MIN_CONTROL_RECALL) else 0.0
+    cost = (
+        float(DEFAULT_SPEED_OBJECTIVE_IDLE_WEIGHT) * idle_fp
+        + float(DEFAULT_SPEED_OBJECTIVE_RECALL_WEIGHT) * (1.0 - control_recall)
+        + float(DEFAULT_SPEED_OBJECTIVE_SWITCH_WEIGHT) * switch_latency
+        + float(DEFAULT_SPEED_OBJECTIVE_RELEASE_WEIGHT) * release_latency
     )
     return (
         idle_violation + recall_violation,
@@ -2646,6 +3752,16 @@ def _calibration_objective(
                 "release_latency_s": float("inf"),
             }
         return _balanced_gate_objective(metrics)
+    if policy == "speed":
+        metrics = dict(gate_metrics or {})
+        if not metrics:
+            metrics = {
+                "idle_fp_per_min": float("inf"),
+                "control_recall": 0.0,
+                "switch_latency_s": float("inf"),
+                "release_latency_s": float("inf"),
+            }
+        return _speed_gate_objective(metrics)
 
     latency = float(summary.get("mean_detection_latency_sec", float("nan")))
     latency_value = 1_000_000.0 if math.isnan(latency) else latency
@@ -2686,6 +3802,10 @@ def build_feature_rows_from_segments(
     freqs: Sequence[float],
     win_sec: float,
     step_sec: float,
+    compute_backend: str = DEFAULT_COMPUTE_BACKEND_NAME,
+    gpu_device: int = DEFAULT_GPU_DEVICE_ID,
+    gpu_precision: str = DEFAULT_GPU_PRECISION_NAME,
+    gpu_warmup: bool = True,
 ) -> list[dict[str, Any]]:
     resolved_channels = resolve_selected_eeg_channels(available_board_channels, selected_board_channels)
     channel_positions = [tuple(int(value) for value in available_board_channels).index(channel) for channel in resolved_channels]
@@ -2694,6 +3814,10 @@ def build_feature_rows_from_segments(
         freqs=freqs,
         win_sec=win_sec,
         step_sec=step_sec,
+        compute_backend=compute_backend,
+        gpu_device=int(gpu_device),
+        gpu_precision=gpu_precision,
+        gpu_warmup=bool(gpu_warmup),
     )
     rows: list[dict[str, Any]] = []
     for trial, segment in trial_segments:
@@ -2718,6 +3842,10 @@ def estimate_fbcca_diag_channel_weights(
     freqs: Sequence[float],
     win_sec: float,
     step_sec: float,
+    compute_backend: str = DEFAULT_COMPUTE_BACKEND_NAME,
+    gpu_device: int = DEFAULT_GPU_DEVICE_ID,
+    gpu_precision: str = DEFAULT_GPU_PRECISION_NAME,
+    gpu_warmup: bool = True,
 ) -> np.ndarray:
     channels = tuple(int(channel) for channel in available_board_channels)
     if not channels:
@@ -2732,6 +3860,10 @@ def estimate_fbcca_diag_channel_weights(
             freqs=freqs,
             win_sec=win_sec,
             step_sec=step_sec,
+            compute_backend=compute_backend,
+            gpu_device=int(gpu_device),
+            gpu_precision=gpu_precision,
+            gpu_warmup=bool(gpu_warmup),
         )
         control_rows = [row for row in rows if row.get("expected_freq") is not None and bool(row.get("correct"))]
         if not control_rows:
@@ -2755,6 +3887,110 @@ def estimate_fbcca_diag_channel_weights(
     return np.asarray(normalized, dtype=float)
 
 
+def train_trca_shared_spatial_basis(
+    train_segments: Sequence[tuple[TrialSpec, np.ndarray]],
+    *,
+    sampling_rate: int,
+    freqs: Sequence[float],
+    win_sec: float,
+    step_sec: float,
+    channel_weights: Optional[Sequence[float]] = None,
+    max_rank: int = 3,
+    spatial_source_model: str = DEFAULT_SPATIAL_SOURCE_MODEL,
+) -> np.ndarray:
+    source_model = parse_spatial_source_model(spatial_source_model)
+    if source_model != "trca":
+        raise ValueError(f"unsupported spatial source model: {spatial_source_model}")
+    if not train_segments:
+        raise ValueError("spatial basis training requires non-empty train segments")
+    core = FBCCAEngine(
+        sampling_rate=sampling_rate,
+        freqs=freqs,
+        win_sec=win_sec,
+        step_sec=step_sec,
+        Nh=DEFAULT_NH,
+        subbands=((6.0, 50.0),),
+    )
+    channels = int(np.asarray(train_segments[0][1]).shape[1])
+    weights = normalize_channel_weights(channel_weights, channels=channels)
+    grouped: dict[float, list[np.ndarray]] = defaultdict(list)
+    for trial, segment in train_segments:
+        if trial.expected_freq is None:
+            continue
+        matrix = np.asarray(segment, dtype=float)
+        if matrix.ndim != 2:
+            continue
+        if weights is not None:
+            matrix = np.asarray(matrix * weights.reshape(1, -1), dtype=float)
+        window = _extract_last_window(matrix, core.win_samples)
+        preprocessed = core.preprocess_window(window)
+        grouped[float(trial.expected_freq)].append(np.asarray(preprocessed.T, dtype=float))
+    if not all(grouped.get(float(freq)) for freq in freqs):
+        missing = [float(freq) for freq in freqs if not grouped.get(float(freq))]
+        raise ValueError(f"spatial basis training missing trials for frequencies: {missing}")
+
+    per_class_filters: list[np.ndarray] = []
+    keep = max(1, int(max_rank))
+    for freq in freqs:
+        trials = grouped[float(freq)]
+        filters = TRCABasedDecoder._train_trca_filters(trials, n_components=keep)
+        per_class_filters.append(np.asarray(filters, dtype=float))
+    stacked = np.concatenate(per_class_filters, axis=1)
+    q_mat, _ = np.linalg.qr(stacked)
+    if q_mat.size == 0:
+        raise ValueError("failed to build spatial projection basis")
+    max_keep = max(1, min(int(keep), int(q_mat.shape[1]), int(q_mat.shape[0])))
+    return np.asarray(q_mat[:, :max_keep], dtype=float)
+
+
+def build_fbcca_frontend_model_params(
+    *,
+    channel_weights: Optional[Sequence[float]],
+    subband_weight_mode: Optional[str],
+    subband_weights: Optional[Sequence[float]],
+    subband_weight_params: Optional[dict[str, Any]],
+    spatial_filter_mode: Optional[str],
+    spatial_projection_basis: Optional[np.ndarray],
+    spatial_rank: Optional[int],
+    spatial_source_model: str,
+) -> dict[str, Any]:
+    model_params: dict[str, Any] = {"Nh": DEFAULT_NH}
+    normalized_weights = normalize_channel_weights(channel_weights)
+    if normalized_weights is not None:
+        model_params["channel_weight_mode"] = "fbcca_diag"
+        model_params["channel_weights"] = [float(value) for value in normalized_weights]
+    resolved_subband_mode = parse_subband_weight_mode(subband_weight_mode) or DEFAULT_SUBBAND_WEIGHT_MODE
+    resolved_subband_weights, _, resolved_subband_params = resolve_fbcca_subband_weight_spec(
+        len(DEFAULT_SUBBANDS),
+        mode=resolved_subband_mode,
+        explicit_weights=subband_weights,
+        params=subband_weight_params,
+    )
+    model_params["subband_weight_mode"] = str(resolved_subband_mode)
+    model_params["subband_weights"] = [float(value) for value in resolved_subband_weights]
+    if resolved_subband_params is not None:
+        model_params["subband_weight_params"] = json_safe(dict(resolved_subband_params))
+    mode = parse_spatial_filter_mode(spatial_filter_mode)
+    if mode == "trca_shared" and spatial_projection_basis is not None:
+        basis = np.asarray(spatial_projection_basis, dtype=float)
+        if basis.ndim != 2:
+            raise ValueError("spatial projection basis must be 2D")
+        rank = int(spatial_rank or basis.shape[1])
+        rank = max(1, min(rank, int(basis.shape[1])))
+        projection = np.asarray(basis[:, :rank], dtype=float)
+        state = {
+            "source_model": str(parse_spatial_source_model(spatial_source_model)),
+            "projection": projection.tolist(),
+            "basis_rank": int(basis.shape[1]),
+            "rank": int(rank),
+        }
+        model_params["spatial_filter_mode"] = str(mode)
+        model_params["spatial_filter_rank"] = int(rank)
+        model_params["spatial_filter_state"] = state
+        model_params["spatial_source_model"] = str(parse_spatial_source_model(spatial_source_model))
+    return model_params
+
+
 def optimize_fbcca_diag_channel_weights(
     *,
     train_segments: Sequence[tuple[TrialSpec, np.ndarray]],
@@ -2768,9 +4004,27 @@ def optimize_fbcca_diag_channel_weights(
     gate_policy: str,
     dynamic_stop_enabled: bool,
     dynamic_stop_alpha: float,
+    spatial_filter_mode: Optional[str] = None,
+    spatial_rank_candidates: Sequence[int] = DEFAULT_SPATIAL_RANK_CANDIDATES,
+    joint_weight_iters: int = DEFAULT_JOINT_WEIGHT_ITERS,
+    spatial_source_model: str = DEFAULT_SPATIAL_SOURCE_MODEL,
+    compute_backend: str = DEFAULT_COMPUTE_BACKEND_NAME,
+    gpu_device: int = DEFAULT_GPU_DEVICE_ID,
+    gpu_precision: str = DEFAULT_GPU_PRECISION_NAME,
+    gpu_warmup: bool = True,
+    gpu_cache_policy: str = DEFAULT_GPU_CACHE_MODE,
+    log_fn: Optional[Callable[[str], None]] = None,
+    log_prefix: str = "FBCCA",
 ) -> tuple[np.ndarray, dict[str, Any]]:
     if not train_segments or not gate_segments:
         raise ValueError("channel-weight optimization requires non-empty train and gate segments")
+    logger = log_fn if log_fn is not None else (lambda _msg: None)
+    mode = parse_spatial_filter_mode(spatial_filter_mode)
+    source_model = parse_spatial_source_model(spatial_source_model)
+    rank_candidates = tuple(sorted({max(1, int(value)) for value in spatial_rank_candidates}))
+    if not rank_candidates:
+        rank_candidates = tuple(DEFAULT_SPATIAL_RANK_CANDIDATES)
+    joint_iters = max(1, int(joint_weight_iters))
     channels = int(np.asarray(train_segments[0][1]).shape[1])
     initial_weights = estimate_fbcca_diag_channel_weights(
         train_segments,
@@ -2779,54 +4033,116 @@ def optimize_fbcca_diag_channel_weights(
         freqs=freqs,
         win_sec=win_sec,
         step_sec=step_sec,
+        compute_backend=compute_backend,
+        gpu_device=int(gpu_device),
+        gpu_precision=gpu_precision,
+        gpu_warmup=bool(gpu_warmup),
     )
     initial_weights = normalize_channel_weights(initial_weights, channels=channels)
     if initial_weights is None:
         initial_weights = np.ones(channels, dtype=float)
+    logger(f"{log_prefix}: initial channel weights ready | channels={channels}")
 
     factors = (0.75, 0.90, 1.00, 1.10, 1.25)
-
-    def evaluate_weights(candidate_weights: np.ndarray) -> tuple[tuple[float, ...], ThresholdProfile, dict[str, float]]:
-        params = {
-            "Nh": DEFAULT_NH,
-            "channel_weight_mode": "fbcca_diag",
-            "channel_weights": [float(value) for value in candidate_weights],
-        }
-        decoder = create_decoder(
-            "fbcca",
+    max_rank = max(rank_candidates)
+    current_basis: Optional[np.ndarray] = None
+    if mode == "trca_shared":
+        logger(f"{log_prefix}: training shared spatial basis | max_rank={max_rank}")
+        current_basis = train_trca_shared_spatial_basis(
+            train_segments,
             sampling_rate=sampling_rate,
             freqs=freqs,
             win_sec=win_sec,
             step_sec=step_sec,
-            model_params=params,
+            channel_weights=initial_weights,
+            max_rank=max_rank,
+            spatial_source_model=source_model,
         )
-        gate_rows = build_feature_rows_with_decoder(decoder, gate_segments)
-        profile = fit_threshold_profile(
-            gate_rows,
-            freqs=freqs,
-            win_sec=win_sec,
-            step_sec=step_sec,
-            min_enter_windows=min_enter_windows,
-            min_exit_windows=min_exit_windows,
-            gate_policy=gate_policy,
-            evaluation_rows=gate_rows,
-            dynamic_stop_enabled=dynamic_stop_enabled,
-            dynamic_stop_alpha=dynamic_stop_alpha,
-        )
-        metrics = evaluate_profile_on_feature_rows(gate_rows, profile)
-        objective = _calibration_objective({}, gate_policy=gate_policy, gate_metrics=metrics)
-        return objective, profile, metrics
+        logger(f"{log_prefix}: shared spatial basis ready")
+
+    def evaluate_weights(
+        candidate_weights: np.ndarray,
+        candidate_basis: Optional[np.ndarray],
+    ) -> tuple[tuple[float, ...], ThresholdProfile, dict[str, float], Optional[int], dict[str, Any]]:
+        best_eval: Optional[
+            tuple[tuple[float, ...], ThresholdProfile, dict[str, float], Optional[int], dict[str, Any]]
+        ] = None
+        candidate_ranks: Sequence[Optional[int]]
+        if mode == "trca_shared" and candidate_basis is not None:
+            candidate_ranks = tuple(
+                rank for rank in rank_candidates if int(rank) <= int(np.asarray(candidate_basis).shape[1])
+            )
+            if not candidate_ranks:
+                candidate_ranks = (int(np.asarray(candidate_basis).shape[1]),)
+        else:
+            candidate_ranks = (None,)
+        for rank in candidate_ranks:
+            params = build_fbcca_frontend_model_params(
+                channel_weights=candidate_weights,
+                spatial_filter_mode=mode,
+                spatial_projection_basis=candidate_basis,
+                spatial_rank=rank,
+                spatial_source_model=source_model,
+            )
+            decoder = create_decoder(
+                "fbcca",
+                sampling_rate=sampling_rate,
+                freqs=freqs,
+                win_sec=win_sec,
+                step_sec=step_sec,
+                model_params=params,
+                compute_backend=compute_backend,
+                gpu_device=gpu_device,
+                gpu_precision=gpu_precision,
+                gpu_warmup=gpu_warmup,
+                gpu_cache_policy=gpu_cache_policy,
+            )
+            gate_rows = build_feature_rows_with_decoder(decoder, gate_segments)
+            if not gate_rows:
+                continue
+            profile = fit_threshold_profile(
+                gate_rows,
+                freqs=freqs,
+                win_sec=win_sec,
+                step_sec=step_sec,
+                min_enter_windows=min_enter_windows,
+                min_exit_windows=min_exit_windows,
+                gate_policy=gate_policy,
+                evaluation_rows=gate_rows,
+                dynamic_stop_enabled=dynamic_stop_enabled,
+                dynamic_stop_alpha=dynamic_stop_alpha,
+            )
+            metrics = evaluate_profile_on_feature_rows(gate_rows, profile)
+            objective = _calibration_objective({}, gate_policy=gate_policy, gate_metrics=metrics) + (
+                int(rank or 0),
+            )
+            if best_eval is None or objective < best_eval[0]:
+                best_eval = (objective, profile, metrics, rank, params)
+        if best_eval is None:
+            raise RuntimeError("no valid FBCCA frontend candidate produced gate rows")
+        return best_eval
 
     best_weights = np.asarray(initial_weights, dtype=float)
-    best_objective, best_profile, best_metrics = evaluate_weights(best_weights)
+    best_objective, best_profile, best_metrics, best_rank, best_model_params = evaluate_weights(
+        best_weights,
+        current_basis,
+    )
+    best_basis = None if current_basis is None else np.asarray(current_basis, dtype=float)
+    iteration_logs: list[dict[str, Any]] = []
+    logger(f"{log_prefix}: joint optimization start | iterations={joint_iters}")
 
-    for _pass in range(2):
+    for iteration in range(joint_iters):
         improved = False
+        before_objective = tuple(best_objective)
+        logger(f"{log_prefix}: iteration {iteration + 1}/{joint_iters} start")
         for ch in range(channels):
+            logger(f"{log_prefix}: iteration {iteration + 1}/{joint_iters} channel {ch + 1}/{channels}")
             local_best_weights = np.asarray(best_weights, dtype=float)
             local_best_objective = tuple(best_objective)
             local_profile = best_profile
             local_metrics = dict(best_metrics)
+            local_rank = best_rank
+            local_model_params = dict(best_model_params)
             for factor in factors:
                 candidate = np.asarray(best_weights, dtype=float)
                 candidate[ch] *= float(factor)
@@ -2834,7 +4150,10 @@ def optimize_fbcca_diag_channel_weights(
                 if normalized is None:
                     continue
                 try:
-                    objective, profile, metrics = evaluate_weights(np.asarray(normalized, dtype=float))
+                    objective, profile, metrics, rank, params = evaluate_weights(
+                        np.asarray(normalized, dtype=float),
+                        best_basis,
+                    )
                 except Exception:
                     continue
                 if objective < local_best_objective:
@@ -2842,24 +4161,505 @@ def optimize_fbcca_diag_channel_weights(
                     local_best_weights = np.asarray(normalized, dtype=float)
                     local_profile = profile
                     local_metrics = dict(metrics)
+                    local_rank = rank
+                    local_model_params = dict(params)
             if local_best_objective < best_objective:
                 best_objective = local_best_objective
                 best_weights = local_best_weights
                 best_profile = local_profile
                 best_metrics = local_metrics
+                best_rank = local_rank
+                best_model_params = local_model_params
                 improved = True
-        if not improved:
+        basis_updated = False
+        if mode == "trca_shared":
+            try:
+                logger(f"{log_prefix}: iteration {iteration + 1}/{joint_iters} refreshing spatial basis")
+                refreshed_basis = train_trca_shared_spatial_basis(
+                    train_segments,
+                    sampling_rate=sampling_rate,
+                    freqs=freqs,
+                    win_sec=win_sec,
+                    step_sec=step_sec,
+                    channel_weights=best_weights,
+                    max_rank=max_rank,
+                    spatial_source_model=source_model,
+                )
+                refreshed_eval = evaluate_weights(best_weights, refreshed_basis)
+                if refreshed_eval[0] <= best_objective:
+                    best_objective, best_profile, best_metrics, best_rank, best_model_params = refreshed_eval
+                    best_basis = np.asarray(refreshed_basis, dtype=float)
+                    basis_updated = True
+            except Exception:
+                pass
+        iteration_logs.append(
+            {
+                "iteration": int(iteration + 1),
+                "before_objective": [float(value) for value in before_objective],
+                "after_objective": [float(value) for value in best_objective],
+                "improved_by_weight": bool(improved),
+                "basis_updated": bool(basis_updated),
+                "selected_rank": None if best_rank is None else int(best_rank),
+            }
+        )
+        logger(
+            f"{log_prefix}: iteration {iteration + 1}/{joint_iters} done | "
+            f"improved={int(improved)} basis_updated={int(basis_updated)} "
+            f"rank={0 if best_rank is None else int(best_rank)}"
+        )
+        if not improved and not basis_updated:
             break
 
     metadata = {
-        "mode": "fbcca_diag",
+        "mode": "fbcca_diag_joint",
         "objective": [float(value) for value in best_objective],
         "initial_weights": [float(value) for value in initial_weights],
         "optimized_weights": [float(value) for value in best_weights],
+        "spatial_filter_mode": mode,
+        "spatial_source_model": source_model,
+        "spatial_rank_candidates": [int(value) for value in rank_candidates],
+        "selected_spatial_rank": None if best_rank is None else int(best_rank),
+        "joint_weight_iters": int(joint_iters),
+        "iterations": json_safe(iteration_logs),
         "gate_metrics": {key: float(value) for key, value in best_metrics.items()},
         "fit_profile": json_safe(asdict(best_profile)),
+        "optimized_model_params": json_safe(dict(best_model_params)),
+        "optimized_spatial_projection": (
+            None if best_basis is None else np.asarray(best_basis[:, : int(best_rank or 1)], dtype=float).tolist()
+        ),
     }
+    logger(
+        f"{log_prefix}: optimization done | "
+        f"selected_rank={0 if best_rank is None else int(best_rank)} "
+        f"objective={[float(value) for value in best_objective]}"
+    )
     return np.asarray(best_weights, dtype=float), metadata
+
+
+def _split_trial_segments_kfold(
+    trial_segments: Sequence[tuple[TrialSpec, np.ndarray]],
+    *,
+    folds: int,
+    seed: int,
+) -> list[tuple[list[tuple[TrialSpec, np.ndarray]], list[tuple[TrialSpec, np.ndarray]]]]:
+    indexed = list(enumerate(trial_segments))
+    if len(indexed) < 2:
+        return [(list(trial_segments), list(trial_segments))]
+    grouped: dict[str, list[int]] = defaultdict(list)
+    for index, (trial, _segment) in indexed:
+        key = "idle" if trial.expected_freq is None else f"{float(trial.expected_freq):g}"
+        grouped[key].append(int(index))
+    rng = random.Random(int(seed))
+    fold_count = max(2, min(int(folds), len(indexed)))
+    fold_ids: list[set[int]] = [set() for _ in range(fold_count)]
+    for indices in grouped.values():
+        block = [int(item) for item in indices]
+        rng.shuffle(block)
+        for position, value in enumerate(block):
+            fold_ids[position % fold_count].add(int(value))
+    results: list[tuple[list[tuple[TrialSpec, np.ndarray]], list[tuple[TrialSpec, np.ndarray]]]] = []
+    for fold_index in range(fold_count):
+        val_ids = fold_ids[fold_index]
+        fit = [item for index, item in indexed if index not in val_ids]
+        val = [item for index, item in indexed if index in val_ids]
+        if not fit or not val:
+            continue
+        results.append((fit, val))
+    return results or [(list(trial_segments), list(trial_segments))]
+
+
+def _aggregate_numeric_metric_dicts(metric_rows: Sequence[dict[str, Any]]) -> dict[str, float]:
+    if not metric_rows:
+        return {}
+    keys = sorted({str(key) for row in metric_rows for key in row.keys()})
+    aggregated: dict[str, float] = {}
+    for key in keys:
+        values = []
+        for row in metric_rows:
+            value = row.get(key)
+            if isinstance(value, (int, float)) and np.isfinite(float(value)):
+                values.append(float(value))
+        if values:
+            aggregated[str(key)] = float(np.mean(np.asarray(values, dtype=float)))
+    return aggregated
+
+
+def _evaluate_fbcca_frontend_candidate_cv(
+    *,
+    model_params: dict[str, Any],
+    train_segments: Sequence[tuple[TrialSpec, np.ndarray]],
+    gate_segments: Sequence[tuple[TrialSpec, np.ndarray]],
+    sampling_rate: int,
+    freqs: Sequence[float],
+    win_sec: float,
+    step_sec: float,
+    min_enter_windows: int,
+    min_exit_windows: int,
+    gate_policy: str,
+    dynamic_stop_enabled: bool,
+    dynamic_stop_alpha: float,
+    weight_cv_folds: int,
+    seed: int,
+    compute_backend: str,
+    gpu_device: int,
+    gpu_precision: str,
+    gpu_warmup: bool,
+    gpu_cache_policy: str,
+) -> dict[str, Any]:
+    folds = _split_trial_segments_kfold(gate_segments, folds=weight_cv_folds, seed=seed)
+    fold_metrics: list[dict[str, float]] = []
+    for fold_index, (profile_segments, eval_segments) in enumerate(folds, start=1):
+        decoder = create_decoder(
+            "fbcca",
+            sampling_rate=sampling_rate,
+            freqs=freqs,
+            win_sec=win_sec,
+            step_sec=step_sec,
+            model_params=model_params,
+            compute_backend=compute_backend,
+            gpu_device=gpu_device,
+            gpu_precision=gpu_precision,
+            gpu_warmup=gpu_warmup,
+            gpu_cache_policy=gpu_cache_policy,
+        )
+        if decoder.requires_fit:
+            decoder.fit(train_segments)
+        fit_rows = build_feature_rows_with_decoder(decoder, profile_segments)
+        val_rows = build_feature_rows_with_decoder(decoder, eval_segments)
+        if not fit_rows or not val_rows:
+            continue
+        profile = fit_threshold_profile(
+            fit_rows,
+            freqs=freqs,
+            win_sec=win_sec,
+            step_sec=step_sec,
+            min_enter_windows=min_enter_windows,
+            min_exit_windows=min_exit_windows,
+            gate_policy=gate_policy,
+            evaluation_rows=fit_rows,
+            dynamic_stop_enabled=dynamic_stop_enabled,
+            dynamic_stop_alpha=dynamic_stop_alpha,
+        )
+        metrics = evaluate_profile_on_feature_rows(val_rows, profile)
+        metrics["cv_fold_index"] = float(fold_index)
+        fold_metrics.append(metrics)
+    if not fold_metrics:
+        raise RuntimeError("no valid gate fold metrics for FBCCA frontend candidate")
+    aggregated = _aggregate_numeric_metric_dicts(fold_metrics)
+    objective = _calibration_objective({}, gate_policy=gate_policy, gate_metrics=aggregated)
+    return {
+        "objective": tuple(float(value) for value in objective),
+        "gate_cv_metrics": aggregated,
+        "fold_metrics": fold_metrics,
+        "fold_count": int(len(fold_metrics)),
+    }
+
+
+def optimize_fbcca_frontend_weights(
+    *,
+    train_segments: Sequence[tuple[TrialSpec, np.ndarray]],
+    gate_segments: Sequence[tuple[TrialSpec, np.ndarray]],
+    sampling_rate: int,
+    freqs: Sequence[float],
+    win_sec: float,
+    step_sec: float,
+    min_enter_windows: int,
+    min_exit_windows: int,
+    gate_policy: str,
+    dynamic_stop_enabled: bool,
+    dynamic_stop_alpha: float,
+    channel_weight_mode: Optional[str] = None,
+    subband_weight_mode: Optional[str] = None,
+    spatial_filter_mode: Optional[str] = None,
+    spatial_rank_candidates: Sequence[int] = DEFAULT_SPATIAL_RANK_CANDIDATES,
+    joint_weight_iters: int = DEFAULT_JOINT_WEIGHT_ITERS,
+    weight_cv_folds: int = DEFAULT_FBCCA_WEIGHT_CV_FOLDS,
+    spatial_source_model: str = DEFAULT_SPATIAL_SOURCE_MODEL,
+    compute_backend: str = DEFAULT_COMPUTE_BACKEND_NAME,
+    gpu_device: int = DEFAULT_GPU_DEVICE_ID,
+    gpu_precision: str = DEFAULT_GPU_PRECISION_NAME,
+    gpu_warmup: bool = True,
+    gpu_cache_policy: str = DEFAULT_GPU_CACHE_MODE,
+    log_fn: Optional[Callable[[str], None]] = None,
+    log_prefix: str = "FBCCA",
+) -> dict[str, Any]:
+    if not train_segments or not gate_segments:
+        raise ValueError("FBCCA frontend optimization requires non-empty train and gate segments")
+    logger = log_fn if log_fn is not None else (lambda _msg: None)
+    resolved_channel_mode = parse_channel_weight_mode(channel_weight_mode)
+    resolved_subband_mode = parse_subband_weight_mode(subband_weight_mode) or DEFAULT_SUBBAND_WEIGHT_MODE
+    resolved_spatial_mode = parse_spatial_filter_mode(spatial_filter_mode)
+    resolved_spatial_source = parse_spatial_source_model(spatial_source_model)
+    rank_candidates = tuple(sorted({max(1, int(value)) for value in spatial_rank_candidates})) or tuple(
+        DEFAULT_SPATIAL_RANK_CANDIDATES
+    )
+    channels = int(np.asarray(train_segments[0][1]).shape[1])
+    joint_iters = max(1, int(joint_weight_iters))
+    weight_folds = max(2, int(weight_cv_folds))
+
+    initial_channel_weights = None
+    if resolved_channel_mode == "fbcca_diag":
+        initial_channel_weights = estimate_fbcca_diag_channel_weights(
+            train_segments,
+            available_board_channels=tuple(range(channels)),
+            sampling_rate=sampling_rate,
+            freqs=freqs,
+            win_sec=win_sec,
+            step_sec=step_sec,
+            compute_backend=compute_backend,
+            gpu_device=int(gpu_device),
+            gpu_precision=gpu_precision,
+            gpu_warmup=bool(gpu_warmup),
+        )
+        initial_channel_weights = normalize_channel_weights(initial_channel_weights, channels=channels)
+    initial_subband_weights, _, initial_subband_params = resolve_fbcca_subband_weight_spec(
+        len(DEFAULT_SUBBANDS),
+        mode=resolved_subband_mode,
+    )
+    current_basis = None
+    if resolved_spatial_mode == "trca_shared":
+        seed_weights = initial_channel_weights if initial_channel_weights is not None else None
+        current_basis = train_trca_shared_spatial_basis(
+            train_segments,
+            sampling_rate=sampling_rate,
+            freqs=freqs,
+            win_sec=win_sec,
+            step_sec=step_sec,
+            channel_weights=seed_weights,
+            max_rank=max(rank_candidates),
+            spatial_source_model=resolved_spatial_source,
+        )
+
+    def evaluate_candidate(
+        candidate_channel_weights: Optional[np.ndarray],
+        candidate_subband_weights: np.ndarray,
+        candidate_subband_params: Optional[dict[str, Any]],
+        candidate_basis: Optional[np.ndarray],
+    ) -> dict[str, Any]:
+        best_eval: Optional[dict[str, Any]] = None
+        candidate_ranks: Sequence[Optional[int]]
+        if resolved_spatial_mode == "trca_shared" and candidate_basis is not None:
+            candidate_ranks = tuple(
+                rank for rank in rank_candidates if int(rank) <= int(np.asarray(candidate_basis).shape[1])
+            ) or (int(np.asarray(candidate_basis).shape[1]),)
+        else:
+            candidate_ranks = (None,)
+        for rank in candidate_ranks:
+            params = build_fbcca_frontend_model_params(
+                channel_weights=candidate_channel_weights,
+                subband_weight_mode=resolved_subband_mode,
+                subband_weights=candidate_subband_weights,
+                subband_weight_params=candidate_subband_params,
+                spatial_filter_mode=resolved_spatial_mode,
+                spatial_projection_basis=candidate_basis,
+                spatial_rank=rank,
+                spatial_source_model=resolved_spatial_source,
+            )
+            evaluation = _evaluate_fbcca_frontend_candidate_cv(
+                model_params=params,
+                train_segments=train_segments,
+                gate_segments=gate_segments,
+                sampling_rate=sampling_rate,
+                freqs=freqs,
+                win_sec=win_sec,
+                step_sec=step_sec,
+                min_enter_windows=min_enter_windows,
+                min_exit_windows=min_exit_windows,
+                gate_policy=gate_policy,
+                dynamic_stop_enabled=dynamic_stop_enabled,
+                dynamic_stop_alpha=dynamic_stop_alpha,
+                weight_cv_folds=weight_folds,
+                seed=DEFAULT_CALIBRATION_SEED,
+                compute_backend=compute_backend,
+                gpu_device=gpu_device,
+                gpu_precision=gpu_precision,
+                gpu_warmup=gpu_warmup,
+                gpu_cache_policy=gpu_cache_policy,
+            )
+            candidate = {
+                "objective": tuple(evaluation["objective"]) + (int(rank or 0),),
+                "metrics": dict(evaluation["gate_cv_metrics"]),
+                "fold_metrics": list(evaluation["fold_metrics"]),
+                "fold_count": int(evaluation["fold_count"]),
+                "rank": None if rank is None else int(rank),
+                "model_params": params,
+            }
+            if best_eval is None or tuple(candidate["objective"]) < tuple(best_eval["objective"]):
+                best_eval = candidate
+        if best_eval is None:
+            raise RuntimeError("no valid FBCCA frontend candidate produced fold metrics")
+        return dict(best_eval)
+
+    best_channel_weights = None if initial_channel_weights is None else np.asarray(initial_channel_weights, dtype=float)
+    best_subband_weights = np.asarray(initial_subband_weights, dtype=float)
+    best_subband_params = None if initial_subband_params is None else dict(initial_subband_params)
+    best_basis = None if current_basis is None else np.asarray(current_basis, dtype=float)
+    best_eval = evaluate_candidate(best_channel_weights, best_subband_weights, best_subband_params, best_basis)
+    iteration_logs: list[dict[str, Any]] = []
+    logger(
+        f"{log_prefix}: frontend optimization start | channel_mode={resolved_channel_mode or 'none'} "
+        f"subband_mode={resolved_subband_mode} spatial_mode={resolved_spatial_mode or 'none'} "
+        f"iters={joint_iters} folds={weight_folds}"
+    )
+    channel_factors = (0.75, 0.90, 1.00, 1.10, 1.25)
+    simplex_factors = (0.75, 0.90, 1.00, 1.10, 1.25)
+    for iteration in range(joint_iters):
+        weight_improved = False
+        subband_improved = False
+        basis_updated = False
+        before_objective = tuple(best_eval["objective"])
+        if resolved_channel_mode == "fbcca_diag" and best_channel_weights is not None:
+            for channel_index in range(channels):
+                logger(f"{log_prefix}: iteration {iteration + 1}/{joint_iters} channel {channel_index + 1}/{channels}")
+                local_best = dict(best_eval)
+                local_weights = np.asarray(best_channel_weights, dtype=float)
+                for factor in channel_factors:
+                    candidate = np.asarray(best_channel_weights, dtype=float)
+                    candidate[channel_index] *= float(factor)
+                    normalized = normalize_channel_weights(candidate, channels=channels)
+                    if normalized is None:
+                        continue
+                    try:
+                        evaluation = evaluate_candidate(np.asarray(normalized, dtype=float), best_subband_weights, best_subband_params, best_basis)
+                    except Exception as exc:
+                        logger(
+                            f"Config failed: model={model_name} {config_index}/{len(config_candidates)} "
+                            f"win={float(win_sec):g}s enter={int(min_enter)} exit={int(min_exit)} error={exc}"
+                        )
+                        continue
+                    if tuple(evaluation["objective"]) < tuple(local_best["objective"]):
+                        local_best = dict(evaluation)
+                        local_weights = np.asarray(normalized, dtype=float)
+                if tuple(local_best["objective"]) < tuple(best_eval["objective"]):
+                    best_eval = local_best
+                    best_channel_weights = np.asarray(local_weights, dtype=float)
+                    weight_improved = True
+        if resolved_subband_mode == "chen_ab_subject":
+            logger(f"{log_prefix}: iteration {iteration + 1}/{joint_iters} subband grid search")
+            local_best = dict(best_eval)
+            local_weights = np.asarray(best_subband_weights, dtype=float)
+            local_params = None if best_subband_params is None else dict(best_subband_params)
+            for a_value in DEFAULT_FBCCA_SUBBAND_WEIGHT_A_GRID:
+                for b_value in DEFAULT_FBCCA_SUBBAND_WEIGHT_B_GRID:
+                    candidate_weights = fbcca_subband_weights_from_ab(
+                        len(DEFAULT_SUBBANDS),
+                        a=float(a_value),
+                        b=float(b_value),
+                    )
+                    try:
+                        evaluation = evaluate_candidate(
+                            best_channel_weights,
+                            candidate_weights,
+                            {"a": float(a_value), "b": float(b_value)},
+                            best_basis,
+                        )
+                    except Exception:
+                        continue
+                    if tuple(evaluation["objective"]) < tuple(local_best["objective"]):
+                        local_best = dict(evaluation)
+                        local_weights = np.asarray(candidate_weights, dtype=float)
+                        local_params = {"a": float(a_value), "b": float(b_value)}
+            if tuple(local_best["objective"]) < tuple(best_eval["objective"]):
+                best_eval = local_best
+                best_subband_weights = np.asarray(local_weights, dtype=float)
+                best_subband_params = local_params
+                subband_improved = True
+        elif resolved_subband_mode == "simplex_subject":
+            for subband_index in range(int(best_subband_weights.size)):
+                logger(
+                    f"{log_prefix}: iteration {iteration + 1}/{joint_iters} subband {subband_index + 1}/{int(best_subband_weights.size)}"
+                )
+                local_best = dict(best_eval)
+                local_weights = np.asarray(best_subband_weights, dtype=float)
+                for factor in simplex_factors:
+                    candidate = np.asarray(best_subband_weights, dtype=float)
+                    candidate[subband_index] *= float(factor)
+                    normalized = normalize_subband_weights(candidate, subbands=int(candidate.size))
+                    if normalized is None:
+                        continue
+                    try:
+                        evaluation = evaluate_candidate(best_channel_weights, np.asarray(normalized, dtype=float), None, best_basis)
+                    except Exception:
+                        continue
+                    if tuple(evaluation["objective"]) < tuple(local_best["objective"]):
+                        local_best = dict(evaluation)
+                        local_weights = np.asarray(normalized, dtype=float)
+                if tuple(local_best["objective"]) < tuple(best_eval["objective"]):
+                    best_eval = local_best
+                    best_subband_weights = np.asarray(local_weights, dtype=float)
+                    best_subband_params = None
+                    subband_improved = True
+        if resolved_spatial_mode == "trca_shared":
+            try:
+                logger(f"{log_prefix}: iteration {iteration + 1}/{joint_iters} refreshing spatial basis")
+                refreshed_basis = train_trca_shared_spatial_basis(
+                    train_segments,
+                    sampling_rate=sampling_rate,
+                    freqs=freqs,
+                    win_sec=win_sec,
+                    step_sec=step_sec,
+                    channel_weights=best_channel_weights,
+                    max_rank=max(rank_candidates),
+                    spatial_source_model=resolved_spatial_source,
+                )
+                refreshed = evaluate_candidate(best_channel_weights, best_subband_weights, best_subband_params, refreshed_basis)
+                if tuple(refreshed["objective"]) <= tuple(best_eval["objective"]):
+                    best_eval = dict(refreshed)
+                    best_basis = np.asarray(refreshed_basis, dtype=float)
+                    basis_updated = True
+            except Exception:
+                pass
+        iteration_logs.append(
+            {
+                "iteration": int(iteration + 1),
+                "before_objective": [float(value) for value in before_objective],
+                "after_objective": [float(value) for value in best_eval["objective"]],
+                "channel_improved": bool(weight_improved),
+                "subband_improved": bool(subband_improved),
+                "basis_updated": bool(basis_updated),
+                "selected_rank": best_eval["rank"],
+            }
+        )
+        logger(
+            f"{log_prefix}: iteration {iteration + 1}/{joint_iters} done | "
+            f"channel_improved={int(weight_improved)} subband_improved={int(subband_improved)} "
+            f"basis_updated={int(basis_updated)}"
+        )
+        if not weight_improved and not subband_improved and not basis_updated:
+            break
+    optimized_params = dict(best_eval["model_params"])
+    metadata = {
+        "mode": "fbcca_frontend_joint",
+        "channel_weight_mode": resolved_channel_mode,
+        "subband_weight_mode": resolved_subband_mode,
+        "spatial_filter_mode": resolved_spatial_mode,
+        "spatial_source_model": resolved_spatial_source,
+        "objective": [float(value) for value in best_eval["objective"]],
+        "initial_channel_weights": None if initial_channel_weights is None else [float(value) for value in initial_channel_weights],
+        "optimized_channel_weights": None if best_channel_weights is None else [float(value) for value in best_channel_weights],
+        "initial_subband_weights": [float(value) for value in initial_subband_weights],
+        "optimized_subband_weights": [float(value) for value in best_subband_weights],
+        "optimized_subband_params": None if best_subband_params is None else json_safe(dict(best_subband_params)),
+        "selected_spatial_rank": best_eval["rank"],
+        "spatial_rank_candidates": [int(value) for value in rank_candidates],
+        "joint_weight_iters": int(joint_iters),
+        "weight_cv_folds": int(weight_folds),
+        "iterations": json_safe(iteration_logs),
+        "gate_cv_metrics": dict(best_eval["metrics"]),
+        "gate_cv_fold_metrics": json_safe(list(best_eval["fold_metrics"])),
+        "optimized_model_params": json_safe(optimized_params),
+        "optimized_spatial_projection": (
+            None
+            if best_basis is None
+            else np.asarray(best_basis[:, : int(best_eval["rank"] or 1)], dtype=float).tolist()
+        ),
+    }
+    return {
+        "channel_weights": None if best_channel_weights is None else np.asarray(best_channel_weights, dtype=float),
+        "subband_weights": np.asarray(best_subband_weights, dtype=float),
+        "subband_weight_params": None if best_subband_params is None else dict(best_subband_params),
+        "metadata": metadata,
+    }
 
 
 def select_auto_eeg_channels(
@@ -2870,6 +4670,11 @@ def select_auto_eeg_channels(
     freqs: Sequence[float],
     win_sec: float,
     step_sec: float,
+    compute_backend: str = DEFAULT_COMPUTE_BACKEND_NAME,
+    gpu_device: int = DEFAULT_GPU_DEVICE_ID,
+    gpu_precision: str = DEFAULT_GPU_PRECISION_NAME,
+    gpu_warmup: bool = True,
+    gpu_cache_policy: str = DEFAULT_GPU_CACHE_MODE,
     seed: int = DEFAULT_CALIBRATION_SEED,
     validation_fraction: float = DEFAULT_VALIDATION_FRACTION,
     target_count: int = DEFAULT_AUTO_CHANNEL_COUNT,
@@ -2888,6 +4693,10 @@ def select_auto_eeg_channels(
             freqs=freqs,
             win_sec=win_sec,
             step_sec=step_sec,
+            compute_backend=compute_backend,
+            gpu_device=int(gpu_device),
+            gpu_precision=gpu_precision,
+            gpu_warmup=bool(gpu_warmup),
         )
         fit_rows, validation_rows, _ = split_feature_rows_by_trial(
             rows,
@@ -2940,6 +4749,11 @@ def select_auto_eeg_channels_for_model(
     win_sec: float,
     step_sec: float,
     model_params: Optional[dict[str, Any]] = None,
+    compute_backend: str = DEFAULT_COMPUTE_BACKEND_NAME,
+    gpu_device: int = DEFAULT_GPU_DEVICE_ID,
+    gpu_precision: str = DEFAULT_GPU_PRECISION_NAME,
+    gpu_warmup: bool = True,
+    gpu_cache_policy: str = DEFAULT_GPU_CACHE_MODE,
     seed: int = DEFAULT_CALIBRATION_SEED,
     validation_fraction: float = DEFAULT_VALIDATION_FRACTION,
     target_count: int = DEFAULT_AUTO_CHANNEL_COUNT,
@@ -2976,6 +4790,11 @@ def select_auto_eeg_channels_for_model(
                 win_sec=win_sec,
                 step_sec=step_sec,
                 model_params=params,
+                compute_backend=compute_backend,
+                gpu_device=gpu_device,
+                gpu_precision=gpu_precision,
+                gpu_warmup=gpu_warmup,
+                gpu_cache_policy=gpu_cache_policy,
             )
             if decoder.requires_fit:
                 decoder.fit(fit_segments)
@@ -3036,21 +4855,53 @@ def optimize_profile_from_segments(
     validation_fraction: float = DEFAULT_VALIDATION_FRACTION,
     gate_policy: str = DEFAULT_GATE_POLICY,
     channel_weight_mode: Optional[str] = DEFAULT_CHANNEL_WEIGHT_MODE,
+    subband_weight_mode: Optional[str] = DEFAULT_SUBBAND_WEIGHT_MODE,
+    spatial_filter_mode: Optional[str] = DEFAULT_SPATIAL_FILTER_MODE,
+    spatial_rank_candidates: Sequence[int] = DEFAULT_SPATIAL_RANK_CANDIDATES,
+    joint_weight_iters: int = DEFAULT_JOINT_WEIGHT_ITERS,
+    weight_cv_folds: int = DEFAULT_FBCCA_WEIGHT_CV_FOLDS,
+    spatial_source_model: str = DEFAULT_SPATIAL_SOURCE_MODEL,
     dynamic_stop_enabled: bool = DEFAULT_DYNAMIC_STOP_ENABLED,
     dynamic_stop_alpha: float = DEFAULT_DYNAMIC_STOP_ALPHA,
+    compute_backend: str = DEFAULT_COMPUTE_BACKEND_NAME,
+    gpu_device: int = DEFAULT_GPU_DEVICE_ID,
+    gpu_precision: str = DEFAULT_GPU_PRECISION_NAME,
+    gpu_warmup: bool = True,
+    gpu_cache_policy: str = DEFAULT_GPU_CACHE_MODE,
 ) -> tuple[ThresholdProfile, dict[str, Any]]:
     policy = parse_gate_policy(gate_policy)
     weight_mode = parse_channel_weight_mode(channel_weight_mode)
-    selected_channels, channel_scores = select_auto_eeg_channels(
-        trial_segments,
-        available_board_channels=available_board_channels,
-        sampling_rate=sampling_rate,
-        freqs=freqs,
-        win_sec=preferred_win_sec,
-        step_sec=step_sec,
-        seed=seed,
-        validation_fraction=validation_fraction,
-    )
+    resolved_subband_mode = parse_subband_weight_mode(subband_weight_mode) or DEFAULT_SUBBAND_WEIGHT_MODE
+    resolved_spatial_mode = parse_spatial_filter_mode(spatial_filter_mode)
+    resolved_spatial_ranks = tuple(sorted({max(1, int(value)) for value in spatial_rank_candidates}))
+    if not resolved_spatial_ranks:
+        resolved_spatial_ranks = tuple(DEFAULT_SPATIAL_RANK_CANDIDATES)
+    resolved_joint_iters = max(1, int(joint_weight_iters))
+    resolved_weight_cv_folds = max(2, int(weight_cv_folds))
+    resolved_spatial_source = parse_spatial_source_model(spatial_source_model)
+    if fbcca_weight_learning_requires_all8(
+        "fbcca",
+        channel_weight_mode=weight_mode,
+        subband_weight_mode=resolved_subband_mode,
+    ):
+        selected_channels = tuple(int(channel) for channel in available_board_channels)
+        channel_scores = []
+    else:
+        selected_channels, channel_scores = select_auto_eeg_channels(
+            trial_segments,
+            available_board_channels=available_board_channels,
+            sampling_rate=sampling_rate,
+            freqs=freqs,
+            win_sec=preferred_win_sec,
+            step_sec=step_sec,
+            compute_backend=compute_backend,
+            gpu_device=int(gpu_device),
+            gpu_precision=gpu_precision,
+            gpu_warmup=bool(gpu_warmup),
+            gpu_cache_policy=gpu_cache_policy,
+            seed=seed,
+            validation_fraction=validation_fraction,
+        )
 
     available = tuple(int(channel) for channel in available_board_channels)
     selected_positions = [available.index(int(channel)) for channel in selected_channels]
@@ -3071,7 +4922,13 @@ def optimize_profile_from_segments(
         gate_segments = list(fit_segments)
     eval_segments = list(holdout_segments) if holdout_segments else list(gate_segments)
 
-    win_candidates = calibration_search_win_candidates(active_sec, preferred_win_sec)
+    win_candidates = calibration_search_win_candidates(active_sec, preferred_win_sec, gate_policy=policy)
+    if policy == "speed":
+        min_enter_candidates = tuple(DEFAULT_SPEED_MIN_ENTER_CANDIDATES)
+        min_exit_candidates = tuple(DEFAULT_SPEED_MIN_EXIT_CANDIDATES)
+    else:
+        min_enter_candidates = tuple(DEFAULT_MIN_ENTER_CANDIDATES)
+        min_exit_candidates = tuple(DEFAULT_MIN_EXIT_CANDIDATES)
     best_profile: Optional[ThresholdProfile] = None
     best_summary: Optional[dict[str, float]] = None
     best_search: Optional[dict[str, Any]] = None
@@ -3081,18 +4938,16 @@ def optimize_profile_from_segments(
 
     for win_sec in win_candidates:
         available_windows = calibration_window_count(active_sec, win_sec, step_sec)
-        valid_enter_candidates = [
-            int(candidate) for candidate in DEFAULT_MIN_ENTER_CANDIDATES if int(candidate) <= int(available_windows)
-        ]
+        valid_enter_candidates = [int(candidate) for candidate in min_enter_candidates if int(candidate) <= int(available_windows)]
         if not valid_enter_candidates:
             continue
         for min_enter in valid_enter_candidates:
-            for min_exit in DEFAULT_MIN_EXIT_CANDIDATES:
+            for min_exit in min_exit_candidates:
                 model_params: dict[str, Any] = {"Nh": DEFAULT_NH}
                 weight_metadata: Optional[dict[str, Any]] = None
-                if weight_mode == "fbcca_diag":
+                if weight_mode == "fbcca_diag" or resolved_subband_mode != "chen_fixed":
                     try:
-                        weights, weight_metadata = optimize_fbcca_diag_channel_weights(
+                        frontend_result = optimize_fbcca_frontend_weights(
                             train_segments=fit_segments,
                             gate_segments=gate_segments,
                             sampling_rate=sampling_rate,
@@ -3104,9 +4959,44 @@ def optimize_profile_from_segments(
                             gate_policy=policy,
                             dynamic_stop_enabled=dynamic_stop_enabled,
                             dynamic_stop_alpha=dynamic_stop_alpha,
+                            channel_weight_mode=weight_mode,
+                            subband_weight_mode=resolved_subband_mode,
+                            spatial_filter_mode=resolved_spatial_mode,
+                            spatial_rank_candidates=resolved_spatial_ranks,
+                            joint_weight_iters=resolved_joint_iters,
+                            weight_cv_folds=resolved_weight_cv_folds,
+                            spatial_source_model=resolved_spatial_source,
+                            compute_backend=compute_backend,
+                            gpu_device=gpu_device,
+                            gpu_precision=gpu_precision,
+                            gpu_warmup=gpu_warmup,
+                            gpu_cache_policy=gpu_cache_policy,
                         )
-                        model_params["channel_weight_mode"] = "fbcca_diag"
-                        model_params["channel_weights"] = [float(value) for value in weights]
+                        weight_metadata = (
+                            dict(frontend_result.get("metadata"))
+                            if isinstance(frontend_result.get("metadata"), dict)
+                            else None
+                        )
+                        optimized_params = (
+                            weight_metadata.get("optimized_model_params")
+                            if isinstance(weight_metadata, dict)
+                            else None
+                        )
+                        if isinstance(optimized_params, dict) and optimized_params:
+                            model_params = dict(optimized_params)
+                            model_params.setdefault("Nh", DEFAULT_NH)
+                        else:
+                            optimized_weights = frontend_result.get("channel_weights")
+                            optimized_subband_weights = frontend_result.get("subband_weights")
+                            optimized_subband_params = frontend_result.get("subband_weight_params")
+                            if optimized_weights is not None:
+                                model_params["channel_weight_mode"] = "fbcca_diag"
+                                model_params["channel_weights"] = [float(value) for value in optimized_weights]
+                            model_params["subband_weight_mode"] = str(resolved_subband_mode)
+                            if optimized_subband_weights is not None:
+                                model_params["subband_weights"] = [float(value) for value in optimized_subband_weights]
+                            if optimized_subband_params is not None:
+                                model_params["subband_weight_params"] = json_safe(dict(optimized_subband_params))
                     except Exception:
                         continue
                 try:
@@ -3117,6 +5007,11 @@ def optimize_profile_from_segments(
                         win_sec=win_sec,
                         step_sec=step_sec,
                         model_params=model_params,
+                        compute_backend=compute_backend,
+                        gpu_device=gpu_device,
+                        gpu_precision=gpu_precision,
+                        gpu_warmup=gpu_warmup,
+                        gpu_cache_policy=gpu_cache_policy,
                     )
                     gate_rows = build_feature_rows_with_decoder(decoder, gate_segments)
                     if not gate_rows:
@@ -3159,12 +5054,23 @@ def optimize_profile_from_segments(
         raise RuntimeError("no valid calibration configuration found during validation search")
 
     final_model_params: dict[str, Any] = {"Nh": DEFAULT_NH, "state": {}}
-    if weight_mode == "fbcca_diag" and best_weight_metadata is not None:
-        optimized_weights = list(best_weight_metadata.get("optimized_weights", []))
-        normalized = normalize_channel_weights(optimized_weights, channels=len(selected_channels))
-        if normalized is not None:
-            final_model_params["channel_weight_mode"] = "fbcca_diag"
-            final_model_params["channel_weights"] = [float(value) for value in normalized]
+    if (weight_mode == "fbcca_diag" or resolved_subband_mode != "chen_fixed") and best_weight_metadata is not None:
+        optimized_model_params = best_weight_metadata.get("optimized_model_params")
+        if isinstance(optimized_model_params, dict) and optimized_model_params:
+            final_model_params.update({key: value for key, value in optimized_model_params.items() if key != "state"})
+        else:
+            optimized_weights = best_weight_metadata.get("optimized_channel_weights", best_weight_metadata.get("optimized_weights"))
+            normalized = normalize_channel_weights(optimized_weights, channels=len(selected_channels))
+            if normalized is not None and weight_mode == "fbcca_diag":
+                final_model_params["channel_weight_mode"] = "fbcca_diag"
+                final_model_params["channel_weights"] = [float(value) for value in normalized]
+            optimized_subband_weights = best_weight_metadata.get("optimized_subband_weights")
+            if optimized_subband_weights is not None:
+                final_model_params["subband_weight_mode"] = str(resolved_subband_mode)
+                final_model_params["subband_weights"] = [float(value) for value in optimized_subband_weights]
+            optimized_subband_params = best_weight_metadata.get("optimized_subband_params")
+            if isinstance(optimized_subband_params, dict):
+                final_model_params["subband_weight_params"] = json_safe(dict(optimized_subband_params))
 
     final_decoder = create_decoder(
         DEFAULT_MODEL_NAME,
@@ -3173,6 +5079,11 @@ def optimize_profile_from_segments(
         win_sec=float(best_search["win_sec"]),
         step_sec=step_sec,
         model_params=final_model_params,
+        compute_backend=compute_backend,
+        gpu_device=gpu_device,
+        gpu_precision=gpu_precision,
+        gpu_warmup=gpu_warmup,
+        gpu_cache_policy=gpu_cache_policy,
     )
     all_rows = build_feature_rows_with_decoder(final_decoder, selected_segments)
     refit_profile = fit_threshold_profile(
@@ -3194,12 +5105,35 @@ def optimize_profile_from_segments(
     profile_channel_weights = None
     if channel_weights is not None:
         profile_channel_weights = tuple(float(value) for value in channel_weights)
+    subband_weights = final_model_params.get("subband_weights")
+    profile_subband_weights = None
+    if subband_weights is not None:
+        profile_subband_weights = tuple(float(value) for value in subband_weights)
+    spatial_filter_rank = final_model_params.get("spatial_filter_rank")
+    profile_spatial_rank = None if spatial_filter_rank is None else int(spatial_filter_rank)
+    profile_spatial_mode = (
+        str(final_model_params.get("spatial_filter_mode"))
+        if final_model_params.get("spatial_filter_mode") is not None
+        else resolved_spatial_mode
+    )
+    profile_spatial_state = (
+        dict(final_model_params.get("spatial_filter_state"))
+        if isinstance(final_model_params.get("spatial_filter_state"), dict)
+        else None
+    )
+    profile_joint_training = dict(best_weight_metadata) if isinstance(best_weight_metadata, dict) else None
     metadata = {
         "source": "calibration",
         "calibration_seed": int(seed),
         "validation_fraction": float(validation_fraction),
         "gate_policy": policy,
         "channel_weight_mode": weight_mode,
+        "subband_weight_mode": resolved_subband_mode,
+        "spatial_filter_mode": resolved_spatial_mode,
+        "spatial_rank_candidates": [int(value) for value in resolved_spatial_ranks],
+        "joint_weight_iters": int(resolved_joint_iters),
+        "weight_cv_folds": int(resolved_weight_cv_folds),
+        "spatial_source_model": resolved_spatial_source,
         "selected_eeg_channels": [int(channel) for channel in selected_channels],
         "channel_selection": channel_scores,
         "validation_search": best_search,
@@ -3226,6 +5160,17 @@ def optimize_profile_from_segments(
         dynamic_stop=dict(refit_profile.dynamic_stop or {}),
         channel_weight_mode=weight_mode,
         channel_weights=profile_channel_weights,
+        subband_weight_mode=resolved_subband_mode,
+        subband_weights=profile_subband_weights,
+        subband_weight_params=(
+            dict(final_model_params.get("subband_weight_params"))
+            if isinstance(final_model_params.get("subband_weight_params"), dict)
+            else None
+        ),
+        spatial_filter_mode=profile_spatial_mode,
+        spatial_filter_rank=profile_spatial_rank,
+        spatial_filter_state=profile_spatial_state,
+        joint_weight_training=profile_joint_training,
         metadata=metadata,
     ), metadata
 
@@ -3309,7 +5254,7 @@ def fit_threshold_profile(
     best: tuple[float, float, float] | None = None
     best_objective: Optional[tuple[float, ...]] = None
     for score_th, ratio_th, margin_th in product(score_grid, ratio_grid, margin_grid):
-        if policy == "balanced":
+        if policy in {"balanced", "speed"}:
             candidate_profile = ThresholdProfile(
                 freqs=(float(freqs[0]), float(freqs[1]), float(freqs[2]), float(freqs[3])),
                 win_sec=float(win_sec),
@@ -3322,6 +5267,10 @@ def fit_threshold_profile(
                 min_enter_windows=int(min_enter_windows),
                 min_exit_windows=int(min_exit_windows),
                 gate_policy=policy,
+                min_switch_windows=1,
+                switch_enter_score_th=0.95 * float(score_th),
+                switch_enter_ratio_th=float(ratio_th),
+                switch_enter_margin_th=0.80 * float(margin_th),
                 dynamic_stop={
                     "enabled": False,
                     "alpha": float(dynamic_stop_alpha),
@@ -3413,6 +5362,15 @@ def fit_threshold_profile(
         "enter_acc_th": None,
         "exit_acc_th": None,
     }
+    if policy == "speed":
+        speed_weights = {
+            "idle_fp_per_min": float(DEFAULT_SPEED_OBJECTIVE_IDLE_WEIGHT),
+            "control_recall": float(DEFAULT_SPEED_OBJECTIVE_RECALL_WEIGHT),
+            "switch_latency_s": float(DEFAULT_SPEED_OBJECTIVE_SWITCH_WEIGHT),
+            "release_latency_s": float(DEFAULT_SPEED_OBJECTIVE_RELEASE_WEIGHT),
+        }
+    else:
+        speed_weights = None
     base_profile = ThresholdProfile(
         freqs=(freq_tuple[0], freq_tuple[1], freq_tuple[2], freq_tuple[3]),
         win_sec=float(win_sec),
@@ -3424,6 +5382,11 @@ def fit_threshold_profile(
         exit_ratio_th=0.95 * enter_ratio_th,
         min_enter_windows=int(min_enter_windows),
         min_exit_windows=int(min_exit_windows),
+        min_switch_windows=1,
+        switch_enter_score_th=0.95 * float(enter_score_th),
+        switch_enter_ratio_th=float(enter_ratio_th),
+        switch_enter_margin_th=0.80 * float(enter_margin_th),
+        speed_objective_weights=speed_weights,
         enter_log_lr_th=best_log_lr_th,
         exit_log_lr_th=exit_log_lr_th,
         control_feature_means={name: float(value) for name, value in zip(MODEL_FEATURE_NAMES, control_means)},
@@ -3689,6 +5652,8 @@ def compute_classification_metrics(
         "macro_f1": macro_f1,
         "confusion_matrix": [[int(item) for item in row] for row in confusion],
         "labels": ordered_labels,
+        "y_true": [str(item) for item in y_true],
+        "y_pred": [str(item) for item in y_pred],
         "mean_decision_time_s": mean_decision_time_s,
         "itr_bpm": itr_bpm,
         "n_total": int(total),
@@ -3721,9 +5686,17 @@ def evaluate_decoder_on_trials_v2(
     dynamic_stop_enabled: Optional[bool] = None,
     metric_scope: str = DEFAULT_METRIC_SCOPE,
     decision_time_mode: str = DEFAULT_DECISION_TIME_MODE,
+    async_decision_time_mode: Optional[str] = None,
+    paper_decision_time_mode: Optional[str] = None,
 ) -> dict[str, Any]:
     scope = parse_metric_scope(metric_scope)
-    decision_mode = parse_decision_time_mode(decision_time_mode)
+    default_mode = parse_decision_time_mode(decision_time_mode)
+    paper_mode = parse_decision_time_mode(
+        paper_decision_time_mode if paper_decision_time_mode is not None else default_mode
+    )
+    async_mode = parse_decision_time_mode(
+        async_decision_time_mode if async_decision_time_mode is not None else DEFAULT_ASYNC_DECISION_TIME_MODE
+    )
     gate_profile = profile
     if dynamic_stop_enabled is not None:
         payload = dict(profile.dynamic_stop or {})
@@ -3734,6 +5707,7 @@ def evaluate_decoder_on_trials_v2(
     idle_selected_windows = 0
     idle_selected_events = 0
     idle_windows = 0
+    idle_duration_sec = 0.0
     control_trials = 0
     control_detected_trials = 0
     detection_latencies: list[float] = []
@@ -3744,10 +5718,13 @@ def evaluate_decoder_on_trials_v2(
     prev_trial_expected_freq: Optional[float] = None
     switch_trials = 0
     switch_detected_trials = 0
+    switch_detected_trials_at_2p8s = 0
     switch_penalty_trials = 0
     release_trials = 0
     release_detected_trials = 0
     release_penalty_trials = 0
+    control_detected_trials_at_2s = 0
+    control_detected_trials_at_3s = 0
     trial_rows: list[dict[str, Any]] = []
     has_explicit_switch_trials = any(
         trial.expected_freq is not None and str(trial.label).startswith("switch_to_")
@@ -3827,6 +5804,7 @@ def evaluate_decoder_on_trials_v2(
         )
 
         if trial.expected_freq is None:
+            idle_duration_sec += float(max(trial_duration_sec, 0.0))
             if prev_trial_expected_freq is not None:
                 release_trials += 1
                 penalty_latency = float(trial_duration_sec + decoder.win_sec)
@@ -3842,6 +5820,10 @@ def evaluate_decoder_on_trials_v2(
         if first_correct_latency is not None:
             control_detected_trials += 1
             detection_latencies.append(float(first_correct_latency))
+            if float(first_correct_latency) <= float(DEFAULT_CONTROL_RECALL_AT_2S_DEADLINE):
+                control_detected_trials_at_2s += 1
+            if float(first_correct_latency) <= float(DEFAULT_CONTROL_RECALL_AT_3S_DEADLINE):
+                control_detected_trials_at_3s += 1
         if is_switch_trial:
             penalty_latency = float(trial_duration_sec + decoder.win_sec)
             if first_correct_latency is None:
@@ -3850,10 +5832,12 @@ def evaluate_decoder_on_trials_v2(
             else:
                 switch_detected_trials += 1
                 switch_latencies.append(float(first_correct_latency))
+                if float(first_correct_latency) <= float(DEFAULT_SWITCH_DETECT_AT_2P8S_DEADLINE):
+                    switch_detected_trials_at_2p8s += 1
         last_control_freq = float(trial.expected_freq)
         prev_trial_expected_freq = float(trial.expected_freq)
 
-    idle_minutes = float(idle_windows) * float(decoder.step_sec) / 60.0
+    idle_minutes = float(max(idle_duration_sec, 0.0)) / 60.0
     idle_fp_per_min = float(idle_selected_events / idle_minutes) if idle_minutes > 1e-12 else 0.0
     idle_selected_windows_per_min = float(idle_selected_windows / idle_minutes) if idle_minutes > 1e-12 else 0.0
     control_recall = float(control_detected_trials / control_trials) if control_trials else 0.0
@@ -3868,7 +5852,12 @@ def evaluate_decoder_on_trials_v2(
         float(np.median(np.asarray(release_latencies, dtype=float))) if release_latencies else float("inf")
     )
     switch_detect_rate = float(switch_detected_trials / switch_trials) if switch_trials else 0.0
+    switch_detect_rate_at_2p8s = (
+        float(switch_detected_trials_at_2p8s / switch_trials) if switch_trials else 0.0
+    )
     release_detect_rate = float(release_detected_trials / release_trials) if release_trials else 0.0
+    control_recall_at_2s = float(control_detected_trials_at_2s / control_trials) if control_trials else 0.0
+    control_recall_at_3s = float(control_detected_trials_at_3s / control_trials) if control_trials else 0.0
     async_itr = compute_itr_bits_per_minute(
         accuracy=control_recall,
         class_count=len(decoder.freqs),
@@ -3878,8 +5867,11 @@ def evaluate_decoder_on_trials_v2(
         "idle_fp_per_min": idle_fp_per_min,
         "idle_selected_windows_per_min": idle_selected_windows_per_min,
         "control_recall": control_recall,
+        "control_recall_at_2s": control_recall_at_2s,
+        "control_recall_at_3s": control_recall_at_3s,
         "control_miss_rate": control_miss_rate,
         "switch_detect_rate": switch_detect_rate,
+        "switch_detect_rate_at_2.8s": switch_detect_rate_at_2p8s,
         "switch_latency_s": median_switch_latency,
         "release_detect_rate": release_detect_rate,
         "release_latency_s": median_release_latency,
@@ -3890,8 +5882,12 @@ def evaluate_decoder_on_trials_v2(
         "idle_windows": float(idle_windows),
         "idle_selected_windows": float(idle_selected_windows),
         "idle_selected_events": float(idle_selected_events),
+        "idle_fp_event_count": float(idle_selected_events),
+        "idle_time_sec": float(idle_duration_sec),
+        "idle_time_min": float(idle_minutes),
         "switch_trials": float(switch_trials),
         "switch_detected_trials": float(switch_detected_trials),
+        "switch_detected_trials_at_2.8s": float(switch_detected_trials_at_2p8s),
         "switch_penalty_trials": float(switch_penalty_trials),
         "release_trials": float(release_trials),
         "release_detected_trials": float(release_detected_trials),
@@ -3899,146 +5895,161 @@ def evaluate_decoder_on_trials_v2(
     }
 
     freq_labels = [_freq_label(freq) for freq in decoder.freqs]
-    y4_true: list[str] = []
-    y4_pred: list[str] = []
-    times4: list[float] = []
-    y2_true: list[str] = []
-    y2_pred: list[str] = []
-    times2: list[float] = []
-    y5_true: list[str] = []
-    y5_pred: list[str] = []
-    times5: list[float] = []
     labels2 = ("idle", "control")
     labels5 = ("idle", *freq_labels)
 
-    for row in trial_rows:
-        expected = row["expected_freq"]
-        trial_duration_sec = float(row["trial_duration_sec"])
-        first_correct_latency = row["first_correct_latency_s"]
-        first_any_latency = row["first_selected_any_latency_s"]
-        first_any_freq = row["first_selected_any_freq"]
-        last_pred_freq = row["last_pred_freq"]
-        had_selected = bool(row["had_selected"])
+    def _build_lens_metrics(mode: str) -> tuple[dict[str, Any], dict[str, Any], Optional[dict[str, Any]]]:
+        y4_true: list[str] = []
+        y4_pred: list[str] = []
+        times4: list[float] = []
+        y2_true: list[str] = []
+        y2_pred: list[str] = []
+        times2: list[float] = []
+        y5_true: list[str] = []
+        y5_pred: list[str] = []
+        times5: list[float] = []
 
-        true_2 = "idle" if expected is None else "control"
-        if expected is None:
-            pred_2 = "control" if had_selected else "idle"
-        elif decision_mode == "first-correct":
-            pred_2 = "control" if first_correct_latency is not None else "idle"
-        elif decision_mode == "first-any":
-            pred_2 = "control" if first_any_latency is not None else "idle"
-        else:
-            pred_2 = "control" if had_selected else "idle"
-        y2_true.append(true_2)
-        y2_pred.append(pred_2)
-        if expected is None:
-            if decision_mode == "first-any" and first_any_latency is not None:
-                times2.append(float(first_any_latency))
-            else:
-                times2.append(float(decoder.win_sec))
-        else:
-            times2.append(
-                _decision_latency_with_mode(
-                    mode=decision_mode,
-                    first_correct_latency=(None if first_correct_latency is None else float(first_correct_latency)),
-                    first_any_latency=(None if first_any_latency is None else float(first_any_latency)),
-                    trial_duration_sec=trial_duration_sec,
-                    win_sec=decoder.win_sec,
-                )
-            )
+        for row in trial_rows:
+            expected = row["expected_freq"]
+            trial_duration_sec = float(row["trial_duration_sec"])
+            first_correct_latency = row["first_correct_latency_s"]
+            first_any_latency = row["first_selected_any_latency_s"]
+            first_any_freq = row["first_selected_any_freq"]
+            last_pred_freq = row["last_pred_freq"]
+            had_selected = bool(row["had_selected"])
 
-        if expected is not None:
-            true_label = _freq_label(float(expected))
-            if decision_mode == "first-correct" and first_correct_latency is not None:
-                pred_label = true_label
-            else:
-                if decision_mode == "fixed-window":
-                    candidate_freq = last_pred_freq if last_pred_freq is not None else first_any_freq
-                else:
-                    candidate_freq = first_any_freq if first_any_freq is not None else last_pred_freq
-                if candidate_freq is None:
-                    candidate_freq = float(decoder.freqs[0])
-                pred_label = _freq_label(_nearest_freq(float(candidate_freq), decoder.freqs))
-            y4_true.append(true_label)
-            y4_pred.append(pred_label)
-            times4.append(
-                _decision_latency_with_mode(
-                    mode=decision_mode,
-                    first_correct_latency=(None if first_correct_latency is None else float(first_correct_latency)),
-                    first_any_latency=(None if first_any_latency is None else float(first_any_latency)),
-                    trial_duration_sec=trial_duration_sec,
-                    win_sec=decoder.win_sec,
-                )
-            )
-
-        if scope == "5class":
+            true_2 = "idle" if expected is None else "control"
             if expected is None:
-                true_5 = "idle"
-                if decision_mode == "first-any" and first_any_latency is not None:
-                    times5.append(float(first_any_latency))
-                else:
-                    times5.append(float(decoder.win_sec))
+                pred_2 = "control" if had_selected else "idle"
+            elif mode == "first-correct":
+                pred_2 = "control" if first_correct_latency is not None else "idle"
+            elif mode == "first-any":
+                pred_2 = "control" if first_any_latency is not None else "idle"
             else:
-                true_5 = _freq_label(float(expected))
-                times5.append(
+                pred_2 = "control" if had_selected else "idle"
+            y2_true.append(true_2)
+            y2_pred.append(pred_2)
+            if expected is None:
+                if mode == "first-any" and first_any_latency is not None:
+                    times2.append(float(first_any_latency))
+                else:
+                    times2.append(float(decoder.win_sec))
+            else:
+                times2.append(
                     _decision_latency_with_mode(
-                        mode=decision_mode,
+                        mode=mode,
                         first_correct_latency=(None if first_correct_latency is None else float(first_correct_latency)),
                         first_any_latency=(None if first_any_latency is None else float(first_any_latency)),
                         trial_duration_sec=trial_duration_sec,
                         win_sec=decoder.win_sec,
                     )
                 )
-            if expected is not None and decision_mode == "first-correct" and first_correct_latency is not None:
-                pred_5 = _freq_label(float(expected))
-            else:
-                if decision_mode == "fixed-window":
-                    candidate_freq = last_pred_freq if last_pred_freq is not None else first_any_freq
-                else:
-                    candidate_freq = first_any_freq if first_any_freq is not None else last_pred_freq
-                if candidate_freq is None:
-                    pred_5 = "idle"
-                else:
-                    pred_5 = _freq_label(_nearest_freq(float(candidate_freq), decoder.freqs))
-            y5_true.append(true_5)
-            y5_pred.append(pred_5)
 
-    metrics_4class = compute_classification_metrics(
-        y_true=y4_true,
-        y_pred=y4_pred,
-        labels=freq_labels,
-        decision_time_samples_s=times4,
-        itr_class_count=4,
-        decision_time_fallback_s=float(decoder.win_sec),
-    )
-    metrics_2class = compute_classification_metrics(
-        y_true=y2_true,
-        y_pred=y2_pred,
-        labels=labels2,
-        decision_time_samples_s=times2,
-        itr_class_count=2,
-        decision_time_fallback_s=float(decoder.win_sec),
-    )
-    metrics_5class: Optional[dict[str, Any]]
-    if scope == "5class":
-        metrics_5class = compute_classification_metrics(
-            y_true=y5_true,
-            y_pred=y5_pred,
-            labels=labels5,
-            decision_time_samples_s=times5,
-            itr_class_count=5,
+            if expected is not None:
+                true_label = _freq_label(float(expected))
+                if mode == "first-correct" and first_correct_latency is not None:
+                    pred_label = true_label
+                else:
+                    if mode == "fixed-window":
+                        candidate_freq = last_pred_freq if last_pred_freq is not None else first_any_freq
+                    else:
+                        candidate_freq = first_any_freq if first_any_freq is not None else last_pred_freq
+                    if candidate_freq is None:
+                        candidate_freq = float(decoder.freqs[0])
+                    pred_label = _freq_label(_nearest_freq(float(candidate_freq), decoder.freqs))
+                y4_true.append(true_label)
+                y4_pred.append(pred_label)
+                times4.append(
+                    _decision_latency_with_mode(
+                        mode=mode,
+                        first_correct_latency=(None if first_correct_latency is None else float(first_correct_latency)),
+                        first_any_latency=(None if first_any_latency is None else float(first_any_latency)),
+                        trial_duration_sec=trial_duration_sec,
+                        win_sec=decoder.win_sec,
+                    )
+                )
+
+            if scope == "5class":
+                if expected is None:
+                    true_5 = "idle"
+                    if mode == "first-any" and first_any_latency is not None:
+                        times5.append(float(first_any_latency))
+                    else:
+                        times5.append(float(decoder.win_sec))
+                else:
+                    true_5 = _freq_label(float(expected))
+                    times5.append(
+                        _decision_latency_with_mode(
+                            mode=mode,
+                            first_correct_latency=(None if first_correct_latency is None else float(first_correct_latency)),
+                            first_any_latency=(None if first_any_latency is None else float(first_any_latency)),
+                            trial_duration_sec=trial_duration_sec,
+                            win_sec=decoder.win_sec,
+                        )
+                    )
+                if expected is not None and mode == "first-correct" and first_correct_latency is not None:
+                    pred_5 = _freq_label(float(expected))
+                else:
+                    if mode == "fixed-window":
+                        candidate_freq = last_pred_freq if last_pred_freq is not None else first_any_freq
+                    else:
+                        candidate_freq = first_any_freq if first_any_freq is not None else last_pred_freq
+                    if candidate_freq is None:
+                        pred_5 = "idle"
+                    else:
+                        pred_5 = _freq_label(_nearest_freq(float(candidate_freq), decoder.freqs))
+                y5_true.append(true_5)
+                y5_pred.append(pred_5)
+
+        metrics_4class = compute_classification_metrics(
+            y_true=y4_true,
+            y_pred=y4_pred,
+            labels=freq_labels,
+            decision_time_samples_s=times4,
+            itr_class_count=4,
             decision_time_fallback_s=float(decoder.win_sec),
         )
-    else:
-        metrics_5class = None
+        metrics_2class = compute_classification_metrics(
+            y_true=y2_true,
+            y_pred=y2_pred,
+            labels=labels2,
+            decision_time_samples_s=times2,
+            itr_class_count=2,
+            decision_time_fallback_s=float(decoder.win_sec),
+        )
+        metrics_5class: Optional[dict[str, Any]]
+        if scope == "5class":
+            metrics_5class = compute_classification_metrics(
+                y_true=y5_true,
+                y_pred=y5_pred,
+                labels=labels5,
+                decision_time_samples_s=times5,
+                itr_class_count=5,
+                decision_time_fallback_s=float(decoder.win_sec),
+            )
+        else:
+            metrics_5class = None
+        return metrics_4class, metrics_2class, metrics_5class
+
+    paper_metrics_4class, paper_metrics_2class, paper_metrics_5class = _build_lens_metrics(paper_mode)
+    async_lens_metrics_4class, async_lens_metrics_2class, async_lens_metrics_5class = _build_lens_metrics(async_mode)
 
     return {
         "async_metrics": async_metrics,
-        "metrics_4class": metrics_4class,
-        "metrics_2class": metrics_2class,
-        "metrics_5class": metrics_5class,
+        "metrics_4class": paper_metrics_4class,
+        "metrics_2class": paper_metrics_2class,
+        "metrics_5class": paper_metrics_5class,
+        "paper_lens_metrics_4class": paper_metrics_4class,
+        "paper_lens_metrics_2class": paper_metrics_2class,
+        "paper_lens_metrics_5class": paper_metrics_5class,
+        "paper_lens_decision_time_mode": paper_mode,
+        "async_lens_metrics_4class": async_lens_metrics_4class,
+        "async_lens_metrics_2class": async_lens_metrics_2class,
+        "async_lens_metrics_5class": async_lens_metrics_5class,
+        "async_lens_decision_time_mode": async_mode,
         "metric_scope": scope,
-        "decision_time_mode": decision_mode,
+        "decision_time_mode": paper_mode,
+        "async_decision_time_mode": async_mode,
         "trial_events": trial_rows,
     }
 
@@ -4094,10 +6105,24 @@ def benchmark_rank_key(
     idle_fp = float(metrics.get("idle_fp_per_min", float("inf")))
     switch_latency = float(metrics.get("switch_latency_s", float("inf")))
     release_latency = float(metrics.get("release_latency_s", float("inf")))
+    control_recall_at_3s = float(metrics.get("control_recall_at_3s", control_recall))
+    switch_detect_rate_at_2p8s = float(metrics.get("switch_detect_rate_at_2.8s", metrics.get("switch_detect_rate", 0.0)))
     acc_4class = float(metrics.get("acc_4class", 0.0))
     macro_f1_4class = float(metrics.get("macro_f1_4class", 0.0))
     itr_4class = float(metrics.get("itr_bpm_4class", 0.0))
     inference_ms = float(metrics.get("inference_ms", float("inf")))
+    if policy == "async-speed":
+        return (
+            idle_fp,
+            -control_recall_at_3s,
+            -switch_detect_rate_at_2p8s,
+            switch_latency,
+            release_latency,
+            -acc_4class,
+            -macro_f1_4class,
+            -itr_4class,
+            inference_ms,
+        )
     if policy == "paper-first":
         return (
             low_recall_penalty,
@@ -4150,10 +6175,12 @@ def benchmark_metric_definition_payload(
     ranking_policy: str = DEFAULT_RANKING_POLICY,
     metric_scope: str = DEFAULT_METRIC_SCOPE,
     decision_time_mode: str = DEFAULT_DECISION_TIME_MODE,
+    async_decision_time_mode: str = DEFAULT_ASYNC_DECISION_TIME_MODE,
 ) -> dict[str, Any]:
     policy = parse_ranking_policy(ranking_policy)
     scope = parse_metric_scope(metric_scope)
     time_mode = parse_decision_time_mode(decision_time_mode)
+    async_time_mode = parse_decision_time_mode(async_decision_time_mode)
     if policy == "paper-first":
         ranking_priority = [
             "low_recall_penalty",
@@ -4166,6 +6193,22 @@ def benchmark_metric_definition_payload(
             "release_latency_s",
             "inference_ms",
         ]
+        ranking_recall_field = "control_recall"
+        ranking_recall_threshold = float(DEFAULT_BENCHMARK_RANK_MIN_CONTROL_RECALL)
+    elif policy == "async-speed":
+        ranking_priority = [
+            "idle_fp_per_min",
+            "control_recall_at_3s",
+            "switch_detect_rate_at_2.8s",
+            "switch_latency_s",
+            "release_latency_s",
+            "acc_4class",
+            "macro_f1_4class",
+            "itr_bpm_4class",
+            "inference_ms",
+        ]
+        ranking_recall_field = "control_recall_at_3s"
+        ranking_recall_threshold = float(DEFAULT_SPEED_MIN_CONTROL_RECALL)
     else:
         ranking_priority = [
             "low_recall_penalty",
@@ -4178,6 +6221,8 @@ def benchmark_metric_definition_payload(
             "itr_bpm_4class",
             "inference_ms",
         ]
+        ranking_recall_field = "control_recall"
+        ranking_recall_threshold = float(DEFAULT_BENCHMARK_RANK_MIN_CONTROL_RECALL)
     return {
         "ranking_policy": {
             "description": (
@@ -4185,12 +6230,14 @@ def benchmark_metric_definition_payload(
                 "classification quality tie-breakers."
             ),
             "policy": policy,
-            "min_control_recall_for_ranking": float(DEFAULT_BENCHMARK_RANK_MIN_CONTROL_RECALL),
+            "min_control_recall_for_ranking": ranking_recall_threshold,
+            "control_recall_field": ranking_recall_field,
             "priority": ranking_priority,
         },
         "evaluation_scope": {
             "metric_scope": scope,
-            "decision_time_mode": time_mode,
+            "paper_lens_decision_time_mode": time_mode,
+            "async_lens_decision_time_mode": async_time_mode,
         },
         "acceptance_policy": {
             "idle_fp_per_min_max": float(DEFAULT_ACCEPTANCE_IDLE_FP_PER_MIN),
@@ -4215,9 +6262,32 @@ def benchmark_metric_definition_payload(
                     "control_recall_min": float(DEFAULT_BALANCED_MIN_CONTROL_RECALL),
                 },
             },
+            "speed_objective": {
+                "idle_fp_per_min_weight": float(DEFAULT_SPEED_OBJECTIVE_IDLE_WEIGHT),
+                "control_recall_weight": float(DEFAULT_SPEED_OBJECTIVE_RECALL_WEIGHT),
+                "switch_latency_weight": float(DEFAULT_SPEED_OBJECTIVE_SWITCH_WEIGHT),
+                "release_latency_weight": float(DEFAULT_SPEED_OBJECTIVE_RELEASE_WEIGHT),
+                "hard_constraints": {
+                    "idle_fp_per_min_max": float(DEFAULT_SPEED_IDLE_FP_MAX),
+                    "control_recall_min": float(DEFAULT_SPEED_MIN_CONTROL_RECALL),
+                },
+                "fixed_search_space": {
+                    "win_sec_candidates": [float(value) for value in DEFAULT_SPEED_WIN_SEC_CANDIDATES],
+                    "min_enter_candidates": [int(value) for value in DEFAULT_SPEED_MIN_ENTER_CANDIDATES],
+                    "min_exit_candidates": [int(value) for value in DEFAULT_SPEED_MIN_EXIT_CANDIDATES],
+                },
+            },
             "dynamic_stop_defaults": {
                 "enabled": bool(DEFAULT_DYNAMIC_STOP_ENABLED),
                 "alpha": float(DEFAULT_DYNAMIC_STOP_ALPHA),
+            },
+            "frontend_training_defaults": {
+                "channel_weight_mode": str(DEFAULT_CHANNEL_WEIGHT_MODE),
+                "channel_weight_range": [float(DEFAULT_CHANNEL_WEIGHT_RANGE[0]), float(DEFAULT_CHANNEL_WEIGHT_RANGE[1])],
+                "spatial_filter_mode": str(DEFAULT_SPATIAL_FILTER_MODE),
+                "spatial_rank_candidates": [int(value) for value in DEFAULT_SPATIAL_RANK_CANDIDATES],
+                "joint_weight_iters": int(DEFAULT_JOINT_WEIGHT_ITERS),
+                "spatial_source_model": str(DEFAULT_SPATIAL_SOURCE_MODEL),
             },
         },
         "robustness_policy": {
@@ -4248,6 +6318,20 @@ def benchmark_metric_definition_payload(
                 "a fixed penalty latency is used."
             ),
             "penalty_formula": "trial_duration_sec + win_sec",
+        },
+        "deadline_metrics": {
+            "control_recall_at_2s": {
+                "deadline_s": float(DEFAULT_CONTROL_RECALL_AT_2S_DEADLINE),
+                "description": "Control-trial recall within 2.0 seconds.",
+            },
+            "control_recall_at_3s": {
+                "deadline_s": float(DEFAULT_CONTROL_RECALL_AT_3S_DEADLINE),
+                "description": "Control-trial recall within 3.0 seconds.",
+            },
+            "switch_detect_rate_at_2.8s": {
+                "deadline_s": float(DEFAULT_SWITCH_DETECT_AT_2P8S_DEADLINE),
+                "description": "Switch-trial detection rate within 2.8 seconds.",
+            },
         },
         "idle_fp_per_min": {
             "description": (
@@ -4281,6 +6365,12 @@ def summarize_benchmark_robustness(
     ranking_policy: str = DEFAULT_RANKING_POLICY,
 ) -> dict[str, Any]:
     policy = parse_ranking_policy(ranking_policy)
+    recall_field = "control_recall_at_3s" if policy == "async-speed" else "control_recall"
+    recall_threshold = (
+        float(DEFAULT_SPEED_MIN_CONTROL_RECALL)
+        if policy == "async-speed"
+        else float(DEFAULT_BENCHMARK_RANK_MIN_CONTROL_RECALL)
+    )
     runs: list[dict[str, Any]] = [dict(item) for item in run_items]
     grouped_indices: dict[tuple[str, int], list[int]] = defaultdict(list)
     for idx, item in enumerate(runs):
@@ -4302,8 +6392,11 @@ def summarize_benchmark_robustness(
     metrics_keys = (
         "idle_fp_per_min",
         "control_recall",
+        "control_recall_at_2s",
+        "control_recall_at_3s",
         "control_miss_rate",
         "switch_detect_rate",
+        "switch_detect_rate_at_2.8s",
         "switch_latency_s",
         "release_latency_s",
         "detection_latency_s",
@@ -4347,8 +6440,7 @@ def summarize_benchmark_robustness(
         row["accept_values"].append(1.0 if bool(item.get("meets_acceptance", False)) else 0.0)
         row["recall_pass_values"].append(
             1.0
-            if float(item.get("metrics", {}).get("control_recall", 0.0))
-            >= float(DEFAULT_BENCHMARK_RANK_MIN_CONTROL_RECALL)
+            if float(item.get("metrics", {}).get(recall_field, 0.0)) >= recall_threshold
             else 0.0
         )
         metrics = dict(item.get("metrics", {}))
@@ -4564,41 +6656,24 @@ def save_collection_dataset_bundle(
     protocol_config: dict[str, Any],
     collection_segments: Sequence[tuple[TrialSpec, np.ndarray]],
 ) -> dict[str, Any]:
-    dataset_root = Path(dataset_root).expanduser().resolve()
-    session_dir = dataset_root / str(session_id)
-    session_dir.mkdir(parents=True, exist_ok=True)
-    npz_arrays: dict[str, np.ndarray] = {}
-    trial_records = _build_trial_dataset_entries(
-        stage="collection",
-        segments=collection_segments,
-        target_samples=int(round(float(protocol_config.get("active_sec", 0.0)) * float(sampling_rate))),
-        npz_arrays=npz_arrays,
+    # Compatibility wrapper: keep the legacy public entry point, but delegate
+    # collection dataset persistence to ssvep_core.dataset so protocol-signature
+    # and manifest schema stay consistent across collection and training.
+    from ssvep_core.dataset import save_collection_dataset_bundle as _core_save_collection_dataset_bundle
+
+    return _core_save_collection_dataset_bundle(
+        dataset_root=dataset_root,
+        session_id=session_id,
+        subject_id=subject_id,
+        serial_port=serial_port,
+        board_id=board_id,
+        sampling_rate=sampling_rate,
+        freqs=freqs,
+        board_eeg_channels=board_eeg_channels,
+        protocol_config=protocol_config,
+        trial_segments=collection_segments,
+        quality_rows=None,
     )
-    npz_path = session_dir / "raw_trials.npz"
-    np.savez_compressed(npz_path, **npz_arrays)
-    manifest_payload = {
-        "data_schema_version": "2.0",
-        "session_id": str(session_id),
-        "subject_id": str(subject_id),
-        "generated_at": datetime.now().isoformat(timespec="seconds"),
-        "serial_port": str(serial_port),
-        "board_id": int(board_id),
-        "sampling_rate": int(sampling_rate),
-        "freqs": [float(freq) for freq in freqs],
-        "board_eeg_channels": [int(channel) for channel in board_eeg_channels],
-        "protocol_config": json_safe(protocol_config),
-        "trials": json_safe(trial_records),
-        "splits": {"train": [], "gate": [], "holdout": []},
-        "files": {"raw_trials_npz": str(npz_path)},
-    }
-    manifest_path = session_dir / "session_manifest.json"
-    manifest_path.write_text(json_dumps(json_safe(manifest_payload)) + "\n", encoding="utf-8")
-    return {
-        "dataset_dir": str(session_dir),
-        "dataset_manifest": str(manifest_path),
-        "dataset_npz": str(npz_path),
-        "data_schema_version": "2.0",
-    }
 
 
 class CalibrationRunner:
@@ -4619,8 +6694,19 @@ class CalibrationRunner:
         step_sec: float = DEFAULT_STEP_SEC,
         gate_policy: str = DEFAULT_GATE_POLICY,
         channel_weight_mode: Optional[str] = DEFAULT_CHANNEL_WEIGHT_MODE,
+        subband_weight_mode: Optional[str] = DEFAULT_SUBBAND_WEIGHT_MODE,
+        spatial_filter_mode: Optional[str] = DEFAULT_SPATIAL_FILTER_MODE,
+        spatial_rank_candidates: Sequence[int] = DEFAULT_SPATIAL_RANK_CANDIDATES,
+        joint_weight_iters: int = DEFAULT_JOINT_WEIGHT_ITERS,
+        weight_cv_folds: int = DEFAULT_FBCCA_WEIGHT_CV_FOLDS,
+        spatial_source_model: str = DEFAULT_SPATIAL_SOURCE_MODEL,
         dynamic_stop_enabled: bool = DEFAULT_DYNAMIC_STOP_ENABLED,
         dynamic_stop_alpha: float = DEFAULT_DYNAMIC_STOP_ALPHA,
+        compute_backend: str = DEFAULT_COMPUTE_BACKEND_NAME,
+        gpu_device: int = DEFAULT_GPU_DEVICE_ID,
+        gpu_precision: str = DEFAULT_GPU_PRECISION_NAME,
+        gpu_warmup: bool = True,
+        gpu_cache_policy: str = DEFAULT_GPU_CACHE_MODE,
     ) -> None:
         self.requested_serial_port = normalize_serial_port(serial_port)
         self.serial_port = self.requested_serial_port
@@ -4634,9 +6720,31 @@ class CalibrationRunner:
         self.idle_repeats = int(idle_repeats)
         self.gate_policy = parse_gate_policy(gate_policy)
         self.channel_weight_mode = parse_channel_weight_mode(channel_weight_mode)
+        self.subband_weight_mode = parse_subband_weight_mode(subband_weight_mode) or DEFAULT_SUBBAND_WEIGHT_MODE
+        self.spatial_filter_mode = parse_spatial_filter_mode(spatial_filter_mode)
+        self.spatial_rank_candidates = tuple(sorted({max(1, int(value)) for value in spatial_rank_candidates}))
+        if not self.spatial_rank_candidates:
+            self.spatial_rank_candidates = tuple(DEFAULT_SPATIAL_RANK_CANDIDATES)
+        self.joint_weight_iters = max(1, int(joint_weight_iters))
+        self.weight_cv_folds = max(2, int(weight_cv_folds))
+        self.spatial_source_model = parse_spatial_source_model(spatial_source_model)
         self.dynamic_stop_enabled = bool(dynamic_stop_enabled)
         self.dynamic_stop_alpha = float(dynamic_stop_alpha)
-        self.engine = FBCCAEngine(sampling_rate=sampling_rate, freqs=self.freqs, win_sec=win_sec, step_sec=step_sec)
+        self.compute_backend = parse_compute_backend_name(compute_backend)
+        self.gpu_device = int(gpu_device)
+        self.gpu_precision = parse_gpu_precision(gpu_precision)
+        self.gpu_warmup = bool(gpu_warmup)
+        self.gpu_cache_policy = parse_gpu_cache_policy(gpu_cache_policy)
+        self.engine = FBCCAEngine(
+            sampling_rate=sampling_rate,
+            freqs=self.freqs,
+            win_sec=win_sec,
+            step_sec=step_sec,
+            compute_backend=self.compute_backend,
+            gpu_device=self.gpu_device,
+            gpu_precision=self.gpu_precision,
+            gpu_warmup=self.gpu_warmup,
+        )
 
     def _build_trials(self) -> list[TrialSpec]:
         return build_calibration_trials(
@@ -4663,6 +6771,7 @@ class CalibrationRunner:
             active_sec=self.active_sec,
             preferred_win_sec=self.engine.win_sec,
             step_sec=self.engine.step_sec,
+            gate_policy=self.gate_policy,
         )
         require_brainflow()
         board = None
@@ -4748,8 +6857,19 @@ class CalibrationRunner:
                     step_sec=self.engine.step_sec,
                     gate_policy=self.gate_policy,
                     channel_weight_mode=self.channel_weight_mode,
+                    subband_weight_mode=self.subband_weight_mode,
+                    spatial_filter_mode=self.spatial_filter_mode,
+                    spatial_rank_candidates=self.spatial_rank_candidates,
+                    joint_weight_iters=self.joint_weight_iters,
+                    weight_cv_folds=self.weight_cv_folds,
+                    spatial_source_model=self.spatial_source_model,
                     dynamic_stop_enabled=self.dynamic_stop_enabled,
                     dynamic_stop_alpha=self.dynamic_stop_alpha,
+                    compute_backend=self.compute_backend,
+                    gpu_device=int(self.gpu_device),
+                    gpu_precision=self.gpu_precision,
+                    gpu_warmup=bool(self.gpu_warmup),
+                    gpu_cache_policy=self.gpu_cache_policy,
                 )
             except Exception as exc:
                 raise RuntimeError(
@@ -4963,12 +7083,24 @@ class BenchmarkRunner:
         win_candidates: Sequence[float] = DEFAULT_WIN_SEC_CANDIDATES,
         gate_policy: str = DEFAULT_GATE_POLICY,
         channel_weight_mode: Optional[str] = DEFAULT_CHANNEL_WEIGHT_MODE,
+        subband_weight_mode: Optional[str] = DEFAULT_SUBBAND_WEIGHT_MODE,
+        spatial_filter_mode: Optional[str] = DEFAULT_SPATIAL_FILTER_MODE,
+        spatial_rank_candidates: Sequence[int] = DEFAULT_SPATIAL_RANK_CANDIDATES,
+        joint_weight_iters: int = DEFAULT_JOINT_WEIGHT_ITERS,
+        weight_cv_folds: int = DEFAULT_FBCCA_WEIGHT_CV_FOLDS,
+        spatial_source_model: str = DEFAULT_SPATIAL_SOURCE_MODEL,
         dynamic_stop_enabled: bool = DEFAULT_DYNAMIC_STOP_ENABLED,
         dynamic_stop_alpha: float = DEFAULT_DYNAMIC_STOP_ALPHA,
         metric_scope: str = DEFAULT_METRIC_SCOPE,
         decision_time_mode: str = DEFAULT_DECISION_TIME_MODE,
+        async_decision_time_mode: str = DEFAULT_ASYNC_DECISION_TIME_MODE,
         ranking_policy: str = DEFAULT_RANKING_POLICY,
         seed: int = DEFAULT_CALIBRATION_SEED,
+        compute_backend: str = DEFAULT_COMPUTE_BACKEND_NAME,
+        gpu_device: int = DEFAULT_GPU_DEVICE_ID,
+        gpu_precision: str = DEFAULT_GPU_PRECISION_NAME,
+        gpu_warmup: bool = True,
+        gpu_cache_policy: str = DEFAULT_GPU_CACHE_MODE,
     ) -> None:
         self.requested_serial_port = normalize_serial_port(serial_port)
         self.serial_port = self.requested_serial_port
@@ -4997,12 +7129,26 @@ class BenchmarkRunner:
             self.win_candidates = (min(float(DEFAULT_WIN_SEC), float(self.active_sec)),)
         self.gate_policy = parse_gate_policy(gate_policy)
         self.channel_weight_mode = parse_channel_weight_mode(channel_weight_mode)
+        self.subband_weight_mode = parse_subband_weight_mode(subband_weight_mode) or DEFAULT_SUBBAND_WEIGHT_MODE
+        self.spatial_filter_mode = parse_spatial_filter_mode(spatial_filter_mode)
+        self.spatial_rank_candidates = tuple(sorted({max(1, int(value)) for value in spatial_rank_candidates}))
+        if not self.spatial_rank_candidates:
+            self.spatial_rank_candidates = tuple(DEFAULT_SPATIAL_RANK_CANDIDATES)
+        self.joint_weight_iters = max(1, int(joint_weight_iters))
+        self.weight_cv_folds = max(2, int(weight_cv_folds))
+        self.spatial_source_model = parse_spatial_source_model(spatial_source_model)
         self.dynamic_stop_enabled = bool(dynamic_stop_enabled)
         self.dynamic_stop_alpha = float(dynamic_stop_alpha)
         self.metric_scope = parse_metric_scope(metric_scope)
         self.decision_time_mode = parse_decision_time_mode(decision_time_mode)
+        self.async_decision_time_mode = parse_decision_time_mode(async_decision_time_mode)
         self.ranking_policy = parse_ranking_policy(ranking_policy)
         self._sampling_rate_hint = int(sampling_rate)
+        self.compute_backend = parse_compute_backend_name(compute_backend)
+        self.gpu_device = int(gpu_device)
+        self.gpu_precision = parse_gpu_precision(gpu_precision)
+        self.gpu_warmup = bool(gpu_warmup)
+        self.gpu_cache_policy = parse_gpu_cache_policy(gpu_cache_policy)
 
     def _countdown(self, message: str, duration_sec: float) -> None:
         remaining = max(0, int(round(duration_sec)))
@@ -5148,25 +7294,70 @@ class BenchmarkRunner:
         gate_segments: Sequence[tuple[TrialSpec, np.ndarray]],
         eval_segments: Sequence[tuple[TrialSpec, np.ndarray]],
         eeg_channels: Sequence[int],
+        log_fn: Optional[Callable[[str], None]] = None,
     ) -> tuple[ThresholdProfile, dict[str, Any]]:
         best_config: Optional[dict[str, Any]] = None
         best_objective: Optional[tuple[float, ...]] = None
+        logger = log_fn if log_fn is not None else (lambda _msg: None)
+        normalized_model_name = normalize_model_name(model_name)
+        resolved_channel_mode, resolved_subband_mode, resolved_spatial_mode = resolve_fbcca_variant_modes(
+            normalized_model_name,
+            channel_weight_mode=self.channel_weight_mode,
+            subband_weight_mode=self.subband_weight_mode,
+            spatial_filter_mode=self.spatial_filter_mode,
+        )
 
-        for win_sec in self.win_candidates:
+        if self.gate_policy == "speed":
+            policy_win_candidates = tuple(
+                sorted(
+                    {
+                        float(value)
+                        for value in DEFAULT_SPEED_WIN_SEC_CANDIDATES
+                        if 0.5 < float(value) <= float(self.active_sec)
+                    }
+                )
+            )
+            if not policy_win_candidates:
+                policy_win_candidates = tuple(self.win_candidates)
+            enter_candidates = tuple(DEFAULT_SPEED_MIN_ENTER_CANDIDATES)
+            exit_candidates = tuple(DEFAULT_SPEED_MIN_EXIT_CANDIDATES)
+        else:
+            policy_win_candidates = tuple(self.win_candidates)
+            enter_candidates = tuple(DEFAULT_MIN_ENTER_CANDIDATES)
+            exit_candidates = tuple(DEFAULT_MIN_EXIT_CANDIDATES)
+
+        config_candidates: list[tuple[float, int, int]] = []
+        for win_sec in policy_win_candidates:
             available_windows = calibration_window_count(self.active_sec, win_sec, self.step_sec)
-            valid_enter = [candidate for candidate in DEFAULT_MIN_ENTER_CANDIDATES if int(candidate) <= available_windows]
+            valid_enter = [candidate for candidate in enter_candidates if int(candidate) <= available_windows]
             if not valid_enter:
                 continue
             for min_enter in valid_enter:
-                for min_exit in DEFAULT_MIN_EXIT_CANDIDATES:
+                for min_exit in exit_candidates:
+                    config_candidates.append((float(win_sec), int(min_enter), int(min_exit)))
+
+        for config_index, (win_sec, min_enter, min_exit) in enumerate(config_candidates, start=1):
                     try:
-                        model_params: dict[str, Any] = {"Nh": DEFAULT_NH}
+                        logger(
+                            f"Config start: model={model_name} {config_index}/{len(config_candidates)} "
+                            f"win={float(win_sec):g}s enter={int(min_enter)} exit={int(min_exit)}"
+                        )
+                        model_params: dict[str, Any] = {
+                            "Nh": DEFAULT_NH,
+                            "compute_backend": self.compute_backend,
+                            "gpu_device": int(self.gpu_device),
+                            "gpu_precision": self.gpu_precision,
+                            "gpu_cache_policy": self.gpu_cache_policy,
+                        }
                         channel_weight_training = None
-                        if (
-                            normalize_model_name(model_name) == "fbcca"
-                            and self.channel_weight_mode == "fbcca_diag"
+                        if normalized_model_name in {"fbcca", *FBCCA_VARIANT_SPECS.keys()} and (
+                            resolved_channel_mode == "fbcca_diag" or resolved_subband_mode != "chen_fixed"
                         ):
-                            optimized_weights, channel_weight_training = optimize_fbcca_diag_channel_weights(
+                            logger(
+                                f"FBCCA frontend start: config={config_index}/{len(config_candidates)} "
+                                f"win={float(win_sec):g}s enter={int(min_enter)} exit={int(min_exit)}"
+                            )
+                            frontend_result = optimize_fbcca_frontend_weights(
                                 train_segments=train_segments,
                                 gate_segments=gate_segments,
                                 sampling_rate=fs,
@@ -5178,9 +7369,57 @@ class BenchmarkRunner:
                                 gate_policy=self.gate_policy,
                                 dynamic_stop_enabled=self.dynamic_stop_enabled,
                                 dynamic_stop_alpha=self.dynamic_stop_alpha,
+                                channel_weight_mode=resolved_channel_mode,
+                                subband_weight_mode=resolved_subband_mode,
+                                spatial_filter_mode=resolved_spatial_mode,
+                                spatial_rank_candidates=self.spatial_rank_candidates,
+                                joint_weight_iters=self.joint_weight_iters,
+                                weight_cv_folds=self.weight_cv_folds,
+                                spatial_source_model=self.spatial_source_model,
+                                compute_backend=self.compute_backend,
+                                gpu_device=int(self.gpu_device),
+                                gpu_precision=self.gpu_precision,
+                                gpu_warmup=bool(self.gpu_warmup),
+                                gpu_cache_policy=self.gpu_cache_policy,
+                                log_fn=logger,
+                                log_prefix=(
+                                    f"FBCCA config {config_index}/{len(config_candidates)} "
+                                    f"(win={float(win_sec):g}s enter={int(min_enter)} exit={int(min_exit)})"
+                                ),
                             )
-                            model_params["channel_weight_mode"] = "fbcca_diag"
-                            model_params["channel_weights"] = [float(value) for value in optimized_weights]
+                            channel_weight_training = (
+                                dict(frontend_result.get("metadata"))
+                                if isinstance(frontend_result.get("metadata"), dict)
+                                else None
+                            )
+                            optimized_model_params = (
+                                channel_weight_training.get("optimized_model_params")
+                                if isinstance(channel_weight_training, dict)
+                                else None
+                            )
+                            if isinstance(optimized_model_params, dict) and optimized_model_params:
+                                model_params = dict(optimized_model_params)
+                                model_params.setdefault("Nh", DEFAULT_NH)
+                            else:
+                                optimized_channel_weights = frontend_result.get("channel_weights")
+                                optimized_subband_weights = frontend_result.get("subband_weights")
+                                optimized_subband_params = frontend_result.get("subband_weight_params")
+                                if optimized_channel_weights is not None:
+                                    model_params["channel_weight_mode"] = "fbcca_diag"
+                                    model_params["channel_weights"] = [float(value) for value in optimized_channel_weights]
+                                model_params["subband_weight_mode"] = str(resolved_subband_mode)
+                                if optimized_subband_weights is not None:
+                                    model_params["subband_weights"] = [float(value) for value in optimized_subband_weights]
+                                if optimized_subband_params is not None:
+                                    model_params["subband_weight_params"] = json_safe(dict(optimized_subband_params))
+                            model_params.setdefault("compute_backend", self.compute_backend)
+                            model_params.setdefault("gpu_device", int(self.gpu_device))
+                            model_params.setdefault("gpu_precision", self.gpu_precision)
+                            model_params.setdefault("gpu_cache_policy", self.gpu_cache_policy)
+                            logger(
+                                f"FBCCA frontend done: config={config_index}/{len(config_candidates)} "
+                                f"win={float(win_sec):g}s enter={int(min_enter)} exit={int(min_exit)}"
+                            )
                         decoder = create_decoder(
                             model_name,
                             sampling_rate=fs,
@@ -5188,6 +7427,11 @@ class BenchmarkRunner:
                             win_sec=win_sec,
                             step_sec=self.step_sec,
                             model_params=model_params,
+                            compute_backend=self.compute_backend,
+                            gpu_device=int(self.gpu_device),
+                            gpu_precision=self.gpu_precision,
+                            gpu_warmup=bool(self.gpu_warmup),
+                            gpu_cache_policy=self.gpu_cache_policy,
                         )
                         if decoder.requires_fit:
                             decoder.fit(train_segments)
@@ -5210,6 +7454,11 @@ class BenchmarkRunner:
                         gate_metrics = evaluate_profile_on_feature_rows(gate_rows, candidate_profile)
                     except Exception:
                         continue
+                    logger(
+                        f"Config done: model={model_name} {config_index}/{len(config_candidates)} "
+                        f"idle_fp={float(gate_metrics.get('idle_fp_per_min', float('inf'))):.4f} "
+                        f"recall={float(gate_metrics.get('control_recall', 0.0)):.4f}"
+                    )
                     objective = _calibration_objective(
                         gate_summary,
                         gate_policy=self.gate_policy,
@@ -5229,6 +7478,10 @@ class BenchmarkRunner:
 
         if best_config is None:
             raise RuntimeError(f"{model_name}: no valid profile candidate found")
+        logger(
+            f"Best config: model={model_name} win={float(best_config['win_sec']):g}s "
+            f"enter={int(best_config['min_enter_windows'])} exit={int(best_config['min_exit_windows'])}"
+        )
 
         final_decoder = create_decoder(
             model_name,
@@ -5237,9 +7490,43 @@ class BenchmarkRunner:
             win_sec=float(best_config["win_sec"]),
             step_sec=self.step_sec,
             model_params=dict(best_config.get("model_params", {"Nh": DEFAULT_NH})),
+            compute_backend=self.compute_backend,
+            gpu_device=int(self.gpu_device),
+            gpu_precision=self.gpu_precision,
+            gpu_warmup=bool(self.gpu_warmup),
+            gpu_cache_policy=self.gpu_cache_policy,
         )
         if final_decoder.requires_fit:
+            logger(f"Final fit start: model={model_name}")
             final_decoder.fit([*train_segments, *gate_segments])
+            logger(f"Final fit done: model={model_name}")
+        backend_probe_window: Optional[np.ndarray] = None
+        for _trial, segment in [*eval_segments, *gate_segments, *train_segments]:
+            segment_matrix = np.asarray(segment, dtype=np.float64)
+            if segment_matrix.ndim == 2 and int(segment_matrix.shape[0]) >= int(final_decoder.win_samples):
+                backend_probe_window = np.ascontiguousarray(
+                    segment_matrix[: int(final_decoder.win_samples), :],
+                    dtype=np.float64,
+                )
+                break
+        try:
+            backend_timing_summary = final_decoder.run_backend_microbenchmark(
+                sample_window=backend_probe_window,
+                repeats=2,
+            )
+            logger(
+                "Final fit backend benchmark: "
+                f"model={model_name} requested={self.compute_backend} "
+                f"used={backend_timing_summary.get('used_backend', final_decoder.compute_backend_used)} "
+                f"total_ms={float(dict(backend_timing_summary.get('kernel_benchmark', {})).get('total_ms', 0.0)):.3f}"
+            )
+        except Exception as exc:
+            backend_timing_summary = {
+                "requested_backend": str(self.compute_backend),
+                "used_backend": str(final_decoder.compute_backend_used),
+                "error": str(exc),
+            }
+            logger(f"Final fit backend benchmark skipped: model={model_name} reason={exc}")
         final_gate_rows = build_feature_rows_with_decoder(final_decoder, gate_segments)
         final_profile = fit_threshold_profile(
             final_gate_rows,
@@ -5257,6 +7544,11 @@ class BenchmarkRunner:
         base_model_params = dict(final_decoder.model_params)
         base_model_params["state"] = trained_state
         base_channel_weights = base_model_params.get("channel_weights")
+        base_spatial_state = (
+            dict(base_model_params.get("spatial_filter_state"))
+            if isinstance(base_model_params.get("spatial_filter_state"), dict)
+            else None
+        )
         base_profile = replace(
             final_profile,
             model_name=normalize_model_name(model_name),
@@ -5271,15 +7563,74 @@ class BenchmarkRunner:
                 if isinstance(base_channel_weights, (list, tuple))
                 else None
             ),
+            subband_weight_mode=(
+                str(base_model_params.get("subband_weight_mode"))
+                if base_model_params.get("subband_weight_mode") is not None
+                else None
+            ),
+            subband_weights=(
+                tuple(float(value) for value in base_model_params.get("subband_weights"))
+                if isinstance(base_model_params.get("subband_weights"), (list, tuple))
+                else None
+            ),
+            subband_weight_params=(
+                dict(base_model_params.get("subband_weight_params"))
+                if isinstance(base_model_params.get("subband_weight_params"), dict)
+                else None
+            ),
+            spatial_filter_mode=(
+                str(base_model_params.get("spatial_filter_mode"))
+                if base_model_params.get("spatial_filter_mode") is not None
+                else None
+            ),
+            spatial_filter_rank=(
+                None
+                if base_model_params.get("spatial_filter_rank") is None
+                else int(base_model_params.get("spatial_filter_rank"))
+            ),
+            spatial_filter_state=base_spatial_state,
+            joint_weight_training=(
+                dict(best_config.get("channel_weight_training"))
+                if isinstance(best_config.get("channel_weight_training"), dict)
+                else None
+            ),
+            runtime_backend_preference=str(self.compute_backend),
+            runtime_precision_preference=str(self.gpu_precision),
         )
-        eval_decoder = load_decoder_from_profile(base_profile, sampling_rate=fs)
-        fixed_decoder = load_decoder_from_profile(base_profile, sampling_rate=fs)
+        eval_decoder = load_decoder_from_profile(
+            base_profile,
+            sampling_rate=fs,
+            compute_backend=self.compute_backend,
+            gpu_device=int(self.gpu_device),
+            gpu_precision=self.gpu_precision,
+            gpu_warmup=bool(self.gpu_warmup),
+            gpu_cache_policy=self.gpu_cache_policy,
+        )
+        fixed_decoder = load_decoder_from_profile(
+            base_profile,
+            sampling_rate=fs,
+            compute_backend=self.compute_backend,
+            gpu_device=int(self.gpu_device),
+            gpu_precision=self.gpu_precision,
+            gpu_warmup=bool(self.gpu_warmup),
+            gpu_cache_policy=self.gpu_cache_policy,
+        )
+        classifier_only_decoder = load_decoder_from_profile(
+            base_profile,
+            sampling_rate=fs,
+            compute_backend=self.compute_backend,
+            gpu_device=int(self.gpu_device),
+            gpu_precision=self.gpu_precision,
+            gpu_warmup=bool(self.gpu_warmup),
+            gpu_cache_policy=self.gpu_cache_policy,
+        )
         eval_bundle = evaluate_decoder_on_trials_v2(
             eval_decoder,
             base_profile,
             eval_segments,
             metric_scope=self.metric_scope,
-            decision_time_mode=self.decision_time_mode,
+            paper_decision_time_mode=self.decision_time_mode,
+            async_decision_time_mode=self.async_decision_time_mode,
         )
         fixed_bundle = evaluate_decoder_on_trials_v2(
             fixed_decoder,
@@ -5287,7 +7638,17 @@ class BenchmarkRunner:
             eval_segments,
             dynamic_stop_enabled=False,
             metric_scope=self.metric_scope,
-            decision_time_mode=self.decision_time_mode,
+            paper_decision_time_mode=self.decision_time_mode,
+            async_decision_time_mode=self.async_decision_time_mode,
+        )
+        classifier_only_bundle = evaluate_decoder_on_trials_v2(
+            classifier_only_decoder,
+            base_profile,
+            eval_segments,
+            dynamic_stop_enabled=False,
+            metric_scope="4class",
+            paper_decision_time_mode="fixed-window",
+            async_decision_time_mode=self.async_decision_time_mode,
         )
         eval_async_metrics = dict(eval_bundle.get("async_metrics", {}))
         fixed_async_metrics = dict(fixed_bundle.get("async_metrics", {}))
@@ -5299,11 +7660,18 @@ class BenchmarkRunner:
             fixed_bundle,
             metric_scope=self.metric_scope,
         )
+        classifier_only_metrics = pack_evaluation_metrics_for_ranking(
+            classifier_only_bundle,
+            metric_scope="4class",
+        )
         dynamic_delta: dict[str, float] = {}
         for metric_name in (
             "idle_fp_per_min",
             "control_recall",
+            "control_recall_at_2s",
+            "control_recall_at_3s",
             "switch_detect_rate",
+            "switch_detect_rate_at_2.8s",
             "switch_latency_s",
             "release_latency_s",
             "detection_latency_s",
@@ -5318,6 +7686,17 @@ class BenchmarkRunner:
         profile_weight_tuple = (
             tuple(float(value) for value in profile_channel_weights)
             if isinstance(profile_channel_weights, (list, tuple))
+            else None
+        )
+        profile_subband_weights = model_params.get("subband_weights")
+        profile_subband_tuple = (
+            tuple(float(value) for value in profile_subband_weights)
+            if isinstance(profile_subband_weights, (list, tuple))
+            else None
+        )
+        profile_spatial_state = (
+            dict(model_params.get("spatial_filter_state"))
+            if isinstance(model_params.get("spatial_filter_state"), dict)
             else None
         )
         final_profile = replace(
@@ -5335,6 +7714,35 @@ class BenchmarkRunner:
                 else None
             ),
             channel_weights=profile_weight_tuple,
+            subband_weight_mode=(
+                str(model_params.get("subband_weight_mode"))
+                if model_params.get("subband_weight_mode") is not None
+                else None
+            ),
+            subband_weights=profile_subband_tuple,
+            subband_weight_params=(
+                dict(model_params.get("subband_weight_params"))
+                if isinstance(model_params.get("subband_weight_params"), dict)
+                else None
+            ),
+            spatial_filter_mode=(
+                str(model_params.get("spatial_filter_mode"))
+                if model_params.get("spatial_filter_mode") is not None
+                else None
+            ),
+            spatial_filter_rank=(
+                None
+                if model_params.get("spatial_filter_rank") is None
+                else int(model_params.get("spatial_filter_rank"))
+            ),
+            spatial_filter_state=profile_spatial_state,
+            joint_weight_training=(
+                dict(best_config.get("channel_weight_training"))
+                if isinstance(best_config.get("channel_weight_training"), dict)
+                else None
+            ),
+            runtime_backend_preference=str(self.compute_backend),
+            runtime_precision_preference=str(self.gpu_precision),
             metadata={
                 "source": "benchmark",
                 "gate_summary": best_config["gate_summary"],
@@ -5346,6 +7754,19 @@ class BenchmarkRunner:
                 },
                 "gate_policy": self.gate_policy,
                 "channel_weight_mode": self.channel_weight_mode,
+                "subband_weight_mode": self.subband_weight_mode,
+                "spatial_filter_mode": self.spatial_filter_mode,
+                "spatial_rank_candidates": [int(value) for value in self.spatial_rank_candidates],
+                "joint_weight_iters": int(self.joint_weight_iters),
+                "weight_cv_folds": int(self.weight_cv_folds),
+                "spatial_source_model": self.spatial_source_model,
+                "compute_backend_requested": str(self.compute_backend),
+                "compute_backend_used": str(final_decoder.compute_backend_used),
+                "gpu_device": int(self.gpu_device),
+                "gpu_precision": str(self.gpu_precision),
+                "gpu_cache_policy": str(self.gpu_cache_policy),
+                "timing_breakdown": dict(final_decoder.get_compute_backend_summary().get("timing_breakdown", {})),
+                "backend_timing_summary": dict(backend_timing_summary),
                 "channel_weight_training": best_config.get("channel_weight_training"),
                 "dynamic_comparison": {
                     "dynamic": eval_bundle,
@@ -5355,10 +7776,27 @@ class BenchmarkRunner:
                 "has_stat_model": profile_has_stat_model(base_profile),
             },
         )
+        normalized_model_name = normalize_model_name(model_name)
+        runtime_implementation_level = model_implementation_level(normalized_model_name)
+        runtime_method_note = model_method_note(normalized_model_name)
+        if normalized_model_name == "fbcca":
+            frontend_components: list[str] = []
+            channel_mode_name = str(model_params.get("channel_weight_mode") or "").strip().lower()
+            if channel_mode_name == "fbcca_diag":
+                frontend_components.append("diag-channel weighting")
+            spatial_mode_name = parse_spatial_filter_mode(model_params.get("spatial_filter_mode"))
+            if spatial_mode_name == "trca_shared" and isinstance(model_params.get("spatial_filter_state"), dict):
+                frontend_components.append("TRCA-shared spatial frontend")
+            if frontend_components:
+                runtime_implementation_level = "engineering-approx"
+                runtime_method_note = (
+                    f"{runtime_method_note} "
+                    f"Runtime frontend combines {' + '.join(frontend_components)} before FBCCA scoring."
+                )
         return final_profile, {
-            "model_name": normalize_model_name(model_name),
-            "implementation_level": model_implementation_level(model_name),
-            "method_note": model_method_note(model_name),
+            "model_name": normalized_model_name,
+            "implementation_level": runtime_implementation_level,
+            "method_note": runtime_method_note,
             "metrics": eval_metrics,
             "async_metrics": eval_async_metrics,
             "metrics_4class": dict(eval_bundle.get("metrics_4class", {})),
@@ -5367,6 +7805,20 @@ class BenchmarkRunner:
                 None
                 if eval_bundle.get("metrics_5class") is None
                 else dict(eval_bundle.get("metrics_5class", {}))
+            ),
+            "paper_lens_metrics_4class": dict(eval_bundle.get("paper_lens_metrics_4class", {})),
+            "paper_lens_metrics_2class": dict(eval_bundle.get("paper_lens_metrics_2class", {})),
+            "paper_lens_metrics_5class": (
+                None
+                if eval_bundle.get("paper_lens_metrics_5class") is None
+                else dict(eval_bundle.get("paper_lens_metrics_5class", {}))
+            ),
+            "async_lens_metrics_4class": dict(eval_bundle.get("async_lens_metrics_4class", {})),
+            "async_lens_metrics_2class": dict(eval_bundle.get("async_lens_metrics_2class", {})),
+            "async_lens_metrics_5class": (
+                None
+                if eval_bundle.get("async_lens_metrics_5class") is None
+                else dict(eval_bundle.get("async_lens_metrics_5class", {}))
             ),
             "fixed_window_metrics": fixed_metrics,
             "fixed_window_async_metrics": fixed_async_metrics,
@@ -5377,12 +7829,32 @@ class BenchmarkRunner:
                 if fixed_bundle.get("metrics_5class") is None
                 else dict(fixed_bundle.get("metrics_5class", {}))
             ),
+            "classifier_only_metrics": classifier_only_metrics,
+            "classifier_only_metrics_4class": dict(classifier_only_bundle.get("metrics_4class", {})),
+            "classifier_only_metrics_2class": dict(classifier_only_bundle.get("metrics_2class", {})),
             "dynamic_delta": dynamic_delta,
             "rank_key": benchmark_rank_key(eval_metrics, ranking_policy=self.ranking_policy),
             "rank_constraints": {
-                "min_control_recall_for_ranking": float(DEFAULT_BENCHMARK_RANK_MIN_CONTROL_RECALL),
+                "min_control_recall_for_ranking": float(
+                    DEFAULT_SPEED_MIN_CONTROL_RECALL
+                    if self.ranking_policy == "async-speed"
+                    else DEFAULT_BENCHMARK_RANK_MIN_CONTROL_RECALL
+                ),
+                "control_recall_field": (
+                    "control_recall_at_3s" if self.ranking_policy == "async-speed" else "control_recall"
+                ),
                 "control_recall_pass": bool(
-                    float(eval_metrics.get("control_recall", 0.0)) >= float(DEFAULT_BENCHMARK_RANK_MIN_CONTROL_RECALL)
+                    float(
+                        eval_metrics.get(
+                            "control_recall_at_3s" if self.ranking_policy == "async-speed" else "control_recall",
+                            0.0,
+                        )
+                    )
+                    >= float(
+                        DEFAULT_SPEED_MIN_CONTROL_RECALL
+                        if self.ranking_policy == "async-speed"
+                        else DEFAULT_BENCHMARK_RANK_MIN_CONTROL_RECALL
+                    )
                 ),
             },
             "gate_summary": best_config["gate_summary"],
@@ -5394,6 +7866,42 @@ class BenchmarkRunner:
             },
             "gate_policy": self.gate_policy,
             "channel_weight_mode": self.channel_weight_mode,
+            "subband_weight_mode": self.subband_weight_mode,
+            "runtime_channel_weight_mode": (
+                None
+                if model_params.get("channel_weight_mode") is None
+                else str(model_params.get("channel_weight_mode"))
+            ),
+            "runtime_subband_weight_mode": (
+                None
+                if model_params.get("subband_weight_mode") is None
+                else str(model_params.get("subband_weight_mode"))
+            ),
+            "runtime_subband_weights": (
+                [float(value) for value in model_params.get("subband_weights", [])]
+                if isinstance(model_params.get("subband_weights"), (list, tuple))
+                else None
+            ),
+            "spatial_filter_mode": self.spatial_filter_mode,
+            "runtime_spatial_filter_mode": parse_spatial_filter_mode(model_params.get("spatial_filter_mode")),
+            "runtime_spatial_filter_rank": (
+                None
+                if model_params.get("spatial_filter_rank") is None
+                else int(model_params.get("spatial_filter_rank"))
+            ),
+            "spatial_rank_candidates": [int(value) for value in self.spatial_rank_candidates],
+            "joint_weight_iters": int(self.joint_weight_iters),
+            "spatial_source_model": self.spatial_source_model,
+            "compute_backend_requested": str(self.compute_backend),
+            "compute_backend_used": str(final_decoder.compute_backend_used),
+            "gpu_device": int(self.gpu_device),
+            "precision": str(self.gpu_precision),
+            "gpu_cache_policy": str(self.gpu_cache_policy),
+            "timing_breakdown": dict(final_decoder.get_compute_backend_summary().get("timing_breakdown", {})),
+            "backend_timing_summary": dict(backend_timing_summary),
+            "warmup_overhead_ms": float(
+                final_decoder.get_compute_backend_summary().get("timing_breakdown", {}).get("warmup_overhead_ms", 0.0)
+            ),
             "channel_weight_training": best_config.get("channel_weight_training"),
             "meets_acceptance": profile_meets_acceptance(eval_metrics),
         }
@@ -5420,7 +7928,13 @@ class BenchmarkRunner:
                 freqs=self.freqs,
                 win_sec=max(self.win_candidates),
                 step_sec=self.step_sec,
-                model_params={"Nh": DEFAULT_NH},
+                model_params={
+                    "Nh": DEFAULT_NH,
+                    "compute_backend": self.compute_backend,
+                    "gpu_device": int(self.gpu_device),
+                    "gpu_precision": self.gpu_precision,
+                    "gpu_cache_policy": self.gpu_cache_policy,
+                },
                 seed=eval_seed,
                 validation_fraction=DEFAULT_VALIDATION_FRACTION,
             )
@@ -5469,6 +7983,7 @@ class BenchmarkRunner:
             active_sec=self.active_sec,
             preferred_win_sec=max(self.win_candidates),
             step_sec=self.step_sec,
+            gate_policy=self.gate_policy,
         )
         board = None
         try:
@@ -5552,6 +8067,12 @@ class BenchmarkRunner:
                 "eval_seeds": [int(seed) for seed in self.eval_seeds],
                 "gate_policy": str(self.gate_policy),
                 "channel_weight_mode": self.channel_weight_mode,
+                "subband_weight_mode": self.subband_weight_mode,
+                "spatial_filter_mode": self.spatial_filter_mode,
+                "spatial_rank_candidates": [int(value) for value in self.spatial_rank_candidates],
+                "joint_weight_iters": int(self.joint_weight_iters),
+                "weight_cv_folds": int(self.weight_cv_folds),
+                "spatial_source_model": self.spatial_source_model,
                 "dynamic_stop_enabled": bool(self.dynamic_stop_enabled),
                 "dynamic_stop_alpha": float(self.dynamic_stop_alpha),
                 "metric_scope": str(self.metric_scope),
@@ -5703,16 +8224,20 @@ class BenchmarkRunner:
                 "chosen_dynamic_delta": dict(chosen_result.get("dynamic_delta", {})),
                 "gate_policy": str(self.gate_policy),
                 "channel_weight_mode": self.channel_weight_mode,
+                "subband_weight_mode": self.subband_weight_mode,
+                "weight_cv_folds": int(self.weight_cv_folds),
                 "dynamic_stop_enabled": bool(self.dynamic_stop_enabled),
                 "dynamic_stop_alpha": float(self.dynamic_stop_alpha),
                 "metric_scope": str(self.metric_scope),
                 "decision_time_mode": str(self.decision_time_mode),
+                "async_decision_time_mode": str(self.async_decision_time_mode),
                 "ranking_policy": str(self.ranking_policy),
                 "model_method_mapping": method_mapping,
                 "metric_definition": benchmark_metric_definition_payload(
                     ranking_policy=self.ranking_policy,
                     metric_scope=self.metric_scope,
                     decision_time_mode=self.decision_time_mode,
+                    async_decision_time_mode=self.async_decision_time_mode,
                 ),
                 "robustness": robustness_summary,
                 "robust_recommendation": robust_recommendation,
@@ -5749,6 +8274,11 @@ class OnlineRunner:
         allow_default_profile: bool = False,
         model_name: Optional[str] = None,
         stop_event: Optional[Any] = None,
+        compute_backend: str = DEFAULT_COMPUTE_BACKEND_NAME,
+        gpu_device: int = DEFAULT_GPU_DEVICE_ID,
+        gpu_precision: str = DEFAULT_GPU_PRECISION_NAME,
+        gpu_warmup: bool = True,
+        gpu_cache_policy: str = DEFAULT_GPU_CACHE_MODE,
     ) -> None:
         self.requested_serial_port = normalize_serial_port(serial_port)
         self.serial_port = self.requested_serial_port
@@ -5758,6 +8288,11 @@ class OnlineRunner:
         self.emit_all = bool(emit_all)
         self.result_callback = result_callback
         self.stop_event = stop_event
+        self.compute_backend = parse_compute_backend_name(compute_backend)
+        self.gpu_device = int(gpu_device)
+        self.gpu_precision = parse_gpu_precision(gpu_precision)
+        self.gpu_warmup = bool(gpu_warmup)
+        self.gpu_cache_policy = parse_gpu_cache_policy(gpu_cache_policy)
         loaded_profile = load_profile(
             self.profile_path,
             fallback_freqs=self.freqs,
@@ -5784,6 +8319,11 @@ class OnlineRunner:
             win_sec=self.profile.win_sec,
             step_sec=self.profile.step_sec,
             model_params=decoder_params,
+            compute_backend=self.compute_backend,
+            gpu_device=self.gpu_device,
+            gpu_precision=self.gpu_precision,
+            gpu_warmup=bool(self.gpu_warmup),
+            gpu_cache_policy=self.gpu_cache_policy,
         )
         state = None
         if isinstance(decoder_params, dict):
@@ -5936,12 +8476,27 @@ def build_parser() -> argparse.ArgumentParser:
     calibrate.add_argument("--step-sec", type=float, default=DEFAULT_STEP_SEC)
     calibrate.add_argument("--gate-policy", type=str, default=DEFAULT_GATE_POLICY)
     calibrate.add_argument("--channel-weight-mode", type=str, default=DEFAULT_CHANNEL_WEIGHT_MODE)
+    calibrate.add_argument("--subband-weight-mode", type=str, default=DEFAULT_SUBBAND_WEIGHT_MODE)
+    calibrate.add_argument("--spatial-filter-mode", type=str, default=DEFAULT_SPATIAL_FILTER_MODE)
+    calibrate.add_argument(
+        "--spatial-rank-candidates",
+        type=str,
+        default=",".join(str(value) for value in DEFAULT_SPATIAL_RANK_CANDIDATES),
+    )
+    calibrate.add_argument("--joint-weight-iters", type=int, default=DEFAULT_JOINT_WEIGHT_ITERS)
+    calibrate.add_argument("--weight-cv-folds", type=int, default=DEFAULT_FBCCA_WEIGHT_CV_FOLDS)
+    calibrate.add_argument("--spatial-source-model", type=str, default=DEFAULT_SPATIAL_SOURCE_MODEL)
     calibrate.add_argument(
         "--disable-dynamic-stop",
         action="store_true",
         help="disable accumulated-evidence dynamic stopping in gate fitting",
     )
     calibrate.add_argument("--dynamic-stop-alpha", type=float, default=DEFAULT_DYNAMIC_STOP_ALPHA)
+    calibrate.add_argument("--compute-backend", type=str, default=DEFAULT_COMPUTE_BACKEND_NAME)
+    calibrate.add_argument("--gpu-device", type=int, default=DEFAULT_GPU_DEVICE_ID)
+    calibrate.add_argument("--gpu-precision", type=str, default=DEFAULT_GPU_PRECISION_NAME)
+    calibrate.add_argument("--gpu-warmup", type=int, default=1)
+    calibrate.add_argument("--gpu-cache-policy", type=str, default=DEFAULT_GPU_CACHE_MODE)
 
     online = subparsers.add_parser("online", help="run realtime asynchronous decoding")
     online.add_argument(
@@ -5965,6 +8520,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="allow running online with built-in fallback thresholds when the profile file is missing",
     )
+    online.add_argument("--compute-backend", type=str, default=DEFAULT_COMPUTE_BACKEND_NAME)
+    online.add_argument("--gpu-device", type=int, default=DEFAULT_GPU_DEVICE_ID)
+    online.add_argument("--gpu-precision", type=str, default=DEFAULT_GPU_PRECISION_NAME)
+    online.add_argument("--gpu-warmup", type=int, default=1)
+    online.add_argument("--gpu-cache-policy", type=str, default=DEFAULT_GPU_CACHE_MODE)
     online.add_argument("--emit-all", action="store_true", help="emit every update instead of only state changes")
     online.add_argument("--max-updates", type=int, default=None)
 
@@ -5990,6 +8550,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="allow running realtime with built-in fallback thresholds when the profile file is missing",
     )
+    realtime.add_argument("--compute-backend", type=str, default=DEFAULT_COMPUTE_BACKEND_NAME)
+    realtime.add_argument("--gpu-device", type=int, default=DEFAULT_GPU_DEVICE_ID)
+    realtime.add_argument("--gpu-precision", type=str, default=DEFAULT_GPU_PRECISION_NAME)
+    realtime.add_argument("--gpu-warmup", type=int, default=1)
+    realtime.add_argument("--gpu-cache-policy", type=str, default=DEFAULT_GPU_CACHE_MODE)
     realtime.add_argument("--emit-all", action="store_true", help="emit every update instead of only state changes")
     realtime.add_argument("--max-updates", type=int, default=None)
 
@@ -6033,8 +8598,20 @@ def build_parser() -> argparse.ArgumentParser:
     train_eval.add_argument("--win-candidates", type=str, default=",".join(f"{value:g}" for value in DEFAULT_WIN_SEC_CANDIDATES))
     train_eval.add_argument("--gate-policy", type=str, default=DEFAULT_GATE_POLICY)
     train_eval.add_argument("--channel-weight-mode", type=str, default=DEFAULT_CHANNEL_WEIGHT_MODE)
+    train_eval.add_argument("--subband-weight-mode", type=str, default=DEFAULT_SUBBAND_WEIGHT_MODE)
+    train_eval.add_argument("--spatial-filter-mode", type=str, default=DEFAULT_SPATIAL_FILTER_MODE)
+    train_eval.add_argument(
+        "--spatial-rank-candidates",
+        type=str,
+        default=",".join(str(value) for value in DEFAULT_SPATIAL_RANK_CANDIDATES),
+    )
+    train_eval.add_argument("--joint-weight-iters", type=int, default=DEFAULT_JOINT_WEIGHT_ITERS)
+    train_eval.add_argument("--weight-cv-folds", type=int, default=DEFAULT_FBCCA_WEIGHT_CV_FOLDS)
+    train_eval.add_argument("--spatial-source-model", type=str, default=DEFAULT_SPATIAL_SOURCE_MODEL)
     train_eval.add_argument("--metric-scope", type=str, default=DEFAULT_METRIC_SCOPE)
-    train_eval.add_argument("--decision-time-mode", type=str, default=DEFAULT_DECISION_TIME_MODE)
+    train_eval.add_argument("--decision-time-mode", type=str, default=DEFAULT_PAPER_DECISION_TIME_MODE)
+    train_eval.add_argument("--async-decision-time-mode", type=str, default=DEFAULT_ASYNC_DECISION_TIME_MODE)
+    train_eval.add_argument("--data-policy", type=str, default=DEFAULT_DATA_POLICY)
     train_eval.add_argument("--export-figures", type=int, default=1)
     train_eval.add_argument("--ranking-policy", type=str, default=DEFAULT_RANKING_POLICY)
     train_eval.add_argument(
@@ -6044,6 +8621,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     train_eval.add_argument("--dynamic-stop-alpha", type=float, default=DEFAULT_DYNAMIC_STOP_ALPHA)
     train_eval.add_argument("--seed", type=int, default=DEFAULT_CALIBRATION_SEED)
+    train_eval.add_argument("--compute-backend", type=str, default=DEFAULT_COMPUTE_BACKEND_NAME)
+    train_eval.add_argument("--gpu-device", type=int, default=DEFAULT_GPU_DEVICE_ID)
+    train_eval.add_argument("--gpu-precision", type=str, default=DEFAULT_GPU_PRECISION_NAME)
+    train_eval.add_argument("--gpu-warmup", type=int, default=1)
+    train_eval.add_argument("--gpu-cache-policy", type=str, default=DEFAULT_GPU_CACHE_MODE)
 
     benchmark = subparsers.add_parser(
         "benchmark",
@@ -6087,6 +8669,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     benchmark.add_argument("--gate-policy", type=str, default=DEFAULT_GATE_POLICY)
     benchmark.add_argument("--channel-weight-mode", type=str, default=DEFAULT_CHANNEL_WEIGHT_MODE)
+    benchmark.add_argument("--subband-weight-mode", type=str, default=DEFAULT_SUBBAND_WEIGHT_MODE)
+    benchmark.add_argument("--spatial-filter-mode", type=str, default=DEFAULT_SPATIAL_FILTER_MODE)
+    benchmark.add_argument(
+        "--spatial-rank-candidates",
+        type=str,
+        default=",".join(str(value) for value in DEFAULT_SPATIAL_RANK_CANDIDATES),
+    )
+    benchmark.add_argument("--joint-weight-iters", type=int, default=DEFAULT_JOINT_WEIGHT_ITERS)
+    benchmark.add_argument("--weight-cv-folds", type=int, default=DEFAULT_FBCCA_WEIGHT_CV_FOLDS)
+    benchmark.add_argument("--spatial-source-model", type=str, default=DEFAULT_SPATIAL_SOURCE_MODEL)
     benchmark.add_argument(
         "--disable-dynamic-stop",
         action="store_true",
@@ -6094,6 +8686,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     benchmark.add_argument("--dynamic-stop-alpha", type=float, default=DEFAULT_DYNAMIC_STOP_ALPHA)
     benchmark.add_argument("--seed", type=int, default=DEFAULT_CALIBRATION_SEED)
+    benchmark.add_argument("--compute-backend", type=str, default=DEFAULT_COMPUTE_BACKEND_NAME)
+    benchmark.add_argument("--gpu-device", type=int, default=DEFAULT_GPU_DEVICE_ID)
+    benchmark.add_argument("--gpu-precision", type=str, default=DEFAULT_GPU_PRECISION_NAME)
+    benchmark.add_argument("--gpu-warmup", type=int, default=1)
+    benchmark.add_argument("--gpu-cache-policy", type=str, default=DEFAULT_GPU_CACHE_MODE)
 
     return parser
 
@@ -6120,8 +8717,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 step_sec=args.step_sec,
                 gate_policy=args.gate_policy,
                 channel_weight_mode=args.channel_weight_mode,
+                subband_weight_mode=args.subband_weight_mode,
+                spatial_filter_mode=args.spatial_filter_mode,
+                spatial_rank_candidates=parse_spatial_rank_candidates(args.spatial_rank_candidates),
+                joint_weight_iters=args.joint_weight_iters,
+                weight_cv_folds=max(2, int(args.weight_cv_folds)),
+                spatial_source_model=args.spatial_source_model,
                 dynamic_stop_enabled=not bool(args.disable_dynamic_stop),
                 dynamic_stop_alpha=args.dynamic_stop_alpha,
+                compute_backend=parse_compute_backend_name(args.compute_backend),
+                gpu_device=int(args.gpu_device),
+                gpu_precision=parse_gpu_precision(args.gpu_precision),
+                gpu_warmup=bool(int(args.gpu_warmup)),
+                gpu_cache_policy=parse_gpu_cache_policy(args.gpu_cache_policy),
             )
             runner.run()
         except Exception as exc:
@@ -6144,6 +8752,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 emit_all=args.emit_all,
                 allow_default_profile=args.allow_default_profile,
                 model_name=args.model,
+                compute_backend=parse_compute_backend_name(args.compute_backend),
+                gpu_device=int(args.gpu_device),
+                gpu_precision=parse_gpu_precision(args.gpu_precision),
+                gpu_warmup=bool(int(args.gpu_warmup)),
+                gpu_cache_policy=parse_gpu_cache_policy(args.gpu_cache_policy),
             )
             runner.run(max_updates=args.max_updates)
         except Exception as exc:
@@ -6209,13 +8822,26 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 win_candidates=tuple(float(item.strip()) for item in str(args.win_candidates).split(",") if item.strip()),
                 gate_policy=parse_gate_policy(args.gate_policy),
                 channel_weight_mode=parse_channel_weight_mode(args.channel_weight_mode),
+                subband_weight_mode=parse_subband_weight_mode(args.subband_weight_mode),
+                spatial_filter_mode=parse_spatial_filter_mode(args.spatial_filter_mode),
+                spatial_rank_candidates=parse_spatial_rank_candidates(args.spatial_rank_candidates),
+                joint_weight_iters=max(1, int(args.joint_weight_iters)),
+                weight_cv_folds=max(2, int(args.weight_cv_folds)),
+                spatial_source_model=parse_spatial_source_model(args.spatial_source_model),
                 metric_scope=parse_metric_scope(args.metric_scope),
                 decision_time_mode=parse_decision_time_mode(args.decision_time_mode),
+                async_decision_time_mode=parse_decision_time_mode(args.async_decision_time_mode),
+                data_policy=parse_data_policy(args.data_policy),
                 export_figures=bool(int(args.export_figures)),
                 ranking_policy=parse_ranking_policy(args.ranking_policy),
                 dynamic_stop_enabled=not bool(args.disable_dynamic_stop),
                 dynamic_stop_alpha=float(args.dynamic_stop_alpha),
                 seed=int(args.seed),
+                compute_backend=parse_compute_backend_name(args.compute_backend),
+                gpu_device=int(args.gpu_device),
+                gpu_precision=parse_gpu_precision(args.gpu_precision),
+                gpu_warmup=bool(int(args.gpu_warmup)),
+                gpu_cache_policy=parse_gpu_cache_policy(args.gpu_cache_policy),
             )
             report = run_offline_train_eval(config, log_fn=lambda text: print(text, flush=True))
             print(json_dumps(json_safe(report)), flush=True)
@@ -6267,9 +8893,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 win_candidates=win_candidates,
                 gate_policy=args.gate_policy,
                 channel_weight_mode=args.channel_weight_mode,
+                subband_weight_mode=args.subband_weight_mode,
+                spatial_filter_mode=args.spatial_filter_mode,
+                spatial_rank_candidates=parse_spatial_rank_candidates(args.spatial_rank_candidates),
+                joint_weight_iters=max(1, int(args.joint_weight_iters)),
+                weight_cv_folds=max(2, int(args.weight_cv_folds)),
+                spatial_source_model=args.spatial_source_model,
                 dynamic_stop_enabled=not bool(args.disable_dynamic_stop),
                 dynamic_stop_alpha=args.dynamic_stop_alpha,
                 seed=args.seed,
+                compute_backend=parse_compute_backend_name(args.compute_backend),
+                gpu_device=int(args.gpu_device),
+                gpu_precision=parse_gpu_precision(args.gpu_precision),
+                gpu_warmup=bool(int(args.gpu_warmup)),
+                gpu_cache_policy=parse_gpu_cache_policy(args.gpu_cache_policy),
             )
             runner.run()
         except Exception as exc:

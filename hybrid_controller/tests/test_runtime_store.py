@@ -16,6 +16,9 @@ def test_runtime_store_reducer_updates_and_perf_fields() -> None:
                 "infer_interval_ms": 88.0,
                 "frame_drop_ratio": 0.25,
                 "remote_snapshot_age_ms": 35.0,
+                "mi_status": "not_implemented",
+                "mi_connected": False,
+                "mi_running": False,
             }
         )
     )
@@ -24,6 +27,9 @@ def test_runtime_store_reducer_updates_and_perf_fields() -> None:
     assert state.robot_connected is True
     assert state.robot_health == "ok"
     assert state.ssvep_running is True
+    assert state.mi_status == "not_implemented"
+    assert state.mi_connected is False
+    assert state.mi_running is False
     assert abs(state.perf.queue_age_ms - 42.5) < 1e-6
     assert abs(state.perf.infer_interval_ms - 88.0) < 1e-6
     assert abs(state.perf.frame_drop_ratio - 0.25) < 1e-6
@@ -38,12 +44,14 @@ def test_runtime_info_compat_mirrors_runtime_store() -> None:
     runtime_info["ssvep_profile_count"] = 3
     runtime_info["ui_refresh_ms_ema"] = 7.5
     runtime_info["custom_note"] = "ok"
+    runtime_info["mi_status"] = "disabled"
 
     assert runtime_info.get("robot_connected") is True
     assert runtime_info.get("ssvep_profile_count") == 3
     assert abs(float(runtime_info.get("ui_refresh_ms_ema", 0.0)) - 7.5) < 1e-6
     assert runtime_info.get("custom_note") == "ok"
+    assert runtime_info.get("mi_status") == "disabled"
     assert store.state.robot_connected is True
     assert store.state.ssvep_profile_count == 3
+    assert store.state.mi_status == "disabled"
     assert abs(store.state.perf.ui_refresh_ms_ema - 7.5) < 1e-6
-
