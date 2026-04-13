@@ -84,10 +84,11 @@ QUICK_MODE_CHANNEL_WEIGHT_MODE = "fbcca_diag"
 QUICK_MODE_SUBBAND_WEIGHT_MODE = "chen_ab_subject"
 QUICK_MODE_SPATIAL_FILTER_MODE = "none"
 
-MODEL_COMPARE_MODELS = tuple(ModelRegistry.list_models(task="benchmark"))
+CORE_COMPARE_MODELS = ("tdca", "trca_r", "etrca_r", "fbcca")
+MODEL_COMPARE_MODELS = CORE_COMPARE_MODELS
 MODEL_COMPARE_CHANNEL_MODES = ("all8",)
 MODEL_COMPARE_MULTI_SEED_COUNT = 5
-MODEL_COMPARE_WIN_CANDIDATES = (1.5, 2.0)
+MODEL_COMPARE_WIN_CANDIDATES = (2.5, 3.0, 3.5, 4.0)
 MODEL_COMPARE_JOINT_WEIGHT_ITERS = 1
 MODEL_COMPARE_WEIGHT_CV_FOLDS = 2
 MODEL_COMPARE_QUICK_SCREEN_TOP_K = len(MODEL_COMPARE_MODELS)
@@ -114,7 +115,7 @@ WEIGHTED_COMPARE_MODELS = tuple(
 )
 WEIGHTED_COMPARE_CHANNEL_MODES = ("all8",)
 WEIGHTED_COMPARE_MULTI_SEED_COUNT = 5
-WEIGHTED_COMPARE_WIN_CANDIDATES = (1.5, 2.0)
+WEIGHTED_COMPARE_WIN_CANDIDATES = (2.5, 3.0, 3.5, 4.0)
 WEIGHTED_COMPARE_JOINT_WEIGHT_ITERS = 1
 WEIGHTED_COMPARE_WEIGHT_CV_FOLDS = 2
 WEIGHTED_COMPARE_QUICK_SCREEN_TOP_K = len(WEIGHTED_COMPARE_MODELS)
@@ -123,17 +124,18 @@ WEIGHTED_COMPARE_CHANNEL_WEIGHT_MODE = "none"
 WEIGHTED_COMPARE_SUBBAND_WEIGHT_MODE = "chen_fixed"
 WEIGHTED_COMPARE_SPATIAL_FILTER_MODE = "none"
 
-FOCUSED_COMPARE_MODELS = WEIGHTED_COMPARE_MODELS
+FOCUSED_COMPARE_MODELS = CORE_COMPARE_MODELS
 FOCUSED_COMPARE_CHANNEL_MODES = ("all8",)
 FOCUSED_COMPARE_MULTI_SEED_COUNT = 5
-FOCUSED_COMPARE_WIN_CANDIDATES = (1.5, 2.0)
+FOCUSED_COMPARE_WIN_CANDIDATES = (2.5, 3.0, 3.5, 4.0)
 FOCUSED_COMPARE_JOINT_WEIGHT_ITERS = 1
 FOCUSED_COMPARE_WEIGHT_CV_FOLDS = 2
 FOCUSED_COMPARE_QUICK_SCREEN_TOP_K = 4
 FOCUSED_COMPARE_FORCE_INCLUDE_MODELS = (
-    "legacy_fbcca_202603",
-    "fbcca_fixed_all8",
-    "fbcca_cw_sw_all8",
+    "tdca",
+    "trca_r",
+    "etrca_r",
+    "fbcca",
 )
 FOCUSED_COMPARE_CHANNEL_WEIGHT_MODE = "none"
 FOCUSED_COMPARE_SUBBAND_WEIGHT_MODE = "chen_fixed"
@@ -151,7 +153,7 @@ CLASSIFIER_COMPARE_MODELS = tuple(
 )
 CLASSIFIER_COMPARE_CHANNEL_MODES = ("all8",)
 CLASSIFIER_COMPARE_MULTI_SEED_COUNT = 10
-CLASSIFIER_COMPARE_WIN_CANDIDATES = (1.5, 2.0)
+CLASSIFIER_COMPARE_WIN_CANDIDATES = (2.5, 3.0, 3.5, 4.0)
 CLASSIFIER_COMPARE_JOINT_WEIGHT_ITERS = 1
 CLASSIFIER_COMPARE_WEIGHT_CV_FOLDS = 2
 CLASSIFIER_COMPARE_QUICK_SCREEN_TOP_K = len(CLASSIFIER_COMPARE_MODELS)
@@ -168,7 +170,7 @@ PROFILE_EVAL_MODELS = (
 )
 PROFILE_EVAL_CHANNEL_MODES = ("all8",)
 PROFILE_EVAL_MULTI_SEED_COUNT = 5
-PROFILE_EVAL_WIN_CANDIDATES = (1.5, 2.0)
+PROFILE_EVAL_WIN_CANDIDATES = (2.5, 3.0, 3.5, 4.0)
 PROFILE_EVAL_JOINT_WEIGHT_ITERS = 1
 PROFILE_EVAL_WEIGHT_CV_FOLDS = 2
 PROFILE_EVAL_QUICK_SCREEN_TOP_K = len(PROFILE_EVAL_MODELS)
@@ -281,6 +283,7 @@ def _apply_model_compare_args(args: argparse.Namespace, provided_options: set[st
     _set_if_missing(args, provided_options, "--win-candidates", "win_candidates", ",".join(f"{float(value):g}" for value in MODEL_COMPARE_WIN_CANDIDATES))
     _set_if_missing(args, provided_options, "--quick-screen-top-k", "quick_screen_top_k", int(MODEL_COMPARE_QUICK_SCREEN_TOP_K))
     _set_if_missing(args, provided_options, "--force-include-models", "force_include_models", ",".join(MODEL_COMPARE_FORCE_INCLUDE_MODELS))
+    _set_if_missing(args, provided_options, "--control-state-mode", "control_state_mode", "frequency-specific-logistic")
     _set_if_missing(args, provided_options, "--compute-backend", "compute_backend", str(TRAIN_EVAL_DEFAULT_COMPUTE_BACKEND))
     _set_if_missing(args, provided_options, "--gpu-precision", "gpu_precision", str(TRAIN_EVAL_DEFAULT_GPU_PRECISION))
 
@@ -298,6 +301,7 @@ def _apply_weighted_compare_args(args: argparse.Namespace, provided_options: set
     _set_if_missing(args, provided_options, "--win-candidates", "win_candidates", ",".join(f"{float(value):g}" for value in WEIGHTED_COMPARE_WIN_CANDIDATES))
     _set_if_missing(args, provided_options, "--quick-screen-top-k", "quick_screen_top_k", int(WEIGHTED_COMPARE_QUICK_SCREEN_TOP_K))
     _set_if_missing(args, provided_options, "--force-include-models", "force_include_models", ",".join(WEIGHTED_COMPARE_FORCE_INCLUDE_MODELS))
+    _set_if_missing(args, provided_options, "--control-state-mode", "control_state_mode", "frequency-specific-logistic")
     _set_if_missing(args, provided_options, "--compute-backend", "compute_backend", str(TRAIN_EVAL_DEFAULT_COMPUTE_BACKEND))
     _set_if_missing(args, provided_options, "--gpu-precision", "gpu_precision", str(TRAIN_EVAL_DEFAULT_GPU_PRECISION))
 
@@ -315,6 +319,7 @@ def _apply_focused_compare_args(args: argparse.Namespace, provided_options: set[
     _set_if_missing(args, provided_options, "--win-candidates", "win_candidates", ",".join(f"{float(value):g}" for value in FOCUSED_COMPARE_WIN_CANDIDATES))
     _set_if_missing(args, provided_options, "--quick-screen-top-k", "quick_screen_top_k", int(FOCUSED_COMPARE_QUICK_SCREEN_TOP_K))
     _set_if_missing(args, provided_options, "--force-include-models", "force_include_models", ",".join(FOCUSED_COMPARE_FORCE_INCLUDE_MODELS))
+    _set_if_missing(args, provided_options, "--control-state-mode", "control_state_mode", "frequency-specific-logistic")
     _set_if_missing(args, provided_options, "--compute-backend", "compute_backend", str(TRAIN_EVAL_DEFAULT_COMPUTE_BACKEND))
     _set_if_missing(args, provided_options, "--gpu-precision", "gpu_precision", str(TRAIN_EVAL_DEFAULT_GPU_PRECISION))
 
@@ -332,6 +337,7 @@ def _apply_classifier_compare_args(args: argparse.Namespace, provided_options: s
     _set_if_missing(args, provided_options, "--win-candidates", "win_candidates", ",".join(f"{float(value):g}" for value in CLASSIFIER_COMPARE_WIN_CANDIDATES))
     _set_if_missing(args, provided_options, "--quick-screen-top-k", "quick_screen_top_k", int(CLASSIFIER_COMPARE_QUICK_SCREEN_TOP_K))
     _set_if_missing(args, provided_options, "--force-include-models", "force_include_models", ",".join(CLASSIFIER_COMPARE_FORCE_INCLUDE_MODELS))
+    _set_if_missing(args, provided_options, "--control-state-mode", "control_state_mode", "frequency-specific-logistic")
     _set_if_missing(args, provided_options, "--compute-backend", "compute_backend", str(TRAIN_EVAL_DEFAULT_COMPUTE_BACKEND))
     _set_if_missing(args, provided_options, "--gpu-precision", "gpu_precision", str(TRAIN_EVAL_DEFAULT_GPU_PRECISION))
 

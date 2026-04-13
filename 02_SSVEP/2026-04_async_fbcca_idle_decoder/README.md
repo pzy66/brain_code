@@ -1,56 +1,72 @@
-# 02_SSVEP 异步专项（服务器优先训练评测）
-
+# 02_SSVEP 专项优化说明（服务器优先训练评测）
 更新时间：2026-04-13
 
-本目录目标：只优化 `02_SSVEP/2026-04_async_fbcca_idle_decoder`，不改主程序集成逻辑。
+本目录只负责 `02_SSVEP/2026-04_async_fbcca_idle_decoder` 内部优化，不涉及主程序集成。
 
-## 1. 当前策略
+## 1. 目标与边界
+- 本地职责：数据采集、在线推理、shadow 验证。
+- 服务器职责：训练、评测、模型对比、报告与 profile 产出。
+- 安全边界：服务器仅允许操作 `/data1/zkx/brain/ssvep` 子树。
 
-- 本地：只做数据采集 + 在线推理/影子验证。
-- 服务器：默认执行训练与评测（GPU 优先）。
-- 模型路线：`TDCA + per-frequency gate + evidence + 5-state` 为主线，同时长期保留旧模型可对比。
+## 2. 当前主策略
+- 主线方案：`TDCA + per-frequency gate + evidence accumulator + 5-state machine`。
+- 对照方案：`TRCA-R / eTRCA-R`。
+- `FBCCA` 仅作为 baseline / fallback，不作为默认主线。
+- 旧模型长期保留在训练评测链路中，随时可复评对比。
 
-## 2. 强约束（必须满足）
+## 3. 模型选择与排序规则（已收敛）
+### 3.1 主对比模型集（默认）
+- `tdca,trca_r,etrca_r,fbcca`
 
-### 2.1 路径安全
+### 3.2 统一搜索设置（默认）
+- `win_candidates = 2.5,3.0,3.5,4.0`
+- `step_sec = 0.25`
+- `multi_seed_count = 5`
 
-远端读写必须同时满足：
+### 3.3 TDCA 专项网格（已启用）
+- `delay_steps = 2,3,4`
+- `n_components = 2,3,4`
+- 在 quick-screen（decoder-only）和 end-to-end（decoder+gate+decision）均参与搜索。
 
-- 在 `/data1/zkx` 前缀内。
-- 在 `/data1/zkx/brain/ssvep` 子树内。
+### 3.4 排序硬约束（已启用）
+- 排序前置硬约束：`acc_4class >= 0.80`（不足会被 `low_acc_penalty` 强惩罚）。
+- 异步验收阈值保持：
+  - `idle_fp_per_min <= 1.5`
+  - `control_recall >= 0.75`
+  - `switch_latency_s <= 2.8`
+  - `release_latency_s <= 1.5`
+  - `inference_ms < 40`
 
-已在 `ssvep_server_train_client.py` 做双重校验。
+## 4. 报告字段（已标准化）
+每个模型行（`model_compare_table`）强制包含：
+- `acc_4class`
+- `macro_f1_4class`
+- `idle_fp_per_min`
+- `control_recall`
+- `switch_latency_s`
+- `release_latency_s`
+- `inference_ms`
+- `compute_backend_used`
+- `metrics_source`
+- `meets_acceptance`
 
-### 2.2 GPU 严格策略
+`metrics_source` 取值固定：
+- `cross_session`
+- `session1_holdout`
+- `no_session2`
 
+并继续输出两套榜单：
+- `ranking_boards.end_to_end`（decoder+gate+decision）
+- `ranking_boards.classifier_only`（decoder-only）
+
+## 5. 服务器训练策略
+### 5.1 GPU 策略
 - 默认 `compute_backend=cuda`。
-- 当 backend 为 `cuda` 时，提交前必须通过 `nvidia-smi` 预检。
-- 预检失败直接报错并终止，不允许静默降级到 CPU。
+- 服务器预检 GPU 失败时，远端提交会直接失败（严格策略）。
+- 兼容模式下，单模型 CUDA 路径不稳定可回退 CPU，并在日志显式记录 `Backend fallback`。
 
-## 3. 主要入口
-
-- 训练评测 UI：`ssvep_training_evaluation_ui.py`
-  - 默认远端模式（remote-first）。
-  - 本地模式默认关闭，仅作为高级兜底。
-- 服务器编排：`ssvep_server_train_client.py`
-- 训练内核 CLI（远端实际执行）：`ssvep_training_evaluation_cli.py`
-- 数据采集 UI：`ssvep_dataset_collection_ui.py`
-- 在线 UI（含 shadow）：`ssvep_realtime_online_ui.py`
-
-## 4. 训练评测流程（推荐）
-
-1. 本地采集 `session1`（必填）和 `session2`（推荐）。
-2. 在训练评测 UI 发起远端任务（默认）。
-3. 服务器执行训练/比较并输出报告。
-4. 本地轮询任务状态并下载结果。
-5. 将下载的 profile 用于本地在线验证。
-
-`session2` 缺失时会弹窗确认；若继续，结果会标记为 `no_session2`（无冻结外测）。
-
-## 5. 服务器目录规范
-
-远端固定目录：
-
+### 5.2 远端目录约束
+仅允许以下路径：
 - `/data1/zkx/brain/ssvep/code`
 - `/data1/zkx/brain/ssvep/data`
 - `/data1/zkx/brain/ssvep/reports`
@@ -58,85 +74,20 @@
 - `/data1/zkx/brain/ssvep/logs`
 - `/data1/zkx/brain/ssvep/tmp`
 
-本地下载落地：
+### 5.3 本地下载落地
+- 运行产物：`profiles/server_runs/<run_id>/`
+- 可部署 profile：`profiles/server_profiles/`
 
-- `profiles/server_runs/<run_id>/`
-- 可部署 profile 复制到 `profiles/server_profiles/`
+## 6. 训练评测入口
+- UI：`ssvep_training_evaluation_ui.py`
+  - 默认远端模式（remote-first）
+  - 本地训练默认禁用，仅高级兜底可启用
+- 远端编排：`ssvep_server_train_client.py`
+- 训练内核：`ssvep_training_evaluation_cli.py`
 
-## 6. 关键接口（已统一）
-
-### 6.1 server helper CLI
-
-`ssvep_server_train_client.py` 公开参数（重点）：
-
-- `--dataset-manifest`（必填）
-- `--dataset-manifest-session2`（可选）
-- `--compute-backend {cuda,auto,cpu}`（默认 `cuda`）
-- `--gpu-device`（默认 `0`）
-- `--gpu-precision {float32,float64}`（默认 `float32`）
-- `--gpu-warmup {0,1}`（默认 `1`）
-- `--gpu-cache-policy {windows,full}`（默认 `windows`）
-- `--win-candidates`（默认 `2.5,3.0,3.5,4.0`）
-- `--multi-seed-count`（默认 `5`）
-
-### 6.2 状态响应字段
-
-最小状态字段：
-
-- `run_id`
-- `pid`
-- `process`
-- `progress`
-- `artifacts`
-- `gpu_device_fuser`
-- `log_path`
-- `report_dir`
-- `tail`
-
-### 6.3 下载响应字段
-
-- `local_run_dir`
-- `local_profile`
-
-## 7. 结果元信息（可复现）
-
-任务记录包含：
-
-- `run_id`
-- `task`
-- `session1`
-- `session2`
-- `remote_manifest_paths`
-- `gpu_params`
-- `started_at`
-
-下载后的报告会追加：
-
-- `metrics_source`（`session1_holdout | cross_session | no_session2`）
-- `server_gpu_params`
-- `remote_path_snapshot`
-
-并生成 `server_run_metadata.json`。
-
-## 8. 模型保留与对比
-
-训练评测链路长期保留旧模型对比，不会因主线升级而移除。基准模型组：
-
-- `cca`
-- `itcca`
-- `ecca`
-- `msetcca`
-- `fbcca`
-- `trca`
-- `trca_r`
-- `sscor`
-- `tdca`
-- `etrca_r`
-
-## 9. 常用命令
-
+## 7. 常用命令
 ```powershell
-# 1) 服务器全模型对比（推荐）
+# 1) 远端模型对比（建议带 session2）
 python ssvep_server_train_client.py `
   --action model-compare `
   --dataset-manifest .\profiles\datasets\<session1>\session_manifest.json `
@@ -149,24 +100,20 @@ python ssvep_server_train_client.py `
   --win-candidates 2.5,3.0,3.5,4.0 `
   --multi-seed-count 5
 
-# 2) 查看状态
+# 2) 查询任务状态
 python ssvep_server_train_client.py --action status
 
 # 3) 下载产物
 python ssvep_server_train_client.py --action download
 ```
 
-## 10. 测试说明
+## 8. 结果解读建议
+- 先看 `model_compare_table` 的全量行，不只看第一名。
+- 主判据优先级：`idle_fp_per_min`、`wrong_action_rate`、`median_commit_latency`、`control_recall`。
+- 若缺失 `session2`，报告会标记 `metrics_source=no_session2`，仅可做内部筛选，不建议上线。
 
-本轮只做了定向测试与编译检查，未跑全量测试（按你的要求避免耗时）：
-
-- `tests/test_server_train_client_gpu_and_paths.py`
-- `tests/test_server_train_client_cuda_policy.py`
-- `tests/test_train_eval_ui_remote_defaults.py`
-- `py_compile`：`ssvep_server_train_client.py`、`ssvep_training_evaluation_ui.py`
-
-如果后续需要发布，再执行全量回归：
-
-```powershell
-python -m pytest -q tests
-```
+## 9. 测试说明
+- 本轮按要求不跑全量长耗时测试。
+- 建议最小自检：
+  - 关键脚本语法检查
+  - 单次小样本远端任务提交流程（submit -> status -> download）

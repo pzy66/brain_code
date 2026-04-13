@@ -156,10 +156,13 @@ DEFAULT_BENCHMARK_SEED_STEP = 1
 DEFAULT_DECODER_UPDATE_ALPHA = 0.08
 DEFAULT_SSCOR_COMPONENTS = 3
 DEFAULT_TDCA_COMPONENTS = 3
+DEFAULT_TDCA_DELAY_STEPS_CANDIDATES = (2, 3, 4)
+DEFAULT_TDCA_N_COMPONENTS_CANDIDATES = (2, 3, 4)
 DEFAULT_BENCHMARK_DATASET_ROOT = Path(__file__).resolve().parent / "profiles" / "datasets"
 DATA_SCHEMA_VERSION = "1.0"
 SWITCH_LATENCY_MODE = "penalized_median"
 DEFAULT_BENCHMARK_RANK_MIN_CONTROL_RECALL = DEFAULT_BALANCED_MIN_CONTROL_RECALL
+DEFAULT_BENCHMARK_RANK_MIN_ACC_4CLASS = 0.80
 DEFAULT_CALIBRATION_MIN_DETECTION_RECALL = 0.05
 DEFAULT_METRIC_SCOPE = "dual"
 DEFAULT_METRIC_SCOPES = ("dual", "4class", "5class")
@@ -2425,9 +2428,22 @@ class TDCADecoder(BaseSSVEPDecoder):
         n_components: int,
     ) -> np.ndarray:
         dim = int(within_cov.shape[0])
-        reg = 1e-6 * np.trace(within_cov) / max(dim, 1)
-        within_cov = within_cov + reg * np.eye(dim)
-        eigvals, eigvecs = scipy.linalg.eigh(between_cov, within_cov)
+        trace_scale = float(np.trace(within_cov)) / max(dim, 1)
+        # Keep a strict positive floor so low-variance / tiny-sample batches do not make B singular.
+        reg = max(1e-6 * abs(trace_scale), 1e-8)
+        within_cov_reg = np.asarray(within_cov, dtype=float) + reg * np.eye(dim, dtype=float)
+        between_cov_sym = 0.5 * (np.asarray(between_cov, dtype=float) + np.asarray(between_cov, dtype=float).T)
+        try:
+            eigvals, eigvecs = scipy.linalg.eigh(
+                between_cov_sym,
+                within_cov_reg,
+                check_finite=False,
+            )
+        except Exception:
+            # Fallback for ill-conditioned generalized eigen problems.
+            inv_within = np.linalg.pinv(within_cov_reg)
+            surrogate = 0.5 * (inv_within @ between_cov_sym + (inv_within @ between_cov_sym).T)
+            eigvals, eigvecs = np.linalg.eigh(surrogate)
         order = np.argsort(eigvals)[::-1]
         keep = max(1, min(int(n_components), eigvecs.shape[1]))
         selected = np.asarray(eigvecs[:, order[:keep]], dtype=float)
@@ -2644,6 +2660,20 @@ MODEL_ALIASES = {
     "fbcca-v1": "fbcca",
     "oacca": "oacca",
 }
+
+# Current CUDA-stable set in this codebase. Other decoders are forced to CPU to
+# avoid runtime type-path crashes during full benchmark sweeps.
+CUDA_STABLE_MODELS = {"cca", "fbcca", "legacy_fbcca_202603"}
+
+
+def resolve_model_compute_backend(model_name: str, requested_backend: str) -> str:
+    backend = parse_compute_backend_name(requested_backend)
+    normalized = normalize_model_name(model_name)
+    if normalized in FBCCA_VARIANT_SPECS:
+        normalized = "fbcca"
+    if backend == "cuda" and normalized not in CUDA_STABLE_MODELS:
+        return "cpu"
+    return backend
 
 
 def normalize_model_name(model_name: str) -> str:
@@ -2992,9 +3022,16 @@ def create_decoder(
             params["subband_weight_mode"] = "chen_ab_subject"
             params["spatial_filter_mode"] = "trca_shared"
         name = "fbcca"
-    if compute_backend is not None:
-        params["compute_backend"] = parse_compute_backend_name(compute_backend)
-    params.setdefault("compute_backend", DEFAULT_COMPUTE_BACKEND_NAME)
+    requested_backend = (
+        parse_compute_backend_name(compute_backend)
+        if compute_backend is not None
+        else parse_compute_backend_name(params.get("compute_backend", DEFAULT_COMPUTE_BACKEND_NAME))
+    )
+    effective_backend = resolve_model_compute_backend(name, requested_backend)
+    params["compute_backend"] = effective_backend
+    if requested_backend != effective_backend:
+        params["compute_backend_requested"] = requested_backend
+        params["compute_backend_fallback_reason"] = "model_cuda_path_not_stable"
     params.setdefault("gpu_device", int(gpu_device))
     params.setdefault("gpu_precision", parse_gpu_precision(gpu_precision))
     params.setdefault("gpu_warmup", bool(gpu_warmup))
@@ -6528,11 +6565,14 @@ def benchmark_rank_key(
     control_recall_at_3s = float(metrics.get("control_recall_at_3s", control_recall))
     switch_detect_rate_at_2p8s = float(metrics.get("switch_detect_rate_at_2.8s", metrics.get("switch_detect_rate", 0.0)))
     acc_4class = float(metrics.get("acc_4class", 0.0))
+    min_acc_4class = float(DEFAULT_BENCHMARK_RANK_MIN_ACC_4CLASS)
+    low_acc_penalty = max(0.0, min_acc_4class - acc_4class)
     macro_f1_4class = float(metrics.get("macro_f1_4class", 0.0))
     itr_4class = float(metrics.get("itr_bpm_4class", 0.0))
     inference_ms = float(metrics.get("inference_ms", float("inf")))
     if policy == "async-speed":
         return (
+            low_acc_penalty,
             idle_fp,
             -control_recall_at_3s,
             -switch_detect_rate_at_2p8s,
@@ -6545,6 +6585,7 @@ def benchmark_rank_key(
         )
     if policy == "paper-first":
         return (
+            low_acc_penalty,
             low_recall_penalty,
             -acc_4class,
             -macro_f1_4class,
@@ -6557,6 +6598,7 @@ def benchmark_rank_key(
         )
     if policy == "dual-board":
         return (
+            low_acc_penalty,
             low_recall_penalty,
             idle_fp,
             -control_recall,
@@ -6568,6 +6610,7 @@ def benchmark_rank_key(
             inference_ms,
         )
     return (
+        low_acc_penalty,
         low_recall_penalty,
         idle_fp,
         -control_recall,
@@ -6603,6 +6646,7 @@ def benchmark_metric_definition_payload(
     async_time_mode = parse_decision_time_mode(async_decision_time_mode)
     if policy == "paper-first":
         ranking_priority = [
+            "low_acc_penalty",
             "low_recall_penalty",
             "acc_4class",
             "macro_f1_4class",
@@ -6617,6 +6661,7 @@ def benchmark_metric_definition_payload(
         ranking_recall_threshold = float(DEFAULT_BENCHMARK_RANK_MIN_CONTROL_RECALL)
     elif policy == "async-speed":
         ranking_priority = [
+            "low_acc_penalty",
             "idle_fp_per_min",
             "control_recall_at_3s",
             "switch_detect_rate_at_2.8s",
@@ -6631,6 +6676,7 @@ def benchmark_metric_definition_payload(
         ranking_recall_threshold = float(DEFAULT_SPEED_MIN_CONTROL_RECALL)
     else:
         ranking_priority = [
+            "low_acc_penalty",
             "low_recall_penalty",
             "idle_fp_per_min",
             "control_recall",
@@ -6651,6 +6697,7 @@ def benchmark_metric_definition_payload(
             ),
             "policy": policy,
             "min_control_recall_for_ranking": ranking_recall_threshold,
+            "min_acc_4class_for_ranking": float(DEFAULT_BENCHMARK_RANK_MIN_ACC_4CLASS),
             "control_recall_field": ranking_recall_field,
             "priority": ranking_priority,
         },
@@ -7762,7 +7809,17 @@ class BenchmarkRunner:
             enter_candidates = tuple(DEFAULT_MIN_ENTER_CANDIDATES)
             exit_candidates = tuple(DEFAULT_MIN_EXIT_CANDIDATES)
 
-        config_candidates: list[tuple[float, int, int]] = []
+        tdca_grid: tuple[tuple[int, int], ...]
+        if normalized_model_name == "tdca":
+            tdca_grid = tuple(
+                (int(delay_steps), int(n_components))
+                for delay_steps in DEFAULT_TDCA_DELAY_STEPS_CANDIDATES
+                for n_components in DEFAULT_TDCA_N_COMPONENTS_CANDIDATES
+            )
+        else:
+            tdca_grid = ((0, 0),)
+
+        config_candidates: list[tuple[float, int, int, int, int]] = []
         for win_sec in policy_win_candidates:
             available_windows = calibration_window_count(self.active_sec, win_sec, self.step_sec)
             valid_enter = [candidate for candidate in enter_candidates if int(candidate) <= available_windows]
@@ -7770,13 +7827,28 @@ class BenchmarkRunner:
                 continue
             for min_enter in valid_enter:
                 for min_exit in exit_candidates:
-                    config_candidates.append((float(win_sec), int(min_enter), int(min_exit)))
+                    for tdca_delay_steps, tdca_n_components in tdca_grid:
+                        config_candidates.append(
+                            (
+                                float(win_sec),
+                                int(min_enter),
+                                int(min_exit),
+                                int(tdca_delay_steps),
+                                int(tdca_n_components),
+                            )
+                        )
 
-        for config_index, (win_sec, min_enter, min_exit) in enumerate(config_candidates, start=1):
+        failure_reasons: list[str] = []
+        for config_index, (win_sec, min_enter, min_exit, tdca_delay_steps, tdca_n_components) in enumerate(
+            config_candidates, start=1
+        ):
                     try:
+                        tdca_suffix = ""
+                        if normalized_model_name == "tdca":
+                            tdca_suffix = f" tdca(delay={int(tdca_delay_steps)},comp={int(tdca_n_components)})"
                         logger(
                             f"Config start: model={model_name} {config_index}/{len(config_candidates)} "
-                            f"win={float(win_sec):g}s enter={int(min_enter)} exit={int(min_exit)}"
+                            f"win={float(win_sec):g}s enter={int(min_enter)} exit={int(min_exit)}{tdca_suffix}"
                         )
                         model_params: dict[str, Any] = {
                             "Nh": DEFAULT_NH,
@@ -7785,6 +7857,9 @@ class BenchmarkRunner:
                             "gpu_precision": self.gpu_precision,
                             "gpu_cache_policy": self.gpu_cache_policy,
                         }
+                        if normalized_model_name == "tdca":
+                            model_params["delay_steps"] = int(tdca_delay_steps)
+                            model_params["n_components"] = int(tdca_n_components)
                         channel_weight_training = None
                         if normalized_model_name in {"fbcca", *FBCCA_VARIANT_SPECS.keys()} and (
                             resolved_channel_mode == "fbcca_diag" or resolved_subband_mode != "chen_fixed"
@@ -7873,6 +7948,14 @@ class BenchmarkRunner:
                             gpu_warmup=bool(self.gpu_warmup),
                             gpu_cache_policy=self.gpu_cache_policy,
                         )
+                        if (
+                            str(self.compute_backend).strip().lower() == "cuda"
+                            and str(decoder.compute_backend_used).strip().lower() != "cuda"
+                        ):
+                            logger(
+                                f"Backend fallback: model={model_name} requested=cuda "
+                                f"used={decoder.compute_backend_used}"
+                            )
                         if decoder.requires_fit:
                             decoder.fit(train_segments)
                         gate_rows = build_feature_rows_with_decoder(decoder, gate_segments)
@@ -7892,7 +7975,20 @@ class BenchmarkRunner:
                         )
                         gate_summary = summarize_profile_quality(gate_rows, candidate_profile)
                         gate_metrics = evaluate_profile_on_feature_rows(gate_rows, candidate_profile)
-                    except Exception:
+                    except Exception as exc:
+                        reason = str(exc).strip() or exc.__class__.__name__
+                        tdca_suffix = ""
+                        if normalized_model_name == "tdca":
+                            tdca_suffix = f" tdca(delay={int(tdca_delay_steps)},comp={int(tdca_n_components)})"
+                        failure_reasons.append(
+                            f"cfg#{config_index} win={float(win_sec):g}s enter={int(min_enter)} "
+                            f"exit={int(min_exit)}{tdca_suffix} -> {reason}"
+                        )
+                        logger(
+                            f"Config failed: model={model_name} {config_index}/{len(config_candidates)} "
+                            f"win={float(win_sec):g}s enter={int(min_enter)} exit={int(min_exit)}{tdca_suffix} "
+                            f"reason={reason}"
+                        )
                         continue
                     logger(
                         f"Config done: model={model_name} {config_index}/{len(config_candidates)} "
@@ -7903,13 +7999,21 @@ class BenchmarkRunner:
                         gate_summary,
                         gate_policy=self.gate_policy,
                         gate_metrics=gate_metrics,
-                    ) + (float(win_sec), int(min_enter), int(min_exit))
+                    ) + (
+                        float(win_sec),
+                        int(min_enter),
+                        int(min_exit),
+                        int(tdca_delay_steps),
+                        int(tdca_n_components),
+                    )
                     if best_objective is None or objective < best_objective:
                         best_objective = objective
                         best_config = {
                             "win_sec": float(win_sec),
                             "min_enter_windows": int(min_enter),
                             "min_exit_windows": int(min_exit),
+                            "tdca_delay_steps": int(tdca_delay_steps),
+                            "tdca_n_components": int(tdca_n_components),
                             "gate_summary": gate_summary,
                             "gate_metrics": gate_metrics,
                             "model_params": model_params,
@@ -7917,10 +8021,18 @@ class BenchmarkRunner:
                         }
 
         if best_config is None:
-            raise RuntimeError(f"{model_name}: no valid profile candidate found")
+            tail = "; ".join(failure_reasons[-3:]) if failure_reasons else "no candidate executed"
+            raise RuntimeError(f"{model_name}: no valid profile candidate found ({tail})")
+        tdca_best_suffix = ""
+        if normalized_model_name == "tdca":
+            tdca_best_suffix = (
+                f" tdca(delay={int(best_config.get('tdca_delay_steps', 0))},"
+                f"comp={int(best_config.get('tdca_n_components', 0))})"
+            )
         logger(
             f"Best config: model={model_name} win={float(best_config['win_sec']):g}s "
             f"enter={int(best_config['min_enter_windows'])} exit={int(best_config['min_exit_windows'])}"
+            f"{tdca_best_suffix}"
         )
 
         final_decoder = create_decoder(
@@ -7936,6 +8048,14 @@ class BenchmarkRunner:
             gpu_warmup=bool(self.gpu_warmup),
             gpu_cache_policy=self.gpu_cache_policy,
         )
+        if (
+            str(self.compute_backend).strip().lower() == "cuda"
+            and str(final_decoder.compute_backend_used).strip().lower() != "cuda"
+        ):
+            logger(
+                f"Final backend fallback: model={model_name} requested=cuda "
+                f"used={final_decoder.compute_backend_used}"
+            )
         if final_decoder.requires_fit:
             logger(f"Final fit start: model={model_name}")
             final_decoder.fit([*train_segments, *gate_segments])

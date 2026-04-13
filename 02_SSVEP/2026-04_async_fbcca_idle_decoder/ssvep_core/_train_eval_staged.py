@@ -20,6 +20,8 @@ from .registry import ModelRegistry
 from .train_eval import (
     AsyncDecisionGate,
     DEFAULT_NH,
+    DEFAULT_TDCA_DELAY_STEPS_CANDIDATES,
+    DEFAULT_TDCA_N_COMPONENTS_CANDIDATES,
     OfflineTrainEvalConfig,
     _aggregate_family_results,
     _apply_trial_quality_filter,
@@ -73,6 +75,8 @@ from .train_eval import (
     summarize_benchmark_robustness,
     BenchmarkRunner,
 )
+
+PRIMARY_SELECTION_MODELS = {"tdca", "trca_r", "etrca_r", "fbcca"}
 
 
 def _fbcca_weight_learning_requires_all8_for_config(model_name: str, config: OfflineTrainEvalConfig) -> bool:
@@ -272,7 +276,7 @@ def _source_views(
         }
 
     return {
-        "source": "session1_holdout",
+        "source": "no_session2",
         "metrics": dict(result.get("metrics", {})),
         "async_metrics": dict(result.get("async_metrics", {})),
         "metrics_4class": dict(result.get("metrics_4class", {})),
@@ -981,12 +985,15 @@ def _model_compare_row(
     if prefer_cross_session and isinstance(result.get("cross_session_metrics_4class"), dict):
         metrics_4 = dict(result.get("cross_session_metrics_4class", {}) or {})
         metrics_2 = dict(result.get("cross_session_metrics_2class", {}) or {})
+    metrics_source = str(_metrics_source_name(result, prefer_cross_session=prefer_cross_session))
     return {
         "rank": int(result.get("rank_end_to_end", result.get("deployment_rank", 0)) or 0),
         "model_name": str(result.get("model_name", "")),
         "implementation_level": str(result.get("implementation_level", "")),
         "channel_mode": str(result.get("channel_mode", "")),
         "eval_seed": int(result.get("eval_seed", 0) or 0),
+        "metrics_source": metrics_source,
+        "compute_backend_used": str(result.get("compute_backend_used", "")),
         "meets_acceptance": bool(
             profile_meets_acceptance(_ranking_metrics_from_result(result, prefer_cross_session=prefer_cross_session))
         ),
@@ -998,6 +1005,7 @@ def _model_compare_row(
         "macro_f1_2class": float(metrics_2.get("macro_f1", 0.0) or 0.0),
         "idle_fp_per_min": float(metrics.get("idle_fp_per_min", float("inf"))),
         "control_recall": float(metrics.get("control_recall", 0.0) or 0.0),
+        "command_recall": float(metrics.get("control_recall", 0.0) or 0.0),
         "switch_latency_s": float(metrics.get("switch_latency_s", float("inf"))),
         "release_latency_s": float(metrics.get("release_latency_s", float("inf"))),
         "inference_ms": float(metrics.get("inference_ms", float("inf"))),
@@ -1638,7 +1646,7 @@ def run_offline_train_eval(
     )
 
     prefer_cross_session = dataset_session2 is not None
-    ranking_source = "cross_session" if prefer_cross_session else "session1_holdout"
+    ranking_source = "cross_session" if prefer_cross_session else "no_session2"
 
     if str(getattr(config, "task", "")).strip().lower() == "classifier-compare":
         eval_relation = "cross_session_eval" if dataset_session2 is not None else "session1_holdout_classifier_only"
@@ -1668,19 +1676,41 @@ def run_offline_train_eval(
                 eval_segments = dataset_session2.trial_segments if dataset_session2 is not None else seed_holdout
                 log(f"Stage A model start: {run_index}/{len(requested_models) * len(helper.eval_seeds)} model={display_name} seed={int(eval_seed)}")
                 best_result: Optional[dict[str, Any]] = None
-                for config_index, win_sec in enumerate(config.win_candidates, start=1):
+                tdca_param_candidates: tuple[dict[str, int], ...]
+                if model_name == "tdca":
+                    tdca_param_candidates = tuple(
+                        {"delay_steps": int(delay_steps), "n_components": int(n_components)}
+                        for delay_steps in DEFAULT_TDCA_DELAY_STEPS_CANDIDATES
+                        for n_components in DEFAULT_TDCA_N_COMPONENTS_CANDIDATES
+                    )
+                else:
+                    tdca_param_candidates = ({},)
+                config_specs = [
+                    (float(win_sec), dict(param_payload))
+                    for win_sec in config.win_candidates
+                    for param_payload in tdca_param_candidates
+                ]
+                for config_index, (win_sec, extra_model_params) in enumerate(config_specs, start=1):
                     try:
+                        tdca_suffix = ""
+                        if model_name == "tdca":
+                            tdca_suffix = (
+                                f" tdca(delay={int(extra_model_params.get('delay_steps', 0))},"
+                                f"comp={int(extra_model_params.get('n_components', 0))})"
+                            )
                         log(
                             f"Stage A config start: model={display_name} seed={int(eval_seed)} "
-                            f"{config_index}/{len(config.win_candidates)} win={float(win_sec):g}s"
+                            f"{config_index}/{len(config_specs)} win={float(win_sec):g}s{tdca_suffix}"
                         )
+                        model_params = {"Nh": DEFAULT_NH}
+                        model_params.update(extra_model_params)
                         decoder = create_decoder(
                             model_name,
                             sampling_rate=fs,
                             freqs=dataset_session1.freqs,
                             win_sec=float(win_sec),
                             step_sec=float(helper.step_sec),
-                            model_params={"Nh": DEFAULT_NH},
+                            model_params=model_params,
                             compute_backend=str(config.compute_backend),
                             gpu_device=int(config.gpu_device),
                             gpu_precision=str(config.gpu_precision),
@@ -1705,10 +1735,12 @@ def run_offline_train_eval(
                             "eval_seed": int(eval_seed),
                             "selected_eeg_channels": [int(channel) for channel in eeg_channels],
                             "best_win_sec": float(win_sec),
+                            "decoder_params": dict(extra_model_params),
                             "metrics": dict(classifier_metrics),
                             "metrics_4class": metrics_4,
                             "classifier_only_metrics": classifier_metrics,
                             "ranking_source": ranking_source,
+                            "compute_backend_used": str(getattr(decoder, "compute_backend_used", config.compute_backend)),
                             "analysis_scope": "classifier_only_fixed_window",
                             "split_counts": {
                                 "train": int(len(seed_train)),
@@ -1727,10 +1759,14 @@ def run_offline_train_eval(
                             "Classifier config done: "
                             f"model={display_name} seed={int(eval_seed)} win={float(win_sec):g}s "
                             f"acc={float(classifier_metrics.get('acc_4class', 0.0)):.4f} "
-                            f"macro_f1={float(classifier_metrics.get('macro_f1_4class', 0.0)):.4f}"
+                            f"macro_f1={float(classifier_metrics.get('macro_f1_4class', 0.0)):.4f}{tdca_suffix}"
                         )
                     except Exception as exc:
-                        log(f"Classifier config failed: model={display_name} seed={int(eval_seed)} win={float(win_sec):g}s error={exc}")
+                        log(
+                            "Classifier config failed: "
+                            f"model={display_name} seed={int(eval_seed)} win={float(win_sec):g}s "
+                            f"params={extra_model_params} error={exc}"
+                        )
                 if best_result is None:
                     failed_runs.append({"model_name": display_name, "eval_seed": int(eval_seed), "error": "all classifier configs failed"})
                     continue
@@ -1787,6 +1823,7 @@ def run_offline_train_eval(
             "seed_level_results": list(classifier_seed_results),
             "aggregated_model_ranking": list(classifier_results),
             "classifier_only_ranking": list(classifier_only_ranked),
+            "primary_selection_models": sorted(PRIMARY_SELECTION_MODELS),
             "end_to_end_ranking": [],
             "model_results": list(classifier_results),
             "stage_b_run_results": list(classifier_results) + list(failed_runs),
@@ -1837,6 +1874,7 @@ def run_offline_train_eval(
             "async_decision_time_mode": str(async_decision_time_mode),
             "ranking_policy": "classifier-only",
             "ranking_source": str(ranking_source),
+            "metrics_source": str(ranking_source),
             "quality_filter": {
                 "min_sample_ratio": float(config.quality_min_sample_ratio),
                 "max_retry_count": int(config.quality_max_retry_count),
@@ -2610,11 +2648,18 @@ def run_offline_train_eval(
         prefer_cross_session=prefer_cross_session,
     )
     family_rank_end_to_end = list(family_summary.get("families", []))
-    winning_family = family_rank_end_to_end[0] if family_rank_end_to_end else {
+    preferred_family_rows = [
+        dict(item)
+        for item in family_rank_end_to_end
+        if normalize_model_name(str(item.get("model_name", ""))) in PRIMARY_SELECTION_MODELS
+    ]
+    winning_family = preferred_family_rows[0] if preferred_family_rows else (
+        family_rank_end_to_end[0] if family_rank_end_to_end else {
         "model_name": str(best_runs_by_model[0].get("model_name", "")),
         "rank": 1,
         "metrics_mean": dict(_ranking_metrics_from_result(best_runs_by_model[0], prefer_cross_session=prefer_cross_session)),
-    }
+        }
+    )
     winning_model_family = str(winning_family.get("model_name", ""))
 
     family_runs = [
@@ -3067,6 +3112,7 @@ def run_offline_train_eval(
         },
         "requested_models": [str(name) for name in requested_model_names],
         "resolved_models": [str(name) for name in requested_models],
+        "primary_selection_models": sorted(PRIMARY_SELECTION_MODELS),
         "evaluation_mode": str(evaluation_mode),
         "quick_screen_top_k": int(quick_screen_top_k),
         "force_include_models": list(force_include_models),
@@ -3167,6 +3213,7 @@ def run_offline_train_eval(
         "long_idle_used": bool(session1_has_long_idle or session2_has_long_idle),
         "ranking_policy": str(ranking_policy),
         "ranking_source": str(ranking_source),
+        "metrics_source": str(_metrics_source_name(deployment_run, prefer_cross_session=prefer_cross_session)),
         "export_figures": bool(export_figures),
         "gate_policy": str(getattr(helper, "gate_policy", config.gate_policy)),
         "channel_weight_mode": getattr(helper, "channel_weight_mode", config.channel_weight_mode),

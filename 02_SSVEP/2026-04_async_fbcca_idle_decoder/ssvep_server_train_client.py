@@ -263,43 +263,63 @@ def preflight_cuda_or_fail(
     if backend != "cuda":
         return {"checked": False, "reason": f"compute_backend={backend}"}
     device_id = int(gpu_device)
-    check_cmd = (
-        "command -v nvidia-smi >/dev/null 2>&1 || { echo CUDA_PREFLIGHT:NO_NVIDIA_SMI; exit 71; }; "
-        "nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader || { echo CUDA_PREFLIGHT:QUERY_FAILED; exit 72; }"
-    )
-    code, out, err = ssh.exec(check_cmd, check=False)
-    text = (out or err or "").strip()
+    check_smi_cmd = "command -v nvidia-smi >/dev/null 2>&1 || { echo CUDA_PREFLIGHT:NO_NVIDIA_SMI; exit 71; }"
+    code, out, err = ssh.exec(check_smi_cmd, check=False)
     if code != 0:
         raise RuntimeError(
             "cuda backend requested but GPU preflight failed: "
-            f"nvidia-smi unavailable or query failed (code={code}, detail={text})"
+            f"nvidia-smi unavailable (code={code}, detail={(out or err or '').strip()})"
         )
-    rows = [line.strip() for line in str(text).splitlines() if line.strip()]
-    if not rows:
-        raise RuntimeError("cuda backend requested but GPU preflight found no visible GPU devices")
+
+    # Enumerate indices via `nvidia-smi -L` first; this is usually more tolerant than full query.
+    code, out, err = ssh.exec("nvidia-smi -L", check=False)
+    lines = [line.strip() for line in str(out or err or "").splitlines() if line.strip()]
     visible_indices: list[int] = []
-    parsed_rows: list[dict[str, Any]] = []
-    for row in rows:
-        parts = [part.strip() for part in row.split(",")]
-        if not parts:
+    for line in lines:
+        if not line.startswith("GPU "):
             continue
+        head = line.split(":", 1)[0].strip().replace("GPU ", "")
         try:
-            index_value = int(parts[0])
+            visible_indices.append(int(head))
         except Exception:
             continue
-        visible_indices.append(index_value)
-        parsed_rows.append(
-            {
-                "index": int(index_value),
-                "name": str(parts[1]) if len(parts) > 1 else "",
-                "memory_total": str(parts[2]) if len(parts) > 2 else "",
-            }
-        )
     if device_id not in visible_indices:
         raise RuntimeError(
             "cuda backend requested but target GPU device is not visible: "
-            f"requested={device_id}, visible={visible_indices}"
+            f"requested={device_id}, visible={visible_indices}. "
+            "Please change GPU Device in UI and retry."
         )
+
+    # Probe only the selected device; avoid failing because of other broken GPUs on the host.
+    query_cmd = (
+        f"nvidia-smi -i {int(device_id)} --query-gpu=index,name,memory.total "
+        "--format=csv,noheader || { echo CUDA_PREFLIGHT:QUERY_FAILED; exit 72; }"
+    )
+    code, out, err = ssh.exec(query_cmd, check=False)
+    detail = (out or err or "").strip()
+    if code != 0:
+        raise RuntimeError(
+            "cuda backend requested but GPU preflight failed: "
+            f"selected device query failed (device={device_id}, code={code}, detail={detail}). "
+            "Please switch GPU Device and retry."
+        )
+    rows = [line.strip() for line in str(out).splitlines() if line.strip()]
+    if not rows:
+        raise RuntimeError(
+            "cuda backend requested but selected GPU returned no info. "
+            f"device={device_id}"
+        )
+    parsed_rows: list[dict[str, Any]] = []
+    for row in rows:
+        parts = [part.strip() for part in row.split(",")]
+        if len(parts) >= 1:
+            parsed_rows.append(
+                {
+                    "index": int(parts[0]) if parts[0].isdigit() else device_id,
+                    "name": str(parts[1]) if len(parts) > 1 else "",
+                    "memory_total": str(parts[2]) if len(parts) > 2 else "",
+                }
+            )
     return {
         "checked": True,
         "compute_backend": "cuda",
@@ -366,7 +386,11 @@ def build_train_command(
     if gpu_cache_policy_value not in {"windows", "full"}:
         raise ValueError(f"unsupported gpu_cache_policy: {gpu_cache_policy}")
     gpu_warmup_bool = bool(_coerce_bool_flag(gpu_warmup))
+    # Physical GPU index selected by user on host machine.
     gpu_device_value = int(gpu_device)
+    # We pin one GPU via CUDA_VISIBLE_DEVICES, so inside process it is remapped to device 0.
+    # Passing the physical id into CLI would trigger invalid ordinal errors.
+    runtime_gpu_device_value = 0
     multi_seed_count_value = max(1, int(multi_seed_count))
     win_candidates_value = str(win_candidates).strip()
     dataset_manifest_remote = assert_remote_ssvep_path(dataset_manifest_remote)
@@ -396,7 +420,7 @@ def build_train_command(
         "--compute-backend",
         sh_quote(backend),
         "--gpu-device",
-        str(gpu_device_value),
+        str(runtime_gpu_device_value),
         "--gpu-precision",
         sh_quote(gpu_precision_value),
         "--gpu-warmup",
@@ -435,7 +459,9 @@ def build_train_command(
     shell_command = (
         f"mkdir -p {sh_quote(report_dir)} {sh_quote(profile_dir)} {sh_quote(REMOTE_LOG_DIR)} {sh_quote(REMOTE_TMP_DIR)} && "
         f"cd {sh_quote(REMOTE_CODE_DIR)} && "
-        f"(nohup {remote_env_prefix(gpu_device=gpu_device_value)} {script} > {sh_quote(log_path)} 2>&1 < /dev/null & echo $!)"
+        # NOTE: `nohup VAR=... cmd` is invalid because nohup treats VAR=... as executable.
+        # Use `env VAR=... cmd` so environment assignment is applied to the CLI process.
+        f"(nohup env {remote_env_prefix(gpu_device=gpu_device_value)} {script} > {sh_quote(log_path)} 2>&1 < /dev/null & echo $!)"
     )
     return {
         "run_id": run_id,
@@ -449,6 +475,7 @@ def build_train_command(
         "dataset_manifest_session2": "" if not dataset_manifest_session2_remote else dataset_manifest_session2_remote,
         "compute_backend": backend,
         "gpu_device": str(gpu_device_value),
+        "gpu_device_runtime": str(runtime_gpu_device_value),
         "gpu_precision": gpu_precision_value,
         "gpu_warmup": "1" if gpu_warmup_bool else "0",
         "gpu_cache_policy": gpu_cache_policy_value,
@@ -482,6 +509,7 @@ def start_remote_task(
         {
             "compute_backend": str(command_payload.get("compute_backend", "")),
             "gpu_device": int(command_payload.get("gpu_device", 0) or 0),
+            "gpu_device_runtime": int(command_payload.get("gpu_device_runtime", 0) or 0),
             "gpu_precision": str(command_payload.get("gpu_precision", "")),
             "gpu_warmup": bool(_coerce_bool_flag(command_payload.get("gpu_warmup", "0"))),
             "gpu_cache_policy": str(command_payload.get("gpu_cache_policy", "")),
@@ -524,7 +552,8 @@ def read_remote_status(ssh: SSHClient, record: dict[str, Any]) -> dict[str, Any]
             progress = {"error": str(exc)}
     ps_command = f"test -n {sh_quote(pid)} && ps -p {sh_quote(pid)} -o pid=,stat=,etime=,cmd= || true"
     _code, ps_out, _err = ssh.exec(ps_command, check=False)
-    fuser_command = "fuser /dev/nvidia0 2>/dev/null || true"
+    gpu_device = int(record.get("gpu_device", 0) or 0)
+    fuser_command = f"fuser /dev/nvidia{gpu_device} 2>/dev/null || true"
     _code, fuser_out, _err = ssh.exec(fuser_command, check=False)
     artifacts = {
         "report_json": ssh.exists(posixpath.join(report_dir, "offline_train_eval.json")),
@@ -962,7 +991,7 @@ def launch_gui() -> int:
                     check_cmd = (
                         f"test -d {sh_quote(REMOTE_ROOT)} && echo ROOT_OK || echo ROOT_MISSING; "
                         "command -v nvidia-smi >/dev/null 2>&1 && "
-                        "nvidia-smi --query-gpu=name,memory.total --format=csv,noheader | head -n 1 || "
+                        "nvidia-smi -L | head -n 4 || "
                         "echo NVIDIA_SMI_MISSING"
                     )
                     _code, out, _err = ssh.exec(check_cmd, check=False)

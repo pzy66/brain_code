@@ -42,6 +42,8 @@ from async_fbcca_idle_standalone import (
     DEFAULT_NH,
     DEFAULT_SPATIAL_RANK_CANDIDATES,
     DEFAULT_SPATIAL_SOURCE_MODEL,
+    DEFAULT_TDCA_DELAY_STEPS_CANDIDATES,
+    DEFAULT_TDCA_N_COMPONENTS_CANDIDATES,
     DEFAULT_WIN_SEC_CANDIDATES,
     BenchmarkRunner,
     atomic_copy_text_file,
@@ -545,9 +547,11 @@ def _metrics_source_name(
     *,
     prefer_cross_session: bool,
 ) -> str:
-    if prefer_cross_session and isinstance(result.get("cross_session_metrics"), dict):
-        return "cross_session"
-    return "session1_holdout"
+    if prefer_cross_session:
+        if isinstance(result.get("cross_session_metrics"), dict):
+            return "cross_session"
+        return "session1_holdout"
+    return "no_session2"
 
 
 def _ranking_metrics_from_result(
@@ -792,19 +796,41 @@ def _quick_screen_models(
         model_name = normalize_model_name(raw_model_name)
         log_fn(f"Stage A model start: {model_index}/{len(model_names)} model={model_name}")
         best_entry: Optional[dict[str, Any]] = None
-        for config_index, win_sec in enumerate(valid_win_candidates, start=1):
+        tdca_param_candidates: tuple[dict[str, int], ...]
+        if model_name == "tdca":
+            tdca_param_candidates = tuple(
+                {"delay_steps": int(delay_steps), "n_components": int(n_components)}
+                for delay_steps in DEFAULT_TDCA_DELAY_STEPS_CANDIDATES
+                for n_components in DEFAULT_TDCA_N_COMPONENTS_CANDIDATES
+            )
+        else:
+            tdca_param_candidates = ({},)
+        config_specs = [
+            (float(win_sec), dict(param_payload))
+            for win_sec in valid_win_candidates
+            for param_payload in tdca_param_candidates
+        ]
+        for config_index, (win_sec, extra_model_params) in enumerate(config_specs, start=1):
+            tdca_suffix = ""
+            if model_name == "tdca":
+                tdca_suffix = (
+                    f" tdca(delay={int(extra_model_params.get('delay_steps', 0))},"
+                    f"comp={int(extra_model_params.get('n_components', 0))})"
+                )
             log_fn(
-                f"Stage A config start: model={model_name} {config_index}/{len(valid_win_candidates)} "
-                f"win={float(win_sec):g}s"
+                f"Stage A config start: model={model_name} {config_index}/{len(config_specs)} "
+                f"win={float(win_sec):g}s{tdca_suffix}"
             )
             try:
+                model_params = {"Nh": DEFAULT_NH}
+                model_params.update(extra_model_params)
                 decoder = create_decoder(
                     model_name,
                     sampling_rate=sampling_rate,
                     freqs=freqs,
                     win_sec=float(win_sec),
                     step_sec=float(step_sec),
-                    model_params={"Nh": DEFAULT_NH},
+                    model_params=model_params,
                     compute_backend=compute_backend,
                     gpu_device=int(gpu_device),
                     gpu_precision=gpu_precision,
@@ -831,6 +857,7 @@ def _quick_screen_models(
                     "eval_seed": int(seed),
                     "selected_eeg_channels": [],
                     "best_win_sec": float(win_sec),
+                    "decoder_params": dict(extra_model_params),
                     "metrics_4class": dict(quick_metrics.get("metrics_4class", {})),
                     "classifier_only_metrics": classifier_only_metrics,
                     "quick_screen_metrics": dict(quick_screen_metrics),
@@ -850,16 +877,16 @@ def _quick_screen_models(
                 ):
                     best_entry = entry
                 log_fn(
-                    f"Stage A config done: model={model_name} {config_index}/{len(valid_win_candidates)} "
+                    f"Stage A config done: model={model_name} {config_index}/{len(config_specs)} "
                     f"idle_fp_proxy={float(quick_screen_metrics.get('idle_fp_rate_proxy', float('inf'))):.4f} "
                     f"recall_proxy={float(quick_screen_metrics.get('control_recall_proxy', 0.0)):.4f} "
                     f"acc_4class={float(classifier_only_metrics.get('acc_4class', 0.0)):.4f} "
-                    f"macro_f1={float(classifier_only_metrics.get('macro_f1_4class', 0.0)):.4f}"
+                    f"macro_f1={float(classifier_only_metrics.get('macro_f1_4class', 0.0)):.4f}{tdca_suffix}"
                 )
             except Exception as exc:
                 log_fn(
-                    f"Stage A config failed: model={model_name} {config_index}/{len(valid_win_candidates)} "
-                    f"win={float(win_sec):g}s error={exc}"
+                    f"Stage A config failed: model={model_name} {config_index}/{len(config_specs)} "
+                    f"win={float(win_sec):g}s{tdca_suffix} error={exc}"
                 )
         if best_entry is None:
             results.append(
