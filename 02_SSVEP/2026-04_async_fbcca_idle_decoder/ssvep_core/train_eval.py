@@ -19,8 +19,13 @@ from async_fbcca_idle_standalone import (
     DEFAULT_BENCHMARK_CHANNEL_MODES,
     DEFAULT_CALIBRATION_SEED,
     DEFAULT_CHANNEL_WEIGHT_MODE,
+    DEFAULT_CHANNEL_WEIGHT_L2,
+    DEFAULT_CONTROL_STATE_MODE,
+    DEFAULT_IDLE_FP_HARD_TH,
     DEFAULT_SUBBAND_WEIGHT_MODE,
+    DEFAULT_SUBBAND_PRIOR_STRENGTH,
     DEFAULT_FBCCA_WEIGHT_CV_FOLDS,
+    DEFAULT_WEIGHT_AGGREGATION,
     DEFAULT_ASYNC_DECISION_TIME_MODE,
     DEFAULT_DATA_POLICY,
     DEFAULT_DYNAMIC_STOP_ALPHA,
@@ -56,12 +61,14 @@ from async_fbcca_idle_standalone import (
     model_method_note,
     normalize_model_name,
     parse_channel_mode_list,
+    parse_control_state_mode,
     parse_data_policy,
     parse_decision_time_mode,
     parse_gate_policy,
     parse_metric_scope,
     parse_model_list,
     parse_ranking_policy,
+    parse_weight_aggregation,
     pack_evaluation_metrics_for_ranking,
     profile_meets_acceptance,
     save_profile,
@@ -135,6 +142,15 @@ class OfflineTrainEvalConfig:
     gpu_precision: str = DEFAULT_GPU_PRECISION_NAME
     gpu_warmup: bool = True
     gpu_cache_policy: str = DEFAULT_GPU_CACHE_MODE
+    pretrained_profile_path: Optional[Path] = None
+    profile_eval_mode: str = "fbcca-vs-all"
+    freeze_profile_weights: bool = True
+    weight_aggregation: str = DEFAULT_WEIGHT_AGGREGATION
+    idle_fp_hard_th: float = DEFAULT_IDLE_FP_HARD_TH
+    channel_weight_l2: float = DEFAULT_CHANNEL_WEIGHT_L2
+    subband_prior_strength: float = DEFAULT_SUBBAND_PRIOR_STRENGTH
+    control_state_mode: str = DEFAULT_CONTROL_STATE_MODE
+    long_idle_required: bool = False
 
 
 def _sanitize_path_token(value: str, *, fallback: str) -> str:

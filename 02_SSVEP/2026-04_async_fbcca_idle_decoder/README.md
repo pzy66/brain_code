@@ -1,44 +1,87 @@
-# SSVEP 三程序主线说明（2026-04）
+# SSVEP 异步识别代码说明
 
-本目录是一套面向异步 SSVEP 的完整工程链路，核心目标是：
+本目录是一套围绕异步 SSVEP 的完整工程链路，目标很明确：
 
-1. 看目标时输出目标频率。
-2. 不看目标时输出 `None`（不误触发）。
-3. 训练、评测、在线运行三件事完全解耦。
+1. 看某个闪烁目标时，输出对应频率。
+2. 不看任何目标时，输出 `None`，尽量减少误触发。
+3. 把采集、训练评测、实时识别拆开，职责清晰。
 
-当前主线分成三个程序：
+当前主线是 3 个程序：
 
-- 实时识别：`ssvep_realtime_online_ui.py`
-- 数据采集：`ssvep_dataset_collection_ui.py`
-- 训练评测：`ssvep_training_evaluation_ui.py`
+- `ssvep_dataset_collection_ui.py`
+  只负责采集数据集。
+- `ssvep_training_evaluation_ui.py`
+  只负责训练、评测、生成报告和 profile。
+- `ssvep_realtime_online_ui.py`
+  只负责读取 profile 做实时识别。
 
----
+另外有一个服务器助手：
 
-## 1. 对脑电信号到底做了什么（总览）
+- `ssvep_server_train_client.py`
+  只负责把本地数据上传到服务器、启动训练、查看进度、下载报告和 profile。
 
-从工程上，信号路径是固定的：
+## 1. 目录结构
 
-`设备原始EEG -> 采样窗口 -> 预处理 -> 模型打分 -> 特征提取 -> 异步门控状态机 -> 输出 selected_freq / None`
+本目录常用文件如下：
 
-从数学上，主线是：
+- `async_fbcca_idle_standalone.py`
+  核心算法和公共解码逻辑。包含 FBCCA、门控状态机、profile 读写、在线分析等。
+- `ssvep_dataset_collection_ui.py`
+  数据采集 UI。
+- `ssvep_training_evaluation_ui.py`
+  训练评测 UI。
+- `ssvep_training_evaluation_cli.py`
+  训练评测 CLI，UI 和服务器助手最终都调用它。
+- `ssvep_realtime_online_ui.py`
+  实时识别 UI。
+- `ssvep_server_train_client.py`
+  服务器训练助手。
+- `ssvep_core/`
+  训练评测、数据集读写、后端计算等公共模块。
+- `profiles/`
+  本地 profile、报告、服务器下载产物、采集数据集的默认落点。
 
-- 分类器：FBCCA（可叠加通道权重和 TRCA 空间前端）
-- 控制态判决：阈值 + 迟滞 +（可选）动态累计证据
-- 评测：论文口径（四分类）+ 异步口径（误触发和时延）双口径并行
+父目录中保留了几个便捷启动脚本，方便在 PyCharm 里直接运行：
 
----
+- `C:\Users\P1233\Desktop\brain\brain_code\02_SSVEP\START_SSVEP_DATA_COLLECTION_UI.py`
+- `C:\Users\P1233\Desktop\brain\brain_code\02_SSVEP\START_MODEL_EVALUATION_UI.py`
+- `C:\Users\P1233\Desktop\brain\brain_code\02_SSVEP\START_FBCCA_REALTIME_UI.py`
+- `C:\Users\P1233\Desktop\brain\brain_code\02_SSVEP\START_SSVEP_SERVER_TRAIN.py`
 
-## 2. 采集阶段（程序 B）对信号做了什么
+## 2. 当前推荐工作流
 
-### 2.1 设备连接与采样稳定
+推荐按下面顺序使用：
 
-- 使用 BrainFlow 连接设备（支持 `serial_port=auto` 自动选串口）。
-- 自动串口策略会优先考虑常见 USB 串口设备描述，并对 `COM4` 这类端口给更高优先级。
-- 连接后先 `ensure_stream_ready`，确认缓存样本达到最小稳定量，再正式采集。
+1. 先用采集程序采集一轮或多轮数据。
+2. 再用训练评测程序训练 FBCCA 权重，或做多模型评测。
+3. 训练得到可用 profile 后，用实时识别程序加载 profile 做在线验证。
+4. 如果本地训练太慢，再用服务器助手上传数据到服务器训练。
 
-### 2.2 Trial 时序（你现在默认）
+这套设计的原则是：
 
-默认预设是 `stable_12m`：
+- 采集程序不训练。
+- 训练程序不直接接设备采集。
+- 实时程序不做训练，只读 profile。
+
+## 3. 采集程序
+
+主程序：
+
+- `ssvep_dataset_collection_ui.py`
+
+### 3.1 采集程序做什么
+
+采集程序负责：
+
+- 连接 BrainFlow 设备。
+- 按协议展示闪烁刺激。
+- 在每个 trial 的 active 段采样 EEG。
+- 做基本质量检查。
+- 把每轮数据保存成可复用数据集。
+
+### 3.2 当前默认协议
+
+当前默认预设是 `stable_12m`，参数为：
 
 - `prepare_sec = 1.0`
 - `active_sec = 5.0`
@@ -46,221 +89,161 @@
 - `target_repeats = 10`
 - `idle_repeats = 20`
 - `switch_trials = 14`
+- `long_idle_sec = 0.0`
 
-每个 trial 在 `active` 开始和结束都会发提示音（采集 UI 已实现）。
+也就是说，默认每轮没有额外 long-idle 段。这个设计是为了兼容你当前已经在用的短轮采集流程。
 
-### 2.3 只保存 active 段 EEG，并做质量门槛
+### 3.3 新增的 long-idle 采集
 
-每个 trial 实际保存的是 active 段 EEG 矩阵 `X ∈ R^{samples × channels}`，并执行质量门槛：
+采集 UI 现在支持：
 
+- `Long Idle (sec, 0=off)`
+
+当它大于 0 时，每轮会额外增加 1 个 `long_idle` trial：
+
+- 被试只看中心，不看任何闪烁目标。
+- 该 trial 会被单独标记为 `label=long_idle`
+- manifest 中会记录 `stage=long_idle`
+
+这个 long-idle 的作用不是提高四分类准确率，而是让异步评测里的 `idle_fp_per_min` 更可信。
+
+### 3.4 质量门槛
+
+采集时每个 trial 都做质量检查：
+
+- `MIN_ACTIVE_SEC_FOR_TRAINING = 1.5`
 - `MIN_TRIAL_QUALITY_RATIO = 0.90`
 - `MAX_TRIAL_RETRIES = 3`
-- `MIN_ACTIVE_SEC_FOR_TRAINING = 1.5`
 
-如果 `used_samples / target_samples < 0.9`，该 trial 自动重采，最多 3 次。
+如果有效样本比例太低，会自动重采该 trial，最多 3 次。
 
-### 2.4 采集数据如何落盘
+### 3.5 提示音和多轮
 
-每轮独立 session 目录，固定输出：
+采集 UI 支持：
+
+- 计划轮数显示
+- 当前轮次显示
+- 每次只采一轮，结束后手动开始下一轮
+- 每个 trial 的 active 开始和结束提示音
+
+这样做是为了让每轮长度可控，降低疲劳，同时保留多轮采集的可重复性。
+
+### 3.6 采集输出格式
+
+每轮会生成一个独立 session 目录，默认在：
+
+- `profiles/datasets/<session_id>/`
+
+固定文件：
 
 - `session_manifest.json`
 - `raw_trials.npz`
 
-其中 `NPZ` 保存每个 trial 的原始矩阵，`manifest` 保存索引和协议元数据（label、expected_freq、trial_id、短缺比例、重试次数等）。
+其中：
 
-新增关键字段：
+- `raw_trials.npz`
+  保存每个 trial 的原始 EEG 段，shape 一般是 `samples x channels`
+- `session_manifest.json`
+  保存协议参数、trial 元数据、质量信息、split 需要的索引信息
 
-- `protocol_signature`：对协议核心参数做哈希签名（采样率、prepare/active/rest、target/idle/switch、频率、通道）。
-- `quality_summary`：整轮采集质量汇总。
+### 3.7 manifest 里的关键字段
 
-这一步的意义是：训练评测可以严格保证“只用同协议数据”，避免混协议导致结论失真。
+训练端会依赖这些字段：
 
----
+- `protocol_signature`
+  用于判断是否是同一协议数据。
+- `quality_summary`
+  记录有效 trial 数、丢弃数、重采统计。
+- `trials`
+  记录每个 trial 的 `label / expected_freq / trial_id / npz_key / used_samples / target_samples`
+- `protocol_config.long_idle_sec`
+  明确本轮是否含 long-idle
 
-## 3. 解码阶段对信号做了什么（核心）
+## 4. 训练评测程序
 
-核心代码在 `async_fbcca_idle_standalone.py`。
+主程序：
 
-### 3.1 窗口化
+- `ssvep_training_evaluation_ui.py`
+- `ssvep_training_evaluation_cli.py`
 
-在线和离线都把 trial 切成滑动窗：
+### 4.1 训练评测程序做什么
 
-- 窗长 `win_sec`（常见 1.0~3.0s，配置可搜索）
-- 步长 `step_sec=0.25s`
+它负责：
 
-每个窗口独立做一次“预处理 + 打分 + 门控更新”。
+- 读取一个或多个 session 数据集
+- 做 trial 级切分
+- 训练模型或权重
+- 输出固定窗分类指标
+- 输出异步在线可用性指标
+- 生成报告和 profile
 
-### 3.2 预处理（每个窗口）
+### 4.2 当前支持的主要任务
 
-对每个通道做：
+当前主推 4 个任务：
 
-1. 低频基线估计并去除  
-`baseline = LPF(x, 3Hz)`，`x' = x - baseline`
+- `fbcca-weights`
+  只训练 FBCCA 通道权重和子带权重，目标是给实时端提供可部署 profile。
+- `classifier-compare`
+  跑所有候选模型的 fixed-window 四分类比较，不做完整异步门控搜索。
+- `focused-compare`
+  先做全模型快速筛选，再对 Top 模型做完整异步端到端评测。
+- `profile-eval`
+  读取一个已经训练好的 FBCCA weighted profile，在指定数据集上比较：
+  `fbcca_plain_all8`、`fbcca_profile_weighted` 和其他模型。
 
-2. 工频陷波（若采样率允许）  
-默认 50Hz notch：`iirnotch(50Hz, Q=30)`
+兼容任务仍然保留：
 
-3. 子带带通滤波  
-默认 5 个子带：`(6-50),(10-50),(14-50),(18-50),(22-50) Hz`
+- `model-compare`
+- `fbcca-weighted-compare`
 
-### 3.3 FBCCA 打分
+但日常建议优先使用前面 4 个任务。
 
-对每个候选频率 `f`：
+### 4.3 多 seed 现在的语义
 
-1. 生成参考信号矩阵  
-`Y_f = [sin(2πhft), cos(2πhft)]_{h=1..Nh}`，默认 `Nh=3`
+多随机种子不是为了“扩充样本量”，而是为了：
 
-2. 在每个子带上做 CCA，取最大典型相关 `ρ_m(f)`（SVD/eigh 白化实现）
+- 让同一批数据做多次不同的 trial-level split
+- 估计模型结果稳定性
+- 减少单次切分的偶然性
 
-3. 子带加权融合  
-`score(f) = Σ_m w_m * ρ_m(f)^2`  
-其中权重默认 `w_m ∝ (m+1)^(-1.25)+0.25`，再归一化
+当前默认：
 
-最终得到四频分数向量 `scores[4]`。
+- `classifier-compare`: `multi_seed_count = 10`
+- `focused-compare`: `multi_seed_count = 5`
 
-### 3.4 从分数提取门控特征
+训练结论应该看聚合结果，而不是只看某一个 seed 的最好结果。
 
-每窗生成：
+### 4.4 训练数据如何切分
 
-- `top1_score`
-- `top2_score`
-- `margin = top1 - top2`
-- `ratio = top1 / top2`
-- `normalized_top1`
-- `score_entropy`
-
-这些特征进入异步状态机，不直接把 `argmax` 当最终输出。
-
----
-
-## 4. 异步门控状态机（为什么会“有输出/无输出”）
-
-状态固定三态：
-
-- `idle`
-- `candidate`
-- `selected`
-
-### 4.1 进入 selected（迟滞进入）
-
-需要同时满足：
-
-- `top1_score >= enter_score_th`
-- `ratio >= enter_ratio_th`
-- `margin >= enter_margin_th`
-- 连续 `min_enter_windows` 个窗口通过
-
-### 4.2 退出 selected（迟滞退出）
-
-当当前目标不再满足保持条件，连续 `min_exit_windows` 个窗口失败后释放到 `idle`，外部输出回到 `None`。
-
-### 4.3 speed 策略的直接切换（A->B）
-
-当 `gate_policy=speed` 时，在 `selected(A)` 可直接切到 `selected(B)`，不必强制 `A->idle->B`：
-
-- `pred_freq != current_selected_freq`
-- 达到 `switch_enter_*` 阈值
-- 连续 `min_switch_windows` 满足
-
-### 4.4 动态停止（累计证据）
-
-可选 `dynamic_stop`：
-
-- 先估计 control-vs-idle 的对数似然比 `log_lr_t`
-- 再做累计证据  
-`S_t = alpha * S_{t-1} + log_lr_t`（默认 `alpha=0.7`）
-- 进入/退出还可叠加 `S_t` 阈值
-
-这个机制用于减少“单窗抖动”引发的误判。
-
----
-
-## 5. 可学习权重：通道权重 + 空间滤波权重
-
-### 5.1 通道权重（FBCCA 对角权重）
-
-模式：`channel_weight_mode=fbcca_diag`
-
-做法：
-
-1. 单通道可分性初始化：用 control vs idle 的 `top1_score` 估计 `d'`
-2. `softmax(d')` 得初始通道权重
-3. 归一化并约束（均值归一，数值裁剪）
-4. 在 gate 集上按异步目标函数做坐标搜索微调
-
-### 5.2 空间滤波前端（TRCA shared）
-
-模式：`spatial_filter_mode=trca_shared`（FBCCA 主线）
-
-做法：
-
-1. 每个频率训练 TRCA 空间滤波向量
-2. 拼接后做正交化得到共享基 `W`
-3. 选 rank `K`（候选 `{1,2,3}`）
-4. 前端变换：先通道加权，再空间投影  
-`X1 = X * diag(w)`，`X2 = X1 @ W[:, :K]`
-5. `X2` 再进入 FBCCA
-
-### 5.3 联合优化（工程近似）
-
-支持交替优化：
-
-- 固定 `W` 优化 `w`
-- 固定 `w` 重估 `W`
-
-迭代日志会写入 profile 的 `joint_weight_training` 字段。
-
----
-
-## 6. 训练评测（程序 C）做了什么
-
-### 6.1 数据读取与筛选
-
-输入是一组 `session_manifest.json`（可在 UI 选择哪些 session 参与训练）。
-
-先做质量过滤：
-
-- `quality_min_sample_ratio`（默认 0.90）
-- `quality_max_retry_count`（默认 3）
-
-再做一致性过滤：
-
-- `strict_protocol_consistency`
-- `strict_subject_consistency`
-
-### 6.2 新协议优先策略（默认）
-
-默认 `data_policy=new-only`：
-
-- 要求 manifest 必须有 `protocol_signature`
-- 且所有训练 session 的 `protocol_signature` 必须一致
-- 不一致 session 会被排除并记录到 `excluded_sessions`
-
-### 6.3 trial 级无泄漏切分
-
-评测切分不是窗口随机打散，而是 trial 级分层切分：
+训练程序使用 trial 级切分，而不是窗口级打散：
 
 - `train : gate : holdout = 60% : 20% : 20%`
 
-并按类别分组后再抽样，保证每类在各 split 都有样本，减少泄漏。
+这样做是为了避免窗口泄漏。因为同一 trial 切出的窗口高度相关，不能当独立样本随便打散。
 
-### 6.4 评测双口径并行（重点）
+### 4.5 双口径评测
 
-#### Paper lens（对齐论文 6.2.1）
+训练程序现在同时输出两套指标。
 
-输出：
+#### 4.5.1 Classifier-only / paper lens
 
-- `Acc_SSVEP = N_correct / N_total`
+这套指标对应论文常见写法，主要评估分类器本体：
+
+- `Acc_SSVEP`
 - `Macro-F1`
-- 混淆矩阵
-- 平均决策时间
-- `ITR = [log2(N)+Plog2P+(1-P)log2((1-P)/(N-1))] * 60/T`
+- `Confusion Matrix`
+- `Mean Decision Time`
+- `ITR`
 
-默认 `decision_time_mode=fixed-window`（论文口径更稳）。
+这回答的是：
 
-#### Async lens（在线可用性）
+- 8/10/12/15 Hz 能不能分清
+- 哪些频率之间容易混淆
+- 单次固定窗决策有多快
 
-输出：
+#### 4.5.2 End-to-end async lens
+
+这套指标对应真实异步在线可用性：
 
 - `idle_fp_per_min`
 - `control_recall`
@@ -270,152 +253,315 @@
 - `release_latency_s`
 - `inference_ms`
 
-`idle_fp_per_min` 的分母是**真实 idle 时长（秒）/60**，不是窗口数近似。
+这回答的是：
 
-### 6.5 排名与报告
+- 不看目标时会不会误触发
+- 看目标时多久能进入 selected
+- 目标切换时多久能跟上
+- 目光移开时多久能回到 `None`
 
-默认 `ranking_policy=async-first`，先看可用性再看分类精度。
+### 4.6 当前 FBCCA 权重训练在做什么
 
-报告统一存放到：
+当前实时主线仍然是：
 
-`profiles/reports/train_eval/<run_id>/`
+- `FBCCA + 8通道权重 + 5个全局子带权重`
 
-固定产物：
+含义要区分清楚：
+
+- `channel_weights`
+  是 8 个 EEG 通道的连续权重
+- `subband_weights`
+  是 5 个 filter-bank 子带的全局融合权重
+
+当前不训练：
+
+- 每个通道各自一套子带权重矩阵
+
+原因很简单：你现在的数据量还不够支持 `8 x 5` 这种更高自由度的参数，容易过拟合。
+
+### 4.7 权重训练目标
+
+FBCCA weighted 训练已经不是单纯追求 recall，而是优先控制误触发。
+
+当前思路是：
+
+1. 先满足硬约束
+   - `idle_fp_per_min <= 阈值`
+   - `control_recall >= 下限`
+2. 再在满足约束的候选里比较
+   - `control_recall`
+   - `control_recall_at_3s`
+   - `switch_latency_s`
+   - `release_latency_s`
+   - `Acc_4class / Macro-F1`
+
+这和“只追求准确率”不同。因为异步 SSVEP 的主要问题通常不是四分类分不开，而是 idle 时误触发太多。
+
+### 4.8 frequency-specific control-state
+
+当前门控支持两类思路：
+
+- `unified`
+  所有频率共用一套 enter/exit 阈值
+- `frequency-specific-threshold`
+  每个频率拟合自己的一套阈值
+
+目前已经真正接入的是：
+
+- `frequency-specific-threshold`
+
+当前还没有完全独立实现的是：
+
+- `frequency-specific-logistic`
+
+现在如果你选 logistic，不应把它理解成已经有完整的频率专属逻辑回归分类器训练流程。当前可靠可用的是 threshold 版本。
+
+### 4.9 同 session 和跨 session
+
+训练评测报告会明确区分：
+
+- `internal_holdout`
+- `same_session_profile_eval`
+- `cross_session_eval`
+- `long_idle_used = true/false`
+
+解释如下：
+
+- `internal_holdout`
+  同一轮 session 内部切分出的 holdout，只能说明方向，不是最终泛化结论。
+- `same_session_profile_eval`
+  同一轮既训练 profile 又拿来复评，会偏乐观。
+- `cross_session_eval`
+  用另一轮独立 session 评测训练好的 profile，才是更可信的部署依据。
+
+## 5. 实时识别程序
+
+主程序：
+
+- `ssvep_realtime_online_ui.py`
+
+### 5.1 实时程序做什么
+
+它只做一件事：
+
+- 读取 profile，加载对应模型和参数，实时输出 `selected_freq` 或 `None`
+
+它不负责训练，也不应该在这里重新选模型、重新拟合阈值。
+
+### 5.2 实时程序如何依赖 profile
+
+实时程序以 profile 为主，而不是以 UI 下拉框为主。
+
+也就是说：
+
+- UI 上选的模型如果和 profile 内记录的模型冲突，最终还是以 profile 为准
+- 这是为了避免“加载的是 weighted FBCCA profile，但 UI 误切到别的模型”这种错误
+
+### 5.3 实时端会校验什么
+
+实时端加载 profile 时会检查：
+
+- 通道权重数量是否等于当前 EEG 通道数
+- 子带权重数量是否等于当前 filter-bank 子带数
+- profile 中的模型状态是否能正常恢复
+
+如果不匹配，会直接报错，不会悄悄截断。
+
+### 5.4 GPU / CPU 后端
+
+实时端支持：
+
+- `auto`
+- `cpu`
+- `cuda`
+
+但实时端不会盲目强制 CUDA。启动时会比较实际开销，如果 GPU 对单窗口推理并不更快，会自动回退 CPU。
+
+这点是合理的，因为实时识别是低 batch、低延迟问题，不是大批量吞吐问题。
+
+## 6. 服务器训练助手
+
+主程序：
+
+- `ssvep_server_train_client.py`
+
+### 6.1 服务器侧目录约束
+
+服务器所有写入统一限制在：
+
+- `/data1/zkx/brain/ssvep`
+
+其中主要目录为：
+
+- `/data1/zkx/brain/ssvep/code`
+- `/data1/zkx/brain/ssvep/data`
+- `/data1/zkx/brain/ssvep/reports`
+- `/data1/zkx/brain/ssvep/profiles`
+- `/data1/zkx/brain/ssvep/logs`
+
+当前代码里写死的远端根目录也是这个位置，不会往系统路径或 home 目录乱写。
+
+### 6.2 服务器助手当前支持的主要操作
+
+按钮层面，当前已经有：
+
+- `只训练FBCCA权重`
+- `读取权重评测`
+- `精选模型深度分析`
+- `全量分类对比`
+
+也就是说，服务器端已经可以分别承担：
+
+- 只训练 weighted FBCCA profile
+- 读取已有 weighted profile 做复评
+- 跑全模型 fixed-window 分类榜
+- 跑筛选后的异步端到端榜
+
+### 6.3 数据流
+
+本地采集后：
+
+- `profiles/datasets/<session_id>/session_manifest.json`
+- `profiles/datasets/<session_id>/raw_trials.npz`
+
+上传到服务器后：
+
+- `/data1/zkx/brain/ssvep/data/<session_id>/session_manifest.json`
+- `/data1/zkx/brain/ssvep/data/<session_id>/raw_trials.npz`
+
+服务器训练完成后，本地可下载：
+
+- 报告 JSON
+- 报告 Markdown
+- 图表
+- `profile_best_fbcca_weighted.json`
+- 推荐实时 profile
+
+## 7. 输出文件说明
+
+### 7.1 训练报告
+
+本地训练报告默认位于：
+
+- `profiles/reports/train_eval/<date>/<run_id>/`
+
+常见文件：
 
 - `offline_train_eval.json`
-- `offline_train_eval.md`（中文）
+- `offline_train_eval.md`
 - `run.log`
 - `selection_snapshot.json`
-- `figures/*.png`（若开启）
+- `progress_snapshot.json`
+- `figures/*.png`
 
-### 6.6 训练产物如何安全保存
+### 7.2 profile
 
-训练评测结束后，会先在本次报告目录内保存候选 profile，再决定是否覆盖默认实时 profile。
+常见 profile 包括：
 
-核心规则：
+- `profile_best_candidate.json`
+- `profile_best_fbcca_weighted.json`
 
-- `profile_best_candidate.json`：本轮最佳候选 profile
-- `profile_best_fbcca_weighted.json`：本轮最佳加权 FBCCA profile
-- `default_profile.json`：只有达到验收阈值时才覆盖
+其中对实时端最关键的是：
 
-保存采用原子写入：先写临时文件，再 `replace()` 到正式文件，减少半写入导致的损坏风险。
+- `profile_best_fbcca_weighted.json`
 
-报告 JSON 中还会额外记录：
+如果该文件经过独立评测验证，可以手动导入到实时程序使用。
 
-- `profile_for_realtime_path`
-- `profile_for_realtime_type`
-- `roundtrip_ready`
-- `atomic_write_completed`
+### 7.3 服务器下载产物
 
----
+服务器训练下载后，通常位于：
 
-## 7. 实时在线（程序 A）做了什么
+- `profiles/server_runs/<run_id>/`
+- `profiles/server_profiles/<run_id>__profile_best_fbcca_weighted.json`
 
-实时程序只做三件事：
+## 8. 旧数据和新数据的兼容性
 
-1. 读取 profile（含模型状态和门控阈值）
-2. 在线滑窗解码
-3. 输出状态变化
+当前代码已经兼容两类数据：
 
-输出结构包含：
+### 8.1 旧数据
 
-- `state`
-- `pred_freq`
-- `selected_freq`（最终控制输出）
-- `top1_score/top2_score/margin/ratio`
-- `control_log_lr/acc_log_lr`
-- `stable_windows`
-- `decision_latency_ms`
+旧的 session 没有 `long_idle` 也可以：
 
-默认只在 `(state, selected_freq)` 变化时发输出，避免刷屏；`--emit-all` 可改为每窗输出。
+- 做 `classifier-compare`
+- 做 `focused-compare`
+- 做 `fbcca-weights`
+- 做 `profile-eval`
 
-### 7.1 实时端如何直接调用训练结果
+但限制是：
 
-实时端不直接读取训练数据集，只读取训练评测阶段生成的 profile。
+- `long_idle_required=1` 时不能通过
+- `idle_fp_per_min` 的可信度不如带 long-idle 的新数据
 
-标准链路是：
+### 8.2 新数据
 
-`数据采集 -> 训练评测 -> 生成 profile -> 实时端加载 profile`
+新协议数据如果带有 `long_idle_sec > 0`，训练评测会更合理：
 
-实时加载时会做三类校验：
+- idle 误触发统计更稳定
+- 更适合调 control-state 门控
+- 更适合做跨 session 部署验证
 
-- `model_name/model_params.state` 是否完整
-- `channel_weights` 数量是否等于当前 EEG 通道数
-- `subband_weights` 数量是否等于当前 filter-bank 子带数
+## 9. 当前建议的实际使用方式
 
-若 `compute_backend=auto`，实时端会先做 CPU/CUDA 小基准，再选择实际后端；若 CUDA 单窗不占优，会自动回退 CPU。
+### 9.1 如果你已经有旧数据
 
----
+建议这样做：
 
-## 8. 三程序职责边界（务必遵守）
+1. 先跑 `fbcca-weights`
+2. 再跑 `profile-eval`
+3. 看 `fbcca_plain_all8` 和 `fbcca_profile_weighted` 的差异
+4. 结果只当方向性参考，不直接当最终定型依据
 
-- 程序 A（实时）：不训练，不写训练报告。
-- 程序 B（采集）：只采集并落盘，不做模型排名。
-- 程序 C（训练评测）：只吃数据集，不直接连设备采集。
+### 9.2 如果你准备重新采数据
 
-这样能保证结果可复现、问题可定位、工程不会互相污染。
+建议至少 3 轮：
 
----
+1. 第 1 轮：训练权重
+2. 第 2 轮：拟合门控阈值
+3. 第 3 轮：完全外测
 
-## 9. 推荐使用流程（你当前版本）
+更稳妥的是 5 轮：
 
-1. 用程序 B 采 2~4 轮（每轮独立 session）。
-2. 在程序 C 勾选要参与训练的 session，跑 train/eval，生成 profile 和报告。
-3. 用程序 A 加载 profile 做在线识别。
-4. 如果在线速度慢：优先调 gate（`balanced/speed`、`min_enter/min_exit`、`win_sec`），再考虑模型替换。
+1. 2 轮训练
+2. 1 轮 gate
+3. 2 轮 cross-session holdout
 
----
+并且建议把 `Long Idle` 设为 `60~120s`。
 
-## 10. 常见问题与定位
+## 10. 快速启动
 
-### 10.1 识别慢（进入/退出都慢）
+如果你习惯直接运行 Python 启动脚本，用下面这些：
 
-优先检查：
+- 采集：
+  `C:\Users\P1233\Desktop\brain\brain_code\02_SSVEP\START_SSVEP_DATA_COLLECTION_UI.py`
+- 训练评测：
+  `C:\Users\P1233\Desktop\brain\brain_code\02_SSVEP\START_MODEL_EVALUATION_UI.py`
+- 实时识别：
+  `C:\Users\P1233\Desktop\brain\brain_code\02_SSVEP\START_FBCCA_REALTIME_UI.py`
+- 服务器训练助手：
+  `C:\Users\P1233\Desktop\brain\brain_code\02_SSVEP\START_SSVEP_SERVER_TRAIN.py`
 
-- `win_sec` 是否过大
-- `min_enter_windows` / `min_exit_windows` 是否过大
-- gate policy 是否过于保守
-- 动态停止阈值是否过高
+## 11. 当前已知边界
 
-### 10.2 训练结果很好，在线不好
+当前代码可以用，但有几个边界需要明确：
 
-优先检查：
+1. `frequency-specific-threshold` 已可用。
+2. `frequency-specific-logistic` 还不是完整独立实现，不应把它当作已经正式可用的主线。
+3. weighted FBCCA 的训练仍然比普通模型慢，因为它要搜索通道权重和子带权重。
+4. 四分类准确率高，不等于异步在线可用；真正部署前必须看 `idle_fp_per_min`、`switch_latency_s`、`release_latency_s`。
+5. 同 session 训练再同 session 评测的结果会偏乐观，最终结论应尽量基于 `cross_session_eval`。
 
-- 是否混入旧协议数据（看 `protocol_signature`）
-- 采集质量是否短段过多（看 `shortfall_ratio`、`retry_count`）
-- session2 跨会话结果是否掉得明显（报告里有对照）
+## 12. 一句话总结
 
-### 10.3 一直误触发
+这套代码现在已经形成了清晰主线：
 
-优先检查：
+- 采集程序负责产生结构化数据集
+- 训练评测程序负责训练 weighted FBCCA 和做多模型评测
+- 实时程序负责读取 profile 做在线识别
+- 服务器助手负责把训练搬到服务器上执行
 
-- idle 样本是否不足
-- `enter_ratio_th` / `enter_margin_th` 是否过低
-- speed 策略下 `switch_enter_*` 是否过宽
+如果你的目标是“训练出能直接用于实时 FBCCA 的权重，并系统比较各模型效果”，当前这套结构已经是对的。后续主要优化点不再是程序职责划分，而是：
 
----
+- 增加 long-idle 数据
+- 做跨 session 验证
+- 继续压低异步误触发
 
-## 11. 主要参数默认值（当前代码）
-
-- `DEFAULT_GATE_POLICY = balanced`
-- `DEFAULT_CHANNEL_WEIGHT_MODE = fbcca_diag`
-- `DEFAULT_SPATIAL_FILTER_MODE = trca_shared`
-- `DEFAULT_DYNAMIC_STOP_ENABLED = True`
-- `DEFAULT_DYNAMIC_STOP_ALPHA = 0.7`
-- `DEFAULT_NH = 3`
-- `DEFAULT_SUBBANDS = (6-50, 10-50, 14-50, 18-50, 22-50)`
-- `DEFAULT_STEP_SEC = 0.25`
-- 采集质量门槛：`min_sample_ratio=0.90`, `max_retry=3`, `active_sec>=1.5`
-
----
-
-## 12. 关键文献对齐（实现依据）
-
-- CCA 基线：Bin et al., J Neural Eng 2009, DOI: `10.1088/1741-2560/6/4/046002`
-- FBCCA：Chen et al., PLOS ONE 2015, DOI: `10.1371/journal.pone.0140703`
-- TRCA：Nakanishi et al., TBME 2018, DOI: `10.1109/TBME.2017.2694818`
-- 异步 control-state：DOI `10.1142/S0129065715500306`
-- 动态停止：PMID `26736447`, PMID `32731432`
-- 伪在线评测框架：DOI `10.1088/1741-2552/ad171a`
-
-当前 `FBCCA + 通道权重 + TRCA共享前端` 属于工程组合方案，报告中按 `engineering-approx` 标注，并通过 A/B 对照证明增益。

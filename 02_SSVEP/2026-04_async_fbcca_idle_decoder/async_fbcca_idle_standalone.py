@@ -41,6 +41,7 @@ from ssvep_core.compute_kernels import (
     design_sos_notch,
     fbcca_subband_scores_batch,
     fbcca_scores_batch,
+    preprocess_windows_batch,
 )
 
 try:
@@ -83,10 +84,17 @@ DEFAULT_SERIAL_PORT = "auto"
 DEFAULT_GATE_POLICY = "balanced"
 DEFAULT_GATE_POLICIES = ("conservative", "balanced", "speed")
 DEFAULT_CHANNEL_WEIGHT_MODE = "fbcca_diag"
-DEFAULT_CHANNEL_WEIGHT_RANGE = (0.3, 2.5)
+DEFAULT_CHANNEL_WEIGHT_RANGE = (0.5, 1.8)
 DEFAULT_SUBBAND_WEIGHT_MODE = "chen_fixed"
 DEFAULT_SUBBAND_WEIGHT_MODES = ("chen_fixed", "chen_ab_subject", "simplex_subject")
 DEFAULT_SUBBAND_WEIGHT_RANGE = (0.02, 1.0)
+DEFAULT_WEIGHT_AGGREGATION = "median"
+DEFAULT_WEIGHT_AGGREGATION_MODES = ("median", "mean", "trimmed-mean")
+DEFAULT_IDLE_FP_HARD_TH = 1.5
+DEFAULT_CHANNEL_WEIGHT_L2 = 0.03
+DEFAULT_SUBBAND_PRIOR_STRENGTH = 0.10
+DEFAULT_CONTROL_STATE_MODE = "unified"
+DEFAULT_CONTROL_STATE_MODES = ("unified", "frequency-specific-threshold", "frequency-specific-logistic")
 DEFAULT_FBCCA_SUBBAND_WEIGHT_A = 1.25
 DEFAULT_FBCCA_SUBBAND_WEIGHT_B = 0.25
 DEFAULT_FBCCA_SUBBAND_WEIGHT_A_GRID = (0.50, 0.75, 1.00, 1.25, 1.50, 1.75, 2.00, 2.25, 2.50)
@@ -539,6 +547,11 @@ class ThresholdProfile:
     spatial_filter_rank: Optional[int] = None
     spatial_filter_state: Optional[dict[str, Any]] = None
     joint_weight_training: Optional[dict[str, Any]] = None
+    weight_training_seed_summary: Optional[dict[str, Any]] = None
+    control_state_mode: str = DEFAULT_CONTROL_STATE_MODE
+    frequency_specific_thresholds: Optional[dict[str, Any]] = None
+    profile_validation_status: Optional[dict[str, Any]] = None
+    recommended_for_realtime: Optional[bool] = None
     runtime_backend_preference: Optional[str] = None
     runtime_precision_preference: Optional[str] = None
     metadata: Optional[dict[str, Any]] = None
@@ -582,6 +595,18 @@ class ThresholdProfile:
             data["spatial_filter_state"] = dict(data["spatial_filter_state"])
         if "joint_weight_training" in data and data["joint_weight_training"] is not None:
             data["joint_weight_training"] = dict(data["joint_weight_training"])
+        if "weight_training_seed_summary" in data and data["weight_training_seed_summary"] is not None:
+            data["weight_training_seed_summary"] = dict(data["weight_training_seed_summary"])
+        if "control_state_mode" in data and data["control_state_mode"] is not None:
+            data["control_state_mode"] = parse_control_state_mode(str(data["control_state_mode"]))
+        if "frequency_specific_thresholds" in data and data["frequency_specific_thresholds"] is not None:
+            data["frequency_specific_thresholds"] = normalize_frequency_specific_thresholds(
+                data["frequency_specific_thresholds"]
+            )
+        if "profile_validation_status" in data and data["profile_validation_status"] is not None:
+            data["profile_validation_status"] = dict(data["profile_validation_status"])
+        if "recommended_for_realtime" in data and data["recommended_for_realtime"] is not None:
+            data["recommended_for_realtime"] = bool(data["recommended_for_realtime"])
         if "runtime_backend_preference" in data and data["runtime_backend_preference"] is not None:
             data["runtime_backend_preference"] = str(data["runtime_backend_preference"]).strip().lower()
         if "runtime_precision_preference" in data and data["runtime_precision_preference"] is not None:
@@ -598,6 +623,56 @@ class ThresholdProfile:
                 payload["exit_acc_th"] = float(payload["exit_acc_th"])
             data["dynamic_stop"] = payload
         return cls(**data)
+
+
+def _frequency_key(value: Any) -> Optional[str]:
+    try:
+        numeric = float(value)
+    except Exception:
+        text = str(value).strip()
+        return text or None
+    if not np.isfinite(numeric):
+        return None
+    return f"{float(numeric):g}"
+
+
+def normalize_frequency_specific_thresholds(
+    payload: Optional[dict[str, Any]],
+) -> Optional[dict[str, dict[str, Any]]]:
+    if payload is None:
+        return None
+    normalized: dict[str, dict[str, Any]] = {}
+    for raw_key, raw_value in dict(payload).items():
+        key = _frequency_key(raw_key)
+        if key is None or not isinstance(raw_value, dict):
+            continue
+        item = dict(raw_value)
+        coerced: dict[str, Any] = {}
+        float_fields = {
+            "enter_score_th",
+            "enter_ratio_th",
+            "enter_margin_th",
+            "exit_score_th",
+            "exit_ratio_th",
+            "switch_enter_score_th",
+            "switch_enter_ratio_th",
+            "switch_enter_margin_th",
+            "enter_log_lr_th",
+            "exit_log_lr_th",
+            "freq",
+        }
+        int_fields = {"min_enter_windows", "min_exit_windows", "min_switch_windows"}
+        for field_name, field_value in item.items():
+            if field_value is None:
+                continue
+            if field_name in float_fields:
+                coerced[str(field_name)] = float(field_value)
+            elif field_name in int_fields:
+                coerced[str(field_name)] = int(field_value)
+            else:
+                coerced[str(field_name)] = field_value
+        normalized[key] = coerced
+    return normalized or None
 
 
 def default_profile(freqs: Sequence[float] = DEFAULT_FREQS) -> ThresholdProfile:
@@ -921,6 +996,7 @@ class FBCCAEngine:
         self.step_samples = 0
         self.subbands: list[tuple[float, float]] = []
         self.subband_sos: list[np.ndarray] = []
+        self.subband_filters: list[np.ndarray] = []
         self.weights: np.ndarray | None = None
         self.Y_refs: dict[float, np.ndarray] = {}
         self._baseline_sos: Optional[np.ndarray] = None
@@ -951,13 +1027,16 @@ class FBCCAEngine:
         self._notch_sos = design_sos_notch(self.fs, self.notch_freq, self.notch_q)
         self.subbands = []
         self.subband_sos = []
+        self.subband_filters = []
         for low, high in self.base_subbands:
             sos = design_sos_bandpass(self.fs, low, high, order=2)
             if sos is None:
                 continue
             clipped_high = min(float(high), self.fs / 2.0 - 1e-3)
             self.subbands.append((float(low), clipped_high))
-            self.subband_sos.append(np.asarray(sos, dtype=np.float64))
+            coeffs = np.asarray(sos, dtype=np.float64)
+            self.subband_sos.append(coeffs)
+            self.subband_filters.append(coeffs)
         if not self.subband_sos:
             raise ValueError(f"sampling_rate={self.fs} is too low for configured subbands")
         weights, resolved_mode, resolved_params = resolve_fbcca_subband_weight_spec(
@@ -1076,6 +1155,15 @@ class FBCCAEngine:
         if self._notch_sos is not None:
             filtered = sosfiltfilt(np.asarray(self._notch_sos, dtype=np.float64), filtered, axis=0)
         return np.asarray(filtered, dtype=np.float64)
+
+    def bandpass_filter_multichannel(self, x_raw: np.ndarray, coeffs: np.ndarray) -> np.ndarray:
+        matrix = np.asarray(x_raw, dtype=np.float64)
+        if matrix.ndim != 2:
+            raise ValueError("bandpass_filter_multichannel expects shape (samples, channels)")
+        return np.asarray(
+            sosfiltfilt(np.asarray(coeffs, dtype=np.float64), matrix, axis=0),
+            dtype=np.float64,
+        )
 
     def preprocess_window(self, X_raw: np.ndarray) -> np.ndarray:
         return self.preprocess_windows_batch(np.asarray(X_raw, dtype=np.float64)[None, :, :])[0]
@@ -1891,7 +1979,12 @@ class TemplateCCADecoder(BaseSSVEPDecoder):
             step_sec=step_sec,
             Nh=nh,
             subbands=((6.0, 50.0),),
+            compute_backend=self.compute_backend_requested,
+            gpu_device=self.gpu_device,
+            gpu_precision=self.gpu_precision,
+            gpu_warmup=self.gpu_warmup,
         )
+        self.compute_backend_used = str(self._core.backend_name)
         self.templates: dict[float, np.ndarray] = {}
         self.template_weights: dict[float, np.ndarray] = {}
 
@@ -1902,6 +1995,7 @@ class TemplateCCADecoder(BaseSSVEPDecoder):
     def configure_runtime(self, sampling_rate: int) -> None:
         super().configure_runtime(sampling_rate)
         self._core.configure_runtime(self.fs)
+        self.compute_backend_used = str(self._core.backend_name)
 
     def fit(self, trial_segments: Sequence[tuple[TrialSpec, np.ndarray]]) -> None:
         grouped: dict[float, list[np.ndarray]] = defaultdict(list)
@@ -2021,7 +2115,12 @@ class TRCABasedDecoder(BaseSSVEPDecoder):
             step_sec=step_sec,
             Nh=nh,
             subbands=DEFAULT_SUBBANDS if self.use_filterbank else ((6.0, 50.0),),
+            compute_backend=self.compute_backend_requested,
+            gpu_device=self.gpu_device,
+            gpu_precision=self.gpu_precision,
+            gpu_warmup=self.gpu_warmup,
         )
+        self.compute_backend_used = str(self._core.backend_name)
         self.band_templates: list[dict[float, np.ndarray]] = []
         self.band_filters: list[dict[float, np.ndarray]] = []
 
@@ -2032,6 +2131,7 @@ class TRCABasedDecoder(BaseSSVEPDecoder):
     def configure_runtime(self, sampling_rate: int) -> None:
         super().configure_runtime(sampling_rate)
         self._core.configure_runtime(self.fs)
+        self.compute_backend_used = str(self._core.backend_name)
 
     def _augment_delay(self, matrix: np.ndarray) -> np.ndarray:
         return _augment_delay_matrix(matrix, self.delay_steps)
@@ -2279,7 +2379,12 @@ class TDCADecoder(BaseSSVEPDecoder):
             step_sec=step_sec,
             Nh=nh,
             subbands=DEFAULT_SUBBANDS,
+            compute_backend=self.compute_backend_requested,
+            gpu_device=self.gpu_device,
+            gpu_precision=self.gpu_precision,
+            gpu_warmup=self.gpu_warmup,
         )
+        self.compute_backend_used = str(self._core.backend_name)
         self.band_projection: list[np.ndarray] = []
         self.band_templates: list[dict[float, np.ndarray]] = []
 
@@ -2290,6 +2395,7 @@ class TDCADecoder(BaseSSVEPDecoder):
     def configure_runtime(self, sampling_rate: int) -> None:
         super().configure_runtime(sampling_rate)
         self._core.configure_runtime(self.fs)
+        self.compute_backend_used = str(self._core.backend_name)
 
     def _augment_delay(self, matrix: np.ndarray) -> np.ndarray:
         return _augment_delay_matrix(matrix, self.delay_steps)
@@ -2496,6 +2602,8 @@ MODEL_ALIASES = {
     "legacy-fbcca-202603": "legacy_fbcca_202603",
     "legacy_fbcca": "legacy_fbcca_202603",
     "fbcca_202603": "legacy_fbcca_202603",
+    "fbcca_plain_all8": "fbcca_fixed_all8",
+    "fbcca-plain-all8": "fbcca_fixed_all8",
     "fbcca_fixed_all8": "fbcca_fixed_all8",
     "fbcca_cw_all8": "fbcca_cw_all8",
     "fbcca_sw_all8": "fbcca_sw_all8",
@@ -2616,6 +2724,20 @@ def parse_data_policy(raw: str) -> str:
     value = str(raw).strip().lower()
     if value not in set(DEFAULT_DATA_POLICIES):
         raise ValueError(f"unsupported data policy: {raw}")
+    return value
+
+
+def parse_weight_aggregation(raw: str) -> str:
+    value = str(raw).strip().lower()
+    if value not in set(DEFAULT_WEIGHT_AGGREGATION_MODES):
+        raise ValueError(f"unsupported weight aggregation: {raw}")
+    return value
+
+
+def parse_control_state_mode(raw: str) -> str:
+    value = str(raw).strip().lower()
+    if value not in set(DEFAULT_CONTROL_STATE_MODES):
+        raise ValueError(f"unsupported control state mode: {raw}")
     return value
 
 
@@ -3040,6 +3162,8 @@ class AsyncDecisionGate:
         dynamic_stop_alpha: float = DEFAULT_DYNAMIC_STOP_ALPHA,
         enter_acc_th: Optional[float] = None,
         exit_acc_th: Optional[float] = None,
+        control_state_mode: str = DEFAULT_CONTROL_STATE_MODE,
+        frequency_specific_thresholds: Optional[dict[str, Any]] = None,
     ) -> None:
         self.enter_score_th = float(enter_score_th)
         self.enter_ratio_th = float(enter_ratio_th)
@@ -3075,6 +3199,8 @@ class AsyncDecisionGate:
         self.dynamic_stop_alpha = min(max(float(dynamic_stop_alpha), 0.0), 1.0)
         self.enter_acc_th = None if enter_acc_th is None else float(enter_acc_th)
         self.exit_acc_th = None if exit_acc_th is None else float(exit_acc_th)
+        self.control_state_mode = parse_control_state_mode(control_state_mode)
+        self.frequency_specific_thresholds = normalize_frequency_specific_thresholds(frequency_specific_thresholds)
         self._control_means_vec = (
             np.array([float(control_feature_means[name]) for name in MODEL_FEATURE_NAMES], dtype=float)
             if control_feature_means is not None
@@ -3123,6 +3249,8 @@ class AsyncDecisionGate:
             dynamic_stop_alpha=float(dynamic_payload.get("alpha", DEFAULT_DYNAMIC_STOP_ALPHA)),
             enter_acc_th=dynamic_payload.get("enter_acc_th"),
             exit_acc_th=dynamic_payload.get("exit_acc_th"),
+            control_state_mode=profile.control_state_mode,
+            frequency_specific_thresholds=profile.frequency_specific_thresholds,
         )
 
     def reset(self) -> None:
@@ -3136,17 +3264,43 @@ class AsyncDecisionGate:
         self._exit_windows = 0
         self._acc_log_lr = 0.0
 
+    def _threshold_payload_for_features(
+        self,
+        features: dict[str, Any],
+        *,
+        selected_fallback: bool = False,
+    ) -> dict[str, Any]:
+        if not self.frequency_specific_thresholds:
+            return {}
+        if self.control_state_mode not in {"frequency-specific-threshold", "frequency-specific-logistic"}:
+            return {}
+        freq_value = features.get("pred_freq")
+        if selected_fallback and self._selected_freq is not None:
+            freq_value = self._selected_freq
+        if freq_value is None:
+            return {}
+        key = _frequency_key(freq_value)
+        if key is None:
+            return {}
+        payload = self.frequency_specific_thresholds.get(key)
+        return dict(payload) if isinstance(payload, dict) else {}
+
     def _enter_pass(self, features: dict[str, Any]) -> bool:
+        payload = self._threshold_payload_for_features(features)
+        score_th = float(payload.get("enter_score_th", self.enter_score_th))
+        ratio_th = float(payload.get("enter_ratio_th", self.enter_ratio_th))
+        margin_th = float(payload.get("enter_margin_th", self.enter_margin_th))
+        enter_log_lr_th = payload.get("enter_log_lr_th", self.enter_log_lr_th)
         legacy_pass = (
-            float(features["top1_score"]) >= self.enter_score_th
-            and float(features["ratio"]) >= self.enter_ratio_th
-            and float(features["margin"]) >= self.enter_margin_th
+            float(features["top1_score"]) >= score_th
+            and float(features["ratio"]) >= ratio_th
+            and float(features["margin"]) >= margin_th
         )
-        if self.enter_log_lr_th is None:
+        if enter_log_lr_th is None:
             pass_by_log_lr = True
         else:
             control_log_lr = features.get("control_log_lr")
-            pass_by_log_lr = control_log_lr is not None and float(control_log_lr) >= self.enter_log_lr_th
+            pass_by_log_lr = control_log_lr is not None and float(control_log_lr) >= float(enter_log_lr_th)
         if not (legacy_pass and pass_by_log_lr):
             return False
         if self.dynamic_stop_enabled and self.enter_acc_th is not None:
@@ -3164,25 +3318,33 @@ class AsyncDecisionGate:
             return False
         if abs(float(pred_freq) - float(self._selected_freq)) <= 1e-8:
             return False
+        payload = self._threshold_payload_for_features(features)
+        switch_score_th = float(payload.get("switch_enter_score_th", self.switch_enter_score_th))
+        switch_ratio_th = float(payload.get("switch_enter_ratio_th", self.switch_enter_ratio_th))
+        switch_margin_th = float(payload.get("switch_enter_margin_th", self.switch_enter_margin_th))
         return (
-            float(features["top1_score"]) >= self.switch_enter_score_th
-            and float(features["ratio"]) >= self.switch_enter_ratio_th
-            and float(features["margin"]) >= self.switch_enter_margin_th
+            float(features["top1_score"]) >= switch_score_th
+            and float(features["ratio"]) >= switch_ratio_th
+            and float(features["margin"]) >= switch_margin_th
         )
 
     def _exit_fail(self, features: dict[str, Any]) -> bool:
         if self._selected_freq is None:
             return True
+        payload = self._threshold_payload_for_features(features, selected_fallback=True)
+        exit_score_th = float(payload.get("exit_score_th", self.exit_score_th))
+        exit_ratio_th = float(payload.get("exit_ratio_th", self.exit_ratio_th))
+        exit_log_lr_th = payload.get("exit_log_lr_th", self.exit_log_lr_th)
         pred_freq = features.get("pred_freq")
         if pred_freq is None or abs(float(pred_freq) - float(self._selected_freq)) > 1e-8:
             return True
-        if float(features["top1_score"]) < self.exit_score_th:
+        if float(features["top1_score"]) < exit_score_th:
             return True
-        if float(features["ratio"]) < self.exit_ratio_th:
+        if float(features["ratio"]) < exit_ratio_th:
             return True
-        if self.exit_log_lr_th is not None:
+        if exit_log_lr_th is not None:
             control_log_lr = features.get("control_log_lr")
-            if control_log_lr is None or float(control_log_lr) < self.exit_log_lr_th:
+            if control_log_lr is None or float(control_log_lr) < float(exit_log_lr_th):
                 return True
         if self.dynamic_stop_enabled and self.exit_acc_th is not None:
             acc_log_lr = features.get("acc_log_lr")
@@ -3362,18 +3524,25 @@ def summarize_profile_quality(
     feature_rows: Sequence[dict[str, Any]],
     profile: ThresholdProfile,
 ) -> dict[str, float]:
+    threshold_gate = AsyncDecisionGate.from_profile(profile)
+
     def is_idle_row(row: dict[str, Any]) -> bool:
         return row.get("expected_freq") is None
 
     def passes(row: dict[str, Any]) -> bool:
         control_log_lr = profile_log_lr(profile, row)
-        log_lr_pass = profile.enter_log_lr_th is None or (
-            control_log_lr is not None and float(control_log_lr) >= float(profile.enter_log_lr_th)
+        payload = threshold_gate._threshold_payload_for_features(row)
+        enter_score_th = float(payload.get("enter_score_th", profile.enter_score_th))
+        enter_ratio_th = float(payload.get("enter_ratio_th", profile.enter_ratio_th))
+        enter_margin_th = float(payload.get("enter_margin_th", profile.enter_margin_th))
+        enter_log_lr_th = payload.get("enter_log_lr_th", profile.enter_log_lr_th)
+        log_lr_pass = enter_log_lr_th is None or (
+            control_log_lr is not None and float(control_log_lr) >= float(enter_log_lr_th)
         )
         return (
-            float(row["top1_score"]) >= profile.enter_score_th
-            and float(row["ratio"]) >= profile.enter_ratio_th
-            and float(row["margin"]) >= profile.enter_margin_th
+            float(row["top1_score"]) >= enter_score_th
+            and float(row["ratio"]) >= enter_ratio_th
+            and float(row["margin"]) >= enter_margin_th
             and log_lr_pass
         )
 
@@ -4298,6 +4467,7 @@ def _evaluate_fbcca_frontend_candidate_cv(
     gate_policy: str,
     dynamic_stop_enabled: bool,
     dynamic_stop_alpha: float,
+    control_state_mode: str,
     weight_cv_folds: int,
     seed: int,
     compute_backend: str,
@@ -4339,6 +4509,7 @@ def _evaluate_fbcca_frontend_candidate_cv(
             evaluation_rows=fit_rows,
             dynamic_stop_enabled=dynamic_stop_enabled,
             dynamic_stop_alpha=dynamic_stop_alpha,
+            control_state_mode=control_state_mode,
         )
         metrics = evaluate_profile_on_feature_rows(val_rows, profile)
         metrics["cv_fold_index"] = float(fold_index)
@@ -4375,6 +4546,10 @@ def optimize_fbcca_frontend_weights(
     joint_weight_iters: int = DEFAULT_JOINT_WEIGHT_ITERS,
     weight_cv_folds: int = DEFAULT_FBCCA_WEIGHT_CV_FOLDS,
     spatial_source_model: str = DEFAULT_SPATIAL_SOURCE_MODEL,
+    idle_fp_hard_th: float = DEFAULT_IDLE_FP_HARD_TH,
+    channel_weight_l2: float = DEFAULT_CHANNEL_WEIGHT_L2,
+    subband_prior_strength: float = DEFAULT_SUBBAND_PRIOR_STRENGTH,
+    control_state_mode: str = DEFAULT_CONTROL_STATE_MODE,
     compute_backend: str = DEFAULT_COMPUTE_BACKEND_NAME,
     gpu_device: int = DEFAULT_GPU_DEVICE_ID,
     gpu_precision: str = DEFAULT_GPU_PRECISION_NAME,
@@ -4396,6 +4571,10 @@ def optimize_fbcca_frontend_weights(
     channels = int(np.asarray(train_segments[0][1]).shape[1])
     joint_iters = max(1, int(joint_weight_iters))
     weight_folds = max(2, int(weight_cv_folds))
+    idle_fp_limit = float(idle_fp_hard_th)
+    channel_l2 = max(0.0, float(channel_weight_l2))
+    subband_prior = max(0.0, float(subband_prior_strength))
+    resolved_control_state_mode = parse_control_state_mode(control_state_mode)
 
     initial_channel_weights = None
     if resolved_channel_mode == "fbcca_diag":
@@ -4415,6 +4594,11 @@ def optimize_fbcca_frontend_weights(
     initial_subband_weights, _, initial_subband_params = resolve_fbcca_subband_weight_spec(
         len(DEFAULT_SUBBANDS),
         mode=resolved_subband_mode,
+    )
+    chen_prior_weights = fbcca_subband_weights_from_ab(
+        len(DEFAULT_SUBBANDS),
+        a=DEFAULT_FBCCA_SUBBAND_WEIGHT_A,
+        b=DEFAULT_FBCCA_SUBBAND_WEIGHT_B,
     )
     current_basis = None
     if resolved_spatial_mode == "trca_shared":
@@ -4468,6 +4652,7 @@ def optimize_fbcca_frontend_weights(
                 gate_policy=gate_policy,
                 dynamic_stop_enabled=dynamic_stop_enabled,
                 dynamic_stop_alpha=dynamic_stop_alpha,
+                control_state_mode=resolved_control_state_mode,
                 weight_cv_folds=weight_folds,
                 seed=DEFAULT_CALIBRATION_SEED,
                 compute_backend=compute_backend,
@@ -4483,6 +4668,36 @@ def optimize_fbcca_frontend_weights(
                 "fold_count": int(evaluation["fold_count"]),
                 "rank": None if rank is None else int(rank),
                 "model_params": params,
+            }
+            idle_fp = float(candidate["metrics"].get("idle_fp_per_min", float("inf")))
+            hard_idle_violation = 1.0 if idle_fp > idle_fp_limit else 0.0
+            channel_penalty = 0.0
+            if candidate_channel_weights is not None:
+                cw = np.asarray(candidate_channel_weights, dtype=float).reshape(-1)
+                if cw.size:
+                    channel_penalty = float(np.mean((cw - 1.0) ** 2))
+            subband_penalty = 0.0
+            sw = np.asarray(candidate_subband_weights, dtype=float).reshape(-1)
+            if sw.size == chen_prior_weights.size:
+                subband_penalty = float(np.mean((sw - chen_prior_weights) ** 2))
+            base_objective = tuple(float(value) for value in candidate["objective"])
+            candidate["objective"] = (
+                hard_idle_violation,
+                base_objective[0] if base_objective else 0.0,
+                base_objective[1] if len(base_objective) > 1 else 0.0,
+                base_objective[2] if len(base_objective) > 2 else 0.0,
+                (base_objective[3] if len(base_objective) > 3 else 0.0)
+                + channel_l2 * channel_penalty
+                + subband_prior * subband_penalty,
+            ) + base_objective[4:]
+            candidate["regularization"] = {
+                "idle_fp_hard_th": float(idle_fp_limit),
+                "hard_idle_violation": bool(hard_idle_violation > 0.0),
+                "channel_weight_l2": float(channel_l2),
+                "channel_penalty": float(channel_penalty),
+                "subband_prior_strength": float(subband_prior),
+                "subband_prior_penalty": float(subband_penalty),
+                "control_state_mode": str(resolved_control_state_mode),
             }
             if best_eval is None or tuple(candidate["objective"]) < tuple(best_eval["objective"]):
                 best_eval = candidate
@@ -4522,10 +4737,7 @@ def optimize_fbcca_frontend_weights(
                     try:
                         evaluation = evaluate_candidate(np.asarray(normalized, dtype=float), best_subband_weights, best_subband_params, best_basis)
                     except Exception as exc:
-                        logger(
-                            f"Config failed: model={model_name} {config_index}/{len(config_candidates)} "
-                            f"win={float(win_sec):g}s enter={int(min_enter)} exit={int(min_exit)} error={exc}"
-                        )
+                        logger(f"{log_prefix}: channel candidate failed channel={channel_index + 1} factor={float(factor):g} error={exc}")
                         continue
                     if tuple(evaluation["objective"]) < tuple(local_best["objective"]):
                         local_best = dict(evaluation)
@@ -4647,6 +4859,7 @@ def optimize_fbcca_frontend_weights(
         "iterations": json_safe(iteration_logs),
         "gate_cv_metrics": dict(best_eval["metrics"]),
         "gate_cv_fold_metrics": json_safe(list(best_eval["fold_metrics"])),
+        "regularization": json_safe(dict(best_eval.get("regularization", {}))),
         "optimized_model_params": json_safe(optimized_params),
         "optimized_spatial_projection": (
             None
@@ -5027,6 +5240,7 @@ def optimize_profile_from_segments(
                         evaluation_rows=gate_rows,
                         dynamic_stop_enabled=dynamic_stop_enabled,
                         dynamic_stop_alpha=dynamic_stop_alpha,
+                        control_state_mode=control_state_mode,
                     )
                     eval_rows = build_feature_rows_with_decoder(decoder, eval_segments)
                     summary = summarize_profile_quality(eval_rows, candidate_profile)
@@ -5097,6 +5311,7 @@ def optimize_profile_from_segments(
         evaluation_rows=all_rows,
         dynamic_stop_enabled=dynamic_stop_enabled,
         dynamic_stop_alpha=dynamic_stop_alpha,
+        control_state_mode=control_state_mode,
     )
     refit_summary = summarize_profile_quality(all_rows, refit_profile)
     refit_gate_metrics = evaluate_profile_on_feature_rows(all_rows, refit_profile)
@@ -5202,6 +5417,170 @@ def select_control_rows(rows: Sequence[dict[str, Any]]) -> tuple[list[dict[str, 
     return ranked[:keep_count], "top_non_idle_fallback"
 
 
+def _fit_frequency_specific_thresholds(
+    rows: Sequence[dict[str, Any]],
+    *,
+    freqs: Sequence[float],
+    global_profile: ThresholdProfile,
+    control_means: np.ndarray,
+    control_stds: np.ndarray,
+    idle_means: np.ndarray,
+    idle_stds: np.ndarray,
+) -> Optional[dict[str, dict[str, Any]]]:
+    control_rows, _ = select_control_rows(rows)
+    idle_rows_global = [dict(row) for row in rows if row.get("expected_freq") is None]
+    if not control_rows or not idle_rows_global:
+        return None
+
+    output: dict[str, dict[str, Any]] = {}
+    per_freq_idle_min = max(4, int(math.ceil(len(idle_rows_global) / max(len(freqs), 1))))
+    for freq in tuple(float(value) for value in freqs):
+        freq_key = _frequency_key(freq)
+        if freq_key is None:
+            continue
+        control_rows_freq = [
+            dict(row)
+            for row in control_rows
+            if row.get("expected_freq") is not None
+            and abs(float(row.get("expected_freq")) - float(freq)) < 1e-8
+            and row.get("pred_freq") is not None
+            and abs(float(row.get("pred_freq")) - float(freq)) < 1e-8
+        ]
+        if len(control_rows_freq) < 4:
+            control_rows_freq = [
+                dict(row)
+                for row in control_rows
+                if row.get("expected_freq") is not None
+                and abs(float(row.get("expected_freq")) - float(freq)) < 1e-8
+            ]
+        idle_rows_freq = [
+            dict(row)
+            for row in idle_rows_global
+            if row.get("pred_freq") is not None and abs(float(row.get("pred_freq")) - float(freq)) < 1e-8
+        ]
+        if len(control_rows_freq) < 4 or len(idle_rows_freq) < per_freq_idle_min:
+            idle_rows_freq = list(idle_rows_global)
+        if len(control_rows_freq) < 4 or len(idle_rows_freq) < 4:
+            continue
+
+        control_scores = np.asarray([float(row["top1_score"]) for row in control_rows_freq], dtype=float)
+        control_ratios = np.asarray([float(row["ratio"]) for row in control_rows_freq], dtype=float)
+        control_margins = np.asarray([float(row["margin"]) for row in control_rows_freq], dtype=float)
+        idle_scores = np.asarray([float(row["top1_score"]) for row in idle_rows_freq], dtype=float)
+        idle_ratios = np.asarray([float(row["ratio"]) for row in idle_rows_freq], dtype=float)
+        idle_margins = np.asarray([float(row["margin"]) for row in idle_rows_freq], dtype=float)
+        score_grid = sorted(
+            {
+                *(_quantile_candidates(control_scores, (0.10, 0.20, 0.30, 0.40, 0.50), floor=0.0)),
+                *(_quantile_candidates(idle_scores, (0.80, 0.90, 0.95, 0.98), floor=0.0)),
+            }
+        )
+        ratio_grid = sorted(
+            {
+                *(_quantile_candidates(control_ratios, (0.10, 0.20, 0.30, 0.40, 0.50), floor=1.0)),
+                *(_quantile_candidates(idle_ratios, (0.80, 0.90, 0.95, 0.98), floor=1.0)),
+            }
+        )
+        margin_grid = sorted(
+            {
+                *(_quantile_candidates(control_margins, (0.10, 0.20, 0.30, 0.40, 0.50), floor=0.0)),
+                *(_quantile_candidates(idle_margins, (0.80, 0.90, 0.95, 0.98), floor=0.0)),
+            }
+        )
+
+        best_local = (
+            float(global_profile.enter_score_th),
+            float(global_profile.enter_ratio_th),
+            float(global_profile.enter_margin_th),
+        )
+        best_objective: Optional[tuple[float, float, float, float, float]] = None
+        for score_th, ratio_th, margin_th in product(score_grid, ratio_grid, margin_grid):
+            idle_fp = float(
+                np.mean((idle_scores >= score_th) & (idle_ratios >= ratio_th) & (idle_margins >= margin_th))
+            )
+            control_recall = float(
+                np.mean(
+                    (control_scores >= score_th)
+                    & (control_ratios >= ratio_th)
+                    & (control_margins >= margin_th)
+                )
+            )
+            objective = (
+                idle_fp,
+                -control_recall,
+                float(score_th),
+                float(ratio_th),
+                float(margin_th),
+            )
+            if best_objective is None or objective < best_objective:
+                best_objective = objective
+                best_local = (float(score_th), float(ratio_th), float(margin_th))
+
+        control_log_lrs = np.asarray(
+            [
+                gaussian_log_likelihood_ratio(
+                    row,
+                    control_means=control_means,
+                    control_stds=control_stds,
+                    idle_means=idle_means,
+                    idle_stds=idle_stds,
+                )
+                for row in control_rows_freq
+            ],
+            dtype=float,
+        )
+        idle_log_lrs = np.asarray(
+            [
+                gaussian_log_likelihood_ratio(
+                    row,
+                    control_means=control_means,
+                    control_stds=control_stds,
+                    idle_means=idle_means,
+                    idle_stds=idle_stds,
+                )
+                for row in idle_rows_freq
+            ],
+            dtype=float,
+        )
+        best_log_lr_th = float(global_profile.enter_log_lr_th) if global_profile.enter_log_lr_th is not None else None
+        exit_log_lr_th = float(global_profile.exit_log_lr_th) if global_profile.exit_log_lr_th is not None else None
+        if control_log_lrs.size and idle_log_lrs.size:
+            log_lr_grid = sorted(
+                {
+                    *(_quantile_candidates(control_log_lrs, (0.05, 0.10, 0.20, 0.30, 0.40), floor=-1_000_000.0)),
+                    *(_quantile_candidates(idle_log_lrs, (0.80, 0.90, 0.95, 0.98), floor=-1_000_000.0)),
+                }
+            )
+            best_log_objective: Optional[tuple[float, float, float]] = None
+            for log_lr_th in log_lr_grid:
+                idle_fp = float(np.mean(idle_log_lrs >= log_lr_th))
+                control_recall = float(np.mean(control_log_lrs >= log_lr_th))
+                objective = (idle_fp, -control_recall, float(log_lr_th))
+                if best_log_objective is None or objective < best_log_objective:
+                    best_log_objective = objective
+                    best_log_lr_th = float(log_lr_th)
+            exit_floor = float(np.quantile(control_log_lrs, 0.05))
+            if best_log_lr_th is not None:
+                exit_log_lr_th = min(float(best_log_lr_th), exit_floor)
+
+        output[freq_key] = {
+            "freq": float(freq),
+            "enter_score_th": float(best_local[0]),
+            "enter_ratio_th": float(best_local[1]),
+            "enter_margin_th": float(best_local[2]),
+            "exit_score_th": 0.85 * float(best_local[0]),
+            "exit_ratio_th": 0.95 * float(best_local[1]),
+            "switch_enter_score_th": 0.95 * float(best_local[0]),
+            "switch_enter_ratio_th": float(best_local[1]),
+            "switch_enter_margin_th": 0.80 * float(best_local[2]),
+            "enter_log_lr_th": None if best_log_lr_th is None else float(best_log_lr_th),
+            "exit_log_lr_th": None if exit_log_lr_th is None else float(exit_log_lr_th),
+            "n_control_rows": int(len(control_rows_freq)),
+            "n_idle_rows": int(len(idle_rows_freq)),
+        }
+    return output or None
+
+
 def fit_threshold_profile(
     feature_rows: Iterable[dict[str, Any]],
     *,
@@ -5214,8 +5593,10 @@ def fit_threshold_profile(
     evaluation_rows: Optional[Sequence[dict[str, Any]]] = None,
     dynamic_stop_enabled: bool = DEFAULT_DYNAMIC_STOP_ENABLED,
     dynamic_stop_alpha: float = DEFAULT_DYNAMIC_STOP_ALPHA,
+    control_state_mode: str = DEFAULT_CONTROL_STATE_MODE,
 ) -> ThresholdProfile:
     policy = parse_gate_policy(gate_policy)
+    resolved_control_state_mode = parse_control_state_mode(control_state_mode)
     rows = list(feature_rows)
     objective_rows = list(evaluation_rows) if evaluation_rows is not None else list(rows)
     control_rows, _control_strategy = select_control_rows(rows)
@@ -5395,7 +5776,23 @@ def fit_threshold_profile(
         idle_feature_stds={name: float(value) for name, value in zip(MODEL_FEATURE_NAMES, idle_stds)},
         gate_policy=policy,
         dynamic_stop=dynamic_payload,
+        control_state_mode=resolved_control_state_mode,
     )
+    if resolved_control_state_mode in {"frequency-specific-threshold", "frequency-specific-logistic"}:
+        frequency_specific_thresholds = _fit_frequency_specific_thresholds(
+            rows,
+            freqs=freqs,
+            global_profile=base_profile,
+            control_means=control_means,
+            control_stds=control_stds,
+            idle_means=idle_means,
+            idle_stds=idle_stds,
+        )
+        if frequency_specific_thresholds is not None:
+            base_profile = replace(
+                base_profile,
+                frequency_specific_thresholds=frequency_specific_thresholds,
+            )
 
     if not bool(dynamic_stop_enabled):
         return base_profile
@@ -6700,6 +7097,10 @@ class CalibrationRunner:
         joint_weight_iters: int = DEFAULT_JOINT_WEIGHT_ITERS,
         weight_cv_folds: int = DEFAULT_FBCCA_WEIGHT_CV_FOLDS,
         spatial_source_model: str = DEFAULT_SPATIAL_SOURCE_MODEL,
+        idle_fp_hard_th: float = DEFAULT_IDLE_FP_HARD_TH,
+        channel_weight_l2: float = DEFAULT_CHANNEL_WEIGHT_L2,
+        subband_prior_strength: float = DEFAULT_SUBBAND_PRIOR_STRENGTH,
+        control_state_mode: str = DEFAULT_CONTROL_STATE_MODE,
         dynamic_stop_enabled: bool = DEFAULT_DYNAMIC_STOP_ENABLED,
         dynamic_stop_alpha: float = DEFAULT_DYNAMIC_STOP_ALPHA,
         compute_backend: str = DEFAULT_COMPUTE_BACKEND_NAME,
@@ -6728,6 +7129,10 @@ class CalibrationRunner:
         self.joint_weight_iters = max(1, int(joint_weight_iters))
         self.weight_cv_folds = max(2, int(weight_cv_folds))
         self.spatial_source_model = parse_spatial_source_model(spatial_source_model)
+        self.idle_fp_hard_th = float(idle_fp_hard_th)
+        self.channel_weight_l2 = max(0.0, float(channel_weight_l2))
+        self.subband_prior_strength = max(0.0, float(subband_prior_strength))
+        self.control_state_mode = parse_control_state_mode(control_state_mode)
         self.dynamic_stop_enabled = bool(dynamic_stop_enabled)
         self.dynamic_stop_alpha = float(dynamic_stop_alpha)
         self.compute_backend = parse_compute_backend_name(compute_backend)
@@ -7088,6 +7493,10 @@ class BenchmarkRunner:
         spatial_rank_candidates: Sequence[int] = DEFAULT_SPATIAL_RANK_CANDIDATES,
         joint_weight_iters: int = DEFAULT_JOINT_WEIGHT_ITERS,
         weight_cv_folds: int = DEFAULT_FBCCA_WEIGHT_CV_FOLDS,
+        idle_fp_hard_th: float = DEFAULT_IDLE_FP_HARD_TH,
+        channel_weight_l2: float = DEFAULT_CHANNEL_WEIGHT_L2,
+        subband_prior_strength: float = DEFAULT_SUBBAND_PRIOR_STRENGTH,
+        control_state_mode: str = DEFAULT_CONTROL_STATE_MODE,
         spatial_source_model: str = DEFAULT_SPATIAL_SOURCE_MODEL,
         dynamic_stop_enabled: bool = DEFAULT_DYNAMIC_STOP_ENABLED,
         dynamic_stop_alpha: float = DEFAULT_DYNAMIC_STOP_ALPHA,
@@ -7136,6 +7545,10 @@ class BenchmarkRunner:
             self.spatial_rank_candidates = tuple(DEFAULT_SPATIAL_RANK_CANDIDATES)
         self.joint_weight_iters = max(1, int(joint_weight_iters))
         self.weight_cv_folds = max(2, int(weight_cv_folds))
+        self.idle_fp_hard_th = float(idle_fp_hard_th)
+        self.channel_weight_l2 = max(0.0, float(channel_weight_l2))
+        self.subband_prior_strength = max(0.0, float(subband_prior_strength))
+        self.control_state_mode = parse_control_state_mode(control_state_mode)
         self.spatial_source_model = parse_spatial_source_model(spatial_source_model)
         self.dynamic_stop_enabled = bool(dynamic_stop_enabled)
         self.dynamic_stop_alpha = float(dynamic_stop_alpha)
@@ -7376,6 +7789,10 @@ class BenchmarkRunner:
                                 joint_weight_iters=self.joint_weight_iters,
                                 weight_cv_folds=self.weight_cv_folds,
                                 spatial_source_model=self.spatial_source_model,
+                                idle_fp_hard_th=self.idle_fp_hard_th,
+                                channel_weight_l2=self.channel_weight_l2,
+                                subband_prior_strength=self.subband_prior_strength,
+                                control_state_mode=self.control_state_mode,
                                 compute_backend=self.compute_backend,
                                 gpu_device=int(self.gpu_device),
                                 gpu_precision=self.gpu_precision,
@@ -7539,6 +7956,7 @@ class BenchmarkRunner:
             evaluation_rows=final_gate_rows,
             dynamic_stop_enabled=self.dynamic_stop_enabled,
             dynamic_stop_alpha=self.dynamic_stop_alpha,
+            control_state_mode=self.control_state_mode,
         )
         trained_state = json_safe(final_decoder.get_state())
         base_model_params = dict(final_decoder.model_params)
@@ -7594,6 +8012,8 @@ class BenchmarkRunner:
                 if isinstance(best_config.get("channel_weight_training"), dict)
                 else None
             ),
+            control_state_mode=self.control_state_mode,
+            frequency_specific_thresholds=final_profile.frequency_specific_thresholds,
             runtime_backend_preference=str(self.compute_backend),
             runtime_precision_preference=str(self.gpu_precision),
         )
@@ -7759,6 +8179,10 @@ class BenchmarkRunner:
                 "spatial_rank_candidates": [int(value) for value in self.spatial_rank_candidates],
                 "joint_weight_iters": int(self.joint_weight_iters),
                 "weight_cv_folds": int(self.weight_cv_folds),
+                "idle_fp_hard_th": float(self.idle_fp_hard_th),
+                "channel_weight_l2": float(self.channel_weight_l2),
+                "subband_prior_strength": float(self.subband_prior_strength),
+                "control_state_mode": str(self.control_state_mode),
                 "spatial_source_model": self.spatial_source_model,
                 "compute_backend_requested": str(self.compute_backend),
                 "compute_backend_used": str(final_decoder.compute_backend_used),

@@ -30,6 +30,7 @@ class CollectionProtocol:
     target_repeats: int
     idle_repeats: int
     switch_trials: int
+    long_idle_sec: float = 0.0
 
 
 ENHANCED_45M_PROTOCOL = CollectionProtocol(
@@ -40,6 +41,7 @@ ENHANCED_45M_PROTOCOL = CollectionProtocol(
     target_repeats=24,
     idle_repeats=48,
     switch_trials=32,
+    long_idle_sec=0.0,
 )
 
 
@@ -94,13 +96,26 @@ def build_collection_trials(
     seed: int = DEFAULT_CALIBRATION_SEED,
     session_index: int = 1,
 ) -> list[TrialSpec]:
-    return build_benchmark_eval_trials(
+    trials = build_benchmark_eval_trials(
         freqs,
         target_repeats=int(protocol.target_repeats),
         idle_repeats=int(protocol.idle_repeats),
         switch_trials=int(protocol.switch_trials),
         seed=int(seed) + int(max(session_index, 1) - 1) * 1009,
     )
+    long_idle_sec = float(getattr(protocol, "long_idle_sec", 0.0) or 0.0)
+    if long_idle_sec > 0.0:
+        next_trial_id = max((trial.trial_id for trial in trials), default=-1) + 1
+        next_block_index = max((trial.block_index for trial in trials), default=-1) + 1
+        trials.append(
+            TrialSpec(
+                label="long_idle",
+                expected_freq=None,
+                trial_id=next_trial_id,
+                block_index=next_block_index,
+            )
+        )
+    return trials
 
 
 def _build_collection_records(
@@ -137,10 +152,13 @@ def _build_collection_records(
         used_samples = int(matrix.shape[0])
         retry_count = max(0, int(quality.get("retry_count", 0)))
         shortfall_ratio = float(max(effective_target - used_samples, 0) / effective_target)
+        label_text = str(trial.label)
+        label_lower = label_text.strip().lower()
+        stage_name = "long_idle" if ("long_idle" in label_lower or "long idle" in label_lower) else "collection"
         records.append(
             {
-                "stage": "collection",
-                "label": str(trial.label),
+                "stage": stage_name,
+                "label": label_text,
                 "expected_freq": None if trial.expected_freq is None else float(trial.expected_freq),
                 "trial_id": int(trial.trial_id),
                 "block_index": int(trial.block_index),
@@ -186,6 +204,7 @@ def _protocol_signature_payload(
         "prepare_sec": round(_safe_float(cfg.get("prepare_sec", 0.0), 0.0), 6),
         "active_sec": round(_safe_float(cfg.get("active_sec", 0.0), 0.0), 6),
         "rest_sec": round(_safe_float(cfg.get("rest_sec", 0.0), 0.0), 6),
+        "long_idle_sec": round(_safe_float(cfg.get("long_idle_sec", 0.0), 0.0), 6),
         "target_repeats": _safe_int(cfg.get("target_repeats", 0), 0),
         "idle_repeats": _safe_int(cfg.get("idle_repeats", 0), 0),
         "switch_trials": _safe_int(cfg.get("switch_trials", 0), 0),
@@ -297,7 +316,18 @@ def load_collection_dataset(manifest_path: Path) -> LoadedDataset:
     path = Path(manifest_path).expanduser().resolve()
     manifest = json.loads(path.read_text(encoding="utf-8"))
     files = dict(manifest.get("files", {}))
-    npz_path = Path(files.get("raw_trials_npz", "")).expanduser().resolve()
+    raw_npz_value = str(files.get("raw_trials_npz", "")).strip()
+    if raw_npz_value:
+        npz_path = Path(raw_npz_value).expanduser().resolve()
+    else:
+        npz_path = path.parent / "raw_trials.npz"
+    if not npz_path.exists():
+        # Dataset bundles are often moved from the acquisition PC to a server.
+        # In that case an absolute Windows path in the manifest is no longer valid,
+        # but raw_trials.npz should still live beside session_manifest.json.
+        sibling_npz = path.parent / "raw_trials.npz"
+        if sibling_npz.exists():
+            npz_path = sibling_npz.resolve()
     if not npz_path.exists():
         raise FileNotFoundError(f"dataset npz not found: {npz_path}")
     data = np.load(npz_path, allow_pickle=False)
@@ -353,8 +383,28 @@ def summarize_collection_manifest(manifest_path: Path) -> dict[str, Any]:
             if str(row.get("stage", "")).strip() != ""
         }
     )
-    target_trials = sum(1 for row in trials if row.get("expected_freq") is not None and not str(row.get("label", "")).startswith("switch_to_"))
-    idle_trials = sum(1 for row in trials if row.get("expected_freq") is None)
+    long_idle_trials = sum(
+        1
+        for row in trials
+        if "long_idle" in str(row.get("label", "")).strip().lower()
+        or "long idle" in str(row.get("label", "")).strip().lower()
+        or "long_idle" in str(row.get("stage", "")).strip().lower()
+        or "long idle" in str(row.get("stage", "")).strip().lower()
+    )
+    target_trials = sum(
+        1
+        for row in trials
+        if row.get("expected_freq") is not None and not str(row.get("label", "")).startswith("switch_to_")
+    )
+    idle_trials = sum(
+        1
+        for row in trials
+        if row.get("expected_freq") is None
+        and "long_idle" not in str(row.get("label", "")).strip().lower()
+        and "long idle" not in str(row.get("label", "")).strip().lower()
+        and "long_idle" not in str(row.get("stage", "")).strip().lower()
+        and "long idle" not in str(row.get("stage", "")).strip().lower()
+    )
     switch_trials = sum(1 for row in trials if str(row.get("label", "")).startswith("switch_to_"))
     generated_at = str(payload.get("generated_at", ""))
     return {
@@ -368,6 +418,7 @@ def summarize_collection_manifest(manifest_path: Path) -> dict[str, Any]:
         "trial_count": int(len(trials)),
         "target_trial_count": int(target_trials),
         "idle_trial_count": int(idle_trials),
+        "long_idle_trial_count": int(long_idle_trials),
         "switch_trial_count": int(switch_trials),
         "shortfall_ratio_mean": float(np.mean(np.asarray(shortfalls, dtype=float))) if shortfalls else 0.0,
         "shortfall_ratio_max": float(np.max(np.asarray(shortfalls, dtype=float))) if shortfalls else 0.0,
@@ -402,6 +453,7 @@ def discover_collection_manifests(dataset_root: Path) -> list[dict[str, Any]]:
                     "trial_count": 0,
                     "target_trial_count": 0,
                     "idle_trial_count": 0,
+                    "long_idle_trial_count": 0,
                     "switch_trial_count": 0,
                     "shortfall_ratio_mean": 0.0,
                     "shortfall_ratio_max": 0.0,

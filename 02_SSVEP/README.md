@@ -30,3 +30,9 @@ python .\START_MODEL_EVALUATION_UI.py `
 
 详细说明见：
 - `2026-04_async_fbcca_idle_decoder/README.md`
+
+如果后续要把训练评测放到服务器上，统一服务器根目录固定为：
+- `/data1/zkx/brain`
+
+SSVEP 服务器目录初始化脚本：
+- `2026-04_async_fbcca_idle_decoder/ssvep_prepare_server_layout.py`

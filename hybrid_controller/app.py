@@ -348,6 +348,8 @@ class HybridControllerApplication:
             ack = str(event.value or "").strip().upper()
             if ack == "PICK_DONE":
                 self._finish_pick_trace(response=f"ACK {ack}")
+                if self._set_ssvep_stim_enabled(False, refresh=False):
+                    self._log_runtime("ssvep", "Stimulus auto-disabled after PICK_DONE.")
             if ack == "ABORT":
                 self._stop_teleop_motion(send_command=False, reason="robot_abort_ack")
                 controller_event = None
@@ -2511,13 +2513,22 @@ class HybridControllerApplication:
         self._refresh_view()
         self.ssvep_coordinator.stop_online()
 
-    def _on_ssvep_stim_toggled(self, enabled: bool) -> None:
-        self._rt_set("ssvep_stim_enabled", bool(enabled))
+    def _set_ssvep_stim_enabled(self, enabled: bool, *, refresh: bool = True) -> bool:
+        next_enabled = bool(enabled)
+        current_enabled = bool(self._rt_get("ssvep_stim_enabled", False))
+        if current_enabled == next_enabled:
+            return False
+        self._rt_set("ssvep_stim_enabled", next_enabled)
         self.main_window.update_vision_payload(
-            flash_enabled=bool(enabled),
+            flash_enabled=next_enabled,
             status_text=str(self._rt_get("vision_health", "unknown")),
         )
-        self._refresh_view()
+        if refresh:
+            self._refresh_view()
+        return True
+
+    def _on_ssvep_stim_toggled(self, enabled: bool) -> None:
+        self._set_ssvep_stim_enabled(enabled, refresh=True)
 
     def _request_remote_snapshot(self) -> None:
         poller = self._remote_snapshot_poller

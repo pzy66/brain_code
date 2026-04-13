@@ -78,6 +78,7 @@ DEFAULT_STABLE_REST_SEC = 4.0
 DEFAULT_STABLE_TARGET_REPEATS = 10
 DEFAULT_STABLE_IDLE_REPEATS = 20
 DEFAULT_STABLE_SWITCH_TRIALS = 14
+DEFAULT_STABLE_LONG_IDLE_SEC = 0.0
 DEFAULT_PRESET_NAME = "stable_12m"
 
 
@@ -91,6 +92,7 @@ class ProtocolPreset:
     target_repeats: int
     idle_repeats: int
     switch_trials: int
+    long_idle_sec: float
 
 
 STABLE_12M_PRESET = ProtocolPreset(
@@ -102,6 +104,7 @@ STABLE_12M_PRESET = ProtocolPreset(
     target_repeats=DEFAULT_STABLE_TARGET_REPEATS,
     idle_repeats=DEFAULT_STABLE_IDLE_REPEATS,
     switch_trials=DEFAULT_STABLE_SWITCH_TRIALS,
+    long_idle_sec=DEFAULT_STABLE_LONG_IDLE_SEC,
 )
 ENHANCED_45M_PRESET = ProtocolPreset(
     key="enhanced_45m",
@@ -112,6 +115,7 @@ ENHANCED_45M_PRESET = ProtocolPreset(
     target_repeats=int(ENHANCED_45M_PROTOCOL.target_repeats),
     idle_repeats=int(ENHANCED_45M_PROTOCOL.idle_repeats),
     switch_trials=int(ENHANCED_45M_PROTOCOL.switch_trials),
+    long_idle_sec=float(ENHANCED_45M_PROTOCOL.long_idle_sec),
 )
 CUSTOM_PRESET = ProtocolPreset(
     key="custom",
@@ -122,6 +126,7 @@ CUSTOM_PRESET = ProtocolPreset(
     target_repeats=DEFAULT_STABLE_TARGET_REPEATS,
     idle_repeats=DEFAULT_STABLE_IDLE_REPEATS,
     switch_trials=DEFAULT_STABLE_SWITCH_TRIALS,
+    long_idle_sec=DEFAULT_STABLE_LONG_IDLE_SEC,
 )
 COLLECTION_PRESETS: dict[str, ProtocolPreset] = {
     STABLE_12M_PRESET.key: STABLE_12M_PRESET,
@@ -137,8 +142,20 @@ def normalize_preset_name(raw: Optional[str]) -> str:
     return CUSTOM_PRESET.key
 
 
-def trial_count_for_protocol(target_repeats: int, idle_repeats: int, switch_trials: int) -> int:
-    return int(max(0, int(target_repeats)) * 4 + max(0, int(idle_repeats)) + max(0, int(switch_trials)))
+def trial_count_for_protocol(
+    target_repeats: int,
+    idle_repeats: int,
+    switch_trials: int,
+    *,
+    long_idle_sec: float = 0.0,
+) -> int:
+    long_idle_trials = 1 if float(long_idle_sec) > 0.0 else 0
+    return int(
+        max(0, int(target_repeats)) * 4
+        + max(0, int(idle_repeats))
+        + max(0, int(switch_trials))
+        + long_idle_trials
+    )
 
 
 def estimate_round_seconds(
@@ -149,9 +166,18 @@ def estimate_round_seconds(
     target_repeats: int,
     idle_repeats: int,
     switch_trials: int,
+    long_idle_sec: float = 0.0,
 ) -> float:
-    trial_count = trial_count_for_protocol(target_repeats, idle_repeats, switch_trials)
-    return float(trial_count) * float(max(0.0, prepare_sec) + max(0.0, active_sec) + max(0.0, rest_sec))
+    base_trial_count = trial_count_for_protocol(
+        target_repeats,
+        idle_repeats,
+        switch_trials,
+        long_idle_sec=0.0,
+    )
+    total_sec = float(base_trial_count) * float(max(0.0, prepare_sec) + max(0.0, active_sec) + max(0.0, rest_sec))
+    if float(long_idle_sec) > 0.0:
+        total_sec += float(max(0.0, prepare_sec) + max(0.0, long_idle_sec) + max(0.0, rest_sec))
+    return total_sec
 
 
 def format_duration(seconds: float) -> str:
@@ -160,12 +186,21 @@ def format_duration(seconds: float) -> str:
     return f"{mins}m {secs:02d}s"
 
 
-def _validate_collection_protocol(*, active_sec: float) -> None:
+def _validate_collection_protocol_legacy_unused(*, active_sec: float) -> None:
     if float(active_sec) < float(MIN_ACTIVE_SEC_FOR_TRAINING):
         raise ValueError(
             f"active_sec 必须 >= {MIN_ACTIVE_SEC_FOR_TRAINING:.1f}s，"
             "否则不满足训练质量门槛"
         )
+
+
+def _validate_collection_protocol(*, active_sec: float, long_idle_sec: float = 0.0) -> None:
+    if float(active_sec) < float(MIN_ACTIVE_SEC_FOR_TRAINING):
+        raise ValueError(f"active_sec must be >= {MIN_ACTIVE_SEC_FOR_TRAINING:.1f}s")
+    if float(long_idle_sec) < 0.0:
+        raise ValueError("long_idle_sec must be >= 0")
+    if 0.0 < float(long_idle_sec) < float(MIN_ACTIVE_SEC_FOR_TRAINING):
+        raise ValueError(f"long_idle_sec must be 0 or >= {MIN_ACTIVE_SEC_FOR_TRAINING:.1f}s")
 
 
 def _auto_session_base_id(subject_id: str) -> str:
@@ -199,6 +234,7 @@ class CollectionConfig:
     target_repeats: int = DEFAULT_STABLE_TARGET_REPEATS
     idle_repeats: int = DEFAULT_STABLE_IDLE_REPEATS
     switch_trials: int = DEFAULT_STABLE_SWITCH_TRIALS
+    long_idle_sec: float = DEFAULT_STABLE_LONG_IDLE_SEC
     seed: int = 20260410
     rounds_planned: int = 1
     round_index: int = 1
@@ -311,6 +347,7 @@ class CollectionWorker(QObject):
                 target_repeats=int(self.config.target_repeats),
                 idle_repeats=int(self.config.idle_repeats),
                 switch_trials=int(self.config.switch_trials),
+                long_idle_sec=float(self.config.long_idle_sec),
             )
             trials = build_collection_trials(
                 self.config.freqs,
@@ -318,7 +355,6 @@ class CollectionWorker(QObject):
                 seed=self.config.seed,
                 session_index=self.config.session_index,
             )
-            active_samples = int(round(self.config.active_sec * fs))
             minimum_samples = max(1, int(round(1.5 * fs)))
             collected: list[tuple[Any, np.ndarray]] = []
             quality_rows: list[dict[str, Any]] = []
@@ -327,11 +363,24 @@ class CollectionWorker(QObject):
                 if self._stop_event.is_set():
                     break
                 cue_freq = None if trial.expected_freq is None else float(trial.expected_freq)
+                trial_label_lower = str(trial.label).strip().lower()
+                is_long_idle = "long_idle" in trial_label_lower or "long idle" in trial_label_lower
+                trial_active_sec = (
+                    float(self.config.long_idle_sec)
+                    if is_long_idle and float(self.config.long_idle_sec) > 0.0
+                    else float(self.config.active_sec)
+                )
+                active_samples = int(round(trial_active_sec * fs))
                 prompt_base = (
                     f"第{self.config.round_index}轮 Trial {index}/{total} 空闲（看中心）"
                     if cue_freq is None
                     else f"第{self.config.round_index}轮 Trial {index}/{total} 注视 {trial.label}"
                 )
+                if is_long_idle:
+                    prompt_base = (
+                        f"Round {self.config.round_index} Trial {index}/{total} long-idle "
+                        "(keep looking at center, avoid all targets)"
+                    )
                 accepted_segment: Optional[np.ndarray] = None
                 accepted_used_samples = 0
                 accepted_shortfall_ratio = 1.0
@@ -357,7 +406,7 @@ class CollectionWorker(QObject):
                         retry_index=retry_count,
                     )
                     self._emit_phase(PHASE_CAL_ACTIVE, "采集中", prompt, flicker=True, cue_freq=cue_freq)
-                    time.sleep(max(0.0, self.config.active_sec))
+                    time.sleep(max(0.0, trial_active_sec))
                     self._emit_tone(
                         event="active_end",
                         trial_index=index,
@@ -423,6 +472,7 @@ class CollectionWorker(QObject):
                 "prepare_sec": float(self.config.prepare_sec),
                 "active_sec": float(self.config.active_sec),
                 "rest_sec": float(self.config.rest_sec),
+                "long_idle_sec": float(self.config.long_idle_sec),
                 "target_repeats": int(self.config.target_repeats),
                 "idle_repeats": int(self.config.idle_repeats),
                 "switch_trials": int(self.config.switch_trials),
@@ -545,6 +595,10 @@ class DatasetCollectionWindow(QMainWindow):
         self.rest_spin.setRange(0.0, 20.0)
         self.rest_spin.setDecimals(1)
         self.rest_spin.setSingleStep(0.5)
+        self.long_idle_spin = QDoubleSpinBox()
+        self.long_idle_spin.setRange(0.0, 300.0)
+        self.long_idle_spin.setDecimals(1)
+        self.long_idle_spin.setSingleStep(5.0)
         self.target_spin = QSpinBox()
         self.target_spin.setRange(1, 60)
         self.idle_spin = QSpinBox()
@@ -571,6 +625,7 @@ class DatasetCollectionWindow(QMainWindow):
         form.addRow("空闲重复次数", self.idle_spin)
         form.addRow("切换 Trial 数", self.switch_spin)
         form.addRow("单轮预计时长", self.estimate_label)
+        form.addRow("Long Idle (sec, 0=off)", self.long_idle_spin)
         left_layout.addLayout(form)
 
         row = QHBoxLayout()
@@ -614,6 +669,7 @@ class DatasetCollectionWindow(QMainWindow):
             self.prepare_spin,
             self.active_spin,
             self.rest_spin,
+            self.long_idle_spin,
             self.target_spin,
             self.idle_spin,
             self.switch_spin,
@@ -627,6 +683,7 @@ class DatasetCollectionWindow(QMainWindow):
         self.prepare_spin.valueChanged.connect(self._on_protocol_value_changed)
         self.active_spin.valueChanged.connect(self._on_protocol_value_changed)
         self.rest_spin.valueChanged.connect(self._on_protocol_value_changed)
+        self.long_idle_spin.valueChanged.connect(self._on_protocol_value_changed)
         self.target_spin.valueChanged.connect(self._on_protocol_value_changed)
         self.idle_spin.valueChanged.connect(self._on_protocol_value_changed)
         self.switch_spin.valueChanged.connect(self._on_protocol_value_changed)
@@ -679,6 +736,7 @@ class DatasetCollectionWindow(QMainWindow):
             self.prepare_spin.setValue(float(preset.prepare_sec))
             self.active_spin.setValue(float(preset.active_sec))
             self.rest_spin.setValue(float(preset.rest_sec))
+            self.long_idle_spin.setValue(float(preset.long_idle_sec))
             self.target_spin.setValue(int(preset.target_repeats))
             self.idle_spin.setValue(int(preset.idle_repeats))
             self.switch_spin.setValue(int(preset.switch_trials))
@@ -712,6 +770,7 @@ class DatasetCollectionWindow(QMainWindow):
             target_repeats=int(self.target_spin.value()),
             idle_repeats=int(self.idle_spin.value()),
             switch_trials=int(self.switch_spin.value()),
+            long_idle_sec=float(self.long_idle_spin.value()),
         )
         round_sec = estimate_round_seconds(
             prepare_sec=float(self.prepare_spin.value()),
@@ -720,6 +779,7 @@ class DatasetCollectionWindow(QMainWindow):
             target_repeats=int(self.target_spin.value()),
             idle_repeats=int(self.idle_spin.value()),
             switch_trials=int(self.switch_spin.value()),
+            long_idle_sec=float(self.long_idle_spin.value()),
         )
         planned = int(self.rounds_planned_spin.value())
         total_sec = round_sec * float(planned)
@@ -749,7 +809,8 @@ class DatasetCollectionWindow(QMainWindow):
         protocol_name = self._current_preset_name()
         prepare_sec = float(self.prepare_spin.value())
         active_sec = float(self.active_spin.value())
-        _validate_collection_protocol(active_sec=active_sec)
+        long_idle_sec = float(self.long_idle_spin.value())
+        _validate_collection_protocol(active_sec=active_sec, long_idle_sec=long_idle_sec)
         rest_sec = float(self.rest_spin.value())
         target_repeats = int(self.target_spin.value())
         idle_repeats = int(self.idle_spin.value())
@@ -761,6 +822,7 @@ class DatasetCollectionWindow(QMainWindow):
             target_repeats=target_repeats,
             idle_repeats=idle_repeats,
             switch_trials=switch_trials,
+            long_idle_sec=long_idle_sec,
         )
         return CollectionConfig(
             serial_port=serial_port,
@@ -777,6 +839,7 @@ class DatasetCollectionWindow(QMainWindow):
             target_repeats=target_repeats,
             idle_repeats=idle_repeats,
             switch_trials=switch_trials,
+            long_idle_sec=long_idle_sec,
             rounds_planned=rounds_planned,
             round_index=round_index,
             estimated_round_sec=estimated_round_sec,
@@ -957,6 +1020,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--prepare-sec", type=float, default=DEFAULT_STABLE_PREPARE_SEC)
     parser.add_argument("--active-sec", type=float, default=DEFAULT_STABLE_ACTIVE_SEC)
     parser.add_argument("--rest-sec", type=float, default=DEFAULT_STABLE_REST_SEC)
+    parser.add_argument("--long-idle-sec", type=float, default=DEFAULT_STABLE_LONG_IDLE_SEC)
     parser.add_argument("--target-repeats", type=int, default=DEFAULT_STABLE_TARGET_REPEATS)
     parser.add_argument("--idle-repeats", type=int, default=DEFAULT_STABLE_IDLE_REPEATS)
     parser.add_argument("--switch-trials", type=int, default=DEFAULT_STABLE_SWITCH_TRIALS)
@@ -971,10 +1035,11 @@ def _resolve_cli_protocol(
     prepare_sec: float,
     active_sec: float,
     rest_sec: float,
+    long_idle_sec: float,
     target_repeats: int,
     idle_repeats: int,
     switch_trials: int,
-) -> tuple[str, float, float, float, int, int, int]:
+) -> tuple[str, float, float, float, float, int, int, int]:
     preset_key = normalize_preset_name(preset_name)
     if preset_key in (STABLE_12M_PRESET.key, ENHANCED_45M_PRESET.key):
         preset = COLLECTION_PRESETS[preset_key]
@@ -983,6 +1048,7 @@ def _resolve_cli_protocol(
             float(preset.prepare_sec),
             float(preset.active_sec),
             float(preset.rest_sec),
+            float(preset.long_idle_sec),
             int(preset.target_repeats),
             int(preset.idle_repeats),
             int(preset.switch_trials),
@@ -992,6 +1058,7 @@ def _resolve_cli_protocol(
         float(prepare_sec),
         float(active_sec),
         float(rest_sec),
+        float(long_idle_sec),
         int(target_repeats),
         int(idle_repeats),
         int(switch_trials),
@@ -1007,6 +1074,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         prepare_sec,
         active_sec,
         rest_sec,
+        long_idle_sec,
         target_repeats,
         idle_repeats,
         switch_trials,
@@ -1015,6 +1083,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         prepare_sec=float(args.prepare_sec),
         active_sec=float(args.active_sec),
         rest_sec=float(args.rest_sec),
+        long_idle_sec=float(args.long_idle_sec),
         target_repeats=int(args.target_repeats),
         idle_repeats=int(args.idle_repeats),
         switch_trials=int(args.switch_trials),
@@ -1030,8 +1099,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         target_repeats=target_repeats,
         idle_repeats=idle_repeats,
         switch_trials=switch_trials,
+        long_idle_sec=long_idle_sec,
     )
-    _validate_collection_protocol(active_sec=active_sec)
+    _validate_collection_protocol(active_sec=active_sec, long_idle_sec=long_idle_sec)
     config = CollectionConfig(
         serial_port=normalize_serial_port(args.serial_port),
         board_id=int(args.board_id),
@@ -1047,6 +1117,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         target_repeats=target_repeats,
         idle_repeats=idle_repeats,
         switch_trials=switch_trials,
+        long_idle_sec=long_idle_sec,
         seed=int(args.seed),
         rounds_planned=max(1, int(args.rounds_planned)),
         round_index=round_index,
@@ -1077,6 +1148,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     window.prepare_spin.setValue(config.prepare_sec)
     window.active_spin.setValue(config.active_sec)
     window.rest_spin.setValue(config.rest_sec)
+    window.long_idle_spin.setValue(config.long_idle_sec)
     window.target_spin.setValue(config.target_repeats)
     window.idle_spin.setValue(config.idle_repeats)
     window.switch_spin.setValue(config.switch_trials)

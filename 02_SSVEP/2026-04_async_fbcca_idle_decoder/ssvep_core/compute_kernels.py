@@ -77,8 +77,9 @@ def preprocess_windows_batch(
     baseline_sos: np.ndarray,
     notch_sos: Optional[np.ndarray],
 ) -> Any:
-    baseline = _sosfiltfilt_with_backend(backend, baseline_sos, windows, axis=1)
-    filtered = windows - baseline
+    values = backend.as_float_array(windows) if backend.uses_cuda else np.asarray(windows, dtype=backend.float_dtype)
+    baseline = _sosfiltfilt_with_backend(backend, baseline_sos, values, axis=1)
+    filtered = values - baseline
     if notch_sos is not None:
         filtered = _sosfiltfilt_with_backend(backend, notch_sos, filtered, axis=1)
     filtered = filtered - backend.xp.mean(filtered, axis=1, keepdims=True)
@@ -91,9 +92,10 @@ def apply_filterbank_batch(
     *,
     subband_sos: Sequence[np.ndarray],
 ) -> Any:
+    values = backend.as_float_array(windows) if backend.uses_cuda else np.asarray(windows, dtype=backend.float_dtype)
     filtered = []
     for sos in subband_sos:
-        band = _sosfiltfilt_with_backend(backend, sos, windows, axis=1)
+        band = _sosfiltfilt_with_backend(backend, sos, values, axis=1)
         band = band - backend.xp.mean(band, axis=1, keepdims=True)
         filtered.append(band)
     return backend.xp.stack(filtered, axis=1)

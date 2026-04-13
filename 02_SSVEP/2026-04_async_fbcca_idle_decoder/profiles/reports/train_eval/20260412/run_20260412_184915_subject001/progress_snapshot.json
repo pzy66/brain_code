@@ -1,1 +1,1 @@
-{"stage": "stage_b", "model_name": "fbcca_sw_all8", "run_index": 5, "run_total": 14, "config_index": 4, "config_total": 12, "elapsed_s": 1906.8202881000034, "eta_s": 3432.276518580006, "last_message": "Config start: model=fbcca_sw_all8 4/12 win=1.5s enter=2 exit=1"}
+{"stage": "stage_b", "model_name": "fbcca_cw_sw_all8", "run_index": 6, "run_total": 14, "config_index": 1, "config_total": 12, "elapsed_s": 3501.8736107000004, "eta_s": 4669.164814266667, "last_message": "Config start: model=fbcca_cw_sw_all8 1/12 win=1.5s enter=1 exit=1"}
