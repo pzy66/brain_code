@@ -12,6 +12,7 @@ from PyQt5.QtCore import QObject, QThread, pyqtSignal, pyqtSlot
 from PyQt5.QtGui import QCloseEvent, QFont
 from PyQt5.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QFormLayout,
@@ -53,6 +54,7 @@ from async_fbcca_idle_standalone import (
     profile_is_default_fallback,
     resolve_selected_eeg_channels,
 )
+from ssvep_core.runtime_shadow import build_shadow_runtime_chain
 from async_fbcca_validation_ui import (
     FourArrowStimWidget,
     PHASE_ERROR,
@@ -83,6 +85,7 @@ class RealtimeConfig:
     gpu_precision: str
     gpu_warmup: bool
     gpu_cache_policy: str
+    shadow_mode: bool = True
 
 
 def resolve_realtime_model_choice(selected_model: str, profile_model: str) -> tuple[str, bool]:
@@ -320,8 +323,7 @@ class RealtimeWorker(QObject):
             resolved_model, mismatch = resolve_realtime_model_choice(selected_model, original_model)
             if mismatch:
                 self.log.emit(
-                    f"模型不一致：UI 选择={selected_model}，profile 模型={original_model}；"
-                    f"在线阶段将使用 profile 模型。"
+                    f"模型不一致：UI 选择={selected_model}，profile 模型={original_model}；在线阶段将使用 profile 模型。"
                 )
             profile = replace(profile, model_name=resolved_model)
 
@@ -336,6 +338,32 @@ class RealtimeWorker(QObject):
                 profile.eeg_channels,
             )
             gate = AsyncDecisionGate.from_profile(profile)
+            shadow_chain = None
+            shadow_summary: dict[str, Any] = {
+                "shadow_mode_enabled": bool(self.config.shadow_mode),
+                "shadow_mode": "disabled",
+            }
+            if bool(self.config.shadow_mode):
+                try:
+                    shadow_chain, shadow_runtime_summary = build_shadow_runtime_chain(
+                        profile=profile,
+                        profile_path=self.config.profile_path,
+                    )
+                    shadow_summary.update(dict(shadow_runtime_summary))
+                    shadow_summary["shadow_mode_enabled"] = True
+                    self.log.emit(
+                        "shadow runtime enabled | "
+                        f"gate={shadow_summary.get('gate_mode', 'unknown')} | "
+                        f"profile_v2={int(bool(shadow_summary.get('profile_v2_loaded', False)))}"
+                    )
+                except Exception as exc:
+                    shadow_chain = None
+                    shadow_summary = {
+                        "shadow_mode_enabled": False,
+                        "shadow_mode": "failed",
+                        "error": str(exc),
+                    }
+                    self.log.emit(f"shadow runtime disabled: {exc}")
             board.start_stream(450000)
             ready = ensure_stream_ready(board, fs)
             probe_samples = max(int(round(profile.win_sec * fs)), 1)
@@ -382,6 +410,7 @@ class RealtimeWorker(QObject):
                     "backend_requested": str(backend_summary.get("requested_backend", self.config.compute_backend)),
                     "backend_used": str(backend_summary.get("used_backend", "cpu")),
                     "selection_summary": dict(selection_summary),
+                    "shadow_summary": dict(shadow_summary),
                 }
             )
             self.log.emit(
@@ -398,7 +427,7 @@ class RealtimeWorker(QObject):
                 {
                     "mode": PHASE_VALIDATION,
                     "title": f"实时识别中（{profile.model_name}）",
-                    "detail": "注视目标方块将输出结果；看中心则不输出。",
+                    "detail": "注视目标方块会输出结果；看中心点时不输出。",
                     "flicker": True,
                     "cue_freq": None,
                 }
@@ -416,13 +445,17 @@ class RealtimeWorker(QObject):
                         continue
                     eeg = np.ascontiguousarray(data[eeg_channels, -decoder.win_samples :].T, dtype=np.float64)
                     t0 = time.perf_counter()
-                    decision = gate.update(decoder.analyze_window(eeg))
+                    analysis = dict(decoder.analyze_window(eeg))
+                    decision = gate.update(dict(analysis))
+                    shadow_decision: dict[str, Any] = {}
+                    if shadow_chain is not None:
+                        shadow_decision = dict(shadow_chain.update(dict(analysis), timestamp_s=t0))
                     t1 = time.perf_counter()
                     decoder.update_online(decision, eeg)
                     consecutive_errors = 0
                 except Exception as exc:
                     consecutive_errors += 1
-                    self.log.emit(f"实时读数瞬态错误 {consecutive_errors}：{exc}")
+                    self.log.emit(f"实时读数瞬态错误 {consecutive_errors}: {exc}")
                     if consecutive_errors >= DEFAULT_MAX_TRANSIENT_READ_ERRORS:
                         raise
                     self._stop_event.wait(0.2)
@@ -444,6 +477,21 @@ class RealtimeWorker(QObject):
                     "compute_backend_used": str(backend_summary.get("used_backend", "cpu")),
                     "precision": str(backend_summary.get("precision", self.config.gpu_precision)),
                     "timing_breakdown": dict(backend_summary.get("timing_breakdown", {})),
+                    "shadow_mode_enabled": bool(shadow_summary.get("shadow_mode_enabled", False)),
+                    "shadow_gate_mode": str(shadow_summary.get("gate_mode", "global_gate")),
+                    "shadow_state": None if not shadow_decision else str(shadow_decision.get("state", "")),
+                    "shadow_commit": False if not shadow_decision else bool(shadow_decision.get("commit", False)),
+                    "shadow_selected_freq": (
+                        None
+                        if not shadow_decision or shadow_decision.get("selected_freq") is None
+                        else float(shadow_decision.get("selected_freq"))
+                    ),
+                    "shadow_gate_score": (
+                        None if not shadow_decision else float(shadow_decision.get("gate_score", 0.0))
+                    ),
+                    "shadow_p_control": (
+                        None if not shadow_decision else float(shadow_decision.get("p_control", 0.0))
+                    ),
                 }
                 self.result.emit(payload)
                 self._stop_event.wait(max(0.01, decoder.step_sec))
@@ -513,7 +561,7 @@ class RealtimeOnlineWindow(QMainWindow):
         for item in MODEL_OPTIONS:
             self.model_combo.addItem(item)
         self.model_combo.setCurrentText(DEFAULT_MODEL_NAME)
-        self.model_combo.setToolTip("在线识别以 profile 内的 model_name/model_params 为准；下拉框只用于启动前一致性提示。")
+        self.model_combo.setToolTip("在线识别以 profile 内的 model_name/model_params 为准；下拉框仅用于启动前一致性提示。")
         self.profile_edit = QLineEdit(str(DEFAULT_REALTIME_PROFILE_PATH))
         self.compute_backend_combo = QComboBox()
         self.compute_backend_combo.addItems(["auto", "cpu", "cuda"])
@@ -526,6 +574,8 @@ class RealtimeOnlineWindow(QMainWindow):
         self.gpu_cache_combo = QComboBox()
         self.gpu_cache_combo.addItems(["windows", "full"])
         self.gpu_cache_combo.setCurrentText(str(DEFAULT_GPU_CACHE_MODE))
+        self.shadow_mode_check = QCheckBox("Shadow mode (no robot command)")
+        self.shadow_mode_check.setChecked(True)
 
         form.addRow("串口", self.serial_edit)
         form.addRow("板卡 ID", self.board_edit)
@@ -537,6 +587,7 @@ class RealtimeOnlineWindow(QMainWindow):
         form.addRow("GPU 精度", self.gpu_precision_combo)
         form.addRow("GPU 预热(1/0)", self.gpu_warmup_edit)
         form.addRow("GPU 缓存", self.gpu_cache_combo)
+        form.addRow("Shadow", self.shadow_mode_check)
         left_layout.addLayout(form)
 
         row = QHBoxLayout()
@@ -602,6 +653,7 @@ class RealtimeOnlineWindow(QMainWindow):
         self.btn_connect.setEnabled((not running) and (not self._connecting))
         self.btn_start.setEnabled((not running) and (not self._connecting))
         self.btn_stop.setEnabled(running)
+        self.shadow_mode_check.setEnabled(not running)
 
     def _set_connecting(self, connecting: bool) -> None:
         self._connecting = bool(connecting)
@@ -635,13 +687,14 @@ class RealtimeOnlineWindow(QMainWindow):
             gpu_precision=parse_gpu_precision(self.gpu_precision_combo.currentText().strip()),
             gpu_warmup=bool(int(self.gpu_warmup_edit.text().strip() or "1")),
             gpu_cache_policy=parse_gpu_cache_policy(self.gpu_cache_combo.currentText().strip()),
+            shadow_mode=bool(self.shadow_mode_check.isChecked()),
         )
 
     def _connect_device(self) -> None:
         if self.connect_thread is not None or self._connecting:
             return
         if self.worker_thread is not None:
-            self._log("实时识别运行中，请先停止再重连设备。")
+            self._log("实时识别运行中，请先停止后再重连设备。")
             return
         try:
             cfg = self._read_config()
@@ -666,8 +719,8 @@ class RealtimeOnlineWindow(QMainWindow):
     def _on_connected(self, payload: dict[str, Any]) -> None:
         self.phase_label.setText("设备已连接")
         self._log(
-            "连接成功：请求串口={requested_serial_port}，实际串口={resolved_serial_port}，"
-            "采样率={sampling_rate}Hz，缓存就绪={ready_samples}".format(**payload)
+            "连接成功：请求串口 {requested_serial_port}，实际串口 {resolved_serial_port}；"
+            "采样率 {sampling_rate}Hz，缓存就绪 {ready_samples}".format(**payload)
         )
 
     def _on_connect_error(self, text: str) -> None:
@@ -739,6 +792,15 @@ class RealtimeOnlineWindow(QMainWindow):
                 decision_latency_ms=float(payload.get("decision_latency_ms", 0.0)),
             )
         )
+        if bool(payload.get("shadow_mode_enabled", False)):
+            self._log(
+                "shadow={state} commit={commit} selected={selected} p={p:.3f}".format(
+                    state=payload.get("shadow_state"),
+                    commit=bool(payload.get("shadow_commit", False)),
+                    selected=payload.get("shadow_selected_freq"),
+                    p=float(payload.get("shadow_p_control", 0.0) or 0.0),
+                )
+            )
 
     def _on_profile_info(self, payload: dict[str, Any]) -> None:
         self.profile_meta_label.setText(
@@ -750,12 +812,16 @@ class RealtimeOnlineWindow(QMainWindow):
             )
         )
         selection_summary = dict(payload.get("selection_summary", {}))
+        shadow_summary = dict(payload.get("shadow_summary", {}))
         self.backend_meta_label.setText(
-            "后端：requested={requested} | used={used}\n选择：{mode} {reason}".format(
+            "后端：requested={requested} | used={used}\n选择：{mode} {reason}\nshadow={shadow} gate={gate} v2={v2}".format(
                 requested=payload.get("backend_requested", ""),
                 used=payload.get("backend_used", ""),
                 mode=selection_summary.get("selection_mode", ""),
                 reason=selection_summary.get("reason", ""),
+                shadow=shadow_summary.get("shadow_mode", "disabled"),
+                gate=shadow_summary.get("gate_mode", "global_gate"),
+                v2=int(bool(shadow_summary.get("profile_v2_loaded", False))),
             ).strip()
         )
 
@@ -800,6 +866,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gpu-precision", type=str, default=DEFAULT_GPU_PRECISION_NAME)
     parser.add_argument("--gpu-warmup", type=int, default=1)
     parser.add_argument("--gpu-cache-policy", type=str, default=DEFAULT_GPU_CACHE_MODE)
+    parser.add_argument("--shadow-mode", type=int, default=1)
     parser.add_argument("--emit-all", action="store_true")
     parser.add_argument("--max-updates", type=int, default=None)
     parser.add_argument("--headless", action="store_true", help="仅命令行运行，不启动 UI")
@@ -840,9 +907,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     window.gpu_precision_combo.setCurrentText(parse_gpu_precision(str(args.gpu_precision).strip()))
     window.gpu_warmup_edit.setText("1" if bool(int(args.gpu_warmup)) else "0")
     window.gpu_cache_combo.setCurrentText(parse_gpu_cache_policy(str(args.gpu_cache_policy).strip()))
+    window.shadow_mode_check.setChecked(bool(int(args.shadow_mode)))
     window.show()
     return int(app.exec_())
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

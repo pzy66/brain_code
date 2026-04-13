@@ -22,6 +22,7 @@ LOCAL_SERVER_RUNS_DIR = LOCAL_PROFILE_DIR / "server_runs"
 LOCAL_SERVER_PROFILES_DIR = LOCAL_PROFILE_DIR / "server_profiles"
 LOCAL_TASK_RECORD_PATH = LOCAL_SERVER_RUNS_DIR / "server_tasks.json"
 
+REMOTE_ALLOWED_PREFIX = "/data1/zkx"
 REMOTE_ROOT = "/data1/zkx/brain/ssvep"
 REMOTE_CODE_DIR = f"{REMOTE_ROOT}/code/2026-04_async_fbcca_idle_decoder"
 REMOTE_DATA_DIR = f"{REMOTE_ROOT}/data"
@@ -30,10 +31,19 @@ REMOTE_PROFILE_ROOT = f"{REMOTE_ROOT}/profiles"
 REMOTE_LOG_DIR = f"{REMOTE_ROOT}/logs"
 REMOTE_TMP_DIR = f"{REMOTE_ROOT}/tmp"
 REMOTE_ENV_PYTHON = "/data1/zkx/miniconda3/envs/brain-ssvep/bin/python"
+DEFAULT_REMOTE_COMPUTE_BACKEND = "cuda"
+DEFAULT_REMOTE_GPU_DEVICE = 0
+DEFAULT_REMOTE_GPU_PRECISION = "float32"
+DEFAULT_REMOTE_GPU_WARMUP = True
+DEFAULT_REMOTE_GPU_CACHE_POLICY = "windows"
+DEFAULT_REMOTE_WIN_CANDIDATES = "2.5,3.0,3.5,4.0"
+DEFAULT_REMOTE_MULTI_SEED_COUNT = 5
 
 
 def assert_remote_ssvep_path(path: str) -> str:
     normalized = posixpath.normpath(str(path).replace("\\", "/"))
+    if not (normalized == REMOTE_ALLOWED_PREFIX or normalized.startswith(REMOTE_ALLOWED_PREFIX + "/")):
+        raise ValueError(f"unsafe remote path outside {REMOTE_ALLOWED_PREFIX}: {path}")
     if not (normalized == REMOTE_ROOT or normalized.startswith(REMOTE_ROOT + "/")):
         raise ValueError(f"unsafe remote path outside {REMOTE_ROOT}: {path}")
     return normalized
@@ -263,14 +273,24 @@ def build_train_command(
     *,
     task: str,
     dataset_manifest_remote: str,
+    dataset_manifest_session2_remote: Optional[str] = None,
     run_id: str,
     pretrained_profile_remote: Optional[str] = None,
     profile_eval_mode: str = "fbcca-vs-all",
+    compute_backend: str = DEFAULT_REMOTE_COMPUTE_BACKEND,
+    gpu_device: int = DEFAULT_REMOTE_GPU_DEVICE,
+    gpu_precision: str = DEFAULT_REMOTE_GPU_PRECISION,
+    gpu_warmup: bool = DEFAULT_REMOTE_GPU_WARMUP,
+    gpu_cache_policy: str = DEFAULT_REMOTE_GPU_CACHE_POLICY,
+    win_candidates: str = DEFAULT_REMOTE_WIN_CANDIDATES,
+    multi_seed_count: int = DEFAULT_REMOTE_MULTI_SEED_COUNT,
 ) -> dict[str, str]:
     task = str(task).strip()
     if task not in {"fbcca-weights", "profile-eval", "model-compare", "focused-compare", "classifier-compare"}:
         raise ValueError(f"unsupported remote task: {task}")
     dataset_manifest_remote = assert_remote_ssvep_path(dataset_manifest_remote)
+    if dataset_manifest_session2_remote:
+        dataset_manifest_session2_remote = assert_remote_ssvep_path(dataset_manifest_session2_remote)
     date_dir = datetime.now().strftime("%Y%m%d")
     report_dir = assert_remote_ssvep_path(posixpath.join(REMOTE_REPORT_ROOT, date_dir, run_id))
     profile_dir = assert_remote_ssvep_path(posixpath.join(REMOTE_PROFILE_ROOT, run_id))
@@ -293,14 +313,29 @@ def build_train_command(
         "--output-profile",
         sh_quote(output_profile),
         "--compute-backend",
-        "cuda",
+        sh_quote(str(compute_backend).strip()),
         "--gpu-device",
-        "0",
+        str(int(gpu_device)),
         "--gpu-precision",
-        "float32",
+        sh_quote(str(gpu_precision).strip()),
+        "--gpu-warmup",
+        "1" if bool(gpu_warmup) else "0",
+        "--gpu-cache-policy",
+        sh_quote(str(gpu_cache_policy).strip()),
+        "--win-candidates",
+        sh_quote(str(win_candidates).strip()),
+        "--multi-seed-count",
+        str(max(1, int(multi_seed_count))),
         "--quick-mode",
         "1" if task == "fbcca-weights" else "0",
     ]
+    if dataset_manifest_session2_remote:
+        args.extend(
+            [
+                "--dataset-manifest-session2",
+                sh_quote(dataset_manifest_session2_remote),
+            ]
+        )
     if task == "profile-eval":
         if not pretrained_profile_remote:
             raise ValueError("profile-eval requires pretrained_profile_remote")
@@ -475,9 +510,27 @@ def run_cli(args: argparse.Namespace) -> int:
             return 0
 
         dataset = _find_dataset_by_manifest(args.dataset_manifest)
+        dataset_session2 = (
+            _find_dataset_by_manifest(args.dataset_manifest_session2)
+            if args.dataset_manifest_session2 is not None
+            else None
+        )
         remote_dataset = upload_dataset(ssh, dataset)
+        remote_dataset_session2 = None
+        if dataset_session2 is not None:
+            if dataset_session2.manifest_path.resolve() != dataset.manifest_path.resolve():
+                remote_dataset_session2 = upload_dataset(ssh, dataset_session2)
         if args.action == "upload":
-            print(json.dumps(remote_dataset, ensure_ascii=False, indent=2))
+            print(
+                json.dumps(
+                    {
+                        "session1": remote_dataset,
+                        "session2": remote_dataset_session2,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
             return 0
 
         run_id = safe_session_id(args.run_id or now_run_id(args.action))
@@ -496,9 +549,19 @@ def run_cli(args: argparse.Namespace) -> int:
         payload = build_train_command(
             task=task,
             dataset_manifest_remote=remote_dataset["manifest"],
+            dataset_manifest_session2_remote=(
+                None if remote_dataset_session2 is None else remote_dataset_session2["manifest"]
+            ),
             run_id=run_id,
             pretrained_profile_remote=pretrained_profile_remote,
             profile_eval_mode=str(args.profile_eval_mode),
+            compute_backend=str(args.compute_backend),
+            gpu_device=int(args.gpu_device),
+            gpu_precision=str(args.gpu_precision),
+            gpu_warmup=bool(int(args.gpu_warmup)),
+            gpu_cache_policy=str(args.gpu_cache_policy),
+            win_candidates=str(args.win_candidates),
+            multi_seed_count=int(args.multi_seed_count),
         )
         record = start_remote_task(ssh, payload)
         print(json.dumps(record, ensure_ascii=False, indent=2))
@@ -531,8 +594,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--password", default="")
     parser.add_argument("--dataset-root", type=Path, default=LOCAL_DATASET_ROOT)
     parser.add_argument("--dataset-manifest", type=Path, default=None)
+    parser.add_argument("--dataset-manifest-session2", type=Path, default=None)
     parser.add_argument("--pretrained-profile", type=Path, default=None)
     parser.add_argument("--profile-eval-mode", choices=["fbcca-vs-all", "fbcca-only"], default="fbcca-vs-all")
+    parser.add_argument("--compute-backend", default=DEFAULT_REMOTE_COMPUTE_BACKEND, choices=["auto", "cpu", "cuda"])
+    parser.add_argument("--gpu-device", type=int, default=DEFAULT_REMOTE_GPU_DEVICE)
+    parser.add_argument("--gpu-precision", default=DEFAULT_REMOTE_GPU_PRECISION, choices=["float32", "float64"])
+    parser.add_argument("--gpu-warmup", type=int, default=1 if DEFAULT_REMOTE_GPU_WARMUP else 0)
+    parser.add_argument("--gpu-cache-policy", default=DEFAULT_REMOTE_GPU_CACHE_POLICY, choices=["windows", "full"])
+    parser.add_argument("--win-candidates", default=DEFAULT_REMOTE_WIN_CANDIDATES)
+    parser.add_argument("--multi-seed-count", type=int, default=DEFAULT_REMOTE_MULTI_SEED_COUNT)
     parser.add_argument("--run-id", default="")
     return parser
 
@@ -546,9 +617,8 @@ def launch_gui() -> int:
     class ServerTrainWindow(QtWidgets.QWidget):
         def __init__(self) -> None:
             super().__init__()
-            self.setWindowTitle("SSVEP服务器训练助手")
+            self.setWindowTitle("SSVEP Server Train/Eval Helper")
             self.resize(980, 720)
-            self.ssh: Optional[SSHClient] = None
             self.records: list[dict[str, Any]] = load_task_records()
             self._build_ui()
             self._refresh_datasets()
@@ -562,36 +632,63 @@ def launch_gui() -> int:
             self.password_edit = QtWidgets.QLineEdit()
             self.password_edit.setEchoMode(QtWidgets.QLineEdit.Password)
             self.dataset_combo = QtWidgets.QComboBox()
+            self.dataset_session2_combo = QtWidgets.QComboBox()
             self.profile_edit = QtWidgets.QLineEdit()
             self.profile_eval_mode = QtWidgets.QComboBox()
             self.profile_eval_mode.addItems(["fbcca-vs-all", "fbcca-only"])
-            form.addRow("服务器", self.host_edit)
-            form.addRow("账号", self.user_edit)
-            form.addRow("密码(不保存)", self.password_edit)
-            form.addRow("本地数据集", self.dataset_combo)
-            form.addRow("已训练Profile", self.profile_edit)
-            form.addRow("权重评测模式", self.profile_eval_mode)
+            self.compute_backend_combo = QtWidgets.QComboBox()
+            self.compute_backend_combo.addItems(["cuda", "auto", "cpu"])
+            self.compute_backend_combo.setCurrentText(DEFAULT_REMOTE_COMPUTE_BACKEND)
+            self.gpu_device_edit = QtWidgets.QLineEdit(str(DEFAULT_REMOTE_GPU_DEVICE))
+            self.gpu_precision_combo = QtWidgets.QComboBox()
+            self.gpu_precision_combo.addItems(["float32", "float64"])
+            self.gpu_precision_combo.setCurrentText(DEFAULT_REMOTE_GPU_PRECISION)
+            self.gpu_warmup_check = QtWidgets.QCheckBox("GPU warmup")
+            self.gpu_warmup_check.setChecked(bool(DEFAULT_REMOTE_GPU_WARMUP))
+            self.gpu_cache_combo = QtWidgets.QComboBox()
+            self.gpu_cache_combo.addItems(["windows", "full"])
+            self.gpu_cache_combo.setCurrentText(DEFAULT_REMOTE_GPU_CACHE_POLICY)
+            self.win_candidates_edit = QtWidgets.QLineEdit(DEFAULT_REMOTE_WIN_CANDIDATES)
+            self.multi_seed_spin = QtWidgets.QSpinBox()
+            self.multi_seed_spin.setRange(1, 20)
+            self.multi_seed_spin.setValue(int(DEFAULT_REMOTE_MULTI_SEED_COUNT))
+
+            form.addRow("Server Host", self.host_edit)
+            form.addRow("Username", self.user_edit)
+            form.addRow("Password (not saved)", self.password_edit)
+            form.addRow("Dataset Session1", self.dataset_combo)
+            form.addRow("Dataset Session2 (optional)", self.dataset_session2_combo)
+            form.addRow("Pretrained Profile", self.profile_edit)
+            form.addRow("Profile Eval Mode", self.profile_eval_mode)
+            form.addRow("Compute Backend", self.compute_backend_combo)
+            form.addRow("GPU Device", self.gpu_device_edit)
+            form.addRow("GPU Precision", self.gpu_precision_combo)
+            form.addRow("GPU Cache Policy", self.gpu_cache_combo)
+            form.addRow("Win Candidates", self.win_candidates_edit)
+            form.addRow("Multi Seed Count", self.multi_seed_spin)
+            form.addRow("", self.gpu_warmup_check)
             layout.addLayout(form)
 
             row = QtWidgets.QHBoxLayout()
             buttons = [
-                ("刷新数据集", self._refresh_datasets),
-                ("连接测试", self._connect_test),
-                ("上传数据集", self._upload_only),
-                ("只训练FBCCA权重", self._train_weights),
-                ("读取权重评测", self._profile_eval),
-                ("精选模型深度分析", self._focused_compare),
-                ("全量分类对比", self._classifier_compare),
-                ("全模型端到端对比", self._model_compare),
-                ("查看服务器进度", self._refresh_status),
-                ("下载结果", self._download_results),
+                ("Refresh Datasets", self._refresh_datasets),
+                ("Test Connection", self._connect_test),
+                ("Upload Dataset(s)", self._upload_only),
+                ("Train FBCCA Weights", self._train_weights),
+                ("Profile Eval", self._profile_eval),
+                ("Focused Compare", self._focused_compare),
+                ("Classifier Compare", self._classifier_compare),
+                ("Model Compare", self._model_compare),
+                ("Refresh Status", self._refresh_status),
+                ("Download Results", self._download_results),
             ]
             for label, slot in buttons:
                 btn = QtWidgets.QPushButton(label)
                 btn.clicked.connect(slot)
                 row.addWidget(btn)
             layout.addLayout(row)
-            self.status_label = QtWidgets.QLabel("未连接")
+
+            self.status_label = QtWidgets.QLabel("Not connected")
             layout.addWidget(self.status_label)
             self.log_box = QtWidgets.QPlainTextEdit()
             self.log_box.setReadOnly(True)
@@ -606,16 +703,27 @@ def launch_gui() -> int:
 
         def _refresh_datasets(self) -> None:
             self.dataset_combo.clear()
-            for item in discover_local_datasets():
-                self.dataset_combo.addItem(
-                    f"{item.session_id} | trials={item.trial_count} | subject={item.subject_id}",
-                    str(item.manifest_path),
-                )
+            self.dataset_session2_combo.clear()
+            self.dataset_session2_combo.addItem("(none)", "")
+            datasets = discover_local_datasets()
+            for item in datasets:
+                label = f"{item.session_id} | trials={item.trial_count} | subject={item.subject_id}"
+                self.dataset_combo.addItem(label, str(item.manifest_path))
+                self.dataset_session2_combo.addItem(label, str(item.manifest_path))
+            if self.dataset_combo.count() > 0:
+                self.dataset_combo.setCurrentIndex(0)
+            self.dataset_session2_combo.setCurrentIndex(0)
 
         def _selected_dataset(self) -> LocalDataset:
             path = self.dataset_combo.currentData()
             if not path:
-                raise RuntimeError("没有可用数据集")
+                raise RuntimeError("no available dataset")
+            return _find_dataset_by_manifest(Path(path))
+
+        def _selected_dataset_session2(self) -> Optional[LocalDataset]:
+            path = self.dataset_session2_combo.currentData()
+            if not path:
+                return None
             return _find_dataset_by_manifest(Path(path))
 
         def _server_config(self) -> ServerConfig:
@@ -625,10 +733,21 @@ def launch_gui() -> int:
                 password=self.password_edit.text(),
             )
 
+        def _gpu_args(self) -> dict[str, Any]:
+            return {
+                "compute_backend": str(self.compute_backend_combo.currentText()).strip(),
+                "gpu_device": int(self.gpu_device_edit.text().strip() or "0"),
+                "gpu_precision": str(self.gpu_precision_combo.currentText()).strip(),
+                "gpu_warmup": bool(self.gpu_warmup_check.isChecked()),
+                "gpu_cache_policy": str(self.gpu_cache_combo.currentText()).strip(),
+                "win_candidates": str(self.win_candidates_edit.text().strip() or DEFAULT_REMOTE_WIN_CANDIDATES),
+                "multi_seed_count": int(self.multi_seed_spin.value()),
+            }
+
         def _with_ssh(self, fn: Callable[[SSHClient], Any]) -> Any:
             cfg = self._server_config()
             if not cfg.password:
-                raise RuntimeError("请输入服务器密码；密码不会保存")
+                raise RuntimeError("please input server password (not persisted)")
             ssh = SSHClient(cfg)
             ssh.connect()
             try:
@@ -639,32 +758,54 @@ def launch_gui() -> int:
         def _connect_test(self) -> None:
             try:
                 def work(ssh: SSHClient) -> str:
-                    _code, out, _err = ssh.exec(f"test -d {sh_quote(REMOTE_ROOT)} && echo OK || echo MISSING")
+                    check_cmd = (
+                        f"test -d {sh_quote(REMOTE_ROOT)} && echo ROOT_OK || echo ROOT_MISSING; "
+                        "command -v nvidia-smi >/dev/null 2>&1 && "
+                        "nvidia-smi --query-gpu=name,memory.total --format=csv,noheader | head -n 1 || "
+                        "echo NVIDIA_SMI_MISSING"
+                    )
+                    _code, out, _err = ssh.exec(check_cmd, check=False)
                     return out.strip()
+
                 out = self._with_ssh(work)
-                self.status_label.setText(f"连接状态: {out}")
-                self._append(f"连接测试: {out}")
+                self.status_label.setText(f"Connection: {out}")
+                self._append(f"Connection check: {out}")
             except Exception as exc:
-                self._append(f"连接失败: {exc}")
+                self._append(f"Connection failed: {exc}")
 
         def _upload_only(self) -> None:
             try:
                 dataset = self._selected_dataset()
-                def work(ssh: SSHClient) -> dict[str, str]:
-                    return upload_dataset(ssh, dataset)
+                dataset_session2 = self._selected_dataset_session2()
+
+                def work(ssh: SSHClient) -> dict[str, Any]:
+                    payload: dict[str, Any] = {
+                        "session1": upload_dataset(ssh, dataset),
+                        "session2": None,
+                    }
+                    if dataset_session2 is not None and dataset_session2.manifest_path.resolve() != dataset.manifest_path.resolve():
+                        payload["session2"] = upload_dataset(ssh, dataset_session2)
+                    return payload
+
                 result = self._with_ssh(work)
-                self._append("上传完成:\n" + json.dumps(result, ensure_ascii=False, indent=2))
+                self._append("Upload done:\n" + json.dumps(result, ensure_ascii=False, indent=2))
             except Exception as exc:
-                self._append(f"上传失败: {exc}")
+                self._append(f"Upload failed: {exc}")
 
         def _start_task(self, action: str) -> None:
             try:
                 dataset = self._selected_dataset()
+                dataset_session2 = self._selected_dataset_session2()
                 run_id = now_run_id(action)
                 profile_remote = None
+                gpu_args = self._gpu_args()
+
                 def work(ssh: SSHClient) -> dict[str, Any]:
                     nonlocal profile_remote
                     remote_dataset = upload_dataset(ssh, dataset)
+                    remote_dataset_session2 = None
+                    if dataset_session2 is not None and dataset_session2.manifest_path.resolve() != dataset.manifest_path.resolve():
+                        remote_dataset_session2 = upload_dataset(ssh, dataset_session2)
                     if action == "profile-eval":
                         profile_path = Path(self.profile_edit.text().strip()).expanduser()
                         profile_remote = upload_profile(ssh, profile_path, run_id=run_id)
@@ -678,16 +819,27 @@ def launch_gui() -> int:
                     payload = build_train_command(
                         task=task,
                         dataset_manifest_remote=remote_dataset["manifest"],
+                        dataset_manifest_session2_remote=(
+                            None if remote_dataset_session2 is None else remote_dataset_session2["manifest"]
+                        ),
                         run_id=run_id,
                         pretrained_profile_remote=profile_remote,
                         profile_eval_mode=self.profile_eval_mode.currentText(),
+                        compute_backend=str(gpu_args["compute_backend"]),
+                        gpu_device=int(gpu_args["gpu_device"]),
+                        gpu_precision=str(gpu_args["gpu_precision"]),
+                        gpu_warmup=bool(gpu_args["gpu_warmup"]),
+                        gpu_cache_policy=str(gpu_args["gpu_cache_policy"]),
+                        win_candidates=str(gpu_args["win_candidates"]),
+                        multi_seed_count=int(gpu_args["multi_seed_count"]),
                     )
                     return start_remote_task(ssh, payload)
+
                 record = self._with_ssh(work)
                 self.records = load_task_records()
-                self._append("远程任务已启动:\n" + json.dumps(record, ensure_ascii=False, indent=2))
+                self._append("Remote task started:\n" + json.dumps(record, ensure_ascii=False, indent=2))
             except Exception as exc:
-                self._append(f"任务启动失败: {exc}")
+                self._append(f"Task start failed: {exc}")
 
         def _train_weights(self) -> None:
             self._start_task("train-weights")
@@ -707,7 +859,7 @@ def launch_gui() -> int:
         def _load_latest_record(self) -> None:
             record = latest_task_record()
             if record:
-                self.status_label.setText(f"最近任务: {record.get('run_id')} pid={record.get('pid')}")
+                self.status_label.setText(f"Latest task: {record.get('run_id')} pid={record.get('pid')}")
 
         def _refresh_status(self) -> None:
             record = latest_task_record()
@@ -716,6 +868,7 @@ def launch_gui() -> int:
             try:
                 def work(ssh: SSHClient) -> dict[str, Any]:
                     return read_remote_status(ssh, record)
+
                 status = self._with_ssh(work)
                 progress = status.get("progress", {}) if isinstance(status.get("progress"), dict) else {}
                 self.status_label.setText(
@@ -733,24 +886,25 @@ def launch_gui() -> int:
                         ensure_ascii=False,
                         indent=2,
                     )
-                    + "\n\n最近日志:\n"
+                    + "\n\nlatest log tail\n"
                     + str(status.get("tail", ""))
                 )
             except Exception as exc:
-                self._append(f"刷新进度失败: {exc}")
+                self._append(f"Refresh status failed: {exc}")
 
         def _download_results(self) -> None:
             record = latest_task_record()
             if not record:
-                self._append("没有本地任务记录")
+                self._append("No local task record")
                 return
             try:
                 def work(ssh: SSHClient) -> dict[str, str]:
                     return download_results(ssh, record)
+
                 result = self._with_ssh(work)
-                self._append("下载完成:\n" + json.dumps(result, ensure_ascii=False, indent=2))
+                self._append("Download done:\n" + json.dumps(result, ensure_ascii=False, indent=2))
             except Exception as exc:
-                self._append(f"下载失败: {exc}")
+                self._append(f"Download failed: {exc}")
 
     app = QtWidgets.QApplication(sys.argv)
     window = ServerTrainWindow()

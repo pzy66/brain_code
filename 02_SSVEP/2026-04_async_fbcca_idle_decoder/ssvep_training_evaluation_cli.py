@@ -59,6 +59,7 @@ from ssvep_core.train_eval import (
     OfflineTrainEvalConfig,
     run_offline_train_eval,
 )
+from ssvep_core.registry import ModelRegistry
 
 THIS_DIR = Path(__file__).resolve().parent
 DEFAULT_DATASET_ROOT = THIS_DIR / "profiles" / "datasets"
@@ -83,7 +84,7 @@ QUICK_MODE_CHANNEL_WEIGHT_MODE = "fbcca_diag"
 QUICK_MODE_SUBBAND_WEIGHT_MODE = "chen_ab_subject"
 QUICK_MODE_SPATIAL_FILTER_MODE = "none"
 
-MODEL_COMPARE_MODELS = tuple(str(name) for name in DEFAULT_BENCHMARK_MODELS)
+MODEL_COMPARE_MODELS = tuple(ModelRegistry.list_models(task="benchmark"))
 MODEL_COMPARE_CHANNEL_MODES = ("all8",)
 MODEL_COMPARE_MULTI_SEED_COUNT = 5
 MODEL_COMPARE_WIN_CANDIDATES = (1.5, 2.0)
@@ -106,7 +107,7 @@ WEIGHTED_COMPARE_MODELS = tuple(
         )
         + tuple(
             name
-            for name in DEFAULT_BENCHMARK_MODELS
+            for name in ModelRegistry.list_models(task="benchmark")
             if str(name) not in {"legacy_fbcca_202603", "fbcca"}
         )
     )
@@ -143,14 +144,7 @@ CLASSIFIER_COMPARE_MODELS = tuple(
         (
             "legacy_fbcca_202603",
             "fbcca_fixed_all8",
-            "cca",
-            "itcca",
-            "ecca",
-            "msetcca",
-            "trca",
-            "trca_r",
-            "sscor",
-            "tdca",
+            *tuple(ModelRegistry.list_models(task="benchmark")),
             "oacca",
         )
     )
@@ -169,14 +163,7 @@ CLASSIFIER_COMPARE_SPATIAL_FILTER_MODE = "none"
 PROFILE_EVAL_MODELS = (
     "fbcca_fixed_all8",
     "legacy_fbcca_202603",
-    "cca",
-    "itcca",
-    "ecca",
-    "msetcca",
-    "trca",
-    "trca_r",
-    "sscor",
-    "tdca",
+    *tuple(ModelRegistry.list_models(task="benchmark")),
     "oacca",
 )
 PROFILE_EVAL_CHANNEL_MODES = ("all8",)

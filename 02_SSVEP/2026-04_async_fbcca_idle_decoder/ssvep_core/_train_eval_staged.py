@@ -10,6 +10,13 @@ from typing import Any, Callable, Optional, Sequence
 
 import numpy as np
 
+from .artifact_store import ArtifactKey, ArtifactStore
+from .benchmark_suite import enrich_primary_metrics
+from .decision import DecisionEngine, DecisionEngineConfig, EvidenceAccumulatorConfig, StateMachineConfig
+from .evaluation import ReplayEvaluator, ReplayEvaluatorConfig, build_replay_stream_from_trials
+from .gating import GlobalThresholdGate, PerFrequencyLogRegGate
+from .profile_v2 import DEFAULT_GATE_FEATURES, build_profile_v2
+from .registry import ModelRegistry
 from .train_eval import (
     AsyncDecisionGate,
     DEFAULT_NH,
@@ -603,6 +610,112 @@ def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
 
 def _write_text_atomic(path: Path, body: str) -> None:
     atomic_write_text(Path(path), str(body), encoding="utf-8")
+
+
+def _build_per_freq_gate_payload(profile: Any) -> dict[str, dict[str, Any]]:
+    payload: dict[str, dict[str, Any]] = {}
+    freq_specific = getattr(profile, "frequency_specific_thresholds", None)
+    if isinstance(freq_specific, dict):
+        for key, item_raw in freq_specific.items():
+            item = dict(item_raw or {})
+            payload[str(key)] = {
+                "coef": list(item.get("coef", [0.0] * len(DEFAULT_GATE_FEATURES))),
+                "intercept": float(item.get("intercept", 0.0)),
+                "mean": list(item.get("mean", [0.0] * len(DEFAULT_GATE_FEATURES))),
+                "std": list(item.get("std", [1.0] * len(DEFAULT_GATE_FEATURES))),
+                "enter_logit_th": float(item.get("enter_logit_th", item.get("enter_log_lr_th", 0.35))),
+                "exit_logit_th": float(item.get("exit_logit_th", item.get("exit_log_lr_th", 0.05))),
+            }
+    if payload:
+        return payload
+
+    enter_llr = getattr(profile, "enter_log_lr_th", None)
+    exit_llr = getattr(profile, "exit_log_lr_th", None)
+    for freq in tuple(float(value) for value in getattr(profile, "freqs", ())):
+        payload[f"{freq:g}"] = {
+            "coef": [0.0] * len(DEFAULT_GATE_FEATURES),
+            "intercept": 0.0,
+            "mean": [0.0] * len(DEFAULT_GATE_FEATURES),
+            "std": [1.0] * len(DEFAULT_GATE_FEATURES),
+            "enter_logit_th": float(enter_llr if enter_llr is not None else 0.35),
+            "exit_logit_th": float(exit_llr if exit_llr is not None else 0.05),
+        }
+    return payload
+
+
+def _build_replay_report(
+    *,
+    profile: Any,
+    sampling_rate: int,
+    eval_segments: Sequence[tuple[Any, np.ndarray]],
+    compute_backend: str,
+    gpu_device: int,
+    gpu_precision: str,
+    gpu_warmup: bool,
+    gpu_cache_policy: str,
+) -> dict[str, Any]:
+    if not eval_segments:
+        return {"enabled": True, "status": "skipped", "reason": "empty_eval_segments"}
+
+    decoder = load_decoder_from_profile(
+        profile,
+        sampling_rate=int(sampling_rate),
+        compute_backend=str(compute_backend),
+        gpu_device=int(gpu_device),
+        gpu_precision=str(gpu_precision),
+        gpu_warmup=bool(gpu_warmup),
+        gpu_cache_policy=str(gpu_cache_policy),
+    )
+    decoder.configure_runtime(int(sampling_rate))
+    stream_rows, labels = build_replay_stream_from_trials(
+        decoder=decoder,
+        trial_segments=eval_segments,
+        step_sec=float(getattr(profile, "step_sec", 0.25)),
+    )
+    if not stream_rows:
+        return {"enabled": True, "status": "skipped", "reason": "empty_replay_rows"}
+
+    per_freq_payload = _build_per_freq_gate_payload(profile)
+    gate = PerFrequencyLogRegGate.from_payload(
+        payload={"feature_names": list(DEFAULT_GATE_FEATURES), "per_freq": per_freq_payload},
+        feature_names=tuple(DEFAULT_GATE_FEATURES),
+    )
+    decision_engine = DecisionEngine(
+        DecisionEngineConfig(
+            evidence=EvidenceAccumulatorConfig(
+                lambda_decay=0.85,
+                beta_consistency=0.5,
+                upper_commit_th=2.2,
+                lower_idle_th=0.4,
+            ),
+            state=StateMachineConfig(
+                candidate_min_windows=2,
+                armed_min_windows=3,
+                refractory_sec=0.8,
+            ),
+        )
+    )
+    evaluator = ReplayEvaluator(
+        gate=gate,
+        decision_engine=decision_engine,
+        config=ReplayEvaluatorConfig(step_sec=float(getattr(profile, "step_sec", 0.25))),
+    )
+    report = evaluator.run(stream_rows, labels)
+    metrics = dict(report.get("metrics", {}))
+    return {
+        "enabled": True,
+        "status": "ok",
+        "window_count": int(report.get("window_count", 0)),
+        "step_sec": float(report.get("step_sec", getattr(profile, "step_sec", 0.25))),
+        "metrics": metrics,
+        "idle_false_trigger_per_min": float(metrics.get("idle_false_trigger_per_min", 0.0)),
+        "wrong_action_rate": float(metrics.get("wrong_action_rate", 0.0)),
+        "median_commit_latency": float(metrics.get("median_commit_latency", float("inf"))),
+        "commit_count": int(metrics.get("commit_count", 0)),
+        "burst_commit_count": int(metrics.get("burst_commit_count", 0)),
+        "trajectory_head": list(report.get("trajectory", [])[:200]),
+        "commits": list(report.get("commits", [])),
+    }
 
 
 def _profile_channel_positions(profile: Any, dataset_channels: Sequence[int]) -> tuple[tuple[int, ...], list[int]]:
@@ -1318,7 +1431,8 @@ def run_offline_train_eval(
     export_figures = bool(config.export_figures)
     evaluation_mode = _parse_evaluation_mode(config.evaluation_mode)
     quick_screen_top_k = max(1, int(config.quick_screen_top_k))
-    requested_models = tuple(normalize_model_name(name) for name in config.model_names)
+    requested_model_names = tuple(str(name) for name in config.model_names)
+    requested_models = tuple(ModelRegistry.resolve_many(requested_model_names, task="benchmark"))
     force_include_models = tuple(
         name
         for name in (normalize_model_name(item) for item in config.force_include_models)
@@ -2726,6 +2840,125 @@ def run_offline_train_eval(
             }
             log(f"Profile roundtrip check failed: {exc}")
 
+    profile_v2_saved = False
+    profile_v2_path: Optional[str] = None
+    artifact_root_path: Optional[str] = None
+    artifact_write_summary: dict[str, Any] = {
+        "model_state_count": 0,
+        "profile_v2_saved": False,
+    }
+    if profile_for_realtime_object is not None:
+        try:
+            per_freq_gate = _build_per_freq_gate_payload(profile_for_realtime_object)
+            profile_v2 = build_profile_v2(
+                base_profile=profile_for_realtime_object,
+                per_freq_gate=per_freq_gate,
+                metrics=dict(deployment_views.get("metrics", {})),
+                feature_names=tuple(DEFAULT_GATE_FEATURES),
+                evidence={
+                    "lambda": 0.85,
+                    "beta_consistency": 0.5,
+                    "upper_commit_th": 2.2,
+                    "lower_idle_th": 0.4,
+                },
+                refractory_sec=0.8,
+            )
+            profile_v2_output = Path(config.output_profile_path).with_name(
+                f"{Path(config.output_profile_path).stem}_v2.json"
+            )
+            _write_json_atomic(profile_v2_output, dict(profile_v2.to_payload()))
+            profile_v2_saved = True
+            profile_v2_path = str(profile_v2_output)
+            artifact_store = ArtifactStore(report_dir / "artifacts")
+            artifact_root_path = str(artifact_store.root)
+            for item in best_runs_by_model:
+                run_key = _run_key(dict(item))
+                model_profile = profile_by_run.get(run_key)
+                if model_profile is None:
+                    continue
+                model_name = str(item.get("model_name", "unknown"))
+                key = ArtifactKey(
+                    subject=str(dataset_session1.subject_id),
+                    session=str(dataset_session1.session_id),
+                    model=model_name,
+                    version="v1",
+                )
+                _write_json_atomic(
+                    artifact_store.state_path(key),
+                    {
+                        "model_name": model_name,
+                        "model_params": dict(getattr(model_profile, "model_params", None) or {}),
+                        "generated_at": datetime.now().isoformat(timespec="seconds"),
+                    },
+                )
+                artifact_write_summary["model_state_count"] = int(artifact_write_summary["model_state_count"]) + 1
+            chosen_key = ArtifactKey(
+                subject=str(dataset_session1.subject_id),
+                session=str(dataset_session1.session_id),
+                model=str(deployment_run.get("model_name", "unknown")),
+                version="v2",
+            )
+            _write_json_atomic(artifact_store.profile_v2_path(chosen_key), dict(profile_v2.to_payload()))
+            _write_json_atomic(
+                artifact_store.report_path(chosen_key),
+                {
+                    "generated_at": datetime.now().isoformat(timespec="seconds"),
+                    "requested_models": [str(name) for name in requested_model_names],
+                    "resolved_models": [str(name) for name in requested_models],
+                    "chosen_model": str(deployment_run.get("model_name", "")),
+                    "chosen_metrics": dict(deployment_views.get("metrics", {})),
+                },
+            )
+            artifact_write_summary["profile_v2_saved"] = True
+        except Exception as exc:
+            profile_v2_saved = False
+            profile_v2_path = None
+            artifact_write_summary = {
+                "model_state_count": int(artifact_write_summary.get("model_state_count", 0)),
+                "profile_v2_saved": False,
+                "error": str(exc),
+            }
+            log(f"profile_v2/artifact export skipped: {exc}")
+
+    replay_report: dict[str, Any] = {"enabled": False, "status": "skipped", "reason": "no_profile"}
+    if profile_for_realtime_object is not None:
+        try:
+            replay_source_segments = dataset_session2.trial_segments if dataset_session2 is not None else holdout_base
+            source_channels = (
+                tuple(int(channel) for channel in dataset_session2.board_eeg_channels)
+                if dataset_session2 is not None
+                else tuple(int(channel) for channel in eeg_channels)
+            )
+            selected_channels = tuple(
+                int(channel)
+                for channel in list(deployment_run.get("selected_eeg_channels", []) or [])
+                if isinstance(channel, (int, float))
+            )
+            if not selected_channels:
+                selected_channels = tuple(int(channel) for channel in (getattr(profile_for_realtime_object, "eeg_channels", None) or source_channels))
+            if selected_channels and tuple(selected_channels) != tuple(source_channels):
+                selected_positions = [list(source_channels).index(int(channel)) for channel in selected_channels if int(channel) in set(source_channels)]
+                replay_segments = _subset_trial_segments_by_positions(replay_source_segments, selected_positions) if selected_positions else list(replay_source_segments)
+            else:
+                replay_segments = list(replay_source_segments)
+            replay_report = _build_replay_report(
+                profile=profile_for_realtime_object,
+                sampling_rate=fs if dataset_session2 is None else int(dataset_session2.sampling_rate),
+                eval_segments=replay_segments,
+                compute_backend=str(config.compute_backend),
+                gpu_device=int(config.gpu_device),
+                gpu_precision=str(config.gpu_precision),
+                gpu_warmup=bool(config.gpu_warmup),
+                gpu_cache_policy=str(config.gpu_cache_policy),
+            )
+        except Exception as exc:
+            replay_report = {
+                "enabled": True,
+                "status": "error",
+                "error": str(exc),
+            }
+            log(f"replay report skipped: {exc}")
+
     robustness_summary = summarize_benchmark_robustness(robustness_runs, ranking_policy=ranking_policy)
     metric_definition = benchmark_metric_definition_payload(
         ranking_policy=ranking_policy,
@@ -2768,6 +3001,19 @@ def run_offline_train_eval(
         _model_compare_row(item, prefer_cross_session=prefer_cross_session)
         for item in best_runs_by_model
     ]
+    for item in best_runs_by_model:
+        metrics = dict(item.get("metrics", {}))
+        if metrics:
+            item["primary_metrics"] = enrich_primary_metrics(metrics)
+    primary_metrics_table = [
+        {
+            "model_name": str(item.get("model_name", "")),
+            "false_trigger_per_min": float(dict(item.get("primary_metrics", {})).get("false_trigger_per_min", 0.0)),
+            "wrong_action_rate": float(dict(item.get("primary_metrics", {})).get("wrong_action_rate", 0.0)),
+            "median_commit_latency": float(dict(item.get("primary_metrics", {})).get("median_commit_latency", 0.0)),
+        }
+        for item in best_runs_by_model
+    ]
 
     report_payload: dict[str, Any] = {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
@@ -2802,6 +3048,9 @@ def run_offline_train_eval(
         },
         "quality_summary_session1": list(session1_quality_rows),
         "quality_summary_session2": None if session2_quality_row is None else dict(session2_quality_row),
+        "trial_role_counts_session1": dict(
+            dict(dataset_session1.manifest.get("quality_summary", {})).get("trial_role_counts", {})
+        ),
         "quality_total_trials_session1": int(quality_total_trials_session1),
         "quality_kept_trials_session1": int(quality_kept_trials_session1),
         "quality_dropped_trials_session1": int(quality_dropped_trials_session1),
@@ -2816,6 +3065,8 @@ def run_offline_train_eval(
             "gate": int(len(gate_base)),
             "holdout": int(len(holdout_base)),
         },
+        "requested_models": [str(name) for name in requested_model_names],
+        "resolved_models": [str(name) for name in requested_models],
         "evaluation_mode": str(evaluation_mode),
         "quick_screen_top_k": int(quick_screen_top_k),
         "force_include_models": list(force_include_models),
@@ -2835,6 +3086,7 @@ def run_offline_train_eval(
         "stage_b_candidates": list(stage_b_candidates),
         "stage_a_only_models": list(stage_a_only_models),
         "model_results": best_runs_by_model,
+        "primary_metrics_table": list(primary_metrics_table),
         "stage_b_run_results": all_successful_ranked + failed_stage_b_runs,
         "winning_model_family": str(winning_model_family),
         "family_rank_end_to_end": list(family_rank_end_to_end),
@@ -2937,6 +3189,11 @@ def run_offline_train_eval(
         "classifier_only_ranking": list(classifier_only_ranked),
         "end_to_end_ranking": list(ranking_end_to_end),
         "fbcca_weight_aggregation": dict(weighted_profile_aggregation_summary),
+        "profile_v2_saved": bool(profile_v2_saved),
+        "profile_v2_path": profile_v2_path,
+        "artifact_root_path": artifact_root_path,
+        "artifact_write_summary": dict(artifact_write_summary),
+        "replay_report": dict(replay_report),
         "idle_false_positive_events": list(deployment_views.get("async_metrics", {}).get("idle_false_positive_events", []) or []),
         "control_state_mode": str(config.control_state_mode),
         "realtime_profile_recommendation": {
@@ -2980,6 +3237,16 @@ def run_offline_train_eval(
     report_payload["metrics_5class"] = report_payload.get("chosen_metrics_5class")
     report_payload["paper_lens_metrics"] = dict(deployment_views.get("paper_lens_metrics", {}))
     report_payload["async_lens_metrics"] = dict(deployment_views.get("async_lens_metrics", {}))
+    replay_metrics = dict(replay_report.get("metrics", {})) if isinstance(replay_report, dict) else {}
+    if replay_metrics:
+        report_payload["idle_false_trigger_per_min"] = float(replay_metrics.get("idle_false_trigger_per_min", 0.0))
+        report_payload["wrong_action_rate"] = float(replay_metrics.get("wrong_action_rate", 0.0))
+        report_payload["median_commit_latency"] = float(replay_metrics.get("median_commit_latency", float("inf")))
+    else:
+        primary_fallback = enrich_primary_metrics(dict(report_payload.get("chosen_metrics", {})))
+        report_payload["idle_false_trigger_per_min"] = float(primary_fallback.get("false_trigger_per_min", 0.0))
+        report_payload["wrong_action_rate"] = float(primary_fallback.get("wrong_action_rate", 0.0))
+        report_payload["median_commit_latency"] = float(primary_fallback.get("median_commit_latency", float("inf")))
     named_stem = _named_report_stem(
         subject_id=str(dataset_session1.subject_id),
         recommended_model=str(winning_model_family),
@@ -2999,6 +3266,8 @@ def run_offline_train_eval(
         "report_json": str(named_report_json_path),
         "report_md": str(named_report_md_path),
         "profile_json": str(named_profile_path),
+        "profile_v2_json": "" if profile_v2_path is None else str(profile_v2_path),
+        "artifact_root": "" if artifact_root_path is None else str(artifact_root_path),
         "best_candidate_profile": str(best_candidate_profile_path) if best_candidate_profile_saved else "",
         "best_fbcca_weighted_profile": (
             str(best_fbcca_weighted_profile_path) if best_fbcca_weighted_profile_saved else ""
@@ -3061,8 +3330,11 @@ def run_offline_train_eval(
         "dataset_selection_snapshot": dict(config.dataset_selection_snapshot or {}),
         "task": str(getattr(config, "task", "")),
         "evaluation_mode": str(evaluation_mode),
+        "requested_models": [str(name) for name in requested_model_names],
+        "resolved_models": [str(name) for name in requested_models],
         "stage_b_candidates": list(stage_b_candidates),
         "stage_a_only_models": list(stage_a_only_models),
+        "primary_metrics_table": list(primary_metrics_table),
         "named_artifacts": dict(report_payload.get("named_artifacts", {})),
     }
 

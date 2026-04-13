@@ -45,6 +45,45 @@ ENHANCED_45M_PROTOCOL = CollectionProtocol(
 )
 
 
+TRIAL_ROLE_CONTROL = "control"
+TRIAL_ROLE_CLEAN_IDLE = "clean_idle"
+TRIAL_ROLE_HARD_IDLE = "hard_idle"
+
+
+def infer_trial_role(*, label: str, expected_freq: Optional[float]) -> str:
+    label_lower = str(label or "").strip().lower()
+    if expected_freq is not None and not label_lower.startswith("switch_to_"):
+        return TRIAL_ROLE_CONTROL
+    if (
+        "hard_idle" in label_lower
+        or "hard idle" in label_lower
+        or "switch" in label_lower
+        or "transition" in label_lower
+        or "scan" in label_lower
+        or "long_idle" in label_lower
+        or "long idle" in label_lower
+    ):
+        return TRIAL_ROLE_HARD_IDLE
+    return TRIAL_ROLE_CLEAN_IDLE
+
+
+def summarize_trial_roles(records: Sequence[dict[str, Any]]) -> dict[str, int]:
+    summary = {
+        TRIAL_ROLE_CONTROL: 0,
+        TRIAL_ROLE_CLEAN_IDLE: 0,
+        TRIAL_ROLE_HARD_IDLE: 0,
+    }
+    for row in records:
+        role = str(row.get("trial_role", "")).strip().lower()
+        if role not in summary:
+            role = infer_trial_role(
+                label=str(row.get("label", "")),
+                expected_freq=None if row.get("expected_freq") is None else float(row.get("expected_freq")),
+            )
+        summary[role] = int(summary.get(role, 0) + 1)
+    return summary
+
+
 def _atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> None:
     target = Path(path).expanduser().resolve()
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -155,9 +194,14 @@ def _build_collection_records(
         label_text = str(trial.label)
         label_lower = label_text.strip().lower()
         stage_name = "long_idle" if ("long_idle" in label_lower or "long idle" in label_lower) else "collection"
+        trial_role = infer_trial_role(
+            label=label_text,
+            expected_freq=None if trial.expected_freq is None else float(trial.expected_freq),
+        )
         records.append(
             {
                 "stage": stage_name,
+                "trial_role": trial_role,
                 "label": label_text,
                 "expected_freq": None if trial.expected_freq is None else float(trial.expected_freq),
                 "trial_id": int(trial.trial_id),
@@ -235,6 +279,7 @@ def _build_quality_summary(trial_records: Sequence[dict[str, Any]]) -> dict[str,
     total_trials = int(len(trial_records))
     shortfalls = [_safe_float(row.get("shortfall_ratio", 0.0), 0.0) for row in trial_records]
     retries = [_safe_int(row.get("retry_count", 0), 0) for row in trial_records]
+    role_counts = summarize_trial_roles(trial_records)
     return {
         "valid_trial_count": total_trials,
         "kept_trial_count": total_trials,
@@ -243,6 +288,7 @@ def _build_quality_summary(trial_records: Sequence[dict[str, Any]]) -> dict[str,
         "retry_max": int(np.max(np.asarray(retries, dtype=int))) if retries else 0,
         "shortfall_ratio_mean": float(np.mean(np.asarray(shortfalls, dtype=float))) if shortfalls else 0.0,
         "shortfall_ratio_max": float(np.max(np.asarray(shortfalls, dtype=float))) if shortfalls else 0.0,
+        "trial_role_counts": role_counts,
     }
 
 
@@ -406,6 +452,7 @@ def summarize_collection_manifest(manifest_path: Path) -> dict[str, Any]:
         and "long idle" not in str(row.get("stage", "")).strip().lower()
     )
     switch_trials = sum(1 for row in trials if str(row.get("label", "")).startswith("switch_to_"))
+    trial_role_counts = summarize_trial_roles(trials)
     generated_at = str(payload.get("generated_at", ""))
     return {
         "manifest_path": str(path),
@@ -420,6 +467,7 @@ def summarize_collection_manifest(manifest_path: Path) -> dict[str, Any]:
         "idle_trial_count": int(idle_trials),
         "long_idle_trial_count": int(long_idle_trials),
         "switch_trial_count": int(switch_trials),
+        "trial_role_counts": trial_role_counts,
         "shortfall_ratio_mean": float(np.mean(np.asarray(shortfalls, dtype=float))) if shortfalls else 0.0,
         "shortfall_ratio_max": float(np.max(np.asarray(shortfalls, dtype=float))) if shortfalls else 0.0,
         "retry_count_total": int(np.sum(np.asarray(retry_counts, dtype=int))) if retry_counts else 0,
@@ -455,6 +503,7 @@ def discover_collection_manifests(dataset_root: Path) -> list[dict[str, Any]]:
                     "idle_trial_count": 0,
                     "long_idle_trial_count": 0,
                     "switch_trial_count": 0,
+                    "trial_role_counts": {},
                     "shortfall_ratio_mean": 0.0,
                     "shortfall_ratio_max": 0.0,
                     "retry_count_total": 0,
