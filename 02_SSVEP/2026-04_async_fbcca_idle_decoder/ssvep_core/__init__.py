@@ -21,6 +21,16 @@ __all__ = [
     "SUPPORTED_MODEL_NAMES",
     "DecoderModelAdapter",
     "create_model_adapter",
+    "ModelRegistry",
+    "ArtifactStore",
+    "ArtifactKey",
+    "BenchmarkReport",
+    "evaluate_models",
+    "enrich_primary_metrics",
+    "ProfileV2",
+    "build_profile_v2",
+    "PROFILE_V2_VERSION",
+    "is_profile_v2_payload",
     "export_evaluation_figures",
     "OfflineTrainEvalConfig",
     "run_offline_train_eval",
@@ -44,6 +54,16 @@ _EXPORT_MAP = {
     "SUPPORTED_MODEL_NAMES": (".models", "SUPPORTED_MODEL_NAMES"),
     "DecoderModelAdapter": (".models", "DecoderModelAdapter"),
     "create_model_adapter": (".models", "create_model_adapter"),
+    "ModelRegistry": (".registry", "ModelRegistry"),
+    "ArtifactStore": (".artifact_store", "ArtifactStore"),
+    "ArtifactKey": (".artifact_store", "ArtifactKey"),
+    "BenchmarkReport": (".benchmark_suite", "BenchmarkReport"),
+    "evaluate_models": (".benchmark_suite", "evaluate_models"),
+    "enrich_primary_metrics": (".benchmark_suite", "enrich_primary_metrics"),
+    "ProfileV2": (".profile_v2", "ProfileV2"),
+    "build_profile_v2": (".profile_v2", "build_profile_v2"),
+    "PROFILE_V2_VERSION": (".profile_v2", "PROFILE_V2_VERSION"),
+    "is_profile_v2_payload": (".profile_v2", "is_profile_v2_payload"),
     "export_evaluation_figures": (".reporting", "export_evaluation_figures"),
     "OfflineTrainEvalConfig": (".train_eval", "OfflineTrainEvalConfig"),
     "run_offline_train_eval": (".train_eval", "run_offline_train_eval"),
@@ -58,4 +78,3 @@ def __getattr__(name: str) -> Any:
     value = getattr(module, attr_name)
     globals()[name] = value
     return value
-

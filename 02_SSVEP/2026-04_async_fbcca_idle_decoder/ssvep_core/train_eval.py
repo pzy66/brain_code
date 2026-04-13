@@ -13,7 +13,6 @@ from scipy.stats import chi2, wilcoxon
 from async_fbcca_idle_standalone import (
     AsyncDecisionGate,
     DEFAULT_COMPUTE_BACKEND_NAME,
-    DEFAULT_BENCHMARK_MODELS,
     DEFAULT_BENCHMARK_MULTI_SEED_COUNT,
     DEFAULT_BENCHMARK_SEED_STEP,
     DEFAULT_BENCHMARK_CHANNEL_MODES,
@@ -79,6 +78,10 @@ from async_fbcca_idle_standalone import (
 )
 
 from .dataset import LoadedDataset, build_protocol_signature, load_collection_dataset
+from .artifact_store import ArtifactKey, ArtifactStore
+from .benchmark_suite import enrich_primary_metrics
+from .profile_v2 import DEFAULT_GATE_FEATURES, build_profile_v2
+from .registry import ModelRegistry
 _REPORTING_IMPORT_ERROR: Optional[Exception] = None
 try:
     from .reporting import export_evaluation_figures
@@ -110,7 +113,7 @@ class OfflineTrainEvalConfig:
     quality_max_retry_count: int = 3
     strict_protocol_consistency: bool = True
     strict_subject_consistency: bool = True
-    model_names: tuple[str, ...] = tuple(DEFAULT_BENCHMARK_MODELS)
+    model_names: tuple[str, ...] = tuple(ModelRegistry.list_models(task="benchmark"))
     channel_modes: tuple[str, ...] = tuple(DEFAULT_BENCHMARK_CHANNEL_MODES)
     multi_seed_count: int = DEFAULT_BENCHMARK_MULTI_SEED_COUNT
     seed_step: int = DEFAULT_BENCHMARK_SEED_STEP
@@ -2305,6 +2308,7 @@ def _legacy_run_offline_train_eval_unused(
         f"train={len(train_base)} gate={len(gate_base)} holdout={len(holdout_base)}"
     )
 
+    requested_model_names = ModelRegistry.resolve_many(config.model_names, task="benchmark")
     helper = BenchmarkRunner(
         serial_port="offline",
         board_id=0,
@@ -2322,7 +2326,7 @@ def _legacy_run_offline_train_eval_unused(
         eval_idle_repeats=1,
         eval_switch_trials=1,
         step_sec=float(dataset_session1.protocol_config.get("step_sec", 0.25)),
-        model_names=parse_model_list(",".join(config.model_names)),
+        model_names=parse_model_list(",".join(requested_model_names)),
         channel_modes=parse_channel_mode_list(",".join(config.channel_modes)),
         multi_seed_count=max(1, int(config.multi_seed_count)),
         seed_step=max(1, int(config.seed_step)),
@@ -2412,6 +2416,7 @@ def _legacy_run_offline_train_eval_unused(
                         eeg_channels=selected_channels,
                         log_fn=log,
                     )
+                    result["primary_metrics"] = enrich_primary_metrics(dict(result.get("metrics", {})))
                     result["selected_eeg_channels"] = [int(channel) for channel in selected_channels]
                     result["channel_mode"] = str(channel_mode)
                     result["eval_seed"] = int(eval_seed)
@@ -2575,6 +2580,10 @@ def _legacy_run_offline_train_eval_unused(
 
     profile_saved = False
     chosen_profile_path: Optional[str] = None
+    chosen_profile_obj: Any = None
+    profile_v2_saved = False
+    profile_v2_path: Optional[str] = None
+    artifact_root_path: Optional[str] = None
     if accepted:
         chosen_profile = best_profiles[str(chosen["model_name"])]
         chosen_profile = replace(
@@ -2586,12 +2595,95 @@ def _legacy_run_offline_train_eval_unused(
             },
         )
         save_profile(chosen_profile, config.output_profile_path)
+        chosen_profile_obj = chosen_profile
         profile_saved = True
         chosen_profile_path = str(config.output_profile_path)
     else:
         log(
             "No model meets acceptance thresholds. "
             f"Top candidate={recommended.get('model_name')} (rank=1) is kept for reference only; profile not saved."
+        )
+
+    if chosen_profile_obj is not None:
+        per_freq_gate: dict[str, dict[str, Any]] = {}
+        freq_specific = getattr(chosen_profile_obj, "frequency_specific_thresholds", None)
+        if isinstance(freq_specific, dict):
+            for key, payload in freq_specific.items():
+                item = dict(payload or {})
+                per_freq_gate[str(key)] = {
+                    "coef": list(item.get("coef", [0.0] * len(DEFAULT_GATE_FEATURES))),
+                    "intercept": float(item.get("intercept", 0.0)),
+                    "enter_logit_th": float(item.get("enter_logit_th", item.get("enter_log_lr_th", 0.35))),
+                    "exit_logit_th": float(item.get("exit_logit_th", item.get("exit_log_lr_th", 0.05))),
+                }
+        if not per_freq_gate:
+            enter_llr = getattr(chosen_profile_obj, "enter_log_lr_th", None)
+            exit_llr = getattr(chosen_profile_obj, "exit_log_lr_th", None)
+            for freq in tuple(float(item) for item in getattr(chosen_profile_obj, "freqs", ())):
+                per_freq_gate[f"{freq:g}"] = {
+                    "coef": [0.0] * len(DEFAULT_GATE_FEATURES),
+                    "intercept": 0.0,
+                    "enter_logit_th": float(enter_llr if enter_llr is not None else 0.35),
+                    "exit_logit_th": float(exit_llr if exit_llr is not None else 0.05),
+                }
+        profile_v2 = build_profile_v2(
+            base_profile=chosen_profile_obj,
+            per_freq_gate=per_freq_gate,
+            metrics=dict(chosen.get("metrics", {})),
+            feature_names=tuple(DEFAULT_GATE_FEATURES),
+            evidence={
+                "lambda": 0.85,
+                "beta_consistency": 0.5,
+                "upper_commit_th": 2.2,
+                "lower_idle_th": 0.4,
+            },
+            refractory_sec=0.8,
+        )
+        profile_v2_output = Path(config.output_profile_path).with_name(
+            f"{Path(config.output_profile_path).stem}_v2.json"
+        )
+        profile_v2_output.write_text(json_dumps(json_safe(profile_v2.to_payload())) + "\n", encoding="utf-8")
+        profile_v2_saved = True
+        profile_v2_path = str(profile_v2_output)
+
+        artifact_store = ArtifactStore(report_dir / "artifacts")
+        artifact_root_path = str(artifact_store.root)
+        for model_name, profile_obj in best_profiles.items():
+            key = ArtifactKey(
+                subject=str(dataset_session1.subject_id),
+                session=str(dataset_session1.session_id),
+                model=str(model_name),
+                version="v1",
+            )
+            state_payload = dict(getattr(profile_obj, "model_params", None) or {})
+            artifact_store.state_path(key).write_text(
+                json_dumps(json_safe(state_payload)) + "\n",
+                encoding="utf-8",
+            )
+        chosen_key = ArtifactKey(
+            subject=str(dataset_session1.subject_id),
+            session=str(dataset_session1.session_id),
+            model=str(chosen.get("model_name", "unknown")),
+            version="v2",
+        )
+        artifact_store.profile_v2_path(chosen_key).write_text(
+            json_dumps(json_safe(profile_v2.to_payload())) + "\n",
+            encoding="utf-8",
+        )
+        artifact_store.report_path(chosen_key).write_text(
+            json_dumps(
+                json_safe(
+                    {
+                        "generated_at": datetime.now().isoformat(timespec="seconds"),
+                        "requested_models": list(requested_model_names),
+                        "resolved_models": [str(item) for item in helper.model_names],
+                        "chosen_model": str(chosen.get("model_name", "")),
+                        "chosen_metrics": dict(chosen.get("metrics", {})),
+                    }
+                )
+            )
+            + "\n",
+            encoding="utf-8",
         )
 
     robustness_summary = summarize_benchmark_robustness(robustness_runs, ranking_policy=ranking_policy)
@@ -2636,6 +2728,8 @@ def _legacy_run_offline_train_eval_unused(
             "gate": int(len(gate_base)),
             "holdout": int(len(holdout_base)),
         },
+        "requested_models": [str(item) for item in requested_model_names],
+        "resolved_models": [str(item) for item in helper.model_names],
         "model_results": model_results,
         "chosen_model": str(chosen["model_name"]),
         "chosen_rank": int(chosen.get("rank_end_to_end", chosen.get("rank", 0)) or 0),
@@ -2659,6 +2753,9 @@ def _legacy_run_offline_train_eval_unused(
         ),
         "chosen_dynamic_delta": dict(chosen.get("dynamic_delta", {})),
         "chosen_profile_path": chosen_profile_path,
+        "profile_v2_saved": bool(profile_v2_saved),
+        "profile_v2_path": profile_v2_path,
+        "artifact_store_root": artifact_root_path,
         "chosen_meets_acceptance": bool(chosen.get("meets_acceptance", False)),
         "accepted_model_count": int(len(accepted)),
         "recommended_model": str(recommended.get("model_name", "")),
@@ -2700,6 +2797,25 @@ def _legacy_run_offline_train_eval_unused(
         "method_references": list(metric_definition.get("method_references", [])),
         "robustness": robustness_summary,
     }
+    report_payload["primary_metric_table"] = [
+        {
+            "model_name": str(item.get("model_name", "")),
+            "rank_end_to_end": int(item.get("rank_end_to_end", item.get("rank", 0)) or 0),
+            "channel_mode": str(item.get("channel_mode", "")),
+            "eval_seed": int(item.get("eval_seed", 0) or 0),
+            "false_trigger_per_min": float(
+                dict(item.get("primary_metrics") or {}).get("false_trigger_per_min", float("inf"))
+            ),
+            "wrong_action_rate": float(
+                dict(item.get("primary_metrics") or {}).get("wrong_action_rate", float("inf"))
+            ),
+            "median_commit_latency": float(
+                dict(item.get("primary_metrics") or {}).get("median_commit_latency", float("inf"))
+            ),
+            "meets_acceptance": bool(item.get("meets_acceptance", False)),
+        }
+        for item in successful
+    ]
     report_payload["async_metrics"] = dict(report_payload.get("chosen_async_metrics", {}))
     report_payload["metrics_4class"] = dict(report_payload.get("chosen_metrics_4class", {}))
     report_payload["metrics_2class"] = dict(report_payload.get("chosen_metrics_2class", {}))

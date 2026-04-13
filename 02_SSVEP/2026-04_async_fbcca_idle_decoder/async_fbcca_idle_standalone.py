@@ -728,15 +728,32 @@ def default_profile(freqs: Sequence[float] = DEFAULT_FREQS) -> ThresholdProfile:
     )
 
 def atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> None:
+    def _native_path(raw_path: Path) -> str:
+        resolved = str(raw_path)
+        if os.name != "nt":
+            return resolved
+        normalized = os.path.abspath(resolved)
+        if normalized.startswith("\\\\?\\"):
+            return normalized
+        # Win32 APIs hit MAX_PATH for long report paths; use extended-length prefix.
+        if len(normalized) >= 240:
+            if normalized.startswith("\\\\"):
+                return "\\\\?\\UNC\\" + normalized[2:]
+            return "\\\\?\\" + normalized
+        return normalized
+
     target = Path(path).expanduser().resolve()
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = target.parent / f".atomic_{uuid.uuid4().hex[:8]}.tmp"
+    native_tmp = _native_path(tmp_path)
+    native_target = _native_path(target)
     try:
-        tmp_path.write_text(str(text), encoding=encoding)
-        os.replace(str(tmp_path), str(target))
+        with open(native_tmp, "w", encoding=encoding) as handle:
+            handle.write(str(text))
+        os.replace(native_tmp, native_target)
     except Exception:
         try:
-            tmp_path.unlink(missing_ok=True)
+            os.remove(native_tmp)
         except Exception:
             pass
         raise
@@ -2617,8 +2634,14 @@ MODEL_ALIASES = {
     "trca_r": "trca_r",
     "trca-r": "trca_r",
     "etrca": "trca_r",
+    "etrca_r": "trca_r",
+    "etrca-r": "trca_r",
     "sscor": "sscor",
     "tdca": "tdca",
+    "tdca_v2": "tdca",
+    "tdca-v2": "tdca",
+    "fbcca_v1": "fbcca",
+    "fbcca-v1": "fbcca",
     "oacca": "oacca",
 }
 
@@ -4115,13 +4138,13 @@ def train_trca_shared_spatial_basis(
 def build_fbcca_frontend_model_params(
     *,
     channel_weights: Optional[Sequence[float]],
-    subband_weight_mode: Optional[str],
-    subband_weights: Optional[Sequence[float]],
-    subband_weight_params: Optional[dict[str, Any]],
-    spatial_filter_mode: Optional[str],
-    spatial_projection_basis: Optional[np.ndarray],
-    spatial_rank: Optional[int],
-    spatial_source_model: str,
+    subband_weight_mode: Optional[str] = None,
+    subband_weights: Optional[Sequence[float]] = None,
+    subband_weight_params: Optional[dict[str, Any]] = None,
+    spatial_filter_mode: Optional[str] = None,
+    spatial_projection_basis: Optional[np.ndarray] = None,
+    spatial_rank: Optional[int] = None,
+    spatial_source_model: str = DEFAULT_SPATIAL_SOURCE_MODEL,
 ) -> dict[str, Any]:
     model_params: dict[str, Any] = {"Nh": DEFAULT_NH}
     normalized_weights = normalize_channel_weights(channel_weights)

@@ -1186,11 +1186,14 @@ def _named_report_stem(
     eval_seed: int,
 ) -> str:
     _ = subject_id
+    rec = _sanitize_path_token(recommended_model, fallback="model")[:18]
+    dep = _sanitize_path_token(deployed_model, fallback="model")[:18]
+    mode = _sanitize_path_token(channel_mode, fallback="mode")[:12]
     return (
         "summary"
-        f"__rec-{_sanitize_path_token(recommended_model, fallback='model')}"
-        f"__dep-{_sanitize_path_token(deployed_model, fallback='model')}"
-        f"__m-{_sanitize_path_token(channel_mode, fallback='mode')}"
+        f"__rec-{rec}"
+        f"__dep-{dep}"
+        f"__m-{mode}"
         f"__s-{int(eval_seed)}"
     )
 

@@ -33,7 +33,6 @@ from PyQt5.QtWidgets import (
 from async_fbcca_idle_standalone import (
     DEFAULT_ASYNC_DECISION_TIME_MODE,
     DEFAULT_BENCHMARK_CHANNEL_MODES,
-    DEFAULT_BENCHMARK_MODELS,
     DEFAULT_BENCHMARK_MULTI_SEED_COUNT,
     DEFAULT_CHANNEL_WEIGHT_MODE,
     DEFAULT_COMPUTE_BACKEND_NAME,
@@ -82,6 +81,7 @@ from ssvep_core.train_eval import (
     OfflineTrainEvalConfig,
     run_offline_train_eval,
 )
+from ssvep_core.registry import ModelRegistry
 
 THIS_DIR = Path(__file__).resolve().parent
 DEFAULT_REPORT_DIR = THIS_DIR / "profiles"
@@ -89,7 +89,8 @@ DEFAULT_DATASET_ROOT = THIS_DIR / "profiles" / "datasets"
 DEFAULT_REPORT_ROOT = THIS_DIR / "profiles" / "reports" / "train_eval"
 TRAIN_EVAL_DEFAULT_COMPUTE_BACKEND = "cuda"
 TRAIN_EVAL_DEFAULT_GPU_PRECISION = "float32"
-SIMPLE_MODE_MODELS = tuple(str(name) for name in DEFAULT_BENCHMARK_MODELS)
+SIMPLE_MODE_MODELS = tuple(ModelRegistry.list_models(task="benchmark"))
+BASELINE_COMPARE_MODELS = tuple(ModelRegistry.list_models(task="benchmark"))
 QUICK_MODE_MODELS = (
     "fbcca_fixed_all8",
     "fbcca_cw_all8",
@@ -108,7 +109,7 @@ QUICK_MODE_FORCE_INCLUDE_MODELS = ("fbcca_fixed_all8", "fbcca_cw_sw_all8")
 QUICK_MODE_CHANNEL_WEIGHT_MODE = "fbcca_diag"
 QUICK_MODE_SUBBAND_WEIGHT_MODE = "chen_ab_subject"
 QUICK_MODE_SPATIAL_FILTER_MODE = "none"
-MODEL_COMPARE_MODELS = tuple(str(name) for name in DEFAULT_BENCHMARK_MODELS)
+MODEL_COMPARE_MODELS = tuple(ModelRegistry.list_models(task="benchmark"))
 MODEL_COMPARE_CHANNEL_MODES = ("all8",)
 MODEL_COMPARE_MULTI_SEED_COUNT = 1
 MODEL_COMPARE_WIN_CANDIDATES = (1.5, 2.0)
@@ -130,7 +131,7 @@ WEIGHTED_COMPARE_MODELS = tuple(
         )
         + tuple(
             name
-            for name in DEFAULT_BENCHMARK_MODELS
+            for name in ModelRegistry.list_models(task="benchmark")
             if str(name) not in {"legacy_fbcca_202603", "fbcca"}
         )
     )
@@ -374,6 +375,8 @@ class TrainingEvaluationWindow(QMainWindow):
     def _build_ui(self) -> None:
         quick_row = QHBoxLayout()
         self.simple_mode_check = QCheckBox("简易模式（推荐）")
+        self.keep_baseline_group_check = QCheckBox("保留基线模型组")
+        self.keep_baseline_group_check.setChecked(True)
         self.simple_mode_check.setChecked(True)
         self.btn_quick_run = QPushButton("一键自动评测（推荐）")
         self.btn_toggle_advanced = QPushButton("显示高级设置")
@@ -383,6 +386,7 @@ class TrainingEvaluationWindow(QMainWindow):
         self.btn_model_compare_run = QPushButton("全模型对比报告")
         self.btn_toggle_advanced.setText("显示高级设置")
         quick_row.addWidget(self.simple_mode_check)
+        quick_row.addWidget(self.keep_baseline_group_check)
         quick_row.addWidget(self.btn_weighted_compare_run)
         quick_row.addWidget(self.btn_quick_run)
         quick_row.addWidget(self.btn_model_compare_run)
@@ -405,7 +409,7 @@ class TrainingEvaluationWindow(QMainWindow):
         self.quality_max_retry_spin.setValue(3)
         self.strict_protocol_edit = QLineEdit("1")
         self.strict_subject_edit = QLineEdit("1")
-        self.models_edit = QLineEdit(",".join(DEFAULT_BENCHMARK_MODELS))
+        self.models_edit = QLineEdit(",".join(ModelRegistry.list_models(task="benchmark")))
         self.channel_modes_edit = QLineEdit(",".join(DEFAULT_BENCHMARK_CHANNEL_MODES))
         self.multi_seed_spin = QSpinBox()
         self.multi_seed_spin.setRange(1, 20)
@@ -1045,7 +1049,13 @@ class TrainingEvaluationWindow(QMainWindow):
             "decision_time_mode": str(self.decision_time_mode_edit.text().strip()),
             "async_decision_time_mode": str(self.async_decision_time_mode_edit.text().strip()),
             "data_policy": str(self.data_policy_edit.text().strip()),
+            "keep_baseline_group": bool(self.keep_baseline_group_check.isChecked()),
         }
+        requested_models = list(parse_model_list(self.models_edit.text().strip()))
+        if self.keep_baseline_group_check.isChecked():
+            for model_name in BASELINE_COMPARE_MODELS:
+                if model_name not in requested_models:
+                    requested_models.append(str(model_name))
         return TrainEvalUIConfig(
             session1_manifest=session1_manifest,
             session2_manifest=session2_manifest,
@@ -1060,7 +1070,7 @@ class TrainingEvaluationWindow(QMainWindow):
             report_path=Path(self.report_edit.text().strip()).expanduser().resolve(),
             report_root_dir=Path(self.report_root_edit.text().strip()).expanduser().resolve(),
             organize_report_dir=bool(int(self.organize_report_edit.text().strip() or "1")),
-            model_names=tuple(parse_model_list(self.models_edit.text().strip())),
+            model_names=tuple(requested_models),
             channel_modes=tuple(parse_channel_mode_list(self.channel_modes_edit.text().strip())),
             multi_seed_count=int(self.multi_seed_spin.value()),
             gate_policy=parse_gate_policy(self.gate_policy_edit.text().strip()),
@@ -1343,7 +1353,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--quality-max-retry-count", type=int, default=3)
     parser.add_argument("--strict-protocol-consistency", type=int, default=1)
     parser.add_argument("--strict-subject-consistency", type=int, default=1)
-    parser.add_argument("--models", type=str, default=",".join(DEFAULT_BENCHMARK_MODELS))
+    parser.add_argument("--models", type=str, default=",".join(ModelRegistry.list_models(task="benchmark")))
     parser.add_argument("--channel-modes", type=str, default=",".join(DEFAULT_BENCHMARK_CHANNEL_MODES))
     parser.add_argument("--multi-seed-count", type=int, default=DEFAULT_BENCHMARK_MULTI_SEED_COUNT)
     parser.add_argument("--gate-policy", type=str, default=DEFAULT_GATE_POLICY)

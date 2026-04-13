@@ -6,14 +6,14 @@ from typing import Any, Optional, Sequence
 import numpy as np
 
 from async_fbcca_idle_standalone import (
-    DEFAULT_BENCHMARK_MODELS,
     DEFAULT_NH,
     TrialSpec,
     create_decoder,
     normalize_model_name,
 )
+from .registry import ModelRegistry
 
-SUPPORTED_MODEL_NAMES = tuple(str(name) for name in DEFAULT_BENCHMARK_MODELS)
+SUPPORTED_MODEL_NAMES = tuple(ModelRegistry.list_models(task="benchmark"))
 
 
 @dataclass
@@ -88,4 +88,3 @@ def create_model_adapter(
         step_sec=float(step_sec),
         model_params=dict(model_params or {}),
     )
-
