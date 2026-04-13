@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import argparse
 import os
@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional, Sequence
 
-from PyQt5.QtCore import QObject, QThread, Qt, QUrl, pyqtSignal, pyqtSlot
+from PyQt5.QtCore import QObject, QThread, Qt, QTimer, QUrl, pyqtSignal, pyqtSlot
 from PyQt5.QtGui import QDesktopServices, QFont
 from PyQt5.QtWidgets import (
     QApplication,
@@ -22,6 +22,7 @@ from PyQt5.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMessageBox,
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
@@ -82,6 +83,25 @@ from ssvep_core.train_eval import (
     run_offline_train_eval,
 )
 from ssvep_core.registry import ModelRegistry
+from ssvep_server_train_client import (
+    DEFAULT_REMOTE_COMPUTE_BACKEND,
+    DEFAULT_REMOTE_GPU_CACHE_POLICY,
+    DEFAULT_REMOTE_GPU_DEVICE,
+    DEFAULT_REMOTE_GPU_PRECISION,
+    DEFAULT_REMOTE_GPU_WARMUP,
+    DEFAULT_REMOTE_MULTI_SEED_COUNT,
+    DEFAULT_REMOTE_WIN_CANDIDATES,
+    ServerConfig,
+    SSHClient,
+    _find_dataset_by_manifest,
+    build_train_command,
+    download_results,
+    now_run_id,
+    preflight_cuda_or_fail,
+    read_remote_status,
+    start_remote_task,
+    upload_dataset,
+)
 
 THIS_DIR = Path(__file__).resolve().parent
 DEFAULT_REPORT_DIR = THIS_DIR / "profiles"
@@ -146,6 +166,10 @@ WEIGHTED_COMPARE_FORCE_INCLUDE_MODELS = WEIGHTED_COMPARE_MODELS
 WEIGHTED_COMPARE_CHANNEL_WEIGHT_MODE = "none"
 WEIGHTED_COMPARE_SUBBAND_WEIGHT_MODE = "chen_fixed"
 WEIGHTED_COMPARE_SPATIAL_FILTER_MODE = "none"
+DEFAULT_SERVER_HOST = "10.72.128.221"
+DEFAULT_SERVER_PORT = 22
+DEFAULT_SERVER_USERNAME = "zhangkexin"
+DEFAULT_REMOTE_POLL_INTERVAL_MS = 5000
 
 
 def _parse_task(raw: str) -> str:
@@ -170,6 +194,15 @@ def _parse_task(raw: str) -> str:
 
 def _now_stamp() -> str:
     return datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
+def _bool_from_text(value: Any, *, default: bool = False) -> bool:
+    raw = str(value if value is not None else "").strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    return bool(default)
 
 
 def _parse_manifest_csv(raw: str) -> tuple[Path, ...]:
@@ -348,7 +381,7 @@ class TrainEvalWorker(QObject):
 class TrainingEvaluationWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("SSVEP 训练评测")
+        self.setWindowTitle("SSVEP 璁粌璇勬祴")
         self.resize(1280, 860)
         self.worker_thread: Optional[QThread] = None
         self.worker: Optional[TrainEvalWorker] = None
@@ -366,6 +399,8 @@ class TrainingEvaluationWindow(QMainWindow):
         self._gpu_warmup = True
         self._gpu_cache_policy = str(DEFAULT_GPU_CACHE_MODE)
         self._task = str(DEFAULT_TRAIN_EVAL_TASK)
+        self._remote_record: Optional[dict[str, Any]] = None
+        self._remote_status_timer = None
 
         root = QWidget(self)
         self.setCentralWidget(root)
@@ -374,19 +409,25 @@ class TrainingEvaluationWindow(QMainWindow):
 
     def _build_ui(self) -> None:
         quick_row = QHBoxLayout()
-        self.simple_mode_check = QCheckBox("简易模式（推荐）")
-        self.keep_baseline_group_check = QCheckBox("保留基线模型组")
+        self.simple_mode_check = QCheckBox("Simple Mode (Recommended)")
+        self.keep_baseline_group_check = QCheckBox("Keep baseline model group")
         self.keep_baseline_group_check.setChecked(True)
         self.simple_mode_check.setChecked(True)
-        self.btn_quick_run = QPushButton("一键自动评测（推荐）")
-        self.btn_toggle_advanced = QPushButton("显示高级设置")
-        self.simple_mode_check.setText("简易模式（推荐）")
-        self.btn_quick_run.setText("FBCCA权重训练（快速）")
-        self.btn_weighted_compare_run = QPushButton("训练权重并对比全部模型（推荐）")
-        self.btn_model_compare_run = QPushButton("全模型对比报告")
-        self.btn_toggle_advanced.setText("显示高级设置")
+        self.btn_quick_run = QPushButton("Run FBCCA Weight Training (Quick)")
+        self.btn_toggle_advanced = QPushButton("鏄剧ず楂樼骇璁剧疆")
+        self.simple_mode_check.setText("Simple Mode (Recommended)")
+        self.btn_quick_run.setText("FBCCA鏉冮噸璁粌锛堝揩閫燂級")
+        self.btn_weighted_compare_run = QPushButton("Train weights + compare all models (Recommended)")
+        self.btn_model_compare_run = QPushButton("Generate full model comparison report")
+        self.btn_toggle_advanced.setText("鏄剧ず楂樼骇璁剧疆")
+        self.remote_mode_check = QCheckBox("Server Remote (default)")
+        self.remote_mode_check.setChecked(True)
+        self.allow_local_mode_check = QCheckBox("Enable local fallback")
+        self.allow_local_mode_check.setChecked(False)
         quick_row.addWidget(self.simple_mode_check)
         quick_row.addWidget(self.keep_baseline_group_check)
+        quick_row.addWidget(self.remote_mode_check)
+        quick_row.addWidget(self.allow_local_mode_check)
         quick_row.addWidget(self.btn_weighted_compare_run)
         quick_row.addWidget(self.btn_quick_run)
         quick_row.addWidget(self.btn_model_compare_run)
@@ -433,7 +474,7 @@ class TrainingEvaluationWindow(QMainWindow):
         self.win_candidates_edit = QLineEdit(",".join(f"{item:g}" for item in DEFAULT_WIN_SEC_CANDIDATES))
         self.seed_edit = QLineEdit("20260410")
         self.compute_backend_combo = QComboBox()
-        self.compute_backend_combo.addItems(["auto", "cpu", "cuda"])
+        self.compute_backend_combo.addItems(["cuda", "auto", "cpu"])
         self.compute_backend_combo.setCurrentText(str(TRAIN_EVAL_DEFAULT_COMPUTE_BACKEND))
         self.gpu_device_edit = QLineEdit(str(DEFAULT_GPU_DEVICE_ID))
         self.gpu_precision_combo = QComboBox()
@@ -443,59 +484,68 @@ class TrainingEvaluationWindow(QMainWindow):
         self.gpu_cache_combo = QComboBox()
         self.gpu_cache_combo.addItems(["windows", "full"])
         self.gpu_cache_combo.setCurrentText(str(DEFAULT_GPU_CACHE_MODE))
+        self.server_host_edit = QLineEdit(DEFAULT_SERVER_HOST)
+        self.server_port_edit = QLineEdit(str(DEFAULT_SERVER_PORT))
+        self.server_username_edit = QLineEdit(DEFAULT_SERVER_USERNAME)
+        self.server_password_edit = QLineEdit("")
+        self.server_password_edit.setEchoMode(QLineEdit.Password)
 
-        form.addRow("数据集根目录", self.dataset_root_edit)
-        form.addRow("Session1 清单（手动回退）", self.session1_edit)
-        form.addRow("Session2 清单（可选）", self.session2_edit)
-        form.addRow("输出 Profile", self.output_profile_edit)
-        form.addRow("报告 JSON", self.report_edit)
-        form.addRow("报告根目录", self.report_root_edit)
-        form.addRow("按运行整理报告目录（1/0）", self.organize_report_edit)
-        form.addRow("最小样本比例", self.quality_min_ratio_edit)
-        form.addRow("最大重采次数", self.quality_max_retry_spin)
-        form.addRow("严格协议一致（1/0）", self.strict_protocol_edit)
-        form.addRow("严格被试一致（1/0）", self.strict_subject_edit)
-        form.addRow("模型列表", self.models_edit)
-        form.addRow("通道模式", self.channel_modes_edit)
-        form.addRow("多种子次数", self.multi_seed_spin)
-        form.addRow("门控策略", self.gate_policy_edit)
-        form.addRow("通道权重模式", self.weight_mode_edit)
-        form.addRow("空间滤波模式", self.spatial_mode_edit)
-        form.addRow("空间秩候选", self.spatial_ranks_edit)
-        form.addRow("联合迭代轮数", self.joint_iters_edit)
-        form.addRow("空间源模型", self.spatial_source_edit)
-        form.addRow("评测范围", self.metric_scope_edit)
-        form.addRow("论文口径决策时间", self.decision_time_mode_edit)
-        form.addRow("异步口径决策时间", self.async_decision_time_mode_edit)
-        form.addRow("数据策略", self.data_policy_edit)
-        form.addRow("导出图表（1/0）", self.export_figures_edit)
-        form.addRow("排序策略", self.ranking_policy_edit)
-        form.addRow("动态停止（1/0）", self.dynamic_stop_edit)
-        form.addRow("动态累计 alpha", self.dynamic_alpha_edit)
-        form.addRow("窗长候选", self.win_candidates_edit)
-        form.addRow("随机种子", self.seed_edit)
-        form.addRow("计算后端", self.compute_backend_combo)
-        form.addRow("GPU 设备", self.gpu_device_edit)
-        form.addRow("GPU 精度", self.gpu_precision_combo)
-        form.addRow("GPU 预热(1/0)", self.gpu_warmup_edit)
-        form.addRow("GPU 缓存", self.gpu_cache_combo)
-        form.addRow("子带权重模式", self.subband_weight_mode_edit)
-        form.addRow("权重交叉验证折数", self.weight_cv_folds_edit)
+        form.addRow("鏁版嵁闆嗘牴鐩綍", self.dataset_root_edit)
+        form.addRow("Session1 Manifest (fallback)", self.session1_edit)
+        form.addRow("Session2 娓呭崟锛堝彲閫夛級", self.session2_edit)
+        form.addRow("杈撳嚭 Profile", self.output_profile_edit)
+        form.addRow("鎶ュ憡 JSON", self.report_edit)
+        form.addRow("Report Root Dir", self.report_root_edit)
+        form.addRow("Organize Report Dir (1/0)", self.organize_report_edit)
+        form.addRow("Quality Min Sample Ratio", self.quality_min_ratio_edit)
+        form.addRow("Quality Max Retry Count", self.quality_max_retry_spin)
+        form.addRow("Strict Protocol Consistency (1/0)", self.strict_protocol_edit)
+        form.addRow("Strict Subject Consistency (1/0)", self.strict_subject_edit)
+        form.addRow("妯″瀷鍒楄〃", self.models_edit)
+        form.addRow("閫氶亾妯″紡", self.channel_modes_edit)
+        form.addRow("Multi-Seed Count", self.multi_seed_spin)
+        form.addRow("闂ㄦ帶绛栫暐", self.gate_policy_edit)
+        form.addRow("閫氶亾鏉冮噸妯″紡", self.weight_mode_edit)
+        form.addRow("绌洪棿婊ゆ尝妯″紡", self.spatial_mode_edit)
+        form.addRow("Spatial Rank Candidates", self.spatial_ranks_edit)
+        form.addRow("鑱斿悎杩唬杞暟", self.joint_iters_edit)
+        form.addRow("Spatial Source Model", self.spatial_source_edit)
+        form.addRow("璇勬祴鑼冨洿", self.metric_scope_edit)
+        form.addRow("璁烘枃鍙ｅ緞鍐崇瓥鏃堕棿", self.decision_time_mode_edit)
+        form.addRow("寮傛鍙ｅ緞鍐崇瓥鏃堕棿", self.async_decision_time_mode_edit)
+        form.addRow("鏁版嵁绛栫暐", self.data_policy_edit)
+        form.addRow("Export Figures (1/0)", self.export_figures_edit)
+        form.addRow("鎺掑簭绛栫暐", self.ranking_policy_edit)
+        form.addRow("Dynamic Stop (1/0)", self.dynamic_stop_edit)
+        form.addRow("鍔ㄦ€佺疮璁?alpha", self.dynamic_alpha_edit)
+        form.addRow("Win Candidates", self.win_candidates_edit)
+        form.addRow("闅忔満绉嶅瓙", self.seed_edit)
+        form.addRow("璁＄畻鍚庣", self.compute_backend_combo)
+        form.addRow("GPU 璁惧", self.gpu_device_edit)
+        form.addRow("GPU 绮惧害", self.gpu_precision_combo)
+        form.addRow("GPU 棰勭儹(1/0)", self.gpu_warmup_edit)
+        form.addRow("GPU 缂撳瓨", self.gpu_cache_combo)
+        form.addRow("Server Host", self.server_host_edit)
+        form.addRow("Server Port", self.server_port_edit)
+        form.addRow("Server Username", self.server_username_edit)
+        form.addRow("Server Password", self.server_password_edit)
+        form.addRow("瀛愬甫鏉冮噸妯″紡", self.subband_weight_mode_edit)
+        form.addRow("鏉冮噸浜ゅ弶楠岃瘉鎶樻暟", self.weight_cv_folds_edit)
         self._layout.addLayout(form)
 
         btn_row = QHBoxLayout()
-        self.btn_pick_dataset_root = QPushButton("选择数据集根目录")
-        self.btn_pick_s1 = QPushButton("选择 Session1")
-        self.btn_pick_s2 = QPushButton("选择 Session2")
-        self.btn_pick_profile = QPushButton("选择输出 Profile")
-        self.btn_pick_report = QPushButton("选择报告 JSON")
-        self.btn_pick_report_root = QPushButton("选择报告根目录")
-        self.btn_scan_datasets = QPushButton("扫描会话")
-        self.btn_select_all_datasets = QPushButton("全选")
-        self.btn_clear_datasets = QPushButton("清空选择")
-        self.btn_run = QPushButton("开始训练评测")
-        self.btn_open_report_dir = QPushButton("打开报告目录")
-        self.btn_open_figures_dir = QPushButton("打开图表目录")
+        self.btn_pick_dataset_root = QPushButton("閫夋嫨鏁版嵁闆嗘牴鐩綍")
+        self.btn_pick_s1 = QPushButton("閫夋嫨 Session1")
+        self.btn_pick_s2 = QPushButton("閫夋嫨 Session2")
+        self.btn_pick_profile = QPushButton("閫夋嫨杈撳嚭 Profile")
+        self.btn_pick_report = QPushButton("閫夋嫨鎶ュ憡 JSON")
+        self.btn_pick_report_root = QPushButton("Pick Report Root")
+        self.btn_scan_datasets = QPushButton("鎵弿浼氳瘽")
+        self.btn_select_all_datasets = QPushButton("Select All")
+        self.btn_clear_datasets = QPushButton("娓呯┖閫夋嫨")
+        self.btn_run = QPushButton("Start Training/Evaluation")
+        self.btn_open_report_dir = QPushButton("鎵撳紑鎶ュ憡鐩綍")
+        self.btn_open_figures_dir = QPushButton("鎵撳紑鍥捐〃鐩綍")
         self.btn_open_report_dir.setEnabled(False)
         self.btn_open_figures_dir.setEnabled(False)
         for btn in (
@@ -515,7 +565,7 @@ class TrainingEvaluationWindow(QMainWindow):
             btn_row.addWidget(btn)
         self._layout.addLayout(btn_row)
 
-        self.dataset_list_title = QLabel("可选采集会话")
+        self.dataset_list_title = QLabel("Available sessions")
         self._layout.addWidget(self.dataset_list_title)
         self.dataset_list = QListWidget()
         self.dataset_list.setAlternatingRowColors(True)
@@ -523,15 +573,15 @@ class TrainingEvaluationWindow(QMainWindow):
         self.dataset_list.setMinimumHeight(210)
         self._layout.addWidget(self.dataset_list)
 
-        self.status_label = QLabel("空闲")
+        self.status_label = QLabel("绌洪棽")
         self.status_label.setStyleSheet("font-size:16px; font-weight:600;")
         self._layout.addWidget(self.status_label)
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
         self._layout.addWidget(self.progress_bar)
-        self.progress_detail_label = QLabel("当前阶段：未开始")
-        self.eta_label = QLabel("预计剩余：--")
+        self.progress_detail_label = QLabel("Current stage: not started")
+        self.eta_label = QLabel("棰勮鍓╀綑锛?-")
         self._layout.addWidget(self.progress_detail_label)
         self._layout.addWidget(self.eta_label)
 
@@ -556,6 +606,9 @@ class TrainingEvaluationWindow(QMainWindow):
         self.btn_model_compare_run.clicked.connect(self._model_compare_run)
         self.simple_mode_check.toggled.connect(self._on_simple_mode_toggled)
         self.btn_toggle_advanced.clicked.connect(self._toggle_advanced)
+        self._remote_status_timer = QTimer(self)
+        self._remote_status_timer.setInterval(int(DEFAULT_REMOTE_POLL_INTERVAL_MS))
+        self._remote_status_timer.timeout.connect(self._poll_remote_status)
 
         self._advanced_widgets = [
             self.session1_edit,
@@ -626,19 +679,19 @@ class TrainingEvaluationWindow(QMainWindow):
                 widget.setVisible(bool(visible))
                 continue
             self._set_form_row_visible(widget, bool(visible))
-        self.btn_toggle_advanced.setText("隐藏高级设置" if visible else "显示高级设置")
+        self.btn_toggle_advanced.setText("闅愯棌楂樼骇璁剧疆" if visible else "鏄剧ず楂樼骇璁剧疆")
 
     def _legacy_on_simple_mode_toggled_unused_1(self, enabled: bool) -> None:
         if bool(enabled):
             self.btn_quick_run.setVisible(True)
             self.btn_toggle_advanced.setVisible(True)
             self._set_advanced_visible(False)
-            self.status_label.setText("简易模式")
+            self.status_label.setText("Simple Mode")
         else:
             self.btn_quick_run.setVisible(False)
             self.btn_toggle_advanced.setVisible(False)
             self._set_advanced_visible(True)
-            self.status_label.setText("高级模式")
+            self.status_label.setText("楂樼骇妯″紡")
 
     def _toggle_advanced(self) -> None:
         if not self.simple_mode_check.isChecked():
@@ -726,12 +779,12 @@ class TrainingEvaluationWindow(QMainWindow):
             self.btn_quick_run.setVisible(True)
             self.btn_toggle_advanced.setVisible(True)
             self._set_advanced_visible(False)
-            self.status_label.setText(f"简易模式：默认运行 {self._simple_mode_run_count(quick=False)} 组")
+            self.status_label.setText(f"Simple Mode: default run {self._simple_mode_run_count(quick=False)} groups")
         else:
             self.btn_quick_run.setVisible(False)
             self.btn_toggle_advanced.setVisible(False)
             self._set_advanced_visible(True)
-            self.status_label.setText("高级模式")
+            self.status_label.setText("楂樼骇妯″紡")
 
     def _valid_scan_rows(self) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
@@ -764,7 +817,7 @@ class TrainingEvaluationWindow(QMainWindow):
             self._scan_dataset_manifests()
         valid_rows = self._valid_scan_rows()
         if not valid_rows:
-            raise ValueError("数据目录中没有可用会话，请先采集并生成 session_manifest.json")
+            raise ValueError("鏁版嵁鐩綍涓病鏈夊彲鐢ㄤ細璇濓紝璇峰厛閲囬泦骞剁敓鎴?session_manifest.json")
 
         session1_row = valid_rows[0]
         session1_manifest = Path(str(session1_row["manifest_path"])).expanduser().resolve()
@@ -791,18 +844,18 @@ class TrainingEvaluationWindow(QMainWindow):
         try:
             session1_manifest, session2_manifest, selected = self._auto_choose_simple_sessions()
         except Exception as exc:
-            self._log(f"自动评测准备失败：{exc}")
+            self._log(f"Auto selection preparation failed: {exc}")
             return
         self.session1_edit.setText(str(session1_manifest))
         self.session2_edit.setText("" if session2_manifest is None else str(session2_manifest))
         self._apply_dataset_selection(selected)
         self._log(
-            f"简易模式自动选择：session1={session1_manifest.name}，"
-            f"session2={'' if session2_manifest is None else session2_manifest.name}，"
-            f"参与会话数={len(selected)}"
+            f"Simple auto selection: session1={session1_manifest.name}, "
+            f"session2={(session2_manifest.name if session2_manifest is not None else 'none')}, "
+            f"鍙備笌浼氳瘽鏁?{len(selected)}"
         )
         self._log(
-            f"快速评测：{self._simple_mode_run_count(quick=True)} 组 | "
+            f"蹇€熻瘎娴嬶細{self._simple_mode_run_count(quick=True)} 缁?| "
             f"models={','.join(QUICK_MODE_MODELS)} | "
             f"channel_modes={','.join(SIMPLE_MODE_CHANNEL_MODES)} | seeds={SIMPLE_MODE_MULTI_SEED_COUNT}"
         )
@@ -815,13 +868,13 @@ class TrainingEvaluationWindow(QMainWindow):
             self.btn_toggle_advanced.setVisible(True)
             self._set_advanced_visible(False)
             self.status_label.setText(
-                f"简易模式：标准评测 {self._simple_mode_run_count(quick=False)} 组，默认使用 GPU"
+                f"绠€鏄撴ā寮忥細鏍囧噯璇勬祴 {self._simple_mode_run_count(quick=False)} 缁勶紝榛樿浣跨敤 GPU"
             )
         else:
             self.btn_quick_run.setVisible(False)
             self.btn_toggle_advanced.setVisible(False)
             self._set_advanced_visible(True)
-            self.status_label.setText("高级模式")
+            self.status_label.setText("楂樼骇妯″紡")
 
     def _legacy_quick_auto_run_unused_2(self) -> None:
         if self.worker_thread is not None:
@@ -831,18 +884,18 @@ class TrainingEvaluationWindow(QMainWindow):
         try:
             session1_manifest, session2_manifest, selected = self._auto_choose_simple_sessions()
         except Exception as exc:
-            self._log(f"自动评测准备失败：{exc}")
+            self._log(f"Auto selection preparation failed: {exc}")
             return
         self.session1_edit.setText(str(session1_manifest))
         self.session2_edit.setText("" if session2_manifest is None else str(session2_manifest))
         self._apply_dataset_selection(selected)
         self._log(
-            f"快速模式自动选择：session1={session1_manifest.name}，"
-            f"session2={'' if session2_manifest is None else session2_manifest.name}，"
-            f"参与会话数={len(selected)}"
+            f"Quick mode auto selection: session1={session1_manifest.name}, "
+            f"session2={(session2_manifest.name if session2_manifest is not None else 'none')}, "
+            f"鍙備笌浼氳瘽鏁?{len(selected)}"
         )
         self._log(
-            f"快速评测：{self._simple_mode_run_count(quick=True)} 组 | "
+            f"蹇€熻瘎娴嬶細{self._simple_mode_run_count(quick=True)} 缁?| "
             f"backend={TRAIN_EVAL_DEFAULT_COMPUTE_BACKEND} | "
             f"models={','.join(QUICK_MODE_MODELS)} | "
             f"channel_modes={','.join(QUICK_MODE_CHANNEL_MODES)} | seeds={QUICK_MODE_MULTI_SEED_COUNT}"
@@ -877,21 +930,21 @@ class TrainingEvaluationWindow(QMainWindow):
             percent = 0
         self.progress_bar.setValue(percent)
         stage_label = {
-            "prepare": "准备",
-            "stage_a": "阶段A：快速筛选",
-            "stage_b": "阶段B：完整评测",
-            "complete": "完成",
-        }.get(stage, stage or "未知")
-        detail = f"当前阶段：{stage_label}"
+            "prepare": "鍑嗗",
+            "stage_a": "Stage A: quick screening",
+            "stage_b": "Stage B: full evaluation",
+            "complete": "瀹屾垚",
+        }.get(stage, stage or "鏈煡")
+        detail = f"Current stage: {stage_label}"
         if model_name:
-            detail += f" | 当前模型：{model_name}"
+            detail += f" | model: {model_name}"
         if run_total > 0:
-            detail += f" | 运行：{run_index}/{run_total}"
+            detail += f" | run: {run_index}/{run_total}"
         if config_total > 0:
-            detail += f" | 配置：{config_index}/{config_total}"
+            detail += f" | config: {config_index}/{config_total}"
         self.progress_detail_label.setText(detail)
         eta_text = "--" if eta_s is None else f"{float(eta_s):.1f}s"
-        self.eta_label.setText(f"已耗时：{elapsed_s:.1f}s | 预计剩余：{eta_text}")
+        self.eta_label.setText(f"elapsed: {elapsed_s:.1f}s | eta: {eta_text}")
         self.status_label.setText(detail)
 
     def _pick_json(self, target: QLineEdit, title: str) -> None:
@@ -907,19 +960,19 @@ class TrainingEvaluationWindow(QMainWindow):
             target.setText(path)
 
     def _pick_dataset_root(self) -> None:
-        self._pick_dir(self.dataset_root_edit, "选择数据集根目录")
+        self._pick_dir(self.dataset_root_edit, "閫夋嫨鏁版嵁闆嗘牴鐩綍")
         self._scan_dataset_manifests()
 
     def _pick_session1(self) -> None:
-        self._pick_json(self.session1_edit, "选择 Session1 Manifest")
+        self._pick_json(self.session1_edit, "閫夋嫨 Session1 Manifest")
 
     def _pick_session2(self) -> None:
-        self._pick_json(self.session2_edit, "选择 Session2 Manifest")
+        self._pick_json(self.session2_edit, "閫夋嫨 Session2 Manifest")
 
     def _pick_profile(self) -> None:
         path, _ = QFileDialog.getSaveFileName(
             self,
-            "选择输出 Profile 路径",
+            "閫夋嫨杈撳嚭 Profile 璺緞",
             self.output_profile_edit.text().strip(),
             "JSON (*.json)",
         )
@@ -929,7 +982,7 @@ class TrainingEvaluationWindow(QMainWindow):
     def _pick_report(self) -> None:
         path, _ = QFileDialog.getSaveFileName(
             self,
-            "选择报告 JSON 路径",
+            "閫夋嫨鎶ュ憡 JSON 璺緞",
             self.report_edit.text().strip(),
             "JSON (*.json)",
         )
@@ -937,7 +990,7 @@ class TrainingEvaluationWindow(QMainWindow):
             self.report_edit.setText(path)
 
     def _pick_report_root(self) -> None:
-        self._pick_dir(self.report_root_edit, "选择报告根目录")
+        self._pick_dir(self.report_root_edit, "Pick report root")
 
     def _scan_dataset_manifests(self) -> None:
         root = Path(self.dataset_root_edit.text().strip()).expanduser().resolve()
@@ -952,15 +1005,15 @@ class TrainingEvaluationWindow(QMainWindow):
             shortfall = float(row.get("shortfall_ratio_mean", 0.0) or 0.0)
             preset = str(row.get("preset_name", ""))
             text = (
-                f"{created} | 被试={subj} | 会话={sid} | 预设={preset} | "
-                f"trial数={trials} | 样本短缺={shortfall:.3f}"
+                f"{created} | 琚瘯={subj} | 浼氳瘽={sid} | 棰勮={preset} | "
+                f"trial鏁?{trials} | 鏍锋湰鐭己={shortfall:.3f}"
             )
             item = QListWidgetItem(text)
             item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
             item.setCheckState(Qt.Unchecked)
             item.setData(Qt.UserRole, str(row.get("manifest_path", "")))
             self.dataset_list.addItem(item)
-        self._log(f"会话扫描完成：root={root}，会话数={len(rows)}")
+        self._log(f"浼氳瘽鎵弿瀹屾垚锛歳oot={root}锛屼細璇濇暟={len(rows)}")
 
     def _selected_dataset_manifest_paths(self) -> tuple[Path, ...]:
         rows: list[Path] = []
@@ -996,11 +1049,11 @@ class TrainingEvaluationWindow(QMainWindow):
 
     def _open_path(self, path: Optional[Path]) -> None:
         if path is None:
-            self._log("路径暂不可用。")
+            self._log("Path is not available yet.")
             return
         target = Path(path).expanduser().resolve()
         if not target.exists():
-            self._log(f"路径不存在：{target}")
+            self._log(f"璺緞涓嶅瓨鍦細{target}")
             return
         if os.name == "nt":
             os.startfile(str(target))  # type: ignore[attr-defined]
@@ -1030,14 +1083,14 @@ class TrainingEvaluationWindow(QMainWindow):
             else:
                 raw = self.session1_edit.text().strip()
                 if not raw:
-                    raise ValueError("请至少选择一个采集会话，或手动指定 Session1 Manifest")
+                    raise ValueError("璇疯嚦灏戦€夋嫨涓€涓噰闆嗕細璇濓紝鎴栨墜鍔ㄦ寚瀹?Session1 Manifest")
                 session1_manifest = Path(raw).expanduser().resolve()
             if not session1_manifest.exists():
-                raise FileNotFoundError(f"未找到 Session1 Manifest：{session1_manifest}")
+                raise FileNotFoundError(f"Session1 manifest not found: {session1_manifest}")
             raw_s2 = self.session2_edit.text().strip()
             session2_manifest = Path(raw_s2).expanduser().resolve() if raw_s2 else None
             if session2_manifest is not None and not session2_manifest.exists():
-                raise FileNotFoundError(f"未找到 Session2 Manifest：{session2_manifest}")
+                raise FileNotFoundError(f"Session2 manifest not found: {session2_manifest}")
         selection_snapshot = {
             "dataset_root": str(Path(self.dataset_root_edit.text().strip()).expanduser().resolve()),
             "selected_manifest_count": int(len(selected)),
@@ -1113,16 +1166,26 @@ class TrainingEvaluationWindow(QMainWindow):
             self.btn_open_report_dir.setEnabled(False)
             self.btn_open_figures_dir.setEnabled(False)
             self.progress_bar.setValue(0)
-            self.progress_detail_label.setText("当前阶段：准备中")
-            self.eta_label.setText("预计剩余：--")
+            self.progress_detail_label.setText("褰撳墠闃舵锛氬噯澶囦腑")
+            self.eta_label.setText("棰勮鍓╀綑锛?-")
 
     def _start_run(self) -> None:
         if self.worker_thread is not None:
             return
+        use_remote = bool(self.remote_mode_check.isChecked())
+        if use_remote:
+            self._start_remote_run()
+            return
+        if not bool(self.allow_local_mode_check.isChecked()):
+            self._log("本地训练已禁用。请开启 'Enable local fallback' 后再使用本地模式。")
+            return
+        self._start_local_run()
+
+    def _start_local_run(self) -> None:
         try:
             cfg = self._read_config()
         except Exception as exc:
-            self._log(f"配置错误：{exc}")
+            self._log(f"Configuration error: {exc}")
             return
         worker = TrainEvalWorker(cfg)
         thread = QThread(self)
@@ -1139,8 +1202,204 @@ class TrainingEvaluationWindow(QMainWindow):
         self.worker = worker
         self.worker_thread = thread
         self._set_running(True)
-        self.status_label.setText("训练评测运行中...")
+        self.status_label.setText("本地训练评测运行中")
         thread.start()
+
+    def _server_config(self) -> ServerConfig:
+        host = str(self.server_host_edit.text().strip() or DEFAULT_SERVER_HOST)
+        username = str(self.server_username_edit.text().strip() or DEFAULT_SERVER_USERNAME)
+        password = str(self.server_password_edit.text())
+        port = int(self.server_port_edit.text().strip() or str(DEFAULT_SERVER_PORT))
+        return ServerConfig(host=host, port=port, username=username, password=password)
+
+    def _remote_gpu_params(self, cfg: TrainEvalUIConfig) -> dict[str, Any]:
+        return {
+            "compute_backend": str(cfg.compute_backend or DEFAULT_REMOTE_COMPUTE_BACKEND),
+            "gpu_device": int(cfg.gpu_device),
+            "gpu_precision": str(cfg.gpu_precision or DEFAULT_REMOTE_GPU_PRECISION),
+            "gpu_warmup": bool(cfg.gpu_warmup),
+            "gpu_cache_policy": str(cfg.gpu_cache_policy or DEFAULT_REMOTE_GPU_CACHE_POLICY),
+            "win_candidates": ",".join(f"{float(item):g}" for item in cfg.win_candidates)
+            if cfg.win_candidates
+            else str(DEFAULT_REMOTE_WIN_CANDIDATES),
+            "multi_seed_count": max(1, int(cfg.multi_seed_count or DEFAULT_REMOTE_MULTI_SEED_COUNT)),
+        }
+
+    def _start_remote_run(self) -> None:
+        try:
+            cfg = self._read_config()
+        except Exception as exc:
+            self._log(f"配置错误: {exc}")
+            return
+        if cfg.session2_manifest is None:
+            decision = QMessageBox.question(
+                self,
+                "Session2 Recommended",
+                "未提供 Session2。将继续运行，但报告会标记为 no_session2。是否继续？",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if decision != QMessageBox.Yes:
+                self._log("已取消：请补充 Session2 或确认继续。")
+                return
+        server_cfg = self._server_config()
+        if not server_cfg.password:
+            self._log("请输入服务器密码后再提交远端任务。")
+            return
+
+        task_name = str(cfg.task)
+        if task_name not in {"fbcca-weights", "model-compare", "fbcca-weighted-compare"}:
+            self._log(f"远端暂不支持该 task: {task_name}")
+            return
+
+        run_id = now_run_id(task_name.replace("-", "_"))
+        gpu_params = self._remote_gpu_params(cfg)
+        self._set_running(True)
+        self.status_label.setText("远端任务提交中")
+        try:
+            ssh = SSHClient(server_cfg)
+            ssh.connect()
+            try:
+                dataset_session1 = _find_dataset_by_manifest(cfg.session1_manifest)
+                dataset_session2 = (
+                    None if cfg.session2_manifest is None else _find_dataset_by_manifest(cfg.session2_manifest)
+                )
+                remote_s1 = upload_dataset(ssh, dataset_session1)
+                remote_s2 = None
+                if (
+                    dataset_session2 is not None
+                    and dataset_session2.manifest_path.resolve() != dataset_session1.manifest_path.resolve()
+                ):
+                    remote_s2 = upload_dataset(ssh, dataset_session2)
+                preflight = preflight_cuda_or_fail(
+                    ssh,
+                    compute_backend=str(gpu_params["compute_backend"]),
+                    gpu_device=int(gpu_params["gpu_device"]),
+                )
+                command_payload = build_train_command(
+                    task=task_name,
+                    dataset_manifest_remote=str(remote_s1["manifest"]),
+                    dataset_manifest_session2_remote=(
+                        None if remote_s2 is None else str(remote_s2["manifest"])
+                    ),
+                    run_id=run_id,
+                    compute_backend=str(gpu_params["compute_backend"]),
+                    gpu_device=int(gpu_params["gpu_device"]),
+                    gpu_precision=str(gpu_params["gpu_precision"]),
+                    gpu_warmup=bool(gpu_params["gpu_warmup"]),
+                    gpu_cache_policy=str(gpu_params["gpu_cache_policy"]),
+                    win_candidates=str(gpu_params["win_candidates"]),
+                    multi_seed_count=int(gpu_params["multi_seed_count"]),
+                )
+                self._remote_record = start_remote_task(
+                    ssh,
+                    command_payload,
+                    metadata={
+                        "session1": str(cfg.session1_manifest),
+                        "session2": "" if cfg.session2_manifest is None else str(cfg.session2_manifest),
+                        "remote_manifest_paths": {
+                            "session1": str(remote_s1.get("manifest", "")),
+                            "session2": "" if remote_s2 is None else str(remote_s2.get("manifest", "")),
+                        },
+                        "gpu_params": dict(gpu_params),
+                        "gpu_preflight": preflight,
+                        "metrics_source": "no_session2" if cfg.session2_manifest is None else "cross_session",
+                    },
+                )
+            finally:
+                ssh.close()
+        except Exception as exc:
+            self._set_running(False)
+            self.status_label.setText("远端任务提交失败")
+            self._log(f"远端任务提交失败: {exc}")
+            return
+
+        self._log(
+            "远端任务已提交: "
+            f"run_id={self._remote_record.get('run_id','')} task={task_name} "
+            f"session2={'none' if cfg.session2_manifest is None else cfg.session2_manifest.name}"
+        )
+        if self._remote_status_timer is not None:
+            self._remote_status_timer.start()
+        self._poll_remote_status()
+
+    def _poll_remote_status(self) -> None:
+        if not self.remote_mode_check.isChecked():
+            return
+        record = self._remote_record
+        if not isinstance(record, dict):
+            return
+        server_cfg = self._server_config()
+        if not server_cfg.password:
+            return
+        try:
+            ssh = SSHClient(server_cfg)
+            ssh.connect()
+            try:
+                status = read_remote_status(ssh, record)
+            finally:
+                ssh.close()
+        except Exception as exc:
+            self._log(f"远端状态查询失败: {exc}")
+            return
+
+        progress = dict(status.get("progress") or {})
+        stage = str(progress.get("stage", "")).strip()
+        stage_percent = progress.get("progress_percent", progress.get("percent", None))
+        if isinstance(stage_percent, (int, float)):
+            self.progress_bar.setValue(max(0, min(100, int(float(stage_percent)))))
+        detail = f"远端阶段: {stage or 'running'}"
+        model_name = str(progress.get("model_name", "")).strip()
+        if model_name:
+            detail += f" | model={model_name}"
+        self.progress_detail_label.setText(detail)
+        self.status_label.setText(detail)
+        self.eta_label.setText(f"log: {status.get('log_path', '')}")
+        tail_text = str(status.get("tail", "") or "").strip()
+        if tail_text:
+            self.log_text.setPlainText(tail_text)
+        process_text = str(status.get("process", "") or "").strip()
+        artifacts = dict(status.get("artifacts") or {})
+        finished = (not process_text) and bool(artifacts.get("report_json", False))
+        if finished:
+            if self._remote_status_timer is not None:
+                self._remote_status_timer.stop()
+            self._download_remote_results()
+
+    def _download_remote_results(self) -> None:
+        record = self._remote_record
+        if not isinstance(record, dict):
+            return
+        server_cfg = self._server_config()
+        if not server_cfg.password:
+            self._log("缺少服务器密码，无法下载结果。")
+            self._set_running(False)
+            return
+        try:
+            ssh = SSHClient(server_cfg)
+            ssh.connect()
+            try:
+                result = download_results(ssh, record)
+            finally:
+                ssh.close()
+        except Exception as exc:
+            self._log(f"远端结果下载失败: {exc}")
+            self._set_running(False)
+            return
+        local_run_dir = Path(str(result.get("local_run_dir", ""))).expanduser().resolve()
+        report_path = local_run_dir / "offline_train_eval.json"
+        if report_path.exists():
+            self._last_report_path = report_path
+        self.btn_open_report_dir.setEnabled(local_run_dir.exists())
+        self.btn_open_figures_dir.setEnabled(False)
+        self.progress_bar.setValue(100)
+        self.progress_detail_label.setText("远端任务完成")
+        self.status_label.setText("远端训练评测完成")
+        self._set_running(False)
+        self._log(
+            "远端任务完成并已下载: "
+            f"run_dir={local_run_dir} profile={result.get('local_profile', '')}"
+        )
 
     def _on_done(self, payload: dict[str, Any]) -> None:
         report_path = payload.get("report_path") or self.report_edit.text().strip()
@@ -1151,33 +1410,33 @@ class TrainingEvaluationWindow(QMainWindow):
         self.btn_open_report_dir.setEnabled(True)
         self.btn_open_figures_dir.setEnabled(self._last_figures_dir is not None)
         self.progress_bar.setValue(100)
-        self.progress_detail_label.setText("当前阶段：完成")
-        self.eta_label.setText("预计剩余：0.0s")
+        self.progress_detail_label.setText("Current stage: completed")
+        self.eta_label.setText("棰勮鍓╀綑锛?.0s")
         async_metrics = dict(payload.get("chosen_async_metrics", {}))
         metrics_4 = dict(payload.get("chosen_metrics_4class", {}))
         kept_trials = int(payload.get("quality_kept_trials_session1", 0) or 0)
         total_trials = int(payload.get("quality_total_trials_session1", 0) or 0)
         self._log(
-            "结果摘要："
-            f"保留质量样本={kept_trials}/{total_trials}, "
-            f"数据策略={payload.get('data_policy', '')}, "
-            f"idle误触发/分钟={float(async_metrics.get('idle_fp_per_min', float('inf'))):.4f}, "
-            f"控制召回={float(async_metrics.get('control_recall', 0.0)):.4f}, "
-            f"切换时延={float(async_metrics.get('switch_latency_s', float('inf'))):.4f}s, "
-            f"释放时延={float(async_metrics.get('release_latency_s', float('inf'))):.4f}s, "
-            f"四分类准确率={float(metrics_4.get('acc', 0.0)):.4f}, "
-            f"四分类Macro-F1={float(metrics_4.get('macro_f1', 0.0)):.4f}"
+            "Result summary: "
+            f"淇濈暀璐ㄩ噺鏍锋湰={kept_trials}/{total_trials}, "
+            f"鏁版嵁绛栫暐={payload.get('data_policy', '')}, "
+            f"idle璇Е鍙?鍒嗛挓={float(async_metrics.get('idle_fp_per_min', float('inf'))):.4f}, "
+            f"鎺у埗鍙洖={float(async_metrics.get('control_recall', 0.0)):.4f}, "
+            f"鍒囨崲鏃跺欢={float(async_metrics.get('switch_latency_s', float('inf'))):.4f}s, "
+            f"閲婃斁鏃跺欢={float(async_metrics.get('release_latency_s', float('inf'))):.4f}s, "
+            f"鍥涘垎绫诲噯纭巼={float(metrics_4.get('acc', 0.0)):.4f}, "
+            f"鍥涘垎绫籑acro-F1={float(metrics_4.get('macro_f1', 0.0)):.4f}"
         )
         if bool(payload.get("profile_saved", False)):
-            self.status_label.setText("训练评测完成")
-            self._log(f"完成。已选模型={payload.get('chosen_model')}，报告={self._last_report_path}")
+            self.status_label.setText("璁粌璇勬祴瀹屾垚")
+            self._log(f"瀹屾垚銆傚凡閫夋ā鍨?{payload.get('chosen_model')}锛屾姤鍛?{self._last_report_path}")
         else:
-            self.status_label.setText("已完成（无达标模型）")
-            self._log(f"完成但未保存 profile。推荐模型={payload.get('recommended_model')}")
+            self.status_label.setText("宸插畬鎴愶紙鏃犺揪鏍囨ā鍨嬶級")
+            self._log(f"瀹屾垚浣嗘湭淇濆瓨 profile銆傛帹鑽愭ā鍨?{payload.get('recommended_model')}")
 
     def _on_error(self, text: str) -> None:
-        self.status_label.setText("训练评测失败")
-        self.progress_detail_label.setText("当前阶段：失败")
+        self.status_label.setText("璁粌璇勬祴澶辫触")
+        self.progress_detail_label.setText("Current stage: failed")
         self._log(text)
 
     def _on_finished(self) -> None:
@@ -1271,14 +1530,14 @@ class TrainingEvaluationWindow(QMainWindow):
             self.btn_model_compare_run.setVisible(True)
             self.btn_toggle_advanced.setVisible(True)
             self._set_advanced_visible(False)
-            self.status_label.setText("简易模式：推荐先运行“训练权重并对比全部模型”")
+            self.status_label.setText("Simple Mode: recommend running weighted compare first")
         else:
             self.btn_weighted_compare_run.setVisible(False)
             self.btn_quick_run.setVisible(False)
             self.btn_model_compare_run.setVisible(False)
             self.btn_toggle_advanced.setVisible(False)
             self._set_advanced_visible(True)
-            self.status_label.setText("高级模式：按当前参数运行")
+            self.status_label.setText("楂樼骇妯″紡锛氭寜褰撳墠鍙傛暟杩愯")
 
     def _run_auto_task(self, task: str) -> None:
         if self.worker_thread is not None:
@@ -1289,24 +1548,24 @@ class TrainingEvaluationWindow(QMainWindow):
         try:
             session1_manifest, session2_manifest, selected = self._auto_choose_simple_sessions()
         except Exception as exc:
-            self._log(f"自动选择数据失败：{exc}")
+            self._log(f"Auto dataset selection failed: {exc}")
             return
         self.session1_edit.setText(str(session1_manifest))
         self.session2_edit.setText("" if session2_manifest is None else str(session2_manifest))
         self._apply_dataset_selection(selected)
         if self._task == "fbcca-weighted-compare":
             self._log(
-                "训练FBCCA通道/子带权重并加入全模型对比：cuda/all8/seed=1 | "
+                "璁粌FBCCA閫氶亾/瀛愬甫鏉冮噸骞跺姞鍏ュ叏妯″瀷瀵规瘮锛歝uda/all8/seed=1 | "
                 f"models={','.join(WEIGHTED_COMPARE_MODELS)} | sessions={len(selected)}"
             )
         elif self._task == "fbcca-weights":
             self._log(
-                "FBCCA权重实验：cuda/all8/seed=1/win=1.5 | "
+                "FBCCA鏉冮噸瀹為獙锛歝uda/all8/seed=1/win=1.5 | "
                 f"models={','.join(QUICK_MODE_MODELS)} | sessions={len(selected)}"
             )
         else:
             self._log(
-                "全模型对比报告：cuda/all8/seed=1 | "
+                "鍏ㄦā鍨嬪姣旀姤鍛婏細cuda/all8/seed=1 | "
                 f"models={','.join(MODEL_COMPARE_MODELS)} | sessions={len(selected)}"
             )
         self._start_run()
@@ -1335,12 +1594,15 @@ class TrainingEvaluationWindow(QMainWindow):
             self.btn_open_report_dir.setEnabled(False)
             self.btn_open_figures_dir.setEnabled(False)
             self.progress_bar.setValue(0)
-            self.progress_detail_label.setText("当前阶段：准备中")
-            self.eta_label.setText("预计剩余：-")
+            self.progress_detail_label.setText("褰撳墠闃舵锛氬噯澶囦腑")
+            self.eta_label.setText("棰勮鍓╀綑锛?")
+        else:
+            if self._remote_status_timer is not None:
+                self._remote_status_timer.stop()
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="SSVEP 训练评测 UI / CLI")
+    parser = argparse.ArgumentParser(description="SSVEP 璁粌璇勬祴 UI / CLI")
     parser.add_argument("--dataset-manifest", type=Path, default=None, help="session1 manifest path")
     parser.add_argument("--dataset-manifest-session2", type=Path, default=None, help="session2 manifest path")
     parser.add_argument("--dataset-root", type=Path, default=DEFAULT_DATASET_ROOT)
@@ -1383,6 +1645,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gpu-precision", type=str, default=TRAIN_EVAL_DEFAULT_GPU_PRECISION)
     parser.add_argument("--gpu-warmup", type=int, default=1)
     parser.add_argument("--gpu-cache-policy", type=str, default=DEFAULT_GPU_CACHE_MODE)
+    parser.add_argument("--remote-mode", type=int, default=1)
+    parser.add_argument("--enable-local-fallback", type=int, default=0)
+    parser.add_argument("--server-host", type=str, default=DEFAULT_SERVER_HOST)
+    parser.add_argument("--server-port", type=int, default=DEFAULT_SERVER_PORT)
+    parser.add_argument("--server-username", type=str, default=DEFAULT_SERVER_USERNAME)
+    parser.add_argument("--server-password", type=str, default="")
     parser.add_argument("--quick-mode", type=int, default=0)
     parser.add_argument(
         "--task",
@@ -1512,6 +1780,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     window.gpu_precision_combo.setCurrentText(parse_gpu_precision(str(args.gpu_precision).strip()))
     window.gpu_warmup_edit.setText("1" if bool(int(args.gpu_warmup)) else "0")
     window.gpu_cache_combo.setCurrentText(parse_gpu_cache_policy(str(args.gpu_cache_policy).strip()))
+    window.remote_mode_check.setChecked(bool(int(args.remote_mode)))
+    window.allow_local_mode_check.setChecked(bool(int(args.enable_local_fallback)))
+    window.server_host_edit.setText(str(args.server_host).strip() or DEFAULT_SERVER_HOST)
+    window.server_port_edit.setText(str(int(args.server_port)))
+    window.server_username_edit.setText(str(args.server_username).strip() or DEFAULT_SERVER_USERNAME)
+    window.server_password_edit.setText(str(args.server_password or os.environ.get("SSVEP_SERVER_PASSWORD", "")))
     window._apply_simple_defaults(quick=bool(int(args.quick_mode)) or window._task == "fbcca-weights")
     if include_manifests:
         selected = {str(path) for path in include_manifests}

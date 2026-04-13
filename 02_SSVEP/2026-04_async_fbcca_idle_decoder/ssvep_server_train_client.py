@@ -65,6 +65,11 @@ def now_run_id(prefix: str) -> str:
     return f"{token}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
 
+def _coerce_bool_flag(value: Any) -> bool:
+    raw = str(value).strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
 def read_json(path: Path, default: Any) -> Any:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -237,15 +242,71 @@ class SSHClient:
         return out
 
 
-def remote_env_prefix() -> str:
+def remote_env_prefix(*, gpu_device: int) -> str:
     env = {
-        "CUDA_VISIBLE_DEVICES": "0",
+        "CUDA_VISIBLE_DEVICES": str(int(gpu_device)),
         "CUPY_CACHE_DIR": f"{REMOTE_LOG_DIR}/cupy_cache",
         "TMPDIR": REMOTE_TMP_DIR,
         "MPLCONFIGDIR": f"{REMOTE_LOG_DIR}/matplotlib",
         "PYTHONPYCACHEPREFIX": f"{REMOTE_LOG_DIR}/pycache",
     }
     return " ".join(f"{key}={sh_quote(value)}" for key, value in env.items())
+
+
+def preflight_cuda_or_fail(
+    ssh: SSHClient,
+    *,
+    compute_backend: str,
+    gpu_device: int,
+) -> dict[str, Any]:
+    backend = str(compute_backend or DEFAULT_REMOTE_COMPUTE_BACKEND).strip().lower()
+    if backend != "cuda":
+        return {"checked": False, "reason": f"compute_backend={backend}"}
+    device_id = int(gpu_device)
+    check_cmd = (
+        "command -v nvidia-smi >/dev/null 2>&1 || { echo CUDA_PREFLIGHT:NO_NVIDIA_SMI; exit 71; }; "
+        "nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader || { echo CUDA_PREFLIGHT:QUERY_FAILED; exit 72; }"
+    )
+    code, out, err = ssh.exec(check_cmd, check=False)
+    text = (out or err or "").strip()
+    if code != 0:
+        raise RuntimeError(
+            "cuda backend requested but GPU preflight failed: "
+            f"nvidia-smi unavailable or query failed (code={code}, detail={text})"
+        )
+    rows = [line.strip() for line in str(text).splitlines() if line.strip()]
+    if not rows:
+        raise RuntimeError("cuda backend requested but GPU preflight found no visible GPU devices")
+    visible_indices: list[int] = []
+    parsed_rows: list[dict[str, Any]] = []
+    for row in rows:
+        parts = [part.strip() for part in row.split(",")]
+        if not parts:
+            continue
+        try:
+            index_value = int(parts[0])
+        except Exception:
+            continue
+        visible_indices.append(index_value)
+        parsed_rows.append(
+            {
+                "index": int(index_value),
+                "name": str(parts[1]) if len(parts) > 1 else "",
+                "memory_total": str(parts[2]) if len(parts) > 2 else "",
+            }
+        )
+    if device_id not in visible_indices:
+        raise RuntimeError(
+            "cuda backend requested but target GPU device is not visible: "
+            f"requested={device_id}, visible={visible_indices}"
+        )
+    return {
+        "checked": True,
+        "compute_backend": "cuda",
+        "gpu_device": device_id,
+        "visible_indices": visible_indices,
+        "devices": parsed_rows,
+    }
 
 
 def upload_dataset(ssh: SSHClient, dataset: LocalDataset) -> dict[str, str]:
@@ -286,8 +347,28 @@ def build_train_command(
     multi_seed_count: int = DEFAULT_REMOTE_MULTI_SEED_COUNT,
 ) -> dict[str, str]:
     task = str(task).strip()
-    if task not in {"fbcca-weights", "profile-eval", "model-compare", "focused-compare", "classifier-compare"}:
+    if task not in {
+        "fbcca-weights",
+        "profile-eval",
+        "model-compare",
+        "focused-compare",
+        "classifier-compare",
+        "fbcca-weighted-compare",
+    }:
         raise ValueError(f"unsupported remote task: {task}")
+    backend = str(compute_backend or DEFAULT_REMOTE_COMPUTE_BACKEND).strip().lower()
+    if backend not in {"cuda", "auto", "cpu"}:
+        raise ValueError(f"unsupported compute_backend: {compute_backend}")
+    gpu_precision_value = str(gpu_precision or DEFAULT_REMOTE_GPU_PRECISION).strip().lower()
+    if gpu_precision_value not in {"float32", "float64"}:
+        raise ValueError(f"unsupported gpu_precision: {gpu_precision}")
+    gpu_cache_policy_value = str(gpu_cache_policy or DEFAULT_REMOTE_GPU_CACHE_POLICY).strip().lower()
+    if gpu_cache_policy_value not in {"windows", "full"}:
+        raise ValueError(f"unsupported gpu_cache_policy: {gpu_cache_policy}")
+    gpu_warmup_bool = bool(_coerce_bool_flag(gpu_warmup))
+    gpu_device_value = int(gpu_device)
+    multi_seed_count_value = max(1, int(multi_seed_count))
+    win_candidates_value = str(win_candidates).strip()
     dataset_manifest_remote = assert_remote_ssvep_path(dataset_manifest_remote)
     if dataset_manifest_session2_remote:
         dataset_manifest_session2_remote = assert_remote_ssvep_path(dataset_manifest_session2_remote)
@@ -313,19 +394,19 @@ def build_train_command(
         "--output-profile",
         sh_quote(output_profile),
         "--compute-backend",
-        sh_quote(str(compute_backend).strip()),
+        sh_quote(backend),
         "--gpu-device",
-        str(int(gpu_device)),
+        str(gpu_device_value),
         "--gpu-precision",
-        sh_quote(str(gpu_precision).strip()),
+        sh_quote(gpu_precision_value),
         "--gpu-warmup",
-        "1" if bool(gpu_warmup) else "0",
+        "1" if gpu_warmup_bool else "0",
         "--gpu-cache-policy",
-        sh_quote(str(gpu_cache_policy).strip()),
+        sh_quote(gpu_cache_policy_value),
         "--win-candidates",
-        sh_quote(str(win_candidates).strip()),
+        sh_quote(win_candidates_value),
         "--multi-seed-count",
-        str(max(1, int(multi_seed_count))),
+        str(multi_seed_count_value),
         "--quick-mode",
         "1" if task == "fbcca-weights" else "0",
     ]
@@ -354,7 +435,7 @@ def build_train_command(
     shell_command = (
         f"mkdir -p {sh_quote(report_dir)} {sh_quote(profile_dir)} {sh_quote(REMOTE_LOG_DIR)} {sh_quote(REMOTE_TMP_DIR)} && "
         f"cd {sh_quote(REMOTE_CODE_DIR)} && "
-        f"(nohup {remote_env_prefix()} {script} > {sh_quote(log_path)} 2>&1 < /dev/null & echo $!)"
+        f"(nohup {remote_env_prefix(gpu_device=gpu_device_value)} {script} > {sh_quote(log_path)} 2>&1 < /dev/null & echo $!)"
     )
     return {
         "run_id": run_id,
@@ -364,15 +445,50 @@ def build_train_command(
         "report_dir": report_dir,
         "report_json": report_json,
         "output_profile": output_profile,
+        "dataset_manifest_session1": dataset_manifest_remote,
+        "dataset_manifest_session2": "" if not dataset_manifest_session2_remote else dataset_manifest_session2_remote,
+        "compute_backend": backend,
+        "gpu_device": str(gpu_device_value),
+        "gpu_precision": gpu_precision_value,
+        "gpu_warmup": "1" if gpu_warmup_bool else "0",
+        "gpu_cache_policy": gpu_cache_policy_value,
+        "win_candidates": win_candidates_value,
+        "multi_seed_count": str(multi_seed_count_value),
     }
 
 
-def start_remote_task(ssh: SSHClient, command_payload: dict[str, str]) -> dict[str, Any]:
+def start_remote_task(
+    ssh: SSHClient,
+    command_payload: dict[str, Any],
+    *,
+    metadata: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
     _code, out, _err = ssh.exec(command_payload["command"], check=True)
     pid = str(out.strip().splitlines()[-1]).strip()
     record = dict(command_payload)
+    if metadata:
+        record.update(dict(metadata))
     record["pid"] = pid
     record["started_at"] = datetime.now().isoformat(timespec="seconds")
+    record.setdefault(
+        "remote_manifest_paths",
+        {
+            "session1": str(command_payload.get("dataset_manifest_session1", "")),
+            "session2": str(command_payload.get("dataset_manifest_session2", "")),
+        },
+    )
+    record.setdefault(
+        "gpu_params",
+        {
+            "compute_backend": str(command_payload.get("compute_backend", "")),
+            "gpu_device": int(command_payload.get("gpu_device", 0) or 0),
+            "gpu_precision": str(command_payload.get("gpu_precision", "")),
+            "gpu_warmup": bool(_coerce_bool_flag(command_payload.get("gpu_warmup", "0"))),
+            "gpu_cache_policy": str(command_payload.get("gpu_cache_policy", "")),
+            "win_candidates": str(command_payload.get("win_candidates", "")),
+            "multi_seed_count": int(command_payload.get("multi_seed_count", 1) or 1),
+        },
+    )
     save_task_record(record)
     return record
 
@@ -429,11 +545,63 @@ def read_remote_status(ssh: SSHClient, record: dict[str, Any]) -> dict[str, Any]
     }
 
 
+def _derive_metrics_source(record: dict[str, Any], report_payload: dict[str, Any]) -> str:
+    remote_s2 = str(dict(record.get("remote_manifest_paths") or {}).get("session2", "")).strip()
+    if not remote_s2:
+        return "no_session2"
+    cross = report_payload.get("chosen_cross_session_metrics")
+    if isinstance(cross, dict) and cross:
+        return "cross_session"
+    return "session1_holdout"
+
+
+def _stamp_report_metadata(local_run_dir: Path, record: dict[str, Any]) -> None:
+    report_path = local_run_dir / "offline_train_eval.json"
+    if not report_path.exists():
+        return
+    try:
+        payload = json.loads(report_path.read_text(encoding="utf-8"))
+    except Exception:
+        return
+    if not isinstance(payload, dict):
+        return
+    payload["metrics_source"] = _derive_metrics_source(record, payload)
+    payload["server_gpu_params"] = dict(record.get("gpu_params") or {})
+    payload["remote_path_snapshot"] = {
+        "remote_root": REMOTE_ROOT,
+        "remote_code_dir": REMOTE_CODE_DIR,
+        "remote_report_dir": str(record.get("report_dir", "")),
+        "remote_report_json": str(record.get("report_json", "")),
+        "remote_log_path": str(record.get("log_path", "")),
+        "remote_manifest_paths": dict(record.get("remote_manifest_paths") or {}),
+    }
+    report_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    metadata_path = local_run_dir / "server_run_metadata.json"
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "run_id": str(record.get("run_id", "")),
+                "task": str(record.get("task", "")),
+                "started_at": str(record.get("started_at", "")),
+                "metrics_source": str(payload.get("metrics_source", "")),
+                "remote_manifest_paths": dict(record.get("remote_manifest_paths") or {}),
+                "gpu_params": dict(record.get("gpu_params") or {}),
+                "remote_paths": payload.get("remote_path_snapshot", {}),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
 def download_results(ssh: SSHClient, record: dict[str, Any]) -> dict[str, str]:
     run_id = safe_session_id(str(record.get("run_id", "")))
     report_dir = assert_remote_ssvep_path(str(record.get("report_dir", "")))
     local_run_dir = LOCAL_SERVER_RUNS_DIR / run_id
     ssh.download_dir(report_dir, local_run_dir)
+    _stamp_report_metadata(local_run_dir, record)
     profile_candidates = [
         local_run_dir / "profile_best_fbcca_weighted.json",
         local_run_dir / "profile_best_candidate.json",
@@ -541,11 +709,26 @@ def run_cli(args: argparse.Namespace) -> int:
             pretrained_profile_remote = upload_profile(ssh, Path(args.pretrained_profile), run_id=run_id)
         task = {
             "train-weights": "fbcca-weights",
+            "fbcca-weighted-compare": "fbcca-weighted-compare",
             "profile-eval": "profile-eval",
             "model-compare": "model-compare",
             "focused-compare": "focused-compare",
             "classifier-compare": "classifier-compare",
         }[args.action]
+        gpu_params = {
+            "compute_backend": str(args.compute_backend),
+            "gpu_device": int(args.gpu_device),
+            "gpu_precision": str(args.gpu_precision),
+            "gpu_warmup": bool(int(args.gpu_warmup)),
+            "gpu_cache_policy": str(args.gpu_cache_policy),
+            "win_candidates": str(args.win_candidates),
+            "multi_seed_count": int(args.multi_seed_count),
+        }
+        preflight = preflight_cuda_or_fail(
+            ssh,
+            compute_backend=str(args.compute_backend),
+            gpu_device=int(args.gpu_device),
+        )
         payload = build_train_command(
             task=task,
             dataset_manifest_remote=remote_dataset["manifest"],
@@ -563,7 +746,24 @@ def run_cli(args: argparse.Namespace) -> int:
             win_candidates=str(args.win_candidates),
             multi_seed_count=int(args.multi_seed_count),
         )
-        record = start_remote_task(ssh, payload)
+        record = start_remote_task(
+            ssh,
+            payload,
+            metadata={
+                "session1": str(dataset.manifest_path),
+                "session2": "" if dataset_session2 is None else str(dataset_session2.manifest_path),
+                "remote_manifest_paths": {
+                    "session1": str(remote_dataset.get("manifest", "")),
+                    "session2": (
+                        ""
+                        if remote_dataset_session2 is None
+                        else str(remote_dataset_session2.get("manifest", ""))
+                    ),
+                },
+                "gpu_params": gpu_params,
+                "gpu_preflight": preflight,
+            },
+        )
         print(json.dumps(record, ensure_ascii=False, indent=2))
         return 0
     finally:
@@ -579,6 +779,7 @@ def build_parser() -> argparse.ArgumentParser:
             "scan",
             "upload",
             "train-weights",
+            "fbcca-weighted-compare",
             "profile-eval",
             "model-compare",
             "focused-compare",
@@ -806,11 +1007,17 @@ def launch_gui() -> int:
                     remote_dataset_session2 = None
                     if dataset_session2 is not None and dataset_session2.manifest_path.resolve() != dataset.manifest_path.resolve():
                         remote_dataset_session2 = upload_dataset(ssh, dataset_session2)
+                    preflight = preflight_cuda_or_fail(
+                        ssh,
+                        compute_backend=str(gpu_args["compute_backend"]),
+                        gpu_device=int(gpu_args["gpu_device"]),
+                    )
                     if action == "profile-eval":
                         profile_path = Path(self.profile_edit.text().strip()).expanduser()
                         profile_remote = upload_profile(ssh, profile_path, run_id=run_id)
                     task = {
                         "train-weights": "fbcca-weights",
+                        "fbcca-weighted-compare": "fbcca-weighted-compare",
                         "profile-eval": "profile-eval",
                         "model-compare": "model-compare",
                         "focused-compare": "focused-compare",
@@ -833,7 +1040,24 @@ def launch_gui() -> int:
                         win_candidates=str(gpu_args["win_candidates"]),
                         multi_seed_count=int(gpu_args["multi_seed_count"]),
                     )
-                    return start_remote_task(ssh, payload)
+                    return start_remote_task(
+                        ssh,
+                        payload,
+                        metadata={
+                            "session1": str(dataset.manifest_path),
+                            "session2": "" if dataset_session2 is None else str(dataset_session2.manifest_path),
+                            "remote_manifest_paths": {
+                                "session1": str(remote_dataset.get("manifest", "")),
+                                "session2": (
+                                    ""
+                                    if remote_dataset_session2 is None
+                                    else str(remote_dataset_session2.get("manifest", ""))
+                                ),
+                            },
+                            "gpu_params": dict(gpu_args),
+                            "gpu_preflight": preflight,
+                        },
+                    )
 
                 record = self._with_ssh(work)
                 self.records = load_task_records()
