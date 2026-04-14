@@ -4,6 +4,7 @@ import argparse
 from dataclasses import asdict, dataclass
 from datetime import datetime
 import getpass
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -21,6 +22,7 @@ LOCAL_DATASET_ROOT = LOCAL_PROFILE_DIR / "datasets"
 LOCAL_SERVER_RUNS_DIR = LOCAL_PROFILE_DIR / "server_runs"
 LOCAL_SERVER_PROFILES_DIR = LOCAL_PROFILE_DIR / "server_profiles"
 LOCAL_TASK_RECORD_PATH = LOCAL_SERVER_RUNS_DIR / "server_tasks.json"
+LOCAL_CODE_ROOT = THIS_DIR
 
 REMOTE_ALLOWED_PREFIX = "/data1/zkx"
 REMOTE_ROOT = "/data1/zkx/brain/ssvep"
@@ -31,6 +33,7 @@ REMOTE_PROFILE_ROOT = f"{REMOTE_ROOT}/profiles"
 REMOTE_LOG_DIR = f"{REMOTE_ROOT}/logs"
 REMOTE_TMP_DIR = f"{REMOTE_ROOT}/tmp"
 REMOTE_ENV_PYTHON = "/data1/zkx/miniconda3/envs/brain-ssvep/bin/python"
+REMOTE_CODE_SYNC_MANIFEST = f"{REMOTE_CODE_DIR}/.ssvep_code_sync_manifest.json"
 DEFAULT_REMOTE_COMPUTE_BACKEND = "cuda"
 DEFAULT_REMOTE_GPU_DEVICE = 0
 DEFAULT_REMOTE_GPU_PRECISION = "float32"
@@ -38,6 +41,19 @@ DEFAULT_REMOTE_GPU_WARMUP = True
 DEFAULT_REMOTE_GPU_CACHE_POLICY = "windows"
 DEFAULT_REMOTE_WIN_CANDIDATES = "2.5,3.0,3.5,4.0"
 DEFAULT_REMOTE_MULTI_SEED_COUNT = 5
+DEFAULT_SSH_CONNECT_TIMEOUT_SEC = 12
+DEFAULT_SSH_BANNER_TIMEOUT_SEC = 30
+DEFAULT_SSH_AUTH_TIMEOUT_SEC = 30
+DEFAULT_SSH_CONNECT_RETRIES = 3
+CODE_SYNC_EXCLUDED_TOP_LEVEL = {
+    "profiles",
+    "__pycache__",
+    ".git",
+    ".idea",
+    ".vscode",
+}
+CODE_SYNC_EXCLUDED_DIR_PREFIXES = (".tmp", ".pytest", "pytest_temp")
+CODE_SYNC_EXCLUDED_FILE_SUFFIXES = (".pyc", ".pyo", ".npz", ".zip")
 
 
 def assert_remote_ssvep_path(path: str) -> str:
@@ -82,6 +98,90 @@ def write_json_atomic(path: Path, payload: Any) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     tmp.replace(path)
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _should_skip_code_dir(rel_dir: Path) -> bool:
+    if not rel_dir.parts:
+        return False
+    name = rel_dir.name.lower()
+    if len(rel_dir.parts) == 1 and name in CODE_SYNC_EXCLUDED_TOP_LEVEL:
+        return True
+    return any(name.startswith(prefix) for prefix in CODE_SYNC_EXCLUDED_DIR_PREFIXES)
+
+
+def _should_skip_code_file(rel_path: Path) -> bool:
+    if not rel_path.parts:
+        return False
+    if any(part.lower() in CODE_SYNC_EXCLUDED_TOP_LEVEL for part in rel_path.parts[:-1]):
+        return True
+    if any(part.lower().startswith(prefix) for part in rel_path.parts[:-1] for prefix in CODE_SYNC_EXCLUDED_DIR_PREFIXES):
+        return True
+    return rel_path.name.lower().endswith(CODE_SYNC_EXCLUDED_FILE_SUFFIXES)
+
+
+def iter_local_code_files(local_root: Path = LOCAL_CODE_ROOT) -> list[Path]:
+    root = Path(local_root).expanduser().resolve()
+    files: list[Path] = []
+    for current_root, dirnames, filenames in os.walk(root, topdown=True, onerror=lambda _exc: None):
+        current_path = Path(current_root)
+        try:
+            rel_dir = current_path.relative_to(root)
+        except ValueError:
+            continue
+        filtered_dirs: list[str] = []
+        for dirname in dirnames:
+            rel_child = rel_dir / dirname if rel_dir.parts else Path(dirname)
+            if _should_skip_code_dir(rel_child):
+                continue
+            filtered_dirs.append(dirname)
+        dirnames[:] = filtered_dirs
+        for filename in filenames:
+            rel_file = rel_dir / filename if rel_dir.parts else Path(filename)
+            if _should_skip_code_file(rel_file):
+                continue
+            local_path = root / rel_file
+            if local_path.is_file():
+                files.append(local_path)
+    files.sort()
+    return files
+
+
+def build_local_code_manifest(local_root: Path = LOCAL_CODE_ROOT) -> dict[str, Any]:
+    root = Path(local_root).expanduser().resolve()
+    files_meta: dict[str, Any] = {}
+    tree_digest = hashlib.sha256()
+    for local_path in iter_local_code_files(root):
+        rel_path = local_path.relative_to(root).as_posix()
+        file_hash = _sha256_file(local_path)
+        stat_result = local_path.stat()
+        meta = {
+            "sha256": file_hash,
+            "size": int(stat_result.st_size),
+            "mtime_ns": int(stat_result.st_mtime_ns),
+        }
+        files_meta[rel_path] = meta
+        tree_digest.update(rel_path.encode("utf-8"))
+        tree_digest.update(b"\0")
+        tree_digest.update(file_hash.encode("ascii"))
+        tree_digest.update(b"\0")
+    return {
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "local_root": str(root),
+        "tree_hash": tree_digest.hexdigest(),
+        "file_count": len(files_meta),
+        "files": files_meta,
+    }
 
 
 @dataclass(frozen=True)
@@ -146,19 +246,46 @@ class SSHClient:
 
     def connect(self) -> None:
         paramiko = _import_paramiko()
-        client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        client.connect(
-            hostname=self.config.host,
-            port=int(self.config.port),
-            username=self.config.username,
-            password=self.config.password,
-            timeout=12,
-            look_for_keys=False,
-            allow_agent=False,
+        last_exc: Optional[Exception] = None
+        for attempt in range(1, DEFAULT_SSH_CONNECT_RETRIES + 1):
+            client = paramiko.SSHClient()
+            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            try:
+                client.connect(
+                    hostname=self.config.host,
+                    port=int(self.config.port),
+                    username=self.config.username,
+                    password=self.config.password,
+                    timeout=DEFAULT_SSH_CONNECT_TIMEOUT_SEC,
+                    banner_timeout=DEFAULT_SSH_BANNER_TIMEOUT_SEC,
+                    auth_timeout=DEFAULT_SSH_AUTH_TIMEOUT_SEC,
+                    look_for_keys=False,
+                    allow_agent=False,
+                )
+                transport = client.get_transport()
+                if transport is not None:
+                    transport.set_keepalive(30)
+                self._client = client
+                self._sftp = client.open_sftp()
+                return
+            except Exception as exc:
+                last_exc = exc
+                try:
+                    client.close()
+                except Exception:
+                    pass
+                message = str(exc).strip() or exc.__class__.__name__
+                self.log_fn(
+                    f"SSH connect attempt {attempt}/{DEFAULT_SSH_CONNECT_RETRIES} failed: {message}"
+                )
+                if attempt >= DEFAULT_SSH_CONNECT_RETRIES:
+                    break
+                time.sleep(float(attempt))
+        raise RuntimeError(
+            "SSH connection failed after "
+            f"{DEFAULT_SSH_CONNECT_RETRIES} attempts to {self.config.host}:{int(self.config.port)}. "
+            f"Last error: {last_exc}"
         )
-        self._client = client
-        self._sftp = client.open_sftp()
 
     def close(self) -> None:
         if self._sftp is not None:
@@ -207,6 +334,17 @@ class SSHClient:
         local_path.parent.mkdir(parents=True, exist_ok=True)
         self.sftp.get(remote_path, str(local_path))
 
+    def read_text(self, remote_path: str, *, encoding: str = "utf-8") -> str:
+        remote_path = assert_remote_ssvep_path(remote_path)
+        with self.sftp.open(remote_path, "rb") as handle:
+            return handle.read().decode(encoding, errors="replace")
+
+    def write_text(self, remote_path: str, text: str, *, encoding: str = "utf-8") -> None:
+        remote_path = assert_remote_ssvep_path(remote_path)
+        self.mkdir_p(posixpath.dirname(remote_path))
+        with self.sftp.open(remote_path, "wb") as handle:
+            handle.write(text.encode(encoding))
+
     def exists(self, remote_path: str) -> bool:
         remote_path = assert_remote_ssvep_path(remote_path)
         try:
@@ -221,6 +359,11 @@ class SSHClient:
             return stat.S_ISDIR(self.sftp.stat(remote_path).st_mode)
         except IOError:
             return False
+
+    def remove_file(self, remote_path: str) -> None:
+        remote_path = assert_remote_ssvep_path(remote_path)
+        if self.exists(remote_path) and not self.is_dir(remote_path):
+            self.sftp.remove(remote_path)
 
     def download_dir(self, remote_dir: str, local_dir: Path) -> None:
         remote_dir = assert_remote_ssvep_path(remote_dir)
@@ -251,6 +394,68 @@ def remote_env_prefix(*, gpu_device: int) -> str:
         "PYTHONPYCACHEPREFIX": f"{REMOTE_LOG_DIR}/pycache",
     }
     return " ".join(f"{key}={sh_quote(value)}" for key, value in env.items())
+
+
+def _load_remote_code_manifest(ssh: SSHClient) -> dict[str, Any]:
+    if not ssh.exists(REMOTE_CODE_SYNC_MANIFEST):
+        return {}
+    try:
+        payload = json.loads(ssh.read_text(REMOTE_CODE_SYNC_MANIFEST, encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def sync_local_code_tree(
+    ssh: SSHClient,
+    *,
+    local_root: Path = LOCAL_CODE_ROOT,
+    remote_code_dir: str = REMOTE_CODE_DIR,
+) -> dict[str, Any]:
+    root = Path(local_root).expanduser().resolve()
+    manifest = build_local_code_manifest(root)
+    remote_manifest = _load_remote_code_manifest(ssh)
+    remote_files = dict(remote_manifest.get("files") or {})
+    local_files = dict(manifest.get("files") or {})
+    uploaded: list[str] = []
+    removed: list[str] = []
+
+    ssh.mkdir_p(remote_code_dir)
+    for rel_path, meta in local_files.items():
+        remote_meta = remote_files.get(rel_path)
+        if remote_meta == meta:
+            continue
+        ssh.put_file(root / Path(rel_path), posixpath.join(remote_code_dir, rel_path))
+        uploaded.append(rel_path)
+
+    for rel_path in sorted(set(remote_files) - set(local_files)):
+        remote_path = posixpath.join(remote_code_dir, rel_path)
+        if ssh.exists(remote_path) and not ssh.is_dir(remote_path):
+            ssh.remove_file(remote_path)
+            removed.append(rel_path)
+
+    sync_payload = {
+        **manifest,
+        "remote_code_dir": assert_remote_ssvep_path(remote_code_dir),
+        "uploaded_count": len(uploaded),
+        "removed_count": len(removed),
+    }
+    ssh.write_text(
+        REMOTE_CODE_SYNC_MANIFEST,
+        json.dumps(sync_payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return {
+        "local_root": str(root),
+        "remote_code_dir": str(remote_code_dir),
+        "tree_hash": str(manifest.get("tree_hash", "")),
+        "file_count": int(manifest.get("file_count", 0) or 0),
+        "uploaded_count": len(uploaded),
+        "removed_count": len(removed),
+        "uploaded_preview": uploaded[:10],
+        "removed_preview": removed[:10],
+        "manifest_path": REMOTE_CODE_SYNC_MANIFEST,
+    }
 
 
 def preflight_cuda_or_fail(
@@ -584,6 +789,82 @@ def _derive_metrics_source(record: dict[str, Any], report_payload: dict[str, Any
     return "session1_holdout"
 
 
+def _normalize_win_candidates(raw: Any) -> list[float]:
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        values = [item.strip() for item in raw.split(",") if item.strip()]
+    elif isinstance(raw, (list, tuple)):
+        values = list(raw)
+    else:
+        return []
+    normalized: list[float] = []
+    for value in values:
+        try:
+            normalized.append(round(float(value), 6))
+        except Exception:
+            continue
+    return normalized
+
+
+def _build_config_consistency(local_run_dir: Path, record: dict[str, Any]) -> dict[str, Any]:
+    run_config_path = local_run_dir / "run_config.json"
+    expected = dict(record.get("requested_config") or {})
+    if not run_config_path.exists():
+        return {
+            "checked": False,
+            "consistent": False,
+            "reason": "run_config_missing",
+            "requested_config": expected,
+            "actual_config": {},
+            "checks": {},
+        }
+    try:
+        actual = json.loads(run_config_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return {
+            "checked": False,
+            "consistent": False,
+            "reason": f"run_config_unreadable:{exc}",
+            "requested_config": expected,
+            "actual_config": {},
+            "checks": {},
+        }
+    if not isinstance(actual, dict):
+        actual = {}
+    checks: dict[str, bool] = {}
+    if expected:
+        checks["task"] = str(actual.get("task", "")).strip() == str(expected.get("task", "")).strip()
+        checks["multi_seed_count"] = int(actual.get("multi_seed_count", 0) or 0) == int(
+            expected.get("multi_seed_count", 0) or 0
+        )
+        checks["win_candidates"] = _normalize_win_candidates(actual.get("win_candidates")) == _normalize_win_candidates(
+            expected.get("win_candidates")
+        )
+        checks["compute_backend"] = str(actual.get("compute_backend", "")).strip() == str(
+            expected.get("compute_backend", "")
+        ).strip()
+        expected_models = [str(item) for item in expected.get("model_names", [])]
+        actual_models = [str(item) for item in actual.get("model_names", [])]
+        if expected_models:
+            checks["model_names"] = actual_models == expected_models
+    consistent = all(bool(value) for value in checks.values()) if checks else True
+    return {
+        "checked": True,
+        "consistent": bool(consistent),
+        "reason": "" if consistent else "requested_config_mismatch",
+        "requested_config": expected,
+        "actual_config": {
+            "task": str(actual.get("task", "")),
+            "multi_seed_count": int(actual.get("multi_seed_count", 0) or 0),
+            "win_candidates": _normalize_win_candidates(actual.get("win_candidates")),
+            "compute_backend": str(actual.get("compute_backend", "")),
+            "model_names": [str(item) for item in actual.get("model_names", [])],
+        },
+        "checks": checks,
+    }
+
+
 def _stamp_report_metadata(local_run_dir: Path, record: dict[str, Any]) -> None:
     report_path = local_run_dir / "offline_train_eval.json"
     if not report_path.exists():
@@ -594,8 +875,13 @@ def _stamp_report_metadata(local_run_dir: Path, record: dict[str, Any]) -> None:
         return
     if not isinstance(payload, dict):
         return
+    config_consistency = _build_config_consistency(local_run_dir, record)
     payload["metrics_source"] = _derive_metrics_source(record, payload)
     payload["server_gpu_params"] = dict(record.get("gpu_params") or {})
+    payload["code_sync"] = dict(record.get("code_sync") or {})
+    payload["requested_config"] = dict(record.get("requested_config") or {})
+    payload["config_consistency"] = config_consistency
+    payload["invalid_run"] = not bool(config_consistency.get("consistent", True))
     payload["remote_path_snapshot"] = {
         "remote_root": REMOTE_ROOT,
         "remote_code_dir": REMOTE_CODE_DIR,
@@ -615,6 +901,9 @@ def _stamp_report_metadata(local_run_dir: Path, record: dict[str, Any]) -> None:
                 "metrics_source": str(payload.get("metrics_source", "")),
                 "remote_manifest_paths": dict(record.get("remote_manifest_paths") or {}),
                 "gpu_params": dict(record.get("gpu_params") or {}),
+                "code_sync": dict(record.get("code_sync") or {}),
+                "requested_config": dict(record.get("requested_config") or {}),
+                "config_consistency": config_consistency,
                 "remote_paths": payload.get("remote_path_snapshot", {}),
             },
             ensure_ascii=False,
@@ -625,12 +914,13 @@ def _stamp_report_metadata(local_run_dir: Path, record: dict[str, Any]) -> None:
     )
 
 
-def download_results(ssh: SSHClient, record: dict[str, Any]) -> dict[str, str]:
+def download_results(ssh: SSHClient, record: dict[str, Any]) -> dict[str, Any]:
     run_id = safe_session_id(str(record.get("run_id", "")))
     report_dir = assert_remote_ssvep_path(str(record.get("report_dir", "")))
     local_run_dir = LOCAL_SERVER_RUNS_DIR / run_id
     ssh.download_dir(report_dir, local_run_dir)
     _stamp_report_metadata(local_run_dir, record)
+    metadata_payload = read_json(local_run_dir / "server_run_metadata.json", {})
     profile_candidates = [
         local_run_dir / "profile_best_fbcca_weighted.json",
         local_run_dir / "profile_best_candidate.json",
@@ -644,7 +934,12 @@ def download_results(ssh: SSHClient, record: dict[str, Any]) -> dict[str, str]:
             target.write_text(candidate.read_text(encoding="utf-8"), encoding="utf-8")
             downloaded_profile = str(target)
             break
-    return {"local_run_dir": str(local_run_dir), "local_profile": downloaded_profile}
+    return {
+        "local_run_dir": str(local_run_dir),
+        "local_profile": downloaded_profile,
+        "invalid_run": bool(metadata_payload.get("config_consistency", {}).get("consistent", True) is False),
+        "config_consistency": dict(metadata_payload.get("config_consistency") or {}),
+    }
 
 
 def require_password(config: ServerConfig) -> None:
@@ -753,6 +1048,7 @@ def run_cli(args: argparse.Namespace) -> int:
             "win_candidates": str(args.win_candidates),
             "multi_seed_count": int(args.multi_seed_count),
         }
+        code_sync = sync_local_code_tree(ssh)
         preflight = preflight_cuda_or_fail(
             ssh,
             compute_backend=str(args.compute_backend),
@@ -791,6 +1087,13 @@ def run_cli(args: argparse.Namespace) -> int:
                 },
                 "gpu_params": gpu_params,
                 "gpu_preflight": preflight,
+                "code_sync": code_sync,
+                "requested_config": {
+                    "task": task,
+                    "multi_seed_count": int(args.multi_seed_count),
+                    "win_candidates": _normalize_win_candidates(args.win_candidates),
+                    "compute_backend": str(args.compute_backend),
+                },
             },
         )
         print(json.dumps(record, ensure_ascii=False, indent=2))
@@ -1032,6 +1335,7 @@ def launch_gui() -> int:
 
                 def work(ssh: SSHClient) -> dict[str, Any]:
                     nonlocal profile_remote
+                    code_sync = sync_local_code_tree(ssh)
                     remote_dataset = upload_dataset(ssh, dataset)
                     remote_dataset_session2 = None
                     if dataset_session2 is not None and dataset_session2.manifest_path.resolve() != dataset.manifest_path.resolve():
@@ -1085,6 +1389,13 @@ def launch_gui() -> int:
                             },
                             "gpu_params": dict(gpu_args),
                             "gpu_preflight": preflight,
+                            "code_sync": code_sync,
+                            "requested_config": {
+                                "task": task,
+                                "multi_seed_count": int(gpu_args["multi_seed_count"]),
+                                "win_candidates": _normalize_win_candidates(gpu_args["win_candidates"]),
+                                "compute_backend": str(gpu_args["compute_backend"]),
+                            },
                         },
                     )
 

@@ -1360,10 +1360,38 @@ def run_offline_train_eval(
         progress_state["elapsed_s"] = float(elapsed_s)
         run_index = int(progress_state.get("run_index", 0) or 0)
         run_total = int(progress_state.get("run_total", 0) or 0)
+        config_index = int(progress_state.get("config_index", 0) or 0)
+        config_total = int(progress_state.get("config_total", 0) or 0)
         if run_total > 0 and run_index > 0:
             progress_state["eta_s"] = float(max((elapsed_s / run_index) * max(run_total - run_index, 0), 0.0))
         else:
             progress_state["eta_s"] = None
+
+        stage_name = str(progress_state.get("stage", "")).strip().lower()
+        within_run_fraction = 0.0
+        if config_total > 0:
+            within_run_fraction = min(max(float(config_index) / float(config_total), 0.0), 1.0)
+        run_fraction = 0.0
+        if run_total > 0:
+            completed_runs = max(run_index - 1, 0)
+            run_fraction = min(max((float(completed_runs) + within_run_fraction) / float(run_total), 0.0), 1.0)
+
+        if stage_name == "prepare":
+            overall_fraction = 0.03
+        elif stage_name == "stage_a":
+            overall_fraction = 0.05 + 0.40 * run_fraction
+        elif stage_name == "stage_b":
+            overall_fraction = 0.45 + 0.50 * run_fraction
+        elif stage_name == "complete":
+            overall_fraction = 0.99
+        else:
+            overall_fraction = 0.0
+
+        progress_percent = int(round(min(max(overall_fraction, 0.0), 1.0) * 100.0))
+        progress_state["progress_percent"] = progress_percent
+        progress_state["percent"] = progress_percent
+        progress_state["stage_run_fraction"] = float(run_fraction)
+
         now = time.perf_counter()
         if not force and (now - progress_last_emit) < heartbeat_sec:
             return

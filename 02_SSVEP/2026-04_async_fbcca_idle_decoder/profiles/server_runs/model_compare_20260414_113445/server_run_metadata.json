@@ -1,0 +1,123 @@
+{
+  "run_id": "model_compare_20260414_113445",
+  "task": "model-compare",
+  "started_at": "2026-04-14T11:34:45",
+  "metrics_source": "no_session2",
+  "remote_manifest_paths": {
+    "session1": "/data1/zkx/brain/ssvep/data/subject001_collection_20260411_220406_r01/session_manifest.json",
+    "session2": ""
+  },
+  "gpu_params": {
+    "compute_backend": "cuda",
+    "gpu_device": 0,
+    "gpu_precision": "float32",
+    "gpu_warmup": true,
+    "gpu_cache_policy": "full",
+    "win_candidates": "2.5,3,3.5,4",
+    "multi_seed_count": 5
+  },
+  "code_sync": {
+    "local_root": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\02_SSVEP\\2026-04_async_fbcca_idle_decoder",
+    "remote_code_dir": "/data1/zkx/brain/ssvep/code/2026-04_async_fbcca_idle_decoder",
+    "tree_hash": "ca67c067d40f99d7992c242eedf0fd6727e3eaf2e2b951c302cd43c78072c6c3",
+    "file_count": 77,
+    "uploaded_count": 0,
+    "removed_count": 0,
+    "uploaded_preview": [],
+    "removed_preview": [],
+    "manifest_path": "/data1/zkx/brain/ssvep/code/2026-04_async_fbcca_idle_decoder/.ssvep_code_sync_manifest.json"
+  },
+  "requested_config": {
+    "task": "model-compare",
+    "model_names": [
+      "tdca",
+      "trca_r",
+      "fbcca",
+      "cca",
+      "itcca",
+      "ecca",
+      "msetcca",
+      "trca",
+      "sscor",
+      "etrca_r"
+    ],
+    "channel_modes": [
+      "all8"
+    ],
+    "multi_seed_count": 5,
+    "win_candidates": [
+      2.5,
+      3.0,
+      3.5,
+      4.0
+    ],
+    "compute_backend": "cuda",
+    "ranking_policy": "async-first"
+  },
+  "config_consistency": {
+    "checked": true,
+    "consistent": false,
+    "reason": "requested_config_mismatch",
+    "requested_config": {
+      "task": "model-compare",
+      "model_names": [
+        "tdca",
+        "trca_r",
+        "fbcca",
+        "cca",
+        "itcca",
+        "ecca",
+        "msetcca",
+        "trca",
+        "sscor",
+        "etrca_r"
+      ],
+      "channel_modes": [
+        "all8"
+      ],
+      "multi_seed_count": 5,
+      "win_candidates": [
+        2.5,
+        3.0,
+        3.5,
+        4.0
+      ],
+      "compute_backend": "cuda",
+      "ranking_policy": "async-first"
+    },
+    "actual_config": {
+      "task": "model-compare",
+      "multi_seed_count": 5,
+      "win_candidates": [
+        2.5,
+        3.0,
+        3.5,
+        4.0
+      ],
+      "compute_backend": "cuda",
+      "model_names": [
+        "tdca",
+        "trca_r",
+        "fbcca"
+      ]
+    },
+    "checks": {
+      "task": true,
+      "multi_seed_count": true,
+      "win_candidates": true,
+      "compute_backend": true,
+      "model_names": false
+    }
+  },
+  "remote_paths": {
+    "remote_root": "/data1/zkx/brain/ssvep",
+    "remote_code_dir": "/data1/zkx/brain/ssvep/code/2026-04_async_fbcca_idle_decoder",
+    "remote_report_dir": "/data1/zkx/brain/ssvep/reports/20260414/model_compare_20260414_113445",
+    "remote_report_json": "/data1/zkx/brain/ssvep/reports/20260414/model_compare_20260414_113445/offline_train_eval.json",
+    "remote_log_path": "/data1/zkx/brain/ssvep/logs/model_compare_20260414_113445.log",
+    "remote_manifest_paths": {
+      "session1": "/data1/zkx/brain/ssvep/data/subject001_collection_20260411_220406_r01/session_manifest.json",
+      "session2": ""
+    }
+  }
+}

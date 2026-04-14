@@ -100,6 +100,7 @@ from ssvep_server_train_client import (
     preflight_cuda_or_fail,
     read_remote_status,
     start_remote_task,
+    sync_local_code_tree,
     upload_dataset,
 )
 
@@ -1345,9 +1346,18 @@ class TrainingEvaluationWindow(QMainWindow):
         self._set_running(True)
         self.status_label.setText("远端任务提交中")
         try:
-            ssh = SSHClient(server_cfg)
+            ssh = SSHClient(server_cfg, log_fn=self._log)
             ssh.connect()
             try:
+                self._log("正在同步本地 02_SSVEP 代码到服务器...")
+                code_sync = sync_local_code_tree(ssh)
+                self._log(
+                    "代码同步完成: "
+                    f"hash={code_sync.get('tree_hash','')} "
+                    f"files={code_sync.get('file_count', 0)} "
+                    f"uploaded={code_sync.get('uploaded_count', 0)} "
+                    f"removed={code_sync.get('removed_count', 0)}"
+                )
                 dataset_session1 = _find_dataset_by_manifest(cfg.session1_manifest)
                 dataset_session2 = (
                     None if cfg.session2_manifest is None else _find_dataset_by_manifest(cfg.session2_manifest)
@@ -1391,6 +1401,16 @@ class TrainingEvaluationWindow(QMainWindow):
                         },
                         "gpu_params": dict(gpu_params),
                         "gpu_preflight": preflight,
+                        "code_sync": code_sync,
+                        "requested_config": {
+                            "task": str(task_name),
+                            "model_names": [str(name) for name in cfg.model_names],
+                            "channel_modes": [str(name) for name in cfg.channel_modes],
+                            "multi_seed_count": int(cfg.multi_seed_count),
+                            "win_candidates": [float(item) for item in cfg.win_candidates],
+                            "compute_backend": str(gpu_params["compute_backend"]),
+                            "ranking_policy": str(cfg.ranking_policy),
+                        },
                         "metrics_source": "no_session2" if cfg.session2_manifest is None else "cross_session",
                     },
                 )
@@ -1399,8 +1419,15 @@ class TrainingEvaluationWindow(QMainWindow):
         except Exception as exc:
             self._set_running(False)
             self.status_label.setText("远端任务提交失败")
-            self._log(f"远端任务提交失败: {exc}")
-            QMessageBox.critical(self, "Remote Submit Failed", str(exc))
+            message = str(exc)
+            if "SSH protocol banner" in message:
+                message = (
+                    "SSH 握手失败：服务器没有在超时内返回 banner。"
+                    "这通常是网络抖动、SSH 服务繁忙或端口未就绪导致。"
+                    f"\n\n原始错误：{exc}"
+                )
+            self._log(f"远端任务提交失败: {message}")
+            QMessageBox.critical(self, "Remote Submit Failed", message)
             return
 
         self._log(
@@ -1422,7 +1449,7 @@ class TrainingEvaluationWindow(QMainWindow):
         if not server_cfg.password:
             return
         try:
-            ssh = SSHClient(server_cfg)
+            ssh = SSHClient(server_cfg, log_fn=self._log)
             ssh.connect()
             try:
                 status = read_remote_status(ssh, record)
@@ -1465,7 +1492,7 @@ class TrainingEvaluationWindow(QMainWindow):
             self._set_running(False)
             return
         try:
-            ssh = SSHClient(server_cfg)
+            ssh = SSHClient(server_cfg, log_fn=self._log)
             ssh.connect()
             try:
                 result = download_results(ssh, record)
@@ -1489,6 +1516,13 @@ class TrainingEvaluationWindow(QMainWindow):
             "远端任务完成并已下载: "
             f"run_dir={local_run_dir} profile={result.get('local_profile', '')}"
         )
+        if bool(result.get("invalid_run", False)):
+            consistency = dict(result.get("config_consistency") or {})
+            self.status_label.setText("远端完成，但本次运行无效")
+            self._log(
+                "警告：本地提交参数与远端实际 run_config 不一致，本次报告已标记 invalid_run。 "
+                f"checks={consistency.get('checks', {})}"
+            )
 
     def _on_done(self, payload: dict[str, Any]) -> None:
         report_path = payload.get("report_path") or self.report_edit.text().strip()

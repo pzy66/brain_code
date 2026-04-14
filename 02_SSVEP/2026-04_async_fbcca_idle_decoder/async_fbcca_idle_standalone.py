@@ -2661,9 +2661,10 @@ MODEL_ALIASES = {
     "oacca": "oacca",
 }
 
-# Current CUDA-stable set in this codebase. Other decoders are forced to CPU to
-# avoid runtime type-path crashes during full benchmark sweeps.
-CUDA_STABLE_MODELS = {"cca", "fbcca", "legacy_fbcca_202603"}
+# Current CUDA-stable set in this codebase. Keep this list conservative, but
+# allow the mainline server-side comparison models to use the validated CUDA
+# path so focused/final benchmarks do not fall back to CPU by policy alone.
+CUDA_STABLE_MODELS = {"cca", "fbcca", "legacy_fbcca_202603", "tdca", "trca_r"}
 
 
 def resolve_model_compute_backend(model_name: str, requested_backend: str) -> str:
