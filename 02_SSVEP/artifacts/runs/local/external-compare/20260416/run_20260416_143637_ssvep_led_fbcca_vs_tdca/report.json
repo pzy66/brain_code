@@ -1,0 +1,2125 @@
+{
+  "dataset_root": "D:\\brain\\brain_code\\02_SSVEP\\artifacts\\datasets\\external\\dataset_ssvep_led_github",
+  "run_dir": "D:\\brain\\brain_code\\02_SSVEP\\artifacts\\runs\\local\\external-compare\\20260416\\run_20260416_143637_ssvep_led_fbcca_vs_tdca",
+  "subjects": [
+    "Subject2",
+    "Subject3",
+    "Subject4",
+    "Subject5"
+  ],
+  "win_secs": [
+    2.0,
+    3.0
+  ],
+  "latency_sec": 0.14,
+  "comparison_scope": "leave-one-session-out active-trial classification",
+  "model_specs": [
+    {
+      "display_name": "fbcca_fixed_all8",
+      "model_name": "fbcca_fixed_all8",
+      "model_params": {
+        "Nh": 3,
+        "compute_backend": "cpu"
+      }
+    },
+    {
+      "display_name": "tdca_like_legacy",
+      "model_name": "tdca",
+      "model_params": {
+        "Nh": 3,
+        "delay_steps": 3,
+        "n_components": 2,
+        "decoder_variant": "tdca_like_legacy",
+        "compute_backend": "cpu"
+      }
+    }
+  ],
+  "subject_reports": [
+    {
+      "subject_id": "Subject2",
+      "sampling_rate": 256,
+      "session_count": 4,
+      "trial_count_per_session": [
+        40,
+        40,
+        40,
+        40
+      ],
+      "active_trials_per_session": [
+        30,
+        30,
+        30,
+        30
+      ],
+      "fold_results": [
+        {
+          "subject_id": "Subject2",
+          "win_sec": 2.0,
+          "holdout_session_index": 0,
+          "holdout_session_name": "Subject2-[2012.04.07-19.27..02]",
+          "model": "fbcca_fixed_all8",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 14,
+          "accuracy": 0.4666666666666667,
+          "mean_inference_ms": 2.273890001621718,
+          "median_inference_ms": 2.1990499953972176,
+          "class_accuracy": {
+            "13": 0.7,
+            "17": 0.6,
+            "21": 0.1
+          },
+          "confusion": {
+            "13->13": 7,
+            "13->17": 3,
+            "17->13": 3,
+            "17->17": 6,
+            "17->21": 1,
+            "21->13": 4,
+            "21->17": 5,
+            "21->21": 1
+          }
+        },
+        {
+          "subject_id": "Subject2",
+          "win_sec": 2.0,
+          "holdout_session_index": 0,
+          "holdout_session_name": "Subject2-[2012.04.07-19.27..02]",
+          "model": "tdca_like_legacy",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 8,
+          "accuracy": 0.26666666666666666,
+          "mean_inference_ms": 2.4279233339863517,
+          "median_inference_ms": 2.3429499997291714,
+          "class_accuracy": {
+            "13": 0.3,
+            "17": 0.1,
+            "21": 0.4
+          },
+          "confusion": {
+            "13->13": 3,
+            "13->17": 4,
+            "13->21": 3,
+            "17->13": 4,
+            "17->17": 1,
+            "17->21": 5,
+            "21->13": 6,
+            "21->21": 4
+          }
+        },
+        {
+          "subject_id": "Subject2",
+          "win_sec": 2.0,
+          "holdout_session_index": 1,
+          "holdout_session_name": "Subject2-[2012.04.07-19.36.29]",
+          "model": "fbcca_fixed_all8",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 24,
+          "accuracy": 0.8,
+          "mean_inference_ms": 2.27454333313896,
+          "median_inference_ms": 2.194199994846713,
+          "class_accuracy": {
+            "13": 0.9,
+            "17": 0.8,
+            "21": 0.7
+          },
+          "confusion": {
+            "13->13": 9,
+            "13->17": 1,
+            "17->13": 1,
+            "17->17": 8,
+            "17->21": 1,
+            "21->13": 3,
+            "21->21": 7
+          }
+        },
+        {
+          "subject_id": "Subject2",
+          "win_sec": 2.0,
+          "holdout_session_index": 1,
+          "holdout_session_name": "Subject2-[2012.04.07-19.36.29]",
+          "model": "tdca_like_legacy",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 7,
+          "accuracy": 0.23333333333333334,
+          "mean_inference_ms": 2.415553333897454,
+          "median_inference_ms": 2.2706500021740794,
+          "class_accuracy": {
+            "13": 0.4,
+            "17": 0.1,
+            "21": 0.2
+          },
+          "confusion": {
+            "13->13": 4,
+            "13->17": 2,
+            "13->21": 4,
+            "17->13": 7,
+            "17->17": 1,
+            "17->21": 2,
+            "21->13": 6,
+            "21->17": 2,
+            "21->21": 2
+          }
+        },
+        {
+          "subject_id": "Subject2",
+          "win_sec": 2.0,
+          "holdout_session_index": 2,
+          "holdout_session_name": "Subject2-[2012.04.07-19.44.23]",
+          "model": "fbcca_fixed_all8",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 21,
+          "accuracy": 0.7,
+          "mean_inference_ms": 2.2591666662871526,
+          "median_inference_ms": 2.212499995948747,
+          "class_accuracy": {
+            "13": 0.8,
+            "17": 0.8,
+            "21": 0.5
+          },
+          "confusion": {
+            "13->13": 8,
+            "13->17": 2,
+            "17->13": 2,
+            "17->17": 8,
+            "21->13": 4,
+            "21->17": 1,
+            "21->21": 5
+          }
+        },
+        {
+          "subject_id": "Subject2",
+          "win_sec": 2.0,
+          "holdout_session_index": 2,
+          "holdout_session_name": "Subject2-[2012.04.07-19.44.23]",
+          "model": "tdca_like_legacy",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 7,
+          "accuracy": 0.23333333333333334,
+          "mean_inference_ms": 2.423583332953664,
+          "median_inference_ms": 2.2998999993433245,
+          "class_accuracy": {
+            "13": 0.1,
+            "17": 0.4,
+            "21": 0.2
+          },
+          "confusion": {
+            "13->13": 1,
+            "13->17": 4,
+            "13->21": 5,
+            "17->13": 5,
+            "17->17": 4,
+            "17->21": 1,
+            "21->13": 4,
+            "21->17": 4,
+            "21->21": 2
+          }
+        },
+        {
+          "subject_id": "Subject2",
+          "win_sec": 2.0,
+          "holdout_session_index": 3,
+          "holdout_session_name": "Subject2-[2012.04.07-19.57.52]",
+          "model": "fbcca_fixed_all8",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 20,
+          "accuracy": 0.6666666666666666,
+          "mean_inference_ms": 2.317303332286732,
+          "median_inference_ms": 2.2481000050902367,
+          "class_accuracy": {
+            "13": 0.8,
+            "17": 0.7,
+            "21": 0.5
+          },
+          "confusion": {
+            "13->13": 8,
+            "13->17": 2,
+            "17->13": 3,
+            "17->17": 7,
+            "21->13": 4,
+            "21->17": 1,
+            "21->21": 5
+          }
+        },
+        {
+          "subject_id": "Subject2",
+          "win_sec": 2.0,
+          "holdout_session_index": 3,
+          "holdout_session_name": "Subject2-[2012.04.07-19.57.52]",
+          "model": "tdca_like_legacy",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 12,
+          "accuracy": 0.4,
+          "mean_inference_ms": 2.5460700004866035,
+          "median_inference_ms": 2.4662999931024387,
+          "class_accuracy": {
+            "13": 0.5,
+            "17": 0.3,
+            "21": 0.4
+          },
+          "confusion": {
+            "13->13": 5,
+            "13->17": 1,
+            "13->21": 4,
+            "17->13": 3,
+            "17->17": 3,
+            "17->21": 4,
+            "21->13": 2,
+            "21->17": 4,
+            "21->21": 4
+          }
+        }
+      ]
+    },
+    {
+      "subject_id": "Subject2",
+      "sampling_rate": 256,
+      "session_count": 4,
+      "trial_count_per_session": [
+        40,
+        40,
+        40,
+        40
+      ],
+      "active_trials_per_session": [
+        30,
+        30,
+        30,
+        30
+      ],
+      "fold_results": [
+        {
+          "subject_id": "Subject2",
+          "win_sec": 3.0,
+          "holdout_session_index": 0,
+          "holdout_session_name": "Subject2-[2012.04.07-19.27..02]",
+          "model": "fbcca_fixed_all8",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 20,
+          "accuracy": 0.6666666666666666,
+          "mean_inference_ms": 2.9018499985492476,
+          "median_inference_ms": 2.8279499892960303,
+          "class_accuracy": {
+            "13": 0.7,
+            "17": 0.9,
+            "21": 0.4
+          },
+          "confusion": {
+            "13->13": 7,
+            "13->17": 3,
+            "17->13": 1,
+            "17->17": 9,
+            "21->13": 4,
+            "21->17": 2,
+            "21->21": 4
+          }
+        },
+        {
+          "subject_id": "Subject2",
+          "win_sec": 3.0,
+          "holdout_session_index": 0,
+          "holdout_session_name": "Subject2-[2012.04.07-19.27..02]",
+          "model": "tdca_like_legacy",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 10,
+          "accuracy": 0.3333333333333333,
+          "mean_inference_ms": 2.6757533337028385,
+          "median_inference_ms": 2.5543000010657124,
+          "class_accuracy": {
+            "13": 0.4,
+            "17": 0.1,
+            "21": 0.5
+          },
+          "confusion": {
+            "13->13": 4,
+            "13->17": 3,
+            "13->21": 3,
+            "17->13": 7,
+            "17->17": 1,
+            "17->21": 2,
+            "21->13": 4,
+            "21->17": 1,
+            "21->21": 5
+          }
+        },
+        {
+          "subject_id": "Subject2",
+          "win_sec": 3.0,
+          "holdout_session_index": 1,
+          "holdout_session_name": "Subject2-[2012.04.07-19.36.29]",
+          "model": "fbcca_fixed_all8",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 22,
+          "accuracy": 0.7333333333333333,
+          "mean_inference_ms": 2.8377333335811272,
+          "median_inference_ms": 2.7715999967767857,
+          "class_accuracy": {
+            "13": 0.7,
+            "17": 0.8,
+            "21": 0.7
+          },
+          "confusion": {
+            "13->13": 7,
+            "13->17": 3,
+            "17->13": 2,
+            "17->17": 8,
+            "21->13": 3,
+            "21->21": 7
+          }
+        },
+        {
+          "subject_id": "Subject2",
+          "win_sec": 3.0,
+          "holdout_session_index": 1,
+          "holdout_session_name": "Subject2-[2012.04.07-19.36.29]",
+          "model": "tdca_like_legacy",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 13,
+          "accuracy": 0.43333333333333335,
+          "mean_inference_ms": 2.626119999816486,
+          "median_inference_ms": 2.518200002668891,
+          "class_accuracy": {
+            "13": 0.6,
+            "17": 0.3,
+            "21": 0.4
+          },
+          "confusion": {
+            "13->13": 6,
+            "13->17": 3,
+            "13->21": 1,
+            "17->13": 3,
+            "17->17": 3,
+            "17->21": 4,
+            "21->13": 3,
+            "21->17": 3,
+            "21->21": 4
+          }
+        },
+        {
+          "subject_id": "Subject2",
+          "win_sec": 3.0,
+          "holdout_session_index": 2,
+          "holdout_session_name": "Subject2-[2012.04.07-19.44.23]",
+          "model": "fbcca_fixed_all8",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 26,
+          "accuracy": 0.8666666666666667,
+          "mean_inference_ms": 2.8271566668991,
+          "median_inference_ms": 2.7605000068433583,
+          "class_accuracy": {
+            "13": 0.9,
+            "17": 0.9,
+            "21": 0.8
+          },
+          "confusion": {
+            "13->13": 9,
+            "13->17": 1,
+            "17->13": 1,
+            "17->17": 9,
+            "21->13": 2,
+            "21->21": 8
+          }
+        },
+        {
+          "subject_id": "Subject2",
+          "win_sec": 3.0,
+          "holdout_session_index": 2,
+          "holdout_session_name": "Subject2-[2012.04.07-19.44.23]",
+          "model": "tdca_like_legacy",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 9,
+          "accuracy": 0.3,
+          "mean_inference_ms": 2.7333066658078073,
+          "median_inference_ms": 2.5994499956141226,
+          "class_accuracy": {
+            "13": 0.4,
+            "17": 0.3,
+            "21": 0.2
+          },
+          "confusion": {
+            "13->13": 4,
+            "13->17": 2,
+            "13->21": 4,
+            "17->13": 5,
+            "17->17": 3,
+            "17->21": 2,
+            "21->13": 5,
+            "21->17": 3,
+            "21->21": 2
+          }
+        },
+        {
+          "subject_id": "Subject2",
+          "win_sec": 3.0,
+          "holdout_session_index": 3,
+          "holdout_session_name": "Subject2-[2012.04.07-19.57.52]",
+          "model": "fbcca_fixed_all8",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 23,
+          "accuracy": 0.7666666666666667,
+          "mean_inference_ms": 2.8806833322353973,
+          "median_inference_ms": 2.7600499961408786,
+          "class_accuracy": {
+            "13": 0.6,
+            "17": 0.9,
+            "21": 0.8
+          },
+          "confusion": {
+            "13->13": 6,
+            "13->17": 3,
+            "13->21": 1,
+            "17->13": 1,
+            "17->17": 9,
+            "21->13": 2,
+            "21->21": 8
+          }
+        },
+        {
+          "subject_id": "Subject2",
+          "win_sec": 3.0,
+          "holdout_session_index": 3,
+          "holdout_session_name": "Subject2-[2012.04.07-19.57.52]",
+          "model": "tdca_like_legacy",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 13,
+          "accuracy": 0.43333333333333335,
+          "mean_inference_ms": 2.589473332530664,
+          "median_inference_ms": 2.49910000275122,
+          "class_accuracy": {
+            "13": 0.4,
+            "17": 0.5,
+            "21": 0.4
+          },
+          "confusion": {
+            "13->13": 4,
+            "13->17": 2,
+            "13->21": 4,
+            "17->13": 2,
+            "17->17": 5,
+            "17->21": 3,
+            "21->13": 4,
+            "21->17": 2,
+            "21->21": 4
+          }
+        }
+      ]
+    },
+    {
+      "subject_id": "Subject3",
+      "sampling_rate": 256,
+      "session_count": 4,
+      "trial_count_per_session": [
+        40,
+        40,
+        40,
+        40
+      ],
+      "active_trials_per_session": [
+        30,
+        30,
+        30,
+        30
+      ],
+      "fold_results": [
+        {
+          "subject_id": "Subject3",
+          "win_sec": 2.0,
+          "holdout_session_index": 0,
+          "holdout_session_name": "Subject3-[2012.04.07-18.17.50]",
+          "model": "fbcca_fixed_all8",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 22,
+          "accuracy": 0.7333333333333333,
+          "mean_inference_ms": 2.273516666900832,
+          "median_inference_ms": 2.1895500030950643,
+          "class_accuracy": {
+            "13": 0.9,
+            "17": 0.7,
+            "21": 0.6
+          },
+          "confusion": {
+            "13->13": 9,
+            "13->17": 1,
+            "17->13": 2,
+            "17->17": 7,
+            "17->21": 1,
+            "21->13": 3,
+            "21->17": 1,
+            "21->21": 6
+          }
+        },
+        {
+          "subject_id": "Subject3",
+          "win_sec": 2.0,
+          "holdout_session_index": 0,
+          "holdout_session_name": "Subject3-[2012.04.07-18.17.50]",
+          "model": "tdca_like_legacy",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 10,
+          "accuracy": 0.3333333333333333,
+          "mean_inference_ms": 2.3867966655719406,
+          "median_inference_ms": 2.2651500039501116,
+          "class_accuracy": {
+            "13": 0.4,
+            "17": 0.2,
+            "21": 0.4
+          },
+          "confusion": {
+            "13->13": 4,
+            "13->21": 6,
+            "17->13": 4,
+            "17->17": 2,
+            "17->21": 4,
+            "21->13": 1,
+            "21->17": 5,
+            "21->21": 4
+          }
+        },
+        {
+          "subject_id": "Subject3",
+          "win_sec": 2.0,
+          "holdout_session_index": 1,
+          "holdout_session_name": "Subject3-[2012.04.07-18.27.18]",
+          "model": "fbcca_fixed_all8",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 26,
+          "accuracy": 0.8666666666666667,
+          "mean_inference_ms": 2.23982666793745,
+          "median_inference_ms": 2.1917999983998016,
+          "class_accuracy": {
+            "13": 0.9,
+            "17": 1.0,
+            "21": 0.7
+          },
+          "confusion": {
+            "13->13": 9,
+            "13->17": 1,
+            "17->17": 10,
+            "21->13": 3,
+            "21->21": 7
+          }
+        },
+        {
+          "subject_id": "Subject3",
+          "win_sec": 2.0,
+          "holdout_session_index": 1,
+          "holdout_session_name": "Subject3-[2012.04.07-18.27.18]",
+          "model": "tdca_like_legacy",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 9,
+          "accuracy": 0.3,
+          "mean_inference_ms": 2.420173333666753,
+          "median_inference_ms": 2.3103499988792464,
+          "class_accuracy": {
+            "13": 0.3,
+            "17": 0.6,
+            "21": 0.0
+          },
+          "confusion": {
+            "13->13": 3,
+            "13->17": 2,
+            "13->21": 5,
+            "17->13": 4,
+            "17->17": 6,
+            "21->13": 5,
+            "21->17": 5
+          }
+        },
+        {
+          "subject_id": "Subject3",
+          "win_sec": 2.0,
+          "holdout_session_index": 2,
+          "holdout_session_name": "Subject3-[2012.04.07-18.45.34]",
+          "model": "fbcca_fixed_all8",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 25,
+          "accuracy": 0.8333333333333334,
+          "mean_inference_ms": 2.403829999578496,
+          "median_inference_ms": 2.355500000703614,
+          "class_accuracy": {
+            "13": 0.9,
+            "17": 1.0,
+            "21": 0.6
+          },
+          "confusion": {
+            "13->13": 9,
+            "13->17": 1,
+            "17->17": 10,
+            "21->13": 3,
+            "21->17": 1,
+            "21->21": 6
+          }
+        },
+        {
+          "subject_id": "Subject3",
+          "win_sec": 2.0,
+          "holdout_session_index": 2,
+          "holdout_session_name": "Subject3-[2012.04.07-18.45.34]",
+          "model": "tdca_like_legacy",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 11,
+          "accuracy": 0.36666666666666664,
+          "mean_inference_ms": 2.40856999977647,
+          "median_inference_ms": 2.2581999946851283,
+          "class_accuracy": {
+            "13": 0.4,
+            "17": 0.5,
+            "21": 0.2
+          },
+          "confusion": {
+            "13->13": 4,
+            "13->17": 4,
+            "13->21": 2,
+            "17->13": 1,
+            "17->17": 5,
+            "17->21": 4,
+            "21->13": 3,
+            "21->17": 5,
+            "21->21": 2
+          }
+        },
+        {
+          "subject_id": "Subject3",
+          "win_sec": 2.0,
+          "holdout_session_index": 3,
+          "holdout_session_name": "Subject3-[2012.04.07-18.53.10]",
+          "model": "fbcca_fixed_all8",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 25,
+          "accuracy": 0.8333333333333334,
+          "mean_inference_ms": 2.2945233334515556,
+          "median_inference_ms": 2.2192000033101067,
+          "class_accuracy": {
+            "13": 1.0,
+            "17": 0.8,
+            "21": 0.7
+          },
+          "confusion": {
+            "13->13": 10,
+            "17->13": 2,
+            "17->17": 8,
+            "21->13": 2,
+            "21->17": 1,
+            "21->21": 7
+          }
+        },
+        {
+          "subject_id": "Subject3",
+          "win_sec": 2.0,
+          "holdout_session_index": 3,
+          "holdout_session_name": "Subject3-[2012.04.07-18.53.10]",
+          "model": "tdca_like_legacy",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 13,
+          "accuracy": 0.43333333333333335,
+          "mean_inference_ms": 2.4044866639693887,
+          "median_inference_ms": 2.25684999168152,
+          "class_accuracy": {
+            "13": 0.3,
+            "17": 0.6,
+            "21": 0.4
+          },
+          "confusion": {
+            "13->13": 3,
+            "13->17": 2,
+            "13->21": 5,
+            "17->13": 3,
+            "17->17": 6,
+            "17->21": 1,
+            "21->13": 3,
+            "21->17": 3,
+            "21->21": 4
+          }
+        }
+      ]
+    },
+    {
+      "subject_id": "Subject3",
+      "sampling_rate": 256,
+      "session_count": 4,
+      "trial_count_per_session": [
+        40,
+        40,
+        40,
+        40
+      ],
+      "active_trials_per_session": [
+        30,
+        30,
+        30,
+        30
+      ],
+      "fold_results": [
+        {
+          "subject_id": "Subject3",
+          "win_sec": 3.0,
+          "holdout_session_index": 0,
+          "holdout_session_name": "Subject3-[2012.04.07-18.17.50]",
+          "model": "fbcca_fixed_all8",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 24,
+          "accuracy": 0.8,
+          "mean_inference_ms": 2.868846666145449,
+          "median_inference_ms": 2.768349993857555,
+          "class_accuracy": {
+            "13": 1.0,
+            "17": 0.8,
+            "21": 0.6
+          },
+          "confusion": {
+            "13->13": 10,
+            "17->13": 2,
+            "17->17": 8,
+            "21->13": 2,
+            "21->17": 2,
+            "21->21": 6
+          }
+        },
+        {
+          "subject_id": "Subject3",
+          "win_sec": 3.0,
+          "holdout_session_index": 0,
+          "holdout_session_name": "Subject3-[2012.04.07-18.17.50]",
+          "model": "tdca_like_legacy",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 9,
+          "accuracy": 0.3,
+          "mean_inference_ms": 2.596883333171718,
+          "median_inference_ms": 2.486550009052735,
+          "class_accuracy": {
+            "13": 0.3,
+            "17": 0.3,
+            "21": 0.3
+          },
+          "confusion": {
+            "13->13": 3,
+            "13->17": 3,
+            "13->21": 4,
+            "17->13": 3,
+            "17->17": 3,
+            "17->21": 4,
+            "21->13": 1,
+            "21->17": 6,
+            "21->21": 3
+          }
+        },
+        {
+          "subject_id": "Subject3",
+          "win_sec": 3.0,
+          "holdout_session_index": 1,
+          "holdout_session_name": "Subject3-[2012.04.07-18.27.18]",
+          "model": "fbcca_fixed_all8",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 29,
+          "accuracy": 0.9666666666666667,
+          "mean_inference_ms": 2.866176665702369,
+          "median_inference_ms": 2.7882500071427785,
+          "class_accuracy": {
+            "13": 1.0,
+            "17": 1.0,
+            "21": 0.9
+          },
+          "confusion": {
+            "13->13": 10,
+            "17->17": 10,
+            "21->17": 1,
+            "21->21": 9
+          }
+        },
+        {
+          "subject_id": "Subject3",
+          "win_sec": 3.0,
+          "holdout_session_index": 1,
+          "holdout_session_name": "Subject3-[2012.04.07-18.27.18]",
+          "model": "tdca_like_legacy",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 8,
+          "accuracy": 0.26666666666666666,
+          "mean_inference_ms": 2.6436966698383912,
+          "median_inference_ms": 2.5157999989460222,
+          "class_accuracy": {
+            "13": 0.2,
+            "17": 0.3,
+            "21": 0.3
+          },
+          "confusion": {
+            "13->13": 2,
+            "13->17": 4,
+            "13->21": 4,
+            "17->13": 2,
+            "17->17": 3,
+            "17->21": 5,
+            "21->13": 5,
+            "21->17": 2,
+            "21->21": 3
+          }
+        },
+        {
+          "subject_id": "Subject3",
+          "win_sec": 3.0,
+          "holdout_session_index": 2,
+          "holdout_session_name": "Subject3-[2012.04.07-18.45.34]",
+          "model": "fbcca_fixed_all8",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 25,
+          "accuracy": 0.8333333333333334,
+          "mean_inference_ms": 2.9185166674627303,
+          "median_inference_ms": 2.893099997891113,
+          "class_accuracy": {
+            "13": 0.9,
+            "17": 1.0,
+            "21": 0.6
+          },
+          "confusion": {
+            "13->13": 9,
+            "13->17": 1,
+            "17->17": 10,
+            "21->13": 2,
+            "21->17": 2,
+            "21->21": 6
+          }
+        },
+        {
+          "subject_id": "Subject3",
+          "win_sec": 3.0,
+          "holdout_session_index": 2,
+          "holdout_session_name": "Subject3-[2012.04.07-18.45.34]",
+          "model": "tdca_like_legacy",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 14,
+          "accuracy": 0.4666666666666667,
+          "mean_inference_ms": 2.62342333298875,
+          "median_inference_ms": 2.5293500075349584,
+          "class_accuracy": {
+            "13": 0.6,
+            "17": 0.4,
+            "21": 0.4
+          },
+          "confusion": {
+            "13->13": 6,
+            "13->17": 4,
+            "17->13": 1,
+            "17->17": 4,
+            "17->21": 5,
+            "21->13": 1,
+            "21->17": 5,
+            "21->21": 4
+          }
+        },
+        {
+          "subject_id": "Subject3",
+          "win_sec": 3.0,
+          "holdout_session_index": 3,
+          "holdout_session_name": "Subject3-[2012.04.07-18.53.10]",
+          "model": "fbcca_fixed_all8",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 28,
+          "accuracy": 0.9333333333333333,
+          "mean_inference_ms": 2.809393334609922,
+          "median_inference_ms": 2.7259999988018535,
+          "class_accuracy": {
+            "13": 1.0,
+            "17": 0.8,
+            "21": 1.0
+          },
+          "confusion": {
+            "13->13": 10,
+            "17->13": 1,
+            "17->17": 8,
+            "17->21": 1,
+            "21->21": 10
+          }
+        },
+        {
+          "subject_id": "Subject3",
+          "win_sec": 3.0,
+          "holdout_session_index": 3,
+          "holdout_session_name": "Subject3-[2012.04.07-18.53.10]",
+          "model": "tdca_like_legacy",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 12,
+          "accuracy": 0.4,
+          "mean_inference_ms": 2.6118600008582384,
+          "median_inference_ms": 2.5035000071511604,
+          "class_accuracy": {
+            "13": 0.2,
+            "17": 0.5,
+            "21": 0.5
+          },
+          "confusion": {
+            "13->13": 2,
+            "13->17": 3,
+            "13->21": 5,
+            "17->13": 1,
+            "17->17": 5,
+            "17->21": 4,
+            "21->13": 4,
+            "21->17": 1,
+            "21->21": 5
+          }
+        }
+      ]
+    },
+    {
+      "subject_id": "Subject4",
+      "sampling_rate": 256,
+      "session_count": 4,
+      "trial_count_per_session": [
+        40,
+        40,
+        40,
+        40
+      ],
+      "active_trials_per_session": [
+        30,
+        30,
+        30,
+        30
+      ],
+      "fold_results": [
+        {
+          "subject_id": "Subject4",
+          "win_sec": 2.0,
+          "holdout_session_index": 0,
+          "holdout_session_name": "Subject4-[2012.04.08-16.06.48]",
+          "model": "fbcca_fixed_all8",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 18,
+          "accuracy": 0.6,
+          "mean_inference_ms": 2.2393699997337535,
+          "median_inference_ms": 2.1719500073231757,
+          "class_accuracy": {
+            "13": 0.8,
+            "17": 0.9,
+            "21": 0.1
+          },
+          "confusion": {
+            "13->13": 8,
+            "13->17": 1,
+            "13->21": 1,
+            "17->17": 9,
+            "17->21": 1,
+            "21->13": 8,
+            "21->17": 1,
+            "21->21": 1
+          }
+        },
+        {
+          "subject_id": "Subject4",
+          "win_sec": 2.0,
+          "holdout_session_index": 0,
+          "holdout_session_name": "Subject4-[2012.04.08-16.06.48]",
+          "model": "tdca_like_legacy",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 9,
+          "accuracy": 0.3,
+          "mean_inference_ms": 2.349680001983264,
+          "median_inference_ms": 2.272199999424629,
+          "class_accuracy": {
+            "13": 0.5,
+            "17": 0.2,
+            "21": 0.2
+          },
+          "confusion": {
+            "13->13": 5,
+            "13->17": 2,
+            "13->21": 3,
+            "17->13": 4,
+            "17->17": 2,
+            "17->21": 4,
+            "21->13": 2,
+            "21->17": 6,
+            "21->21": 2
+          }
+        },
+        {
+          "subject_id": "Subject4",
+          "win_sec": 2.0,
+          "holdout_session_index": 1,
+          "holdout_session_name": "Subject4-[2012.04.08-16.19.25]",
+          "model": "fbcca_fixed_all8",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 18,
+          "accuracy": 0.6,
+          "mean_inference_ms": 2.263020001798092,
+          "median_inference_ms": 2.1896499893045984,
+          "class_accuracy": {
+            "13": 1.0,
+            "17": 0.5,
+            "21": 0.3
+          },
+          "confusion": {
+            "13->13": 10,
+            "17->13": 5,
+            "17->17": 5,
+            "21->13": 4,
+            "21->17": 3,
+            "21->21": 3
+          }
+        },
+        {
+          "subject_id": "Subject4",
+          "win_sec": 2.0,
+          "holdout_session_index": 1,
+          "holdout_session_name": "Subject4-[2012.04.08-16.19.25]",
+          "model": "tdca_like_legacy",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 7,
+          "accuracy": 0.23333333333333334,
+          "mean_inference_ms": 2.376763334905263,
+          "median_inference_ms": 2.2741499997209758,
+          "class_accuracy": {
+            "13": 0.2,
+            "17": 0.1,
+            "21": 0.4
+          },
+          "confusion": {
+            "13->13": 2,
+            "13->17": 4,
+            "13->21": 4,
+            "17->13": 5,
+            "17->17": 1,
+            "17->21": 4,
+            "21->13": 3,
+            "21->17": 3,
+            "21->21": 4
+          }
+        },
+        {
+          "subject_id": "Subject4",
+          "win_sec": 2.0,
+          "holdout_session_index": 2,
+          "holdout_session_name": "Subject4-[2012.04.08-16.27.27]",
+          "model": "fbcca_fixed_all8",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 13,
+          "accuracy": 0.43333333333333335,
+          "mean_inference_ms": 2.2592399996938184,
+          "median_inference_ms": 2.1577999941655435,
+          "class_accuracy": {
+            "13": 1.0,
+            "17": 0.2,
+            "21": 0.1
+          },
+          "confusion": {
+            "13->13": 10,
+            "17->13": 8,
+            "17->17": 2,
+            "21->13": 8,
+            "21->17": 1,
+            "21->21": 1
+          }
+        },
+        {
+          "subject_id": "Subject4",
+          "win_sec": 2.0,
+          "holdout_session_index": 2,
+          "holdout_session_name": "Subject4-[2012.04.08-16.27.27]",
+          "model": "tdca_like_legacy",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 9,
+          "accuracy": 0.3,
+          "mean_inference_ms": 2.3658233321233033,
+          "median_inference_ms": 2.3026499984553084,
+          "class_accuracy": {
+            "13": 0.5,
+            "17": 0.2,
+            "21": 0.2
+          },
+          "confusion": {
+            "13->13": 5,
+            "13->17": 2,
+            "13->21": 3,
+            "17->13": 2,
+            "17->17": 2,
+            "17->21": 6,
+            "21->13": 5,
+            "21->17": 3,
+            "21->21": 2
+          }
+        },
+        {
+          "subject_id": "Subject4",
+          "win_sec": 2.0,
+          "holdout_session_index": 3,
+          "holdout_session_name": "Subject4-[2012.04.08-16.35.27]",
+          "model": "fbcca_fixed_all8",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 18,
+          "accuracy": 0.6,
+          "mean_inference_ms": 2.2750199995546914,
+          "median_inference_ms": 2.167300001019612,
+          "class_accuracy": {
+            "13": 1.0,
+            "17": 0.7,
+            "21": 0.1
+          },
+          "confusion": {
+            "13->13": 10,
+            "17->13": 3,
+            "17->17": 7,
+            "21->13": 7,
+            "21->17": 2,
+            "21->21": 1
+          }
+        },
+        {
+          "subject_id": "Subject4",
+          "win_sec": 2.0,
+          "holdout_session_index": 3,
+          "holdout_session_name": "Subject4-[2012.04.08-16.35.27]",
+          "model": "tdca_like_legacy",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 11,
+          "accuracy": 0.36666666666666664,
+          "mean_inference_ms": 2.3509099992224947,
+          "median_inference_ms": 2.27459999587154,
+          "class_accuracy": {
+            "13": 0.1,
+            "17": 0.4,
+            "21": 0.6
+          },
+          "confusion": {
+            "13->13": 1,
+            "13->17": 4,
+            "13->21": 5,
+            "17->13": 2,
+            "17->17": 4,
+            "17->21": 4,
+            "21->13": 2,
+            "21->17": 2,
+            "21->21": 6
+          }
+        }
+      ]
+    },
+    {
+      "subject_id": "Subject4",
+      "sampling_rate": 256,
+      "session_count": 4,
+      "trial_count_per_session": [
+        40,
+        40,
+        40,
+        40
+      ],
+      "active_trials_per_session": [
+        30,
+        30,
+        30,
+        30
+      ],
+      "fold_results": [
+        {
+          "subject_id": "Subject4",
+          "win_sec": 3.0,
+          "holdout_session_index": 0,
+          "holdout_session_name": "Subject4-[2012.04.08-16.06.48]",
+          "model": "fbcca_fixed_all8",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 18,
+          "accuracy": 0.6,
+          "mean_inference_ms": 2.9235299982246943,
+          "median_inference_ms": 2.8179499931866303,
+          "class_accuracy": {
+            "13": 0.8,
+            "17": 0.9,
+            "21": 0.1
+          },
+          "confusion": {
+            "13->13": 8,
+            "13->17": 2,
+            "17->13": 1,
+            "17->17": 9,
+            "21->13": 7,
+            "21->17": 2,
+            "21->21": 1
+          }
+        },
+        {
+          "subject_id": "Subject4",
+          "win_sec": 3.0,
+          "holdout_session_index": 0,
+          "holdout_session_name": "Subject4-[2012.04.08-16.06.48]",
+          "model": "tdca_like_legacy",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 6,
+          "accuracy": 0.2,
+          "mean_inference_ms": 2.660736665711738,
+          "median_inference_ms": 2.564499998698011,
+          "class_accuracy": {
+            "13": 0.3,
+            "17": 0.1,
+            "21": 0.2
+          },
+          "confusion": {
+            "13->13": 3,
+            "13->17": 3,
+            "13->21": 4,
+            "17->13": 5,
+            "17->17": 1,
+            "17->21": 4,
+            "21->13": 4,
+            "21->17": 4,
+            "21->21": 2
+          }
+        },
+        {
+          "subject_id": "Subject4",
+          "win_sec": 3.0,
+          "holdout_session_index": 1,
+          "holdout_session_name": "Subject4-[2012.04.08-16.19.25]",
+          "model": "fbcca_fixed_all8",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 17,
+          "accuracy": 0.5666666666666667,
+          "mean_inference_ms": 2.9315733312008283,
+          "median_inference_ms": 2.8728499964927323,
+          "class_accuracy": {
+            "13": 1.0,
+            "17": 0.5,
+            "21": 0.2
+          },
+          "confusion": {
+            "13->13": 10,
+            "17->13": 4,
+            "17->17": 5,
+            "17->21": 1,
+            "21->13": 6,
+            "21->17": 2,
+            "21->21": 2
+          }
+        },
+        {
+          "subject_id": "Subject4",
+          "win_sec": 3.0,
+          "holdout_session_index": 1,
+          "holdout_session_name": "Subject4-[2012.04.08-16.19.25]",
+          "model": "tdca_like_legacy",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 9,
+          "accuracy": 0.3,
+          "mean_inference_ms": 2.5695833333884366,
+          "median_inference_ms": 2.48979999742005,
+          "class_accuracy": {
+            "13": 0.1,
+            "17": 0.5,
+            "21": 0.3
+          },
+          "confusion": {
+            "13->13": 1,
+            "13->17": 4,
+            "13->21": 5,
+            "17->13": 2,
+            "17->17": 5,
+            "17->21": 3,
+            "21->13": 4,
+            "21->17": 3,
+            "21->21": 3
+          }
+        },
+        {
+          "subject_id": "Subject4",
+          "win_sec": 3.0,
+          "holdout_session_index": 2,
+          "holdout_session_name": "Subject4-[2012.04.08-16.27.27]",
+          "model": "fbcca_fixed_all8",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 16,
+          "accuracy": 0.5333333333333333,
+          "mean_inference_ms": 2.906713331079421,
+          "median_inference_ms": 2.7727999913622625,
+          "class_accuracy": {
+            "13": 1.0,
+            "17": 0.5,
+            "21": 0.1
+          },
+          "confusion": {
+            "13->13": 10,
+            "17->13": 5,
+            "17->17": 5,
+            "21->13": 8,
+            "21->17": 1,
+            "21->21": 1
+          }
+        },
+        {
+          "subject_id": "Subject4",
+          "win_sec": 3.0,
+          "holdout_session_index": 2,
+          "holdout_session_name": "Subject4-[2012.04.08-16.27.27]",
+          "model": "tdca_like_legacy",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 13,
+          "accuracy": 0.43333333333333335,
+          "mean_inference_ms": 2.5677733327029273,
+          "median_inference_ms": 2.4764499976299703,
+          "class_accuracy": {
+            "13": 0.6,
+            "17": 0.2,
+            "21": 0.5
+          },
+          "confusion": {
+            "13->13": 6,
+            "13->17": 1,
+            "13->21": 3,
+            "17->13": 2,
+            "17->17": 2,
+            "17->21": 6,
+            "21->13": 3,
+            "21->17": 2,
+            "21->21": 5
+          }
+        },
+        {
+          "subject_id": "Subject4",
+          "win_sec": 3.0,
+          "holdout_session_index": 3,
+          "holdout_session_name": "Subject4-[2012.04.08-16.35.27]",
+          "model": "fbcca_fixed_all8",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 21,
+          "accuracy": 0.7,
+          "mean_inference_ms": 2.8512566655990668,
+          "median_inference_ms": 2.7741999947465956,
+          "class_accuracy": {
+            "13": 1.0,
+            "17": 0.9,
+            "21": 0.2
+          },
+          "confusion": {
+            "13->13": 10,
+            "17->13": 1,
+            "17->17": 9,
+            "21->13": 5,
+            "21->17": 3,
+            "21->21": 2
+          }
+        },
+        {
+          "subject_id": "Subject4",
+          "win_sec": 3.0,
+          "holdout_session_index": 3,
+          "holdout_session_name": "Subject4-[2012.04.08-16.35.27]",
+          "model": "tdca_like_legacy",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 17,
+          "accuracy": 0.5666666666666667,
+          "mean_inference_ms": 2.71684333323113,
+          "median_inference_ms": 2.5156499978038482,
+          "class_accuracy": {
+            "13": 0.4,
+            "17": 0.6,
+            "21": 0.7
+          },
+          "confusion": {
+            "13->13": 4,
+            "13->17": 2,
+            "13->21": 4,
+            "17->13": 2,
+            "17->17": 6,
+            "17->21": 2,
+            "21->13": 2,
+            "21->17": 1,
+            "21->21": 7
+          }
+        }
+      ]
+    },
+    {
+      "subject_id": "Subject5",
+      "sampling_rate": 256,
+      "session_count": 4,
+      "trial_count_per_session": [
+        40,
+        40,
+        40,
+        40
+      ],
+      "active_trials_per_session": [
+        30,
+        30,
+        30,
+        30
+      ],
+      "fold_results": [
+        {
+          "subject_id": "Subject5",
+          "win_sec": 2.0,
+          "holdout_session_index": 0,
+          "holdout_session_name": "Subject5-[2012.04.09-19.38.11]",
+          "model": "fbcca_fixed_all8",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 20,
+          "accuracy": 0.6666666666666666,
+          "mean_inference_ms": 2.3261366678828685,
+          "median_inference_ms": 2.254849998280406,
+          "class_accuracy": {
+            "13": 0.6,
+            "17": 1.0,
+            "21": 0.4
+          },
+          "confusion": {
+            "13->13": 6,
+            "13->17": 3,
+            "13->21": 1,
+            "17->17": 10,
+            "21->17": 6,
+            "21->21": 4
+          }
+        },
+        {
+          "subject_id": "Subject5",
+          "win_sec": 2.0,
+          "holdout_session_index": 0,
+          "holdout_session_name": "Subject5-[2012.04.09-19.38.11]",
+          "model": "tdca_like_legacy",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 7,
+          "accuracy": 0.23333333333333334,
+          "mean_inference_ms": 2.4467500004296503,
+          "median_inference_ms": 2.3339000035775825,
+          "class_accuracy": {
+            "13": 0.0,
+            "17": 0.7,
+            "21": 0.0
+          },
+          "confusion": {
+            "13->17": 8,
+            "13->21": 2,
+            "17->13": 2,
+            "17->17": 7,
+            "17->21": 1,
+            "21->13": 3,
+            "21->17": 7
+          }
+        },
+        {
+          "subject_id": "Subject5",
+          "win_sec": 2.0,
+          "holdout_session_index": 1,
+          "holdout_session_name": "Subject5-[2012.04.09-19.48.56]",
+          "model": "fbcca_fixed_all8",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 18,
+          "accuracy": 0.6,
+          "mean_inference_ms": 2.389256666356232,
+          "median_inference_ms": 2.2928499965928495,
+          "class_accuracy": {
+            "13": 0.3,
+            "17": 0.9,
+            "21": 0.6
+          },
+          "confusion": {
+            "13->13": 3,
+            "13->17": 6,
+            "13->21": 1,
+            "17->13": 1,
+            "17->17": 9,
+            "21->13": 1,
+            "21->17": 3,
+            "21->21": 6
+          }
+        },
+        {
+          "subject_id": "Subject5",
+          "win_sec": 2.0,
+          "holdout_session_index": 1,
+          "holdout_session_name": "Subject5-[2012.04.09-19.48.56]",
+          "model": "tdca_like_legacy",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 7,
+          "accuracy": 0.23333333333333334,
+          "mean_inference_ms": 2.380860002206949,
+          "median_inference_ms": 2.268800002639182,
+          "class_accuracy": {
+            "13": 0.5,
+            "17": 0.1,
+            "21": 0.1
+          },
+          "confusion": {
+            "13->13": 5,
+            "13->17": 3,
+            "13->21": 2,
+            "17->13": 7,
+            "17->17": 1,
+            "17->21": 2,
+            "21->13": 6,
+            "21->17": 3,
+            "21->21": 1
+          }
+        },
+        {
+          "subject_id": "Subject5",
+          "win_sec": 2.0,
+          "holdout_session_index": 2,
+          "holdout_session_name": "Subject5-[2012.04.09-19.56.38]",
+          "model": "fbcca_fixed_all8",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 20,
+          "accuracy": 0.6666666666666666,
+          "mean_inference_ms": 2.3240500003642715,
+          "median_inference_ms": 2.2335500034387223,
+          "class_accuracy": {
+            "13": 0.3,
+            "17": 1.0,
+            "21": 0.7
+          },
+          "confusion": {
+            "13->13": 3,
+            "13->17": 7,
+            "17->17": 10,
+            "21->17": 3,
+            "21->21": 7
+          }
+        },
+        {
+          "subject_id": "Subject5",
+          "win_sec": 2.0,
+          "holdout_session_index": 2,
+          "holdout_session_name": "Subject5-[2012.04.09-19.56.38]",
+          "model": "tdca_like_legacy",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 14,
+          "accuracy": 0.4666666666666667,
+          "mean_inference_ms": 2.4526033317670226,
+          "median_inference_ms": 2.3573999933432788,
+          "class_accuracy": {
+            "13": 0.4,
+            "17": 0.6,
+            "21": 0.4
+          },
+          "confusion": {
+            "13->13": 4,
+            "13->17": 2,
+            "13->21": 4,
+            "17->13": 1,
+            "17->17": 6,
+            "17->21": 3,
+            "21->13": 2,
+            "21->17": 4,
+            "21->21": 4
+          }
+        },
+        {
+          "subject_id": "Subject5",
+          "win_sec": 2.0,
+          "holdout_session_index": 3,
+          "holdout_session_name": "Subject5-[2012.04.09-20.02.48]",
+          "model": "fbcca_fixed_all8",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 20,
+          "accuracy": 0.6666666666666666,
+          "mean_inference_ms": 2.6141000009374693,
+          "median_inference_ms": 2.4357500005862676,
+          "class_accuracy": {
+            "13": 0.4,
+            "17": 1.0,
+            "21": 0.6
+          },
+          "confusion": {
+            "13->13": 4,
+            "13->17": 5,
+            "13->21": 1,
+            "17->17": 10,
+            "21->17": 4,
+            "21->21": 6
+          }
+        },
+        {
+          "subject_id": "Subject5",
+          "win_sec": 2.0,
+          "holdout_session_index": 3,
+          "holdout_session_name": "Subject5-[2012.04.09-20.02.48]",
+          "model": "tdca_like_legacy",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 10,
+          "accuracy": 0.3333333333333333,
+          "mean_inference_ms": 2.559206664833861,
+          "median_inference_ms": 2.347649999137502,
+          "class_accuracy": {
+            "13": 0.2,
+            "17": 0.4,
+            "21": 0.4
+          },
+          "confusion": {
+            "13->13": 2,
+            "13->17": 3,
+            "13->21": 5,
+            "17->13": 2,
+            "17->17": 4,
+            "17->21": 4,
+            "21->13": 4,
+            "21->17": 2,
+            "21->21": 4
+          }
+        }
+      ]
+    },
+    {
+      "subject_id": "Subject5",
+      "sampling_rate": 256,
+      "session_count": 4,
+      "trial_count_per_session": [
+        40,
+        40,
+        40,
+        40
+      ],
+      "active_trials_per_session": [
+        30,
+        30,
+        30,
+        30
+      ],
+      "fold_results": [
+        {
+          "subject_id": "Subject5",
+          "win_sec": 3.0,
+          "holdout_session_index": 0,
+          "holdout_session_name": "Subject5-[2012.04.09-19.38.11]",
+          "model": "fbcca_fixed_all8",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 25,
+          "accuracy": 0.8333333333333334,
+          "mean_inference_ms": 3.0258733337783874,
+          "median_inference_ms": 2.885350004362408,
+          "class_accuracy": {
+            "13": 1.0,
+            "17": 1.0,
+            "21": 0.5
+          },
+          "confusion": {
+            "13->13": 10,
+            "17->17": 10,
+            "21->17": 5,
+            "21->21": 5
+          }
+        },
+        {
+          "subject_id": "Subject5",
+          "win_sec": 3.0,
+          "holdout_session_index": 0,
+          "holdout_session_name": "Subject5-[2012.04.09-19.38.11]",
+          "model": "tdca_like_legacy",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 11,
+          "accuracy": 0.36666666666666664,
+          "mean_inference_ms": 2.704460000192436,
+          "median_inference_ms": 2.57765000424115,
+          "class_accuracy": {
+            "13": 0.3,
+            "17": 0.7,
+            "21": 0.1
+          },
+          "confusion": {
+            "13->13": 3,
+            "13->17": 5,
+            "13->21": 2,
+            "17->13": 2,
+            "17->17": 7,
+            "17->21": 1,
+            "21->13": 3,
+            "21->17": 6,
+            "21->21": 1
+          }
+        },
+        {
+          "subject_id": "Subject5",
+          "win_sec": 3.0,
+          "holdout_session_index": 1,
+          "holdout_session_name": "Subject5-[2012.04.09-19.48.56]",
+          "model": "fbcca_fixed_all8",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 19,
+          "accuracy": 0.6333333333333333,
+          "mean_inference_ms": 2.9287299995000162,
+          "median_inference_ms": 2.787199991871603,
+          "class_accuracy": {
+            "13": 0.2,
+            "17": 0.9,
+            "21": 0.8
+          },
+          "confusion": {
+            "13->13": 2,
+            "13->17": 7,
+            "13->21": 1,
+            "17->13": 1,
+            "17->17": 9,
+            "21->17": 2,
+            "21->21": 8
+          }
+        },
+        {
+          "subject_id": "Subject5",
+          "win_sec": 3.0,
+          "holdout_session_index": 1,
+          "holdout_session_name": "Subject5-[2012.04.09-19.48.56]",
+          "model": "tdca_like_legacy",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 8,
+          "accuracy": 0.26666666666666666,
+          "mean_inference_ms": 2.6501099996191138,
+          "median_inference_ms": 2.524349998566322,
+          "class_accuracy": {
+            "13": 0.5,
+            "17": 0.2,
+            "21": 0.1
+          },
+          "confusion": {
+            "13->13": 5,
+            "13->17": 3,
+            "13->21": 2,
+            "17->13": 5,
+            "17->17": 2,
+            "17->21": 3,
+            "21->13": 6,
+            "21->17": 3,
+            "21->21": 1
+          }
+        },
+        {
+          "subject_id": "Subject5",
+          "win_sec": 3.0,
+          "holdout_session_index": 2,
+          "holdout_session_name": "Subject5-[2012.04.09-19.56.38]",
+          "model": "fbcca_fixed_all8",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 22,
+          "accuracy": 0.7333333333333333,
+          "mean_inference_ms": 2.980323334243925,
+          "median_inference_ms": 2.7869999976246618,
+          "class_accuracy": {
+            "13": 0.4,
+            "17": 1.0,
+            "21": 0.8
+          },
+          "confusion": {
+            "13->13": 4,
+            "13->17": 6,
+            "17->17": 10,
+            "21->17": 2,
+            "21->21": 8
+          }
+        },
+        {
+          "subject_id": "Subject5",
+          "win_sec": 3.0,
+          "holdout_session_index": 2,
+          "holdout_session_name": "Subject5-[2012.04.09-19.56.38]",
+          "model": "tdca_like_legacy",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 14,
+          "accuracy": 0.4666666666666667,
+          "mean_inference_ms": 2.587286668616192,
+          "median_inference_ms": 2.4961500021163374,
+          "class_accuracy": {
+            "13": 0.4,
+            "17": 0.6,
+            "21": 0.4
+          },
+          "confusion": {
+            "13->13": 4,
+            "13->17": 4,
+            "13->21": 2,
+            "17->13": 3,
+            "17->17": 6,
+            "17->21": 1,
+            "21->13": 3,
+            "21->17": 3,
+            "21->21": 4
+          }
+        },
+        {
+          "subject_id": "Subject5",
+          "win_sec": 3.0,
+          "holdout_session_index": 3,
+          "holdout_session_name": "Subject5-[2012.04.09-20.02.48]",
+          "model": "fbcca_fixed_all8",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 21,
+          "accuracy": 0.7,
+          "mean_inference_ms": 2.856116667680908,
+          "median_inference_ms": 2.7341999957570806,
+          "class_accuracy": {
+            "13": 0.4,
+            "17": 1.0,
+            "21": 0.7
+          },
+          "confusion": {
+            "13->13": 4,
+            "13->17": 6,
+            "17->17": 10,
+            "21->17": 3,
+            "21->21": 7
+          }
+        },
+        {
+          "subject_id": "Subject5",
+          "win_sec": 3.0,
+          "holdout_session_index": 3,
+          "holdout_session_name": "Subject5-[2012.04.09-20.02.48]",
+          "model": "tdca_like_legacy",
+          "train_trials": 90,
+          "test_trials": 30,
+          "correct_trials": 11,
+          "accuracy": 0.36666666666666664,
+          "mean_inference_ms": 2.540593334803513,
+          "median_inference_ms": 2.4761000022408552,
+          "class_accuracy": {
+            "13": 0.2,
+            "17": 0.4,
+            "21": 0.5
+          },
+          "confusion": {
+            "13->13": 2,
+            "13->17": 4,
+            "13->21": 4,
+            "17->13": 2,
+            "17->17": 4,
+            "17->21": 4,
+            "21->13": 3,
+            "21->17": 2,
+            "21->21": 5
+          }
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "per_subject_summary": [
+      {
+        "subject_id": "Subject2",
+        "model": "fbcca_fixed_all8",
+        "win_sec": 2.0,
+        "mean_accuracy": 0.6583333333333333,
+        "std_accuracy": 0.12104865871944959,
+        "mean_inference_ms": 2.281225833333641
+      },
+      {
+        "subject_id": "Subject2",
+        "model": "tdca_like_legacy",
+        "win_sec": 2.0,
+        "mean_accuracy": 0.2833333333333333,
+        "std_accuracy": 0.06871842709362769,
+        "mean_inference_ms": 2.453282500331018
+      },
+      {
+        "subject_id": "Subject2",
+        "model": "fbcca_fixed_all8",
+        "win_sec": 3.0,
+        "mean_accuracy": 0.7583333333333333,
+        "std_accuracy": 0.07216878364870324,
+        "mean_inference_ms": 2.861855832816218
+      },
+      {
+        "subject_id": "Subject2",
+        "model": "tdca_like_legacy",
+        "win_sec": 3.0,
+        "mean_accuracy": 0.375,
+        "std_accuracy": 0.05951190357119043,
+        "mean_inference_ms": 2.656163332964449
+      },
+      {
+        "subject_id": "Subject3",
+        "model": "fbcca_fixed_all8",
+        "win_sec": 2.0,
+        "mean_accuracy": 0.8166666666666668,
+        "std_accuracy": 0.05000000000000004,
+        "mean_inference_ms": 2.3029241669670837
+      },
+      {
+        "subject_id": "Subject3",
+        "model": "tdca_like_legacy",
+        "win_sec": 2.0,
+        "mean_accuracy": 0.35833333333333334,
+        "std_accuracy": 0.04930066485916348,
+        "mean_inference_ms": 2.405006665746138
+      },
+      {
+        "subject_id": "Subject3",
+        "model": "fbcca_fixed_all8",
+        "win_sec": 3.0,
+        "mean_accuracy": 0.8833333333333333,
+        "std_accuracy": 0.06871842709362766,
+        "mean_inference_ms": 2.865733333480118
+      },
+      {
+        "subject_id": "Subject3",
+        "model": "tdca_like_legacy",
+        "win_sec": 3.0,
+        "mean_accuracy": 0.3583333333333333,
+        "std_accuracy": 0.07949493345141215,
+        "mean_inference_ms": 2.6189658342142743
+      },
+      {
+        "subject_id": "Subject4",
+        "model": "fbcca_fixed_all8",
+        "win_sec": 2.0,
+        "mean_accuracy": 0.5583333333333333,
+        "std_accuracy": 0.0721687836487032,
+        "mean_inference_ms": 2.259162500195089
+      },
+      {
+        "subject_id": "Subject4",
+        "model": "tdca_like_legacy",
+        "win_sec": 2.0,
+        "mean_accuracy": 0.3,
+        "std_accuracy": 0.04714045207910316,
+        "mean_inference_ms": 2.3607941670585815
+      },
+      {
+        "subject_id": "Subject4",
+        "model": "fbcca_fixed_all8",
+        "win_sec": 3.0,
+        "mean_accuracy": 0.5999999999999999,
+        "std_accuracy": 0.062360956446232345,
+        "mean_inference_ms": 2.903268331526003
+      },
+      {
+        "subject_id": "Subject4",
+        "model": "tdca_like_legacy",
+        "win_sec": 3.0,
+        "mean_accuracy": 0.375,
+        "std_accuracy": 0.13819269959814168,
+        "mean_inference_ms": 2.628734166258558
+      },
+      {
+        "subject_id": "Subject5",
+        "model": "fbcca_fixed_all8",
+        "win_sec": 2.0,
+        "mean_accuracy": 0.6499999999999999,
+        "std_accuracy": 0.028867513459481284,
+        "mean_inference_ms": 2.4133858338852106
+      },
+      {
+        "subject_id": "Subject5",
+        "model": "tdca_like_legacy",
+        "win_sec": 2.0,
+        "mean_accuracy": 0.31666666666666665,
+        "std_accuracy": 0.09574271077563382,
+        "mean_inference_ms": 2.459854999809371
+      },
+      {
+        "subject_id": "Subject5",
+        "model": "fbcca_fixed_all8",
+        "win_sec": 3.0,
+        "mean_accuracy": 0.7250000000000001,
+        "std_accuracy": 0.07216878364870324,
+        "mean_inference_ms": 2.947760833800809
+      },
+      {
+        "subject_id": "Subject5",
+        "model": "tdca_like_legacy",
+        "win_sec": 3.0,
+        "mean_accuracy": 0.3666666666666667,
+        "std_accuracy": 0.07071067811865477,
+        "mean_inference_ms": 2.6206125008078134
+      }
+    ],
+    "aggregate_rows": [
+      {
+        "model": "fbcca_fixed_all8",
+        "win_sec": 2.0,
+        "mean_fold_accuracy": 0.6708333333333334,
+        "std_fold_accuracy": 0.12011279421166313,
+        "overall_accuracy": 0.6708333333333333,
+        "mean_inference_ms": 2.314174583595256,
+        "n_folds": 16,
+        "n_trials": 480
+      },
+      {
+        "model": "fbcca_fixed_all8",
+        "win_sec": 3.0,
+        "mean_fold_accuracy": 0.7416666666666667,
+        "std_fold_accuracy": 0.12219065248845985,
+        "overall_accuracy": 0.7416666666666667,
+        "mean_inference_ms": 2.894654582905787,
+        "n_folds": 16,
+        "n_trials": 480
+      },
+      {
+        "model": "tdca_like_legacy",
+        "win_sec": 2.0,
+        "mean_fold_accuracy": 0.3145833333333333,
+        "std_fold_accuracy": 0.07356851492920656,
+        "overall_accuracy": 0.3145833333333333,
+        "mean_inference_ms": 2.419734583236277,
+        "n_folds": 16,
+        "n_trials": 480
+      },
+      {
+        "model": "tdca_like_legacy",
+        "win_sec": 3.0,
+        "mean_fold_accuracy": 0.36875,
+        "std_fold_accuracy": 0.09239765358973619,
+        "overall_accuracy": 0.36875,
+        "mean_inference_ms": 2.6311189585612738,
+        "n_folds": 16,
+        "n_trials": 480
+      }
+    ]
+  }
+}

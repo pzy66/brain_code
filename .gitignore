@@ -23,6 +23,7 @@ pytest_tmp/
 **/*.pyo
 **/*.pyd
 **/*.log
+!02_SSVEP/artifacts/**/*.log
 **/*.tmp
 **/*.bak
 **/Thumbs.db

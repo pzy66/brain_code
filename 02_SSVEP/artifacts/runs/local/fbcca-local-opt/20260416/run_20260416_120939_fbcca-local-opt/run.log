@@ -1,0 +1,101 @@
+[12:09:39] [fbcca-local-opt] report directory prepared: D:\brain\brain_code\02_SSVEP\artifacts\runs\local\fbcca-local-opt\20260416\run_20260416_120939_fbcca-local-opt
+[12:09:39] [fbcca-local-opt] compute backend prepared: requested=auto effective=cuda
+[12:10:07] [fbcca-local-opt] repeat=1/1 candidate=1/20 variant=fbcca_fixed_all8|win=2.5|confidence=global_correctness_logistic
+[12:10:15] [fbcca-local-opt] repeat=1/1 candidate=2/20 variant=fbcca_fixed_all8|win=3|confidence=global_correctness_logistic
+[12:10:23] [fbcca-local-opt] repeat=1/1 candidate=3/20 variant=fbcca_fixed_all8|win=2.5|confidence=bayesian_gap_gmm
+[12:10:32] [fbcca-local-opt] repeat=1/1 candidate=4/20 variant=fbcca_fixed_all8|win=3|confidence=bayesian_gap_gmm
+[12:10:40] [fbcca-local-opt] repeat=1/1 candidate=5/20 variant=fbcca_cw_all8|win=2.5|confidence=global_correctness_logistic
+[12:10:55] FBCCA[fbcca_cw_all8]: frontend optimization start | channel_mode=fbcca_diag subband_mode=chen_fixed spatial_mode=none iters=2 folds=3
+[12:10:55] FBCCA[fbcca_cw_all8]: iteration 1/2 channel 1/8
+[12:11:23] FBCCA[fbcca_cw_all8]: iteration 1/2 channel 2/8
+[12:11:51] FBCCA[fbcca_cw_all8]: iteration 1/2 channel 3/8
+[12:12:19] FBCCA[fbcca_cw_all8]: iteration 1/2 channel 4/8
+[12:12:48] FBCCA[fbcca_cw_all8]: iteration 1/2 channel 5/8
+[12:13:16] FBCCA[fbcca_cw_all8]: iteration 1/2 channel 6/8
+[12:13:44] FBCCA[fbcca_cw_all8]: iteration 1/2 channel 7/8
+[12:14:13] FBCCA[fbcca_cw_all8]: iteration 1/2 channel 8/8
+[12:14:40] FBCCA[fbcca_cw_all8]: iteration 1/2 done | channel_improved=1 subband_improved=0 basis_updated=0
+[12:14:40] FBCCA[fbcca_cw_all8]: iteration 2/2 channel 1/8
+[12:15:09] FBCCA[fbcca_cw_all8]: iteration 2/2 channel 2/8
+[12:15:37] FBCCA[fbcca_cw_all8]: iteration 2/2 channel 3/8
+[12:16:05] FBCCA[fbcca_cw_all8]: iteration 2/2 channel 4/8
+[12:16:34] FBCCA[fbcca_cw_all8]: iteration 2/2 channel 5/8
+[12:17:02] FBCCA[fbcca_cw_all8]: iteration 2/2 channel 6/8
+[12:17:31] FBCCA[fbcca_cw_all8]: iteration 2/2 channel 7/8
+[12:17:58] FBCCA[fbcca_cw_all8]: iteration 2/2 channel 8/8
+[12:18:27] FBCCA[fbcca_cw_all8]: iteration 2/2 done | channel_improved=0 subband_improved=0 basis_updated=0
+[12:18:35] [fbcca-local-opt] repeat=1/1 candidate=6/20 variant=fbcca_cw_all8|win=3|confidence=global_correctness_logistic
+[12:18:50] FBCCA[fbcca_cw_all8]: frontend optimization start | channel_mode=fbcca_diag subband_mode=chen_fixed spatial_mode=none iters=2 folds=3
+[12:18:50] FBCCA[fbcca_cw_all8]: iteration 1/2 channel 1/8
+[12:19:17] FBCCA[fbcca_cw_all8]: iteration 1/2 channel 2/8
+[12:19:43] FBCCA[fbcca_cw_all8]: iteration 1/2 channel 3/8
+[12:20:10] FBCCA[fbcca_cw_all8]: iteration 1/2 channel 4/8
+[12:20:36] FBCCA[fbcca_cw_all8]: iteration 1/2 channel 5/8
+[12:21:03] FBCCA[fbcca_cw_all8]: iteration 1/2 channel 6/8
+[12:21:30] FBCCA[fbcca_cw_all8]: iteration 1/2 channel 7/8
+[12:21:57] FBCCA[fbcca_cw_all8]: iteration 1/2 channel 8/8
+[12:22:23] FBCCA[fbcca_cw_all8]: iteration 1/2 done | channel_improved=1 subband_improved=0 basis_updated=0
+[12:22:23] FBCCA[fbcca_cw_all8]: iteration 2/2 channel 1/8
+[12:22:50] FBCCA[fbcca_cw_all8]: iteration 2/2 channel 2/8
+[12:23:17] FBCCA[fbcca_cw_all8]: iteration 2/2 channel 3/8
+[12:23:44] FBCCA[fbcca_cw_all8]: iteration 2/2 channel 4/8
+[12:24:10] FBCCA[fbcca_cw_all8]: iteration 2/2 channel 5/8
+[12:24:37] FBCCA[fbcca_cw_all8]: iteration 2/2 channel 6/8
+[12:25:04] FBCCA[fbcca_cw_all8]: iteration 2/2 channel 7/8
+[12:25:31] FBCCA[fbcca_cw_all8]: iteration 2/2 channel 8/8
+[12:25:57] FBCCA[fbcca_cw_all8]: iteration 2/2 done | channel_improved=0 subband_improved=0 basis_updated=0
+[12:26:05] [fbcca-local-opt] repeat=1/1 candidate=7/20 variant=fbcca_cw_all8|win=2.5|confidence=bayesian_gap_gmm
+[12:26:20] FBCCA[fbcca_cw_all8]: frontend optimization start | channel_mode=fbcca_diag subband_mode=chen_fixed spatial_mode=none iters=2 folds=3
+[12:26:20] FBCCA[fbcca_cw_all8]: iteration 1/2 channel 1/8
+[12:26:48] FBCCA[fbcca_cw_all8]: iteration 1/2 channel 2/8
+[12:27:16] FBCCA[fbcca_cw_all8]: iteration 1/2 channel 3/8
+[12:27:44] FBCCA[fbcca_cw_all8]: iteration 1/2 channel 4/8
+[12:28:11] FBCCA[fbcca_cw_all8]: iteration 1/2 channel 5/8
+[12:28:40] FBCCA[fbcca_cw_all8]: iteration 1/2 channel 6/8
+[12:29:09] FBCCA[fbcca_cw_all8]: iteration 1/2 channel 7/8
+[12:29:37] FBCCA[fbcca_cw_all8]: iteration 1/2 channel 8/8
+[12:30:05] FBCCA[fbcca_cw_all8]: iteration 1/2 done | channel_improved=1 subband_improved=0 basis_updated=0
+[12:30:05] FBCCA[fbcca_cw_all8]: iteration 2/2 channel 1/8
+[12:30:33] FBCCA[fbcca_cw_all8]: iteration 2/2 channel 2/8
+[12:31:02] FBCCA[fbcca_cw_all8]: iteration 2/2 channel 3/8
+[12:31:30] FBCCA[fbcca_cw_all8]: iteration 2/2 channel 4/8
+[12:31:58] FBCCA[fbcca_cw_all8]: iteration 2/2 channel 5/8
+[12:32:26] FBCCA[fbcca_cw_all8]: iteration 2/2 channel 6/8
+[12:32:54] FBCCA[fbcca_cw_all8]: iteration 2/2 channel 7/8
+[12:33:23] FBCCA[fbcca_cw_all8]: iteration 2/2 channel 8/8
+[12:33:51] FBCCA[fbcca_cw_all8]: iteration 2/2 done | channel_improved=0 subband_improved=0 basis_updated=0
+[12:33:59] [fbcca-local-opt] repeat=1/1 candidate=8/20 variant=fbcca_cw_all8|win=3|confidence=bayesian_gap_gmm
+[12:34:13] FBCCA[fbcca_cw_all8]: frontend optimization start | channel_mode=fbcca_diag subband_mode=chen_fixed spatial_mode=none iters=2 folds=3
+[12:34:13] FBCCA[fbcca_cw_all8]: iteration 1/2 channel 1/8
+[12:34:40] FBCCA[fbcca_cw_all8]: iteration 1/2 channel 2/8
+[12:35:06] FBCCA[fbcca_cw_all8]: iteration 1/2 channel 3/8
+[12:35:33] FBCCA[fbcca_cw_all8]: iteration 1/2 channel 4/8
+[12:35:59] FBCCA[fbcca_cw_all8]: iteration 1/2 channel 5/8
+[12:36:25] FBCCA[fbcca_cw_all8]: iteration 1/2 channel 6/8
+[12:36:51] FBCCA[fbcca_cw_all8]: iteration 1/2 channel 7/8
+[12:37:18] FBCCA[fbcca_cw_all8]: iteration 1/2 channel 8/8
+[12:37:44] FBCCA[fbcca_cw_all8]: iteration 1/2 done | channel_improved=1 subband_improved=0 basis_updated=0
+[12:37:44] FBCCA[fbcca_cw_all8]: iteration 2/2 channel 1/8
+[12:38:10] FBCCA[fbcca_cw_all8]: iteration 2/2 channel 2/8
+[12:38:37] FBCCA[fbcca_cw_all8]: iteration 2/2 channel 3/8
+[12:39:04] FBCCA[fbcca_cw_all8]: iteration 2/2 channel 4/8
+[12:39:31] FBCCA[fbcca_cw_all8]: iteration 2/2 channel 5/8
+[12:39:57] FBCCA[fbcca_cw_all8]: iteration 2/2 channel 6/8
+[12:40:24] FBCCA[fbcca_cw_all8]: iteration 2/2 channel 7/8
+[12:40:50] FBCCA[fbcca_cw_all8]: iteration 2/2 channel 8/8
+[12:41:17] FBCCA[fbcca_cw_all8]: iteration 2/2 done | channel_improved=0 subband_improved=0 basis_updated=0
+[12:41:25] [fbcca-local-opt] repeat=1/1 candidate=9/20 variant=fbcca_sw_all8|win=2.5|confidence=global_correctness_logistic
+[12:41:31] FBCCA[fbcca_sw_all8]: frontend optimization start | channel_mode=none subband_mode=chen_ab_subject spatial_mode=none iters=2 folds=3
+[12:41:31] FBCCA[fbcca_sw_all8]: iteration 1/2 subband grid search
+[12:48:16] FBCCA[fbcca_sw_all8]: iteration 1/2 done | channel_improved=0 subband_improved=1 basis_updated=0
+[12:48:16] FBCCA[fbcca_sw_all8]: iteration 2/2 subband grid search
+[12:55:02] FBCCA[fbcca_sw_all8]: iteration 2/2 done | channel_improved=0 subband_improved=0 basis_updated=0
+[12:55:11] [fbcca-local-opt] repeat=1/1 candidate=10/20 variant=fbcca_sw_all8|win=3|confidence=global_correctness_logistic
+[12:55:17] FBCCA[fbcca_sw_all8]: frontend optimization start | channel_mode=none subband_mode=chen_ab_subject spatial_mode=none iters=2 folds=3
+[12:55:17] FBCCA[fbcca_sw_all8]: iteration 1/2 subband grid search
+[13:01:47] FBCCA[fbcca_sw_all8]: iteration 1/2 done | channel_improved=0 subband_improved=1 basis_updated=0
+[13:01:47] FBCCA[fbcca_sw_all8]: iteration 2/2 subband grid search
+[13:08:20] FBCCA[fbcca_sw_all8]: iteration 2/2 done | channel_improved=0 subband_improved=0 basis_updated=0
+[13:08:28] [fbcca-local-opt] repeat=1/1 candidate=11/20 variant=fbcca_sw_all8|win=2.5|confidence=bayesian_gap_gmm
+[13:08:34] FBCCA[fbcca_sw_all8]: frontend optimization start | channel_mode=none subband_mode=chen_ab_subject spatial_mode=none iters=2 folds=3
+[13:08:34] FBCCA[fbcca_sw_all8]: iteration 1/2 subband grid search

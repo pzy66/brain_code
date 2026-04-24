@@ -10,6 +10,12 @@ if ($override) {
     exit 1
 }
 
+$projectPython = Join-Path (Split-Path -Parent $PSScriptRoot) ".venv\python.exe"
+if (Test-Path -LiteralPath $projectPython) {
+    Write-Output (Resolve-Path -LiteralPath $projectPython).Path
+    exit 0
+}
+
 $candidates = @(
     (Join-Path $env:USERPROFILE "miniconda3\envs\brain-vision\python.exe"),
     (Join-Path $env:USERPROFILE "anaconda3\envs\brain-vision\python.exe"),
@@ -23,5 +29,5 @@ foreach ($candidate in $candidates) {
     }
 }
 
-Write-Error "[resolve-brain-python] brain-vision interpreter not found. Set BRAIN_PYTHON_EXE or create the conda env."
+Write-Error "[resolve-brain-python] project .venv and brain-vision interpreter not found. Set BRAIN_PYTHON_EXE or create the local .venv / conda env."
 exit 1

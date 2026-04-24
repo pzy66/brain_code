@@ -1,0 +1,23 @@
+{
+  "legacy_root": "D:\\brain\\brain_code\\02_SSVEP\\_archive\\legacy_2026-04_async_fbcca_idle_decoder\\profiles",
+  "artifact_root": "D:\\brain\\brain_code\\02_SSVEP\\artifacts",
+  "copied_datasets": [
+    "subject001_collection_20260411_220406_r01"
+  ],
+  "copied_smoke_dirs": [
+    "datasets_linkage_smoke",
+    "datasets_linkage_smoke_check",
+    "datasets_linkage_smoke_small",
+    "datasets_linkage_subject_check",
+    "datasets_linkage_subject_check2",
+    "datasets_runtime_check",
+    "datasets_test_artifacts"
+  ],
+  "imported_reports_count": 226,
+  "imported_server_runs_count": 117,
+  "imported_server_profiles_count": 6,
+  "copied_profiles": {
+    "profile_json": "D:\\brain\\brain_code\\02_SSVEP\\artifacts\\deployed_profiles\\default_profile.json",
+    "profile_v2_json": "D:\\brain\\brain_code\\02_SSVEP\\artifacts\\deployed_profiles\\default_profile_v2.json"
+  }
+}
