@@ -1,0 +1,30 @@
+{
+  "run_id": "model_compare_20260413_201344",
+  "task": "model-compare",
+  "started_at": "2026-04-13T20:13:45",
+  "metrics_source": "no_session2",
+  "remote_manifest_paths": {
+    "session1": "/data1/zkx/brain/ssvep/data/subject001_collection_20260411_220406_r01/session_manifest.json",
+    "session2": ""
+  },
+  "gpu_params": {
+    "compute_backend": "cuda",
+    "gpu_device": 0,
+    "gpu_precision": "float32",
+    "gpu_warmup": true,
+    "gpu_cache_policy": "full",
+    "win_candidates": "1.5,2",
+    "multi_seed_count": 1
+  },
+  "remote_paths": {
+    "remote_root": "/data1/zkx/brain/ssvep",
+    "remote_code_dir": "/data1/zkx/brain/ssvep/code/2026-04_async_fbcca_idle_decoder",
+    "remote_report_dir": "/data1/zkx/brain/ssvep/reports/20260413/model_compare_20260413_201344",
+    "remote_report_json": "/data1/zkx/brain/ssvep/reports/20260413/model_compare_20260413_201344/offline_train_eval.json",
+    "remote_log_path": "/data1/zkx/brain/ssvep/logs/model_compare_20260413_201344.log",
+    "remote_manifest_paths": {
+      "session1": "/data1/zkx/brain/ssvep/data/subject001_collection_20260411_220406_r01/session_manifest.json",
+      "session2": ""
+    }
+  }
+}

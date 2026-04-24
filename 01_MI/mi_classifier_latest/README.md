@@ -23,10 +23,18 @@
 
 ## 快速开始
 
-推荐在 `MI` 环境中运行：
+推荐优先使用仓库内 `.venv`；如果你在别的电脑上用 Conda，也可以创建并激活自己的 `brain_code` 环境：
 
 ```powershell
-conda activate MI
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+pip install -r requirements-realtime.txt
+```
+
+或：
+
+```powershell
+conda activate brain_code
 pip install -r requirements.txt
 pip install -r requirements-realtime.txt
 ```
@@ -37,10 +45,10 @@ pip install -r requirements-realtime.txt
 pip install -r requirements-deep.txt
 ```
 
-如果终端里没有 `python` 命令，可以直接使用解释器绝对路径：
+如果终端里没有 `python` 命令，可以直接使用当前仓库里环境的相对路径：
 
 ```powershell
-& 'C:\Users\P1233\miniconda3\envs\MI\python.exe' run_02_training.py
+& '.\.venv\Scripts\python.exe' .\run_02_training.py
 ```
 
 ## 常用入口
@@ -85,16 +93,20 @@ python run_05_channel_monitor.py
 
 默认会话顺序：
 
-1. `quality_check`
-2. `calibration`
-3. `MI run 1`
-4. `MI run 2`
-5. `continuous block 1`
-6. `MI run 3`
-7. `continuous block 2`
-8. `idle_block`
-9. `idle_prepare`
-10. 自动保存
+1. `calibration`
+2. `MI run 1`
+3. `MI run 2`
+4. `continuous block 1`
+5. `MI run 3`
+6. `continuous block 2`
+7. `idle_block`
+8. 自动保存
+
+说明：
+
+- 操作员在点击开始前，仍应先在预览界面手工确认波形稳定性。
+- 正式协议不再插入单独的 `quality_check` 阶段；信号质量检查统一放在点击开始前完成。
+- 串口校验策略：如果系统已经枚举到可用串口，则所选端口必须在列表中；如果当前完全枚举不到可用串口，则仍允许操作员手工输入端口尝试连接；但 Windows 明确标记为 `Problem/Disconnected` 的端口会在开始前直接拦截。
 
 固定通道约束：
 
@@ -111,7 +123,6 @@ python run_05_channel_monitor.py
 - `long_run_rest_sec=120`
 - `practice_sec=0`
 - `idle_block = 2 x 60s`
-- `idle_prepare = 2 x 60s`
 - `continuous = 2 x 240s`
 - `continuous_command = 4-5s`
 - `continuous_gap = 2-3s`

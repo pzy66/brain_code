@@ -9,26 +9,26 @@
 
 ## 当前包含
 
-- [async_fbcca_idle.py](C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\ssvep\async_fbcca_idle.py)
+- [async_fbcca_idle.py](./async_fbcca_idle.py)
   - profile 读写、fallback profile、gate 判别、串口/设备辅助逻辑
-- [single_model.py](C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\ssvep\single_model.py)
+- [single_model.py](./single_model.py)
   - 单模型 FBCCA 预训练与在线 worker
-- [validation_ui.py](C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\ssvep\validation_ui.py)
+- [validation_ui.py](./validation_ui.py)
   - 预训练/验证辅助逻辑
-- [backend.py](C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\ssvep\backend.py)
+- [backend.py](./backend.py)
   - 后端封装
-- [profiles.py](C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\ssvep\profiles.py)
+- [profiles.py](./profiles.py)
   - profile 路径与元数据辅助
-- [service.py](C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\ssvep\service.py)
+- [service.py](./service.py)
   - 主程序可复用 service 层
-- [runtime.py](C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\ssvep\runtime.py)
+- [runtime.py](./runtime.py)
   - 主程序运行时桥接
 
 ## Profile 目录
 
 主程序默认使用：
 
-- [dataset/ssvep_profiles](C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\dataset\ssvep_profiles)
+- [dataset/ssvep_profiles](../dataset/ssvep_profiles)
 
 其中：
 - 历史 profile：`ssvep_fbcca_profile_YYYYMMDD_HHMMSS.json`

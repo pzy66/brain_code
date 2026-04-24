@@ -50,9 +50,6 @@ from hybrid_controller.runtime_state import (
     RuntimeStore,
 )
 from hybrid_controller.ssvep.runtime import SSVEPRuntime
-from hybrid_controller.vision.processing import packet_to_targets
-from hybrid_controller.vision.runtime import VisionRuntime
-from hybrid_controller.vision.target_resolver import resolve_vision_packet
 
 try:
     from PyQt5.QtCore import QObject, Qt, QTimer, pyqtSignal
@@ -727,16 +724,23 @@ class HybridControllerApplication:
         return importlib.util.find_spec(module_name) is not None
 
     @staticmethod
-    def _expected_brain_vision_python() -> Path | None:
+    def _expected_brain_code_python() -> Path | None:
         override = os.environ.get("BRAIN_PYTHON_EXE", "").strip()
         if override:
             path = Path(override).expanduser()
             return path if path.exists() else None
+        if os.name == "nt":
+            python_name = "python.exe"
+            venv_dir = "Scripts"
+        else:
+            python_name = "python"
+            venv_dir = "bin"
         home = Path.home()
         candidates = (
-            home / "miniconda3" / "envs" / "brain-vision" / "python.exe",
-            home / "anaconda3" / "envs" / "brain-vision" / "python.exe",
-            home / "mambaforge" / "envs" / "brain-vision" / "python.exe",
+            Path(__file__).resolve().parents[1] / ".venv" / venv_dir / python_name,
+            home / "miniconda3" / "envs" / "brain_code" / venv_dir / python_name,
+            home / "anaconda3" / "envs" / "brain_code" / venv_dir / python_name,
+            home / "mambaforge" / "envs" / "brain_code" / venv_dir / python_name,
         )
         for candidate in candidates:
             if candidate.exists():
@@ -869,10 +873,10 @@ class HybridControllerApplication:
         if not missing_modules:
             return
 
-        expected_python = self._expected_brain_vision_python()
+        expected_python = self._expected_brain_code_python()
         if expected_python is None:
             expected_hint = (
-                "Expected interpreter: brain-vision (not found automatically). "
+                "Expected interpreter: repo-local .venv or a Conda env named brain_code. "
                 "Set BRAIN_PYTHON_EXE to an absolute python.exe path if needed."
             )
         else:
@@ -902,6 +906,13 @@ class HybridControllerApplication:
             return
         if self.config.vision_mode not in {"real", "robot_camera_detection"}:
             self._rt_set("vision_health", f"disabled:{self.config.vision_mode}")
+            return
+
+        try:
+            from hybrid_controller.vision.runtime import VisionRuntime
+        except Exception as error:
+            self._handle_runtime_status("vision", f"Vision runtime unavailable: {error}")
+            self._rt_set("vision_health", "env_missing_deps")
             return
 
         calibration_params = self._fetch_vision_calibration_params()
@@ -1700,6 +1711,8 @@ class HybridControllerApplication:
         return build_pick_command_from_mode_and_point(mode, point)
 
     def _resolve_vision_packet(self, packet: dict[str, object]) -> dict[str, object]:
+        from hybrid_controller.vision.target_resolver import resolve_vision_packet
+
         snapshot = self._fetch_remote_robot_snapshot()
         snapshot_age_ms = float(self._compute_remote_snapshot_age_ms())
         self._rt_set("vision_snapshot_age_ms", snapshot_age_ms)
@@ -2287,6 +2300,8 @@ class HybridControllerApplication:
     def _on_vision_packet_received(self, packet: object) -> None:
         if not isinstance(packet, dict):
             return
+        from hybrid_controller.vision.processing import packet_to_targets
+
         resolved_packet = self._resolve_vision_packet(packet)
         self._latest_vision_packet = resolved_packet
         targets = packet_to_targets(resolved_packet)

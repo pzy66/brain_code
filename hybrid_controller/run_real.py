@@ -39,7 +39,21 @@ DEFAULT_ARGS = [
 ]
 
 
-def _enforce_brain_vision_interpreter() -> None:
+def _candidate_brain_code_pythons() -> tuple[Path, ...]:
+    if os.name == "nt":
+        python_parts = ("python.exe",)
+        venv_dir = "Scripts"
+    else:
+        python_parts = ("python",)
+        venv_dir = "bin"
+    home = Path.home()
+    candidates = [PROJECT_ROOT / ".venv" / venv_dir / python_parts[0]]
+    for root_name in ("miniconda3", "anaconda3", "mambaforge"):
+        candidates.append(home / root_name / "envs" / "brain_code" / venv_dir / python_parts[0])
+    return tuple(candidates)
+
+
+def _enforce_brain_code_interpreter() -> None:
     override = os.environ.get("BRAIN_PYTHON_EXE", "").strip()
     if override:
         override_path = Path(override).expanduser()
@@ -47,16 +61,11 @@ def _enforce_brain_vision_interpreter() -> None:
             raise SystemExit(
                 "Interpreter mismatch.\n"
                 f"BRAIN_PYTHON_EXE is set but missing: {override_path}\n"
-                "Please fix BRAIN_PYTHON_EXE or switch PyCharm interpreter to brain-vision."
+                "Please fix BRAIN_PYTHON_EXE or switch PyCharm interpreter to the repo .venv or your brain_code environment."
             )
         expected = override_path.resolve()
     else:
-        home = Path.home()
-        candidates = (
-            home / "miniconda3" / "envs" / "brain-vision" / "python.exe",
-            home / "anaconda3" / "envs" / "brain-vision" / "python.exe",
-            home / "mambaforge" / "envs" / "brain-vision" / "python.exe",
-        )
+        candidates = _candidate_brain_code_pythons()
         expected = next((path.resolve() for path in candidates if path.exists()), None)
     if expected is None:
         return
@@ -67,7 +76,7 @@ def _enforce_brain_vision_interpreter() -> None:
         "Interpreter mismatch.\n"
         f"Current: {current}\n"
         f"Expected: {expected}\n"
-        "Please switch PyCharm interpreter to brain-vision and run again.\n"
+        "Please switch PyCharm interpreter to the repo .venv or your brain_code environment and run again.\n"
         "Optional override: set BRAIN_PYTHON_EXE to an absolute python.exe path."
     )
 
@@ -94,7 +103,7 @@ def _normalize_legacy_rosbridge_port(args: list[str]) -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    _enforce_brain_vision_interpreter()
+    _enforce_brain_code_interpreter()
     from hybrid_controller.app import main as app_main
 
     extra_args = sys.argv[1:] if argv is None else list(argv)

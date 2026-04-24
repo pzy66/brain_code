@@ -1,0 +1,142 @@
+from __future__ import annotations
+
+import sys
+from importlib import import_module
+from pathlib import Path
+from typing import Any
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from brainflow_compat import ensure_brainflow_compat
+
+
+ensure_brainflow_compat()
+
+__all__ = [
+    "ENHANCED_45M_PROTOCOL",
+    "CollectionProtocol",
+    "LoadedDataset",
+    "build_collection_trials",
+    "infer_trial_role",
+    "summarize_trial_roles",
+    "load_collection_dataset",
+    "save_collection_dataset_bundle",
+    "BaseDecoder",
+    "DecoderOutput",
+    "FBCCADecoder",
+    "TRCARDecoder",
+    "TDCADecoder",
+    "AsyncGateAdapter",
+    "BaseGate",
+    "GateOutput",
+    "GlobalThresholdGate",
+    "PerFrequencyLogRegGate",
+    "RollingFeatureHistory",
+    "EvidenceAccumulator",
+    "EvidenceAccumulatorConfig",
+    "DecisionEngine",
+    "DecisionEngineConfig",
+    "DecisionState",
+    "StateMachineConfig",
+    "ReplayEvaluator",
+    "ReplayEvaluatorConfig",
+    "build_replay_stream_from_trials",
+    "ShadowRuntimeChain",
+    "build_shadow_runtime_chain",
+    "BoardShim",
+    "describe_runtime_error",
+    "ensure_stream_ready",
+    "normalize_serial_port",
+    "prepare_board_session",
+    "read_recent_eeg_segment",
+    "resolve_selected_eeg_channels",
+    "SUPPORTED_MODEL_NAMES",
+    "DecoderModelAdapter",
+    "create_model_adapter",
+    "ModelRegistry",
+    "ArtifactStore",
+    "ArtifactKey",
+    "BenchmarkReport",
+    "evaluate_models",
+    "enrich_primary_metrics",
+    "ProfileV2",
+    "build_profile_v2",
+    "PROFILE_V2_VERSION",
+    "is_profile_v2_payload",
+    "export_evaluation_figures",
+    "OfflineTrainEvalConfig",
+    "run_offline_train_eval",
+    "TDCALocalOptConfig",
+    "run_tdca_local_opt",
+]
+
+_EXPORT_MAP = {
+    "ENHANCED_45M_PROTOCOL": (".dataset", "ENHANCED_45M_PROTOCOL"),
+    "CollectionProtocol": (".dataset", "CollectionProtocol"),
+    "LoadedDataset": (".dataset", "LoadedDataset"),
+    "build_collection_trials": (".dataset", "build_collection_trials"),
+    "infer_trial_role": (".dataset", "infer_trial_role"),
+    "summarize_trial_roles": (".dataset", "summarize_trial_roles"),
+    "load_collection_dataset": (".dataset", "load_collection_dataset"),
+    "save_collection_dataset_bundle": (".dataset", "save_collection_dataset_bundle"),
+    "BaseDecoder": (".decoders", "BaseDecoder"),
+    "DecoderOutput": (".decoders", "DecoderOutput"),
+    "FBCCADecoder": (".decoders", "FBCCADecoder"),
+    "TRCARDecoder": (".decoders", "TRCARDecoder"),
+    "TDCADecoder": (".decoders", "TDCADecoder"),
+    "AsyncGateAdapter": (".gate", "AsyncGateAdapter"),
+    "BaseGate": (".gating", "BaseGate"),
+    "GateOutput": (".gating", "GateOutput"),
+    "GlobalThresholdGate": (".gating", "GlobalThresholdGate"),
+    "PerFrequencyLogRegGate": (".gating", "PerFrequencyLogRegGate"),
+    "RollingFeatureHistory": (".gating", "RollingFeatureHistory"),
+    "EvidenceAccumulator": (".decision", "EvidenceAccumulator"),
+    "EvidenceAccumulatorConfig": (".decision", "EvidenceAccumulatorConfig"),
+    "DecisionEngine": (".decision", "DecisionEngine"),
+    "DecisionEngineConfig": (".decision", "DecisionEngineConfig"),
+    "DecisionState": (".decision", "DecisionState"),
+    "StateMachineConfig": (".decision", "StateMachineConfig"),
+    "ReplayEvaluator": (".evaluation", "ReplayEvaluator"),
+    "ReplayEvaluatorConfig": (".evaluation", "ReplayEvaluatorConfig"),
+    "build_replay_stream_from_trials": (".evaluation", "build_replay_stream_from_trials"),
+    "ShadowRuntimeChain": (".runtime_shadow", "ShadowRuntimeChain"),
+    "build_shadow_runtime_chain": (".runtime_shadow", "build_shadow_runtime_chain"),
+    "BoardShim": (".io_brainflow", "BoardShim"),
+    "describe_runtime_error": (".io_brainflow", "describe_runtime_error"),
+    "ensure_stream_ready": (".io_brainflow", "ensure_stream_ready"),
+    "normalize_serial_port": (".io_brainflow", "normalize_serial_port"),
+    "prepare_board_session": (".io_brainflow", "prepare_board_session"),
+    "read_recent_eeg_segment": (".io_brainflow", "read_recent_eeg_segment"),
+    "resolve_selected_eeg_channels": (".io_brainflow", "resolve_selected_eeg_channels"),
+    "SUPPORTED_MODEL_NAMES": (".models", "SUPPORTED_MODEL_NAMES"),
+    "DecoderModelAdapter": (".models", "DecoderModelAdapter"),
+    "create_model_adapter": (".models", "create_model_adapter"),
+    "ModelRegistry": (".registry", "ModelRegistry"),
+    "ArtifactStore": (".artifact_store", "ArtifactStore"),
+    "ArtifactKey": (".artifact_store", "ArtifactKey"),
+    "BenchmarkReport": (".benchmark_suite", "BenchmarkReport"),
+    "evaluate_models": (".benchmark_suite", "evaluate_models"),
+    "enrich_primary_metrics": (".benchmark_suite", "enrich_primary_metrics"),
+    "ProfileV2": (".profile_v2", "ProfileV2"),
+    "build_profile_v2": (".profile_v2", "build_profile_v2"),
+    "PROFILE_V2_VERSION": (".profile_v2", "PROFILE_V2_VERSION"),
+    "is_profile_v2_payload": (".profile_v2", "is_profile_v2_payload"),
+    "export_evaluation_figures": (".reporting", "export_evaluation_figures"),
+    "OfflineTrainEvalConfig": (".train_eval", "OfflineTrainEvalConfig"),
+    "run_offline_train_eval": (".train_eval", "run_offline_train_eval"),
+    "TDCALocalOptConfig": (".tdca_local_opt", "TDCALocalOptConfig"),
+    "run_tdca_local_opt": (".tdca_local_opt", "run_tdca_local_opt"),
+}
+
+
+def __getattr__(name: str) -> Any:
+    if name not in _EXPORT_MAP:
+        raise AttributeError(f"module 'ssvep_core' has no attribute {name!r}")
+    module_name, attr_name = _EXPORT_MAP[name]
+    module = import_module(module_name, __name__)
+    value = getattr(module, attr_name)
+    globals()[name] = value
+    return value

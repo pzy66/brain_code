@@ -10,6 +10,13 @@ from typing import Any
 from pathlib import Path
 
 import numpy as np
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+SHARED_ROOT = PROJECT_ROOT / "code" / "shared"
+if str(SHARED_ROOT) not in sys.path:
+    sys.path.insert(0, str(SHARED_ROOT))
+
+import src  # noqa: F401
+
 from brainflow.board_shim import BoardIds, BoardShim, BrainFlowInputParams
 from brainflow.data_filter import DataFilter, DetrendOperations, FilterTypes, NoiseTypes
 from PyQt5.QtCore import QObject, QPointF, QThread, Qt, pyqtSignal
@@ -33,12 +40,7 @@ from PyQt5.QtWidgets import (
 )
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-SHARED_ROOT = PROJECT_ROOT / "code" / "shared"
-if str(SHARED_ROOT) not in sys.path:
-    sys.path.insert(0, str(SHARED_ROOT))
-
-from src.serial_ports import detect_serial_ports  # noqa: E402
+from src.serial_ports import detect_serial_ports, validate_serial_port_selection  # noqa: E402
 
 
 DEFAULT_BOARD_ID = 0
@@ -63,6 +65,42 @@ def board_options() -> list[tuple[str, int]]:
             continue
         options.append((name.replace("_BOARD", "").replace("_", " ").title(), int(board.value)))
     return options
+
+
+def _format_serial_port_validation_error(serial_port: str, validation: dict[str, object]) -> str:
+    selected_port = str(validation.get("requested_port") or serial_port).strip() or str(serial_port).strip()
+    detected_ports = [str(item) for item in validation.get("detected_ports", []) if str(item).strip()]
+    windows_status = str(validation.get("windows_status", "")).strip()
+    problem_code = str(validation.get("problem_code", "")).strip()
+    problem_status = str(validation.get("problem_status", "")).strip()
+
+    if str(validation.get("reason", "")) == "windows_unavailable":
+        parts = [f"Serial port {selected_port} is marked unavailable by Windows."]
+        if windows_status:
+            parts.append(f" status={windows_status}.")
+        if problem_code:
+            parts.append(f" problem_code={problem_code}.")
+        if problem_status:
+            parts.append(f" problem_status={problem_status}.")
+        if detected_ports:
+            parts.append(f" Detected ports: {', '.join(detected_ports)}.")
+        parts.append(" Check the cable, driver, and whether another app is holding the port.")
+        return "".join(parts)
+
+    if detected_ports:
+        return (
+            f"Serial port {selected_port} is not in the detected device list. "
+            f"Detected ports: {', '.join(detected_ports)}. Refresh ports and confirm the device port."
+        )
+    return "No usable serial ports were detected. Check power, cable, and driver, then refresh the port list."
+
+
+def _serial_port_override_note(validation: dict[str, object]) -> str:
+    selected_port = str(validation.get("requested_port", "")).strip()
+    return (
+        f"No usable serial ports were detected, but the app will still try the manually entered port {selected_port}. "
+        "If connection fails, recheck power, cable, driver, and port occupancy."
+    )
 
 
 class StackedWaveformWidget(QWidget):
@@ -833,6 +871,12 @@ class MonitorWindow(QMainWindow):
         serial_port = "" if is_synthetic else self.serial_combo.currentText().strip()
         if not is_synthetic and not serial_port:
             raise ValueError("Physical board requires a serial port, for example COM4.")
+        if not is_synthetic:
+            serial_validation = validate_serial_port_selection(serial_port)
+            if not bool(serial_validation.get("ok")):
+                raise ValueError(_format_serial_port_validation_error(serial_port, serial_validation))
+            if str(serial_validation.get("reason", "")) == "manual_override":
+                self.log(_serial_port_override_note(serial_validation))
 
         return {
             "board_id": board_id,

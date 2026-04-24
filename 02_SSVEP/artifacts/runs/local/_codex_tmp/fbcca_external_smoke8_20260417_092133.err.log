@@ -1,0 +1,2 @@
+D:\brain\brain_code\.venv\lib\site-packages\cupyx\jit\_interface.py:247: FutureWarning: cupyx.jit.rawkernel is experimental. The interface can change in the future.
+  cupy._util.experimental('cupyx.jit.rawkernel')

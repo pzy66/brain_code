@@ -2,6 +2,7 @@ import os
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
@@ -109,6 +110,94 @@ class MIDataCollectorPreviewTests(unittest.TestCase):
         self.assertEqual(stream_calls, {"stop": 1, "start": 1})
         self.assertIsNone(worker._hw_impedance_channel)
         self.assertEqual(worker.current_quality_mode, worker.MODE_IMPEDANCE)
+
+    def test_initial_connection_retries_transient_start_stream_failure(self) -> None:
+        cyton_board = getattr(BoardIds, "CYTON_BOARD", None)
+        self.assertIsNotNone(cyton_board)
+
+        worker = BoardCaptureWorker(
+            board_id=int(cyton_board.value),
+            serial_port="COM3",
+            channel_positions=list(range(8)),
+            channel_names=["C3", "Cz", "C4", "PO3", "PO4", "O1", "Oz", "O2"],
+        )
+
+        connection_events: list[dict[str, object]] = []
+        worker.connection_ready.connect(lambda info: (connection_events.append(dict(info)), worker.stop_event.set()))
+        errors: list[str] = []
+        worker.error_occurred.connect(lambda message: errors.append(str(message)))
+
+        class FakeInputParams:
+            def __init__(self) -> None:
+                self.serial_port = ""
+
+        class FakeBoardShim:
+            start_attempts = 0
+            instances: list["FakeBoardShim"] = []
+
+            def __init__(self, board_id: int, params: object) -> None:
+                self.board_id = int(board_id)
+                self.params = params
+                self.stop_calls = 0
+                self.release_calls = 0
+                FakeBoardShim.instances.append(self)
+
+            @staticmethod
+            def release_all_sessions() -> None:
+                return None
+
+            @staticmethod
+            def get_eeg_channels(_board_id: int) -> list[int]:
+                return list(range(8))
+
+            @staticmethod
+            def get_marker_channel(_board_id: int) -> int:
+                return 8
+
+            @staticmethod
+            def get_timestamp_channel(_board_id: int) -> int:
+                return 9
+
+            @staticmethod
+            def get_package_num_channel(_board_id: int) -> int:
+                return 10
+
+            @staticmethod
+            def get_board_descr(_board_id: int) -> dict[str, object]:
+                return {"name": "fake_cyton"}
+
+            @staticmethod
+            def get_sampling_rate(_board_id: int) -> float:
+                return 250.0
+
+            def prepare_session(self) -> None:
+                return None
+
+            def start_stream(self, _buffer_size: int) -> None:
+                FakeBoardShim.start_attempts += 1
+                if FakeBoardShim.start_attempts == 1:
+                    raise RuntimeError("transient start failure")
+
+            def get_board_data(self) -> np.ndarray:
+                return np.empty((11, 0), dtype=np.float32)
+
+            def stop_stream(self) -> None:
+                self.stop_calls += 1
+
+            def release_session(self) -> None:
+                self.release_calls += 1
+
+        with patch("mi_data_collector.BoardShim", FakeBoardShim), patch(
+            "mi_data_collector.BrainFlowInputParams",
+            FakeInputParams,
+        ), patch("mi_data_collector.time.sleep", lambda *_args, **_kwargs: None):
+            worker.run()
+
+        self.assertEqual(errors, [])
+        self.assertEqual(len(connection_events), 1)
+        self.assertEqual(FakeBoardShim.start_attempts, 2)
+        self.assertEqual(FakeBoardShim.instances[0].stop_calls, 2)
+        self.assertEqual(FakeBoardShim.instances[0].release_calls, 1)
 
 
 class MIDataCollectorResponsiveUiTests(unittest.TestCase):

@@ -31,7 +31,13 @@ class MICollectionManifestCompatibilityTests(unittest.TestCase):
     def tearDown(self) -> None:
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
-    def _save_single_trial_session(self, *, subject_id: str, session_id: str) -> dict[str, str]:
+    def _save_single_trial_session(
+        self,
+        *,
+        subject_id: str,
+        session_id: str,
+        include_cue_end: bool = False,
+    ) -> dict[str, str]:
         sampling_rate = 250.0
         brainflow_data = np.zeros((10, 2700), dtype=np.float32)
         marker_row = 8
@@ -41,6 +47,7 @@ class MICollectionManifestCompatibilityTests(unittest.TestCase):
                 np.linspace(0.0, 10.0, brainflow_data.shape[1], dtype=np.float32) + float(channel_index)
             )
 
+        cue_end_sample = 900
         markers = [
             (0, "session_start", {}),
             (10, "trial_start", {"trial_id": 1, "class_name": "left_hand", "run_index": 1, "run_trial_index": 1}),
@@ -56,6 +63,15 @@ class MICollectionManifestCompatibilityTests(unittest.TestCase):
             (2513, "trial_end", {"trial_id": 1, "class_name": "left_hand", "run_index": 1, "run_trial_index": 1}),
             (2699, "session_end", {}),
         ]
+        if include_cue_end:
+            markers.insert(
+                7,
+                (
+                    cue_end_sample,
+                    "cue_end",
+                    {"trial_id": 1, "class_name": "left_hand", "run_index": 1, "run_trial_index": 1},
+                ),
+            )
 
         event_log = []
         for sample_index, event_name, extra in markers:
@@ -188,6 +204,22 @@ class MICollectionManifestCompatibilityTests(unittest.TestCase):
 
         self.assertEqual(int(result["save_index"]), 2)
         self.assertIn("_run-002_", Path(result["meta_json_path"]).name)
+
+    def test_cue_end_marker_closes_cue_segment_before_imagery_prepare_audio(self) -> None:
+        result = self._save_single_trial_session(
+            subject_id="cue_end",
+            session_id="segment_boundary",
+            include_cue_end=True,
+        )
+
+        with Path(result["segments_csv_path"]).open("r", encoding="utf-8-sig", newline="") as handle:
+            rows = list(csv.DictReader(handle))
+
+        cue_row = next(row for row in rows if row["segment_type"] == "cue")
+        imagery_row = next(row for row in rows if row["segment_type"] == "imagery")
+        self.assertEqual(cue_row["end_sample"], "900")
+        self.assertEqual(cue_row["source_end_event"], "cue_end")
+        self.assertEqual(imagery_row["start_sample"], "1012")
 
 
 if __name__ == "__main__":

@@ -24,19 +24,22 @@
 
 ## 2. 解释器与环境（必须先确认）
 
-本项目按单解释器收口，默认使用：
+本项目按单解释器收口，默认优先使用仓库内 `.venv`：
 
-`C:\Users\P1233\miniconda3\envs\brain-vision\python.exe`
+`.\.venv\Scripts\python.exe`
 
-`run_real.py` 和 `run_real_ssvep.py` 含解释器守卫，若不是 `brain-vision` 会直接退出并提示 `Interpreter mismatch`。
+如果你的电脑不用 repo 内 `.venv`，也可以使用你自己准备的 `brain_code` 环境，并通过 `BRAIN_PYTHON_EXE` 显式覆盖。
+
+`run_real.py` 和 `run_real_ssvep.py` 含解释器守卫；它们会优先识别 repo `.venv`，其次识别常见的 `brain_code` 环境，不再写死某一台机器的绝对路径。
 
 ### PyCharm 推荐设置
 
 1. 从仓库根目录打开项目：`C:\Users\P1233\Desktop\brain`
-2. `Settings -> Python Interpreter` 选择已有 Conda 环境 `brain-vision`
+2. `Settings -> Python Interpreter` 选择 repo 内 `.venv`，或你自己的 `brain_code` 环境
 3. 确认解释器路径是：
-   - `C:\Users\P1233\miniconda3\envs\brain-vision\python.exe`
-4. 删除或禁用旧的 `.venv` 运行配置，避免误用旧路径
+   - `.\.venv\Scripts\python.exe`
+   - 或你的 `brain_code` 环境对应 `python.exe`
+4. 如需强制指定解释器，可设置环境变量 `BRAIN_PYTHON_EXE`
 
 ---
 
@@ -49,19 +52,19 @@
 ### 步骤 2：电脑端远程拉起机械臂 ROS runtime
 
 ```powershell
-C:\Users\P1233\miniconda3\envs\brain-vision\python.exe C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\robot\tools\jetmax_start_ros_runtime.py --host 192.168.149.1 --user hiwonder --password hiwonder --remote-root /home/hiwonder/brain_code
+.\.venv\Scripts\python.exe .\hybrid_controller\robot\tools\jetmax_start_ros_runtime.py --host 192.168.149.1 --user hiwonder --password hiwonder --remote-root /home/hiwonder/brain_code
 ```
 
 ### 步骤 3：启动 GUI（SSVEP 版本）
 
 ```powershell
-C:\Users\P1233\miniconda3\envs\brain-vision\python.exe C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\run_real_ssvep.py
+.\.venv\Scripts\python.exe .\hybrid_controller\run_real_ssvep.py
 ```
 
 如果只做键盘/视觉调试，不用 SSVEP 识别，可运行：
 
 ```powershell
-C:\Users\P1233\miniconda3\envs\brain-vision\python.exe C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\run_real.py
+.\.venv\Scripts\python.exe .\hybrid_controller\run_real.py
 ```
 
 ---
@@ -154,13 +157,13 @@ bash run_hybrid_controller_ros_runtime.sh
 ### 8.1 ROS 服务状态
 
 ```powershell
-C:\Users\P1233\miniconda3\envs\brain-vision\python.exe C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\robot\tools\ros_service_probe.py --host 192.168.149.1 --port 9091 --action status
+.\.venv\Scripts\python.exe .\hybrid_controller\robot\tools\ros_service_probe.py --host 192.168.149.1 --port 9091 --action status
 ```
 
 ### 8.2 快速动作探针
 
 ```powershell
-C:\Users\P1233\miniconda3\envs\brain-vision\python.exe C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\robot\tools\ros_service_probe.py --host 192.168.149.1 --port 9091 --action move_cyl_auto --theta 0 --radius 170
+.\.venv\Scripts\python.exe .\hybrid_controller\robot\tools\ros_service_probe.py --host 192.168.149.1 --port 9091 --action move_cyl_auto --theta 0 --radius 170
 ```
 
 ---

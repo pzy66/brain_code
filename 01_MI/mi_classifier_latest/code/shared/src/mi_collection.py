@@ -89,6 +89,7 @@ EVENT_CODE_MAP = {
     111: "baseline_end",
     112: "fixation_start",
     120: "cue_start",
+    122: "cue_end",
     121: "imagery_start",
     130: "mi_run_start",
     131: "mi_run_end",
@@ -201,7 +202,7 @@ class SessionSettings:
     run_rest_sec: float = 60.0
     long_run_rest_every: int = 2
     long_run_rest_sec: float = 120.0
-    quality_check_sec: float = 45.0
+    quality_check_sec: float = 0.0
     practice_sec: float = 180.0
     calibration_open_sec: float = 60.0
     calibration_closed_sec: float = 60.0
@@ -212,8 +213,8 @@ class SessionSettings:
     calibration_head_sec: float = 20.0
     idle_block_count: int = 2
     idle_block_sec: float = 60.0
-    idle_prepare_block_count: int = 2
-    idle_prepare_sec: float = 60.0
+    idle_prepare_block_count: int = 0
+    idle_prepare_sec: float = 0.0
     continuous_block_count: int = 2
     continuous_block_sec: float = 240.0
     continuous_command_min_sec: float = 4.0
@@ -549,7 +550,7 @@ def _update_trials_from_events(
             continue
         event_name = str(event.get("event_name"))
         trial = by_id[trial_key]
-        if event_name.startswith("cue_") or event_name == "cue_start":
+        if (event_name.startswith("cue_") and event_name != "cue_end") or event_name == "cue_start":
             _set_earliest_sample(trial, "cue_onset_sample", int(sample_index))
         elif event_name == "imagery_end":
             trial.imagery_offset_sample = int(sample_index)
@@ -930,24 +931,34 @@ def _build_segment_rows(
             trial_id=trial_id,
             event_names=["cue_start", f"cue_{class_name}"],
         )
+        cue_end_event = _first_matching_event(events, trial_id=trial_id, event_names=["cue_end"])
         imagery_start_event = _first_matching_event(
             events,
             trial_id=trial_id,
             event_names=["imagery_start", f"imagery_{class_name}"],
         )
         cue_start = None if cue_start_event is None else int(cue_start_event["sample_index"])
+        cue_end = (
+            int(cue_end_event["sample_index"])
+            if cue_end_event is not None
+            else (None if imagery_start_event is None else int(imagery_start_event["sample_index"]))
+        )
         imagery_start = None if imagery_start_event is None else int(imagery_start_event["sample_index"])
         _append_segment(
             segment_type="cue",
             start_sample=cue_start,
-            end_sample=imagery_start,
+            end_sample=cue_end,
             label=class_name,
             trial_id=trial_id,
             mi_run_index=mi_run_index,
             run_trial_index=run_trial_index,
             accepted=trial.accepted,
             source_start_event="" if cue_start_event is None else str(cue_start_event.get("event_name", "")),
-            source_end_event="" if imagery_start_event is None else str(imagery_start_event.get("event_name", "")),
+            source_end_event=(
+                str(cue_end_event.get("event_name", ""))
+                if cue_end_event is not None
+                else ("" if imagery_start_event is None else str(imagery_start_event.get("event_name", "")))
+            ),
         )
 
         imagery_end_event = _first_matching_event(events, trial_id=trial_id, event_names=["imagery_end"])

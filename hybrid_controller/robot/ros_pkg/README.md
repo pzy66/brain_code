@@ -4,7 +4,7 @@
 
 当前唯一包：
 
-- [hybrid_controller_ros](C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\robot\ros_pkg\hybrid_controller_ros)
+- [hybrid_controller_ros](./hybrid_controller_ros)
 
 它负责提供：
 - `/hybrid_controller/teleop_cyl_cmd`

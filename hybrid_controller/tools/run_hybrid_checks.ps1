@@ -1,9 +1,16 @@
 param(
-    [string]$PythonExe = "C:\Users\P1233\miniconda3\envs\brain-vision\python.exe",
-    [string]$Root = (Split-Path -Parent $PSScriptRoot)
+    [string]$Root = (Split-Path -Parent $PSScriptRoot),
+    [string]$PythonExe = ""
 )
 
 $resolvedRoot = (Resolve-Path -LiteralPath $Root).Path
+if (-not $PythonExe) {
+    if ($env:BRAIN_PYTHON_EXE) {
+        $PythonExe = $env:BRAIN_PYTHON_EXE
+    } else {
+        $PythonExe = Join-Path $resolvedRoot ".venv\Scripts\python.exe"
+    }
+}
 Write-Output "[check] root=$resolvedRoot"
 Write-Output "[check] python=$PythonExe"
 

@@ -57,10 +57,10 @@ bash run_hybrid_controller_ros_runtime.sh
 
 ## 桌面端一键远程启动（推荐）
 
-在 Windows（`brain-vision` 解释器）执行：
+在 Windows（repo `.venv` 或你自己的 `brain_code` 环境）执行：
 
 ```powershell
-C:\Users\P1233\miniconda3\envs\brain-vision\python.exe C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\robot\tools\jetmax_start_ros_runtime.py --host 192.168.149.1 --user hiwonder --password hiwonder --remote-root /home/hiwonder/brain_code
+.\.venv\Scripts\python.exe .\hybrid_controller\robot\tools\jetmax_start_ros_runtime.py --host 192.168.149.1 --user hiwonder --password hiwonder --remote-root /home/hiwonder/brain_code
 ```
 
 这个工具会：
@@ -77,13 +77,13 @@ C:\Users\P1233\miniconda3\envs\brain-vision\python.exe C:\Users\P1233\Desktop\br
 ## 常用健康检查
 
 ```powershell
-C:\Users\P1233\miniconda3\envs\brain-vision\python.exe C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\robot\tools\ros_service_probe.py --host 192.168.149.1 --port 9091 --action status
+.\.venv\Scripts\python.exe .\hybrid_controller\robot\tools\ros_service_probe.py --host 192.168.149.1 --port 9091 --action status
 ```
 
 如果要额外验证 TCP 兼容端口：
 
 ```powershell
-C:\Users\P1233\miniconda3\envs\brain-vision\python.exe C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\robot\tools\jetmax_start_ros_runtime.py --host 192.168.149.1 --user hiwonder --password hiwonder --require-tcp-check
+.\.venv\Scripts\python.exe .\hybrid_controller\robot\tools\jetmax_start_ros_runtime.py --host 192.168.149.1 --user hiwonder --password hiwonder --require-tcp-check
 ```
 
 ## legacy（保留但非主线）
