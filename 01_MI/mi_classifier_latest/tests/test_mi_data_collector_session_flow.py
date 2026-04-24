@@ -39,6 +39,7 @@ class MIDataCollectorSessionFlowTests(unittest.TestCase):
         window.waiting_for_save = False
         window.session_paused = False
         window.capture_on_stop = True
+        window.audio_prompts_enabled = False
         window.event_log = []
         window.trial_records = []
 
@@ -103,6 +104,8 @@ class MIDataCollectorSessionFlowTests(unittest.TestCase):
             window.connect_button,
             window.start_button,
             window.start_mi_only_button,
+            window.show_plan_button,
+            window.show_mi_only_plan_button,
             window.pause_button,
             window.bad_trial_button,
             window.stop_button,
@@ -113,7 +116,6 @@ class MIDataCollectorSessionFlowTests(unittest.TestCase):
     def test_finish_session_does_not_duplicate_terminal_end_markers(self) -> None:
         phase_cases = [
             ("idle_block", "idle_block_end", {"block_index": 1}, {"idle_block_index": 1}),
-            ("idle_prepare", "idle_prepare_end", {"block_index": 1}, {"idle_prepare_block_index": 1}),
             ("continuous", "continuous_block_end", {"block_index": 2}, {"continuous_block_index": 2}),
         ]
 
@@ -139,6 +141,51 @@ class MIDataCollectorSessionFlowTests(unittest.TestCase):
                     window.waiting_for_save = False
                     window.worker_thread = None
                     window.close()
+
+    def test_formal_protocol_starts_with_calibration_even_if_quality_check_duration_is_configured(self) -> None:
+        window = self._build_window_with_fake_session()
+        transition_markers: list[str] = []
+        try:
+            settings = self._build_settings()
+            settings.quality_check_sec = 45.0
+            window.current_settings = settings
+            window.calibration_plan = window._build_calibration_plan(settings)
+            window.use_separate_participant_screen = False
+            window._start_next_calibration_step = lambda: transition_markers.append("calibration_step_started")
+
+            window._start_formal_protocol()
+
+            self.assertEqual(
+                [str(event["event_name"]) for event in window.event_log],
+                ["calibration_start"],
+            )
+            self.assertEqual(transition_markers, ["calibration_step_started"])
+        finally:
+            window.session_running = False
+            window.waiting_for_save = False
+            window.worker_thread = None
+            window.close()
+
+    def test_formal_protocol_without_calibration_plan_starts_post_calibration_sequence_directly(self) -> None:
+        window = self._build_window_with_fake_session()
+        markers: list[str] = []
+        try:
+            settings = self._build_settings()
+            settings.quality_check_sec = 45.0
+            window.current_settings = settings
+            window.calibration_plan = []
+            window.use_separate_participant_screen = False
+            window._start_post_calibration_sequence = lambda: markers.append("post_calibration_started")
+
+            window._start_formal_protocol()
+
+            self.assertEqual([str(event["event_name"]) for event in window.event_log], [])
+            self.assertEqual(markers, ["post_calibration_started"])
+        finally:
+            window.session_running = False
+            window.waiting_for_save = False
+            window.worker_thread = None
+            window.close()
 
     def test_config_section_defaults_to_device(self) -> None:
         window = MIDataCollectorWindow()
@@ -179,11 +226,83 @@ class MIDataCollectorSessionFlowTests(unittest.TestCase):
 
             self.assertEqual(
                 self._visible_control_button_names(window),
-                {"btnStart", "btnStartMiOnly", "btnDisconnect"},
+                {"btnStart", "btnStartMiOnly", "btnShowPlan", "btnShowMiOnlyPlan", "btnDisconnect"},
             )
+            self.assertTrue(window.show_plan_button.isEnabled())
+            self.assertTrue(window.show_mi_only_plan_button.isEnabled())
             self.assertEqual(window.control_layout_columns, 1)
         finally:
             window.worker_thread = None
+            window.close()
+
+    def test_full_session_plan_lists_calibration_continuous_and_total_duration(self) -> None:
+        window = MIDataCollectorWindow()
+        try:
+            settings = self._build_settings()
+            settings.practice_sec = 3.0
+            settings.run_rest_sec = 9.0
+            settings.long_run_rest_every = 0
+            settings.long_run_rest_sec = 0.0
+            settings.calibration_open_sec = 4.0
+            settings.calibration_closed_sec = 5.0
+            settings.calibration_eye_sec = 6.0
+            settings.calibration_blink_sec = 0.0
+            settings.calibration_swallow_sec = 0.0
+            settings.calibration_jaw_sec = 0.0
+            settings.calibration_head_sec = 0.0
+            settings.artifact_types = ["eye_movement"]
+            settings.continuous_block_count = 1
+            settings.continuous_block_sec = 10.0
+            settings.idle_block_count = 1
+            settings.idle_block_sec = 8.0
+
+            plan = window._build_session_plan(settings)
+            plan_text = window._format_session_plan(plan)
+
+            self.assertEqual(plan["protocol_mode"], "full")
+            self.assertEqual(plan["trials_per_run"], 4)
+            self.assertEqual(plan["total_trials"], 8)
+            self.assertAlmostEqual(float(plan["mi_duration_sec"]), 40.0)
+            self.assertAlmostEqual(float(plan["total_duration_sec"]), 85.0)
+            self.assertIn("总时间：1 分 25 秒", plan_text)
+            self.assertIn("睁眼静息", plan_text)
+            self.assertIn("想象训练：3 秒", plan_text)
+            self.assertIn("MI run 1（4 个试次）：20 秒", plan_text)
+            self.assertIn("连续模式 1：10 秒", plan_text)
+            self.assertIn("无控制 1：8 秒", plan_text)
+        finally:
+            window.close()
+
+    def test_mi_only_session_plan_removes_calibration_rest_and_post_blocks(self) -> None:
+        window = MIDataCollectorWindow()
+        try:
+            settings = self._build_settings()
+            settings.protocol_mode = "mi_only"
+            settings.practice_sec = 30.0
+            settings.run_rest_sec = 9.0
+            settings.calibration_open_sec = 4.0
+            settings.calibration_closed_sec = 5.0
+            settings.continuous_block_count = 1
+            settings.continuous_block_sec = 10.0
+            settings.idle_block_count = 1
+            settings.idle_block_sec = 8.0
+
+            plan = window._build_session_plan(window._apply_protocol_mode_overrides(settings))
+            plan_text = window._format_session_plan(plan)
+
+            self.assertEqual(plan["protocol_mode"], "mi_only")
+            self.assertEqual(plan["trials_per_run"], 4)
+            self.assertEqual(plan["total_trials"], 8)
+            self.assertAlmostEqual(float(plan["mi_duration_sec"]), 40.0)
+            self.assertAlmostEqual(float(plan["total_duration_sec"]), 40.0)
+            self.assertIn("总时间：40 秒", plan_text)
+            self.assertNotIn("睁眼静息", plan_text)
+            self.assertNotIn("想象训练", plan_text)
+            self.assertNotIn("轮次间休息", plan_text)
+            self.assertNotIn("连续模式", plan_text)
+            self.assertNotIn("无控制", plan_text)
+            self.assertIn("MI run 1（4 个试次）：20 秒", plan_text)
+        finally:
             window.close()
 
     def test_preview_mode_switch_is_queued_and_locks_controls_until_completion(self) -> None:
@@ -347,9 +466,9 @@ class MIDataCollectorSessionFlowTests(unittest.TestCase):
         finally:
             window.close()
 
-    def test_baseline_to_cue_transition_triggers_class_voice_prompt(self) -> None:
+    def test_baseline_to_cue_transition_places_audio_between_markers(self) -> None:
         window = self._build_window_with_fake_session()
-        spoken_classes: list[str | None] = []
+        prompt_calls: list[tuple[str, str, str | None, int]] = []
         window.current_settings = self._build_settings()
         window.current_phase = "baseline"
         window.phase_deadline = time.perf_counter() - 0.1
@@ -359,12 +478,92 @@ class MIDataCollectorSessionFlowTests(unittest.TestCase):
         window.current_trial.run_index = 1
         window.current_trial.run_trial_index = 1
         window.current_trial.display_name = "左手"
-        window._speak_cue_prompt = lambda class_name: spoken_classes.append(class_name)
+        window._play_phase_end_prompt_blocking = (
+            lambda phase, class_name=None: prompt_calls.append(("end", phase, class_name, len(window.event_log)))
+        )
+        window._play_phase_start_prompt_blocking = (
+            lambda phase, class_name=None: prompt_calls.append(("start", phase, class_name, len(window.event_log)))
+        )
         try:
             window.on_phase_tick()
 
             self.assertEqual(window.current_phase, "cue")
-            self.assertEqual(spoken_classes, ["left_hand"])
+            self.assertEqual(
+                [event["event_name"] for event in window.event_log[-3:]],
+                ["baseline_end", "cue_start", "cue_left_hand"],
+            )
+            self.assertEqual(
+                prompt_calls,
+                [
+                    ("end", "baseline", "left_hand", 1),
+                    ("start", "cue", "left_hand", 1),
+                ],
+            )
+        finally:
+            window.waiting_for_save = False
+            window.session_running = False
+            window.worker_thread = None
+            window.close()
+
+    def test_imagery_start_prompt_finishes_before_imagery_marker(self) -> None:
+        window = self._build_window_with_fake_session()
+        prompt_calls: list[tuple[str, str | None, int]] = []
+        window.current_settings = self._build_settings()
+        window.current_trial = mock.Mock()
+        window.current_trial.trial_id = 1
+        window.current_trial.class_name = "left_hand"
+        window.current_trial.run_index = 1
+        window.current_trial.run_trial_index = 1
+        window._play_phase_start_prompt_blocking = (
+            lambda phase, class_name=None: prompt_calls.append((phase, class_name, len(window.event_log)))
+        )
+        try:
+            window.start_imagery_phase()
+
+            self.assertEqual(prompt_calls, [("imagery", "left_hand", 0)])
+            self.assertEqual(
+                [event["event_name"] for event in window.event_log[:2]],
+                ["imagery_start", "imagery_left_hand"],
+            )
+            self.assertEqual(window.current_phase, "imagery")
+        finally:
+            window.waiting_for_save = False
+            window.session_running = False
+            window.worker_thread = None
+            window.close()
+
+    def test_imagery_end_prompt_starts_before_iti_marker(self) -> None:
+        window = self._build_window_with_fake_session()
+        prompt_calls: list[tuple[str, str, str | None, int]] = []
+        window.current_settings = self._build_settings()
+        window.current_phase = "imagery"
+        window.phase_deadline = time.perf_counter() - 0.1
+        window.current_trial = mock.Mock()
+        window.current_trial.trial_id = 1
+        window.current_trial.class_name = "left_hand"
+        window.current_trial.run_index = 1
+        window.current_trial.run_trial_index = 1
+        window._play_phase_end_prompt_blocking = (
+            lambda phase, class_name=None: prompt_calls.append(("end", phase, class_name, len(window.event_log)))
+        )
+        window._play_phase_start_prompt_blocking = (
+            lambda phase, class_name=None: prompt_calls.append(("start", phase, class_name, len(window.event_log)))
+        )
+        try:
+            window.on_phase_tick()
+
+            self.assertEqual(
+                [event["event_name"] for event in window.event_log[:2]],
+                ["imagery_end", "iti_start"],
+            )
+            self.assertEqual(
+                prompt_calls,
+                [
+                    ("end", "imagery", "left_hand", 1),
+                    ("start", "iti", "left_hand", 1),
+                ],
+            )
+            self.assertEqual(window.current_phase, "iti")
         finally:
             window.waiting_for_save = False
             window.session_running = False

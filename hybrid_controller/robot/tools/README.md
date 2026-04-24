@@ -25,7 +25,7 @@
 ## 一键启动（ROS 主链）
 
 ```powershell
-C:\Users\P1233\miniconda3\envs\brain-vision\python.exe C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\robot\tools\jetmax_start_ros_runtime.py --host 192.168.149.1 --user hiwonder --password hiwonder --remote-root /home/hiwonder/brain_code
+.\.venv\Scripts\python.exe .\hybrid_controller\robot\tools\jetmax_start_ros_runtime.py --host 192.168.149.1 --user hiwonder --password hiwonder --remote-root /home/hiwonder/brain_code
 ```
 
 默认检查：
@@ -42,10 +42,10 @@ C:\Users\P1233\miniconda3\envs\brain-vision\python.exe C:\Users\P1233\Desktop\br
 ## ROS 服务探针
 
 ```powershell
-C:\Users\P1233\miniconda3\envs\brain-vision\python.exe C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\robot\tools\ros_service_probe.py --host 192.168.149.1 --port 9091 --action status
-C:\Users\P1233\miniconda3\envs\brain-vision\python.exe C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\robot\tools\ros_service_probe.py --host 192.168.149.1 --port 9091 --action pick_world --x 0 --y -162.94
-C:\Users\P1233\miniconda3\envs\brain-vision\python.exe C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\robot\tools\ros_service_probe.py --host 192.168.149.1 --port 9091 --action place
-C:\Users\P1233\miniconda3\envs\brain-vision\python.exe C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\robot\tools\ros_service_probe.py --host 192.168.149.1 --port 9091 --action reset
+.\.venv\Scripts\python.exe .\hybrid_controller\robot\tools\ros_service_probe.py --host 192.168.149.1 --port 9091 --action status
+.\.venv\Scripts\python.exe .\hybrid_controller\robot\tools\ros_service_probe.py --host 192.168.149.1 --port 9091 --action pick_world --x 0 --y -162.94
+.\.venv\Scripts\python.exe .\hybrid_controller\robot\tools\ros_service_probe.py --host 192.168.149.1 --port 9091 --action place
+.\.venv\Scripts\python.exe .\hybrid_controller\robot\tools\ros_service_probe.py --host 192.168.149.1 --port 9091 --action reset
 ```
 
 支持 `--action`：

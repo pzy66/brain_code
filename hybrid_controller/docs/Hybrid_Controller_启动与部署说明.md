@@ -4,11 +4,12 @@
 
 ## 主线目录
 
-- `C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller`
+- 仓库内相对路径：`.\hybrid_controller`
 
 ## 解释器
 
-- 唯一解释器：`C:\Users\P1233\miniconda3\envs\brain-vision\python.exe`
+- 默认优先使用：`.\.venv\Scripts\python.exe`
+- 也可使用你自己准备的 `brain_code` 环境，并通过 `BRAIN_PYTHON_EXE` 覆盖
 
 ## 电脑端启动
 

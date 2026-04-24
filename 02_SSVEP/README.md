@@ -114,6 +114,26 @@
 - 把每个 trial 的原始片段存到 `raw_trials.npz`。
 - 生成 `session_manifest.json`，作为后续训练和评测的标准输入。
 
+当前采集窗口与提示音语义：
+
+- `prepare` 阶段会先发语音提示，等待语音播报完成后再发准备提示音；如果语音特别短，仍保留一个最小 guard，避免入耳重叠。
+- 当前默认会最多等待 `5s` 的语音完成确认，并在语音结束后额外保留 `0.8s` 保护间隔；如果确认超时，会先强制停语音，再进入后续提示音。
+- `active_start` 提示音发生在 `board.get_board_data()` 清空缓冲之后，但保存窗口取的是“提示音之后最近 `active_sec` 的样本”，因此开始提示音本身不会落进最终保存片段。
+- `active_end` 提示音在片段抓取完成之后触发，因此也不会污染保存窗口。
+- `session_manifest.json` 里会记录 `voice_prompt_guard_sec`、`active_start_buffer_clear_timing`、`active_saved_window`、`active_end_cue_timing` 等字段，后续做训练、回放或跨机复核时应以这些字段为准。
+- 每个 trial 还会记录 `active_start_tone_started_at`、`active_window_started_at`、`active_window_ended_at`、`segment_captured_at`、`active_end_tone_started_at` 这组带时区的 ISO 8601 时间戳，便于人工复核“提示音位置”和“最终保存窗口”是否一致。
+- UI 里新增了“流程测试模式（不连接板卡，不保存数据）”：勾选后，点击“开始本轮采集”会正常运行语音、提示音、闪烁刺激、trial/轮次流程，但不会连接设备、不会读取 EEG、不会生成 manifest/npz，也不会计入正式完成轮次。
+- 同样也可以从命令行预设：`python entrypoints/start_collection.py --simulation-only`。如果再叠加 `--headless`，则只跑时序流程，不会渲染视觉刺激。
+
+当前落盘格式特性：
+
+- `raw_trials.npz` 采用 `np.savez_compressed`，每个 trial 单独一个 key，因此不同 trial 可以拥有不同的样本长度。
+- `session_manifest.json` 保存 trial 顺序、`npz_key`、`used_samples`、`target_samples`、`active_sec`、`retry_count` 等元数据，读取时优先依赖 manifest，而不是假设所有 trial 长度一致。
+- `generated_at` 使用带时区的 ISO 8601 时间戳；如果把数据包从采集机拷到训练机，时间语义仍然明确。
+- 如果用户手动停止，或者运行时在中途异常但前面已有有效 trial，程序也会把已采到的片段落盘；manifest 的 `protocol_config.collection_aborted`、`protocol_config.aborted_reason`、`protocol_config.failure_reason` 可用于区分是正常完成、用户停止还是异常中断。
+- UI 先做设备检查时，成功后会把解析出的实际串口回写到串口输入框；这样下一次正式采集会继续使用同一个真实设备，而不是再次依赖 `auto`。
+- `entrypoints/start_collection.py --headless` 只适合联调保存链路，不会渲染视觉刺激，不应用于正式 SSVEP 数据采集。
+
 当前主线协议重点：
 
 - 默认目标频率：`8 / 10 / 12 / 15 Hz`

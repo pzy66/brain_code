@@ -76,19 +76,39 @@ python D:\brain\brain_code\02_SSVEP\START_SSVEP.py
   - `custom`
 - 支持 `long_idle_sec`
 - 支持最小采样质量门槛和 retry
+- 点击开始采集后，刺激界面会自动切到自适应全屏窗口，填满当前屏幕；采集完成、报错、停止或按 Esc 会退出全屏
+- 每个 Trial 会在准备阶段语音提示“看中间 / 看上方 / 看左方 / 看下方 / 看右方”，并在准备、正式采样开始、采样结束三个节点发出提示音；正式采样开始音会在语音提示和 prepare 结束后同步播放，确保“滴”的结束对齐采样开始
+- 采集刺激支持 `elapsed_time_sine` 和 `frame_locked_sine` 两种生成方式；会读取当前屏幕刷新率并写入 dataset metadata 的 `stim_refresh_rate_hz`
+- 点击停止会中断 prepare / active / rest 等待；如果已经采到部分 trial，会保存到 `<session>_aborted_<timestamp>`，metadata 写入 `collection_aborted=true`、`requested_session_id` 和 `saved_session_id`，UI 不会把该轮计入完成轮次，下一次重新采同一轮不会覆盖 partial 数据
+- 如果目标 session 目录里已有 `session_manifest.json` 或 `raw_trials.npz`，新数据会自动保存到 `<session>_rerun_<timestamp>`，避免无意覆盖已有完整采集
 
 ### 主要输入
 
 - 串口或设备连接方式
 - `board_id`
 - 目标频率
+- 刺激生成方式
 - 采集协议参数
 - 输出目录
+
+### 刺激频率精度
+
+- `elapsed_time_sine` 是默认模式，目标亮度按 `mean + amp * sin(2πft + phi)` 生成；它使用高精度时钟的真实 elapsed time 计算当前亮度相位，适合平滑、抗长期漂移
+- `frame_locked_sine` 使用 `mean + amp * sin(2π * freq * frame / refresh_rate_hz + phi)`，按显示帧编号采样正弦亮度，适合复现实验刺激序列、对齐 sampled sinusoidal stimulation 论文方法
+- 两种模式默认都使用 `mean=0.5`、`amp=0.5`、`phi=0`
+- 每个 trial 会先把全屏刺激预激活约一帧，等 UI 确认 active 刺激已应用后清空 EEG buffer，再播放开始提示音；保存 EEG 时只取提示音结束后的 `active_sec` 窗口。因此 metadata 中的 `stim_phi=0` 表示刺激序列起点，不等同于 EEG sample 0 的相位；正式窗口起点会额外记录名义时间偏移 `stimulus_sample_window_offset_sec_estimate`、显示帧偏移 `stimulus_sample_window_frame_offset_estimate`、以及 `stimulus_sample_window_phase_rad_by_freq` / `stimulus_sample_window_phase_cycles_by_freq`
+- UI 全屏采集会写入 `stimulus_backend=pyqt_fullscreen` 和 `stimulus_rendered_by_this_process=true`；`--headless` 只负责采 EEG，不渲染视觉刺激，会写入 `stimulus_backend=headless_no_visual`，此时 `stimulus_mode` 只表示配置意图，不能当作实际屏幕刺激证据
+- 刺激刷新触发会读取当前屏幕刷新率；如果 Qt 不能读到刷新率，回退为 60Hz
+- 目标频率必须小于显示刷新率的一半；默认 8/10/12/15Hz 在 60Hz 及以上固定刷新率显示器上可用
+- Qt/Windows 只能保证软件侧的重绘调度，不提供真实屏幕翻页时间戳；正式实验前应固定显示器刷新率、关闭 VRR/G-Sync/FreeSync，并用光敏传感器或高速相机验证物理发光频率
 
 ### 主要输出
 
 - `artifacts/datasets/<session_id>/session_manifest.json`
 - `artifacts/datasets/<session_id>/raw_trials.npz`
+- 每个 trial 会记录 `active_sec`、`target_samples`、`used_samples`、`sample_ratio`、`shortfall_ratio` 和 `retry_count`
+- `quality_summary` 会记录 `planned_trial_count`、`saved_trial_count` 和 `collection_aborted`
+- 协议签名会纳入刺激模式、刷新率和 active 窗口保存策略；不同刺激生成方式不会被误认为同一采集协议
 
 ### 何时使用
 

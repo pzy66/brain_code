@@ -167,6 +167,11 @@ class WindowsTimerResolution:
         return False
 
 
+STIMULUS_MODE_ELAPSED_TIME_SINE = "elapsed_time_sine"
+STIMULUS_MODE_FRAME_LOCKED_SINE = "frame_locked_sine"
+STIMULUS_MODES = (STIMULUS_MODE_ELAPSED_TIME_SINE, STIMULUS_MODE_FRAME_LOCKED_SINE)
+
+
 class StimClockThread(QThread):
     tick = pyqtSignal(float, int)
 
@@ -213,7 +218,104 @@ class StimClockThread(QThread):
                     next_tick_ns = start_ns + frame_index * self.period_ns
 
 
+def validate_stimulus_mode(value: str) -> str:
+    mode = str(value or "").strip().lower()
+    if mode not in STIMULUS_MODES:
+        joined = "|".join(STIMULUS_MODES)
+        raise ValueError(f"stimulus_mode must be one of: {joined}")
+    return mode
+
+
+def stimulus_luminance_elapsed(freq: float, t_sec: float, *, mean: float, amp: float, phi: float) -> float:
+    value = float(mean) + float(amp) * np.sin(2.0 * np.pi * float(freq) * float(t_sec) + float(phi))
+    return float(np.clip(value, 0.0, 1.0))
+
+
+def stimulus_luminance_frame_locked(
+    freq: float,
+    frame_index: int,
+    refresh_rate_hz: float,
+    *,
+    mean: float,
+    amp: float,
+    phi: float,
+) -> float:
+    hz = float(refresh_rate_hz)
+    if not np.isfinite(hz) or hz <= 0.0:
+        raise ValueError("refresh_rate_hz must be positive")
+    frame = max(0, int(frame_index))
+    return stimulus_luminance_elapsed(float(freq), float(frame) / hz, mean=mean, amp=amp, phi=phi)
+
+
+def stimulus_luminance(freq: float, t_sec: float, *, mean: float, amp: float, phi: float) -> float:
+    return stimulus_luminance_elapsed(freq, t_sec, mean=mean, amp=amp, phi=phi)
+
+
+def stimulus_frame_qc_report(
+    *,
+    freqs: Sequence[float],
+    refresh_rate_hz: float,
+    active_sec: float,
+    stimulus_mode: str,
+    mean: float,
+    amp: float,
+    phi: float,
+) -> dict[str, Any]:
+    mode = validate_stimulus_mode(stimulus_mode)
+    hz = float(refresh_rate_hz)
+    frame_count = max(1, int(round(float(active_sec) * hz)))
+    frame_indices = np.arange(frame_count, dtype=int)
+    timeline = frame_indices.astype(float) / hz
+    fft_freqs = np.fft.rfftfreq(frame_count, d=1.0 / hz)
+    rows: list[dict[str, float]] = []
+    for freq in tuple(float(item) for item in freqs):
+        if mode == STIMULUS_MODE_FRAME_LOCKED_SINE:
+            samples = np.asarray(
+                [
+                    stimulus_luminance_frame_locked(
+                        freq,
+                        int(frame),
+                        hz,
+                        mean=mean,
+                        amp=amp,
+                        phi=phi,
+                    )
+                    for frame in frame_indices
+                ],
+                dtype=float,
+            )
+        else:
+            samples = np.asarray(
+                [stimulus_luminance_elapsed(freq, float(t), mean=mean, amp=amp, phi=phi) for t in timeline],
+                dtype=float,
+            )
+        centered = samples - float(np.mean(samples))
+        spectrum = np.abs(np.fft.rfft(centered))
+        nonzero = spectrum.copy()
+        if len(nonzero) > 0:
+            nonzero[0] = 0.0
+        peak_index = int(np.argmax(nonzero))
+        target_index = int(np.argmin(np.abs(fft_freqs - freq)))
+        rows.append(
+            {
+                "target_hz": float(freq),
+                "peak_hz": float(fft_freqs[peak_index]),
+                "target_bin_hz": float(fft_freqs[target_index]),
+                "target_amplitude": float(spectrum[target_index]),
+            }
+        )
+    return {
+        "stimulus_mode": mode,
+        "refresh_rate_hz": hz,
+        "active_sec": float(active_sec),
+        "frame_count": int(frame_count),
+        "rows": rows,
+    }
+
+
 class FourArrowStimWidget(QWidget):
+    active_phase_frame_presented = pyqtSignal(object)
+
     def __init__(
         self,
         *,
@@ -222,6 +324,7 @@ class FourArrowStimWidget(QWidget):
         mean: float,
         amp: float,
         phi: float,
+        stimulus_mode: str = STIMULUS_MODE_ELAPSED_TIME_SINE,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
@@ -230,11 +333,13 @@ class FourArrowStimWidget(QWidget):
         self.mean = float(mean)
         self.amp = float(amp)
         self.phi = float(phi)
+        self.stimulus_mode = validate_stimulus_mode(stimulus_mode)
 
         self.clock_thread: Optional[StimClockThread] = None
         self.clock_running = False
         self.current_t = 0.0
         self.current_frame = -1
+        self.clock_start_ns: Optional[int] = None
 
         self.phase_mode = PHASE_IDLE
         self.phase_title = "Ready"
@@ -245,6 +350,7 @@ class FourArrowStimWidget(QWidget):
         self.pred_freq: Optional[float] = None
         self.selected_freq: Optional[float] = None
         self.decoder_state = "idle"
+        self._pending_active_phase_frame_presented = False
 
         self.setStyleSheet("background-color: black;")
         self.setAttribute(Qt.WA_OpaquePaintEvent)
@@ -257,6 +363,7 @@ class FourArrowStimWidget(QWidget):
         self.clock_running = True
         self.current_t = 0.0
         self.current_frame = -1
+        self.clock_start_ns = time.perf_counter_ns()
         self.clock_thread = StimClockThread(self.refresh_rate_hz)
         self.clock_thread.tick.connect(self.on_tick, type=Qt.QueuedConnection)
         self.clock_thread.start(QThread.TimeCriticalPriority)
@@ -273,6 +380,7 @@ class FourArrowStimWidget(QWidget):
             self.clock_thread = None
         self.current_t = 0.0
         self.current_frame = -1
+        self.clock_start_ns = None
         self.update()
 
     @pyqtSlot(float, int)
@@ -290,16 +398,21 @@ class FourArrowStimWidget(QWidget):
         self.remaining_sec = int(payload.get("remaining_sec", 0) or 0)
         self.flicker_enabled = bool(payload.get("flicker", False))
         self.cue_freq = payload.get("cue_freq")
+        self._pending_active_phase_frame_presented = bool(
+            self.phase_mode == PHASE_CAL_ACTIVE and self.flicker_enabled
+        )
 
         if self.phase_mode == PHASE_STOPPED:
             self.pred_freq = None
             self.selected_freq = None
             self.decoder_state = "idle"
+            self._pending_active_phase_frame_presented = False
             self.stop_clock()
         else:
             if self.flicker_enabled:
                 self.start_clock()
             else:
+                self._pending_active_phase_frame_presented = False
                 self.stop_clock()
         self.update()
 
@@ -309,10 +422,19 @@ class FourArrowStimWidget(QWidget):
         self.decoder_state = str(payload.get("state", "idle"))
         self.update()
 
-    def _box_color(self, freq: float, t_sec: float) -> QColor:
+    def _box_color(self, freq: float, t_sec: float, frame_index: int) -> QColor:
         if self.flicker_enabled and self.clock_running:
-            luminance = self.mean + self.amp * np.sin(2.0 * np.pi * freq * t_sec + self.phi)
-            luminance = float(np.clip(luminance, 0.0, 1.0))
+            if self.stimulus_mode == STIMULUS_MODE_FRAME_LOCKED_SINE:
+                luminance = stimulus_luminance_frame_locked(
+                    freq,
+                    frame_index,
+                    self.refresh_rate_hz,
+                    mean=self.mean,
+                    amp=self.amp,
+                    phi=self.phi,
+                )
+            else:
+                luminance = stimulus_luminance_elapsed(freq, t_sec, mean=self.mean, amp=self.amp, phi=self.phi)
         else:
             luminance = 0.22
         gray = int(round(255 * luminance))
@@ -333,10 +455,33 @@ class FourArrowStimWidget(QWidget):
             return QPen(QColor(64, 220, 140), 9)
         return QPen(QColor(70, 70, 70), 2)
 
+    def _maybe_emit_active_phase_frame_presented(self, *, t_sec: float, frame_index: int) -> None:
+        if not self._pending_active_phase_frame_presented:
+            return
+        if not self.flicker_enabled or self.phase_mode != PHASE_CAL_ACTIVE:
+            self._pending_active_phase_frame_presented = False
+            return
+        if int(frame_index) < 0:
+            return
+        self._pending_active_phase_frame_presented = False
+        self.active_phase_frame_presented.emit(
+            {
+                "mode": str(self.phase_mode),
+                "flicker": bool(self.flicker_enabled),
+                "frame_index": int(frame_index),
+                "presented_t_sec": float(t_sec),
+                "cue_freq": self.cue_freq,
+            }
+        )
+
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setRenderHint(QPainter.Antialiasing, False)
         painter.fillRect(self.rect(), Qt.black)
+        if self.flicker_enabled and self.clock_running and self.clock_start_ns is not None:
+            paint_t_sec = float((time.perf_counter_ns() - self.clock_start_ns) / 1_000_000_000.0)
+        else:
+            paint_t_sec = self.current_t
 
         width = self.width()
         height = self.height()
@@ -363,12 +508,13 @@ class FourArrowStimWidget(QWidget):
             rect = QRect(x, y, side, side)
 
             painter.setPen(Qt.NoPen)
-            painter.setBrush(QBrush(self._box_color(freq, self.current_t)))
+            painter.setBrush(QBrush(self._box_color(freq, paint_t_sec, self.current_frame)))
             painter.drawRect(rect)
 
             painter.setPen(self._border_pen(freq))
             painter.setBrush(Qt.NoBrush)
             painter.drawRect(rect)
+        self._maybe_emit_active_phase_frame_presented(t_sec=paint_t_sec, frame_index=self.current_frame)
 
 
 class DeviceConnectWorker(QObject):

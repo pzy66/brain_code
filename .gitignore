@@ -28,6 +28,10 @@ pytest_tmp/
 **/*.bak
 **/Thumbs.db
 **/.DS_Store
+logs/*.out
+logs/*.err
+02_SSVEP/artifacts/gpu_runtime/tmp/
+02_SSVEP/artifacts/dev_smoke/pytest_tmp_check/
 
 01_MI/mi_classifier_latest/datasets/
 01_MI/mi_classifier_latest/runtime/

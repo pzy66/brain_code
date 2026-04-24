@@ -101,3 +101,15 @@ def test_build_train_command_accepts_fbcca_weighted_compare() -> None:
     command = str(payload["command"])
     assert "--task fbcca-weighted-compare" in command
     assert payload["task"] == "fbcca-weighted-compare"
+
+
+def test_build_train_command_uses_server_safe_cli_entrypoint() -> None:
+    payload = build_train_command(
+        task="model-compare",
+        dataset_manifest_remote="/data1/zkx/brain/ssvep/data/s1/session_manifest.json",
+        run_id="cli_001",
+    )
+    command = str(payload["command"])
+    assert "/tools/training_evaluation_cli.py" in command
+    assert "/entrypoints/start_training_eval.py" not in command
+    assert "--headless" not in command

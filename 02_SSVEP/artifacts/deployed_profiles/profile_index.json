@@ -1,11 +1,11 @@
 {
-  "updated_at": "2026-04-17T00:40:28",
+  "updated_at": "2026-04-24T17:11:19",
   "task": "tdca-local-opt",
-  "run_tag": "case_86b513e6eb184e268fccea22385fc7ea",
-  "run_dir": "D:\\brain\\brain_code\\02_SSVEP\\.tmp_test_artifacts\\pytest_tmp\\case_86b513e6eb184e268fccea22385fc7ea",
-  "report_json": "D:\\brain\\brain_code\\02_SSVEP\\.tmp_test_artifacts\\pytest_tmp\\case_86b513e6eb184e268fccea22385fc7ea\\report_full_board.json",
-  "profile_json": "D:\\brain\\brain_code\\02_SSVEP\\.tmp_test_artifacts\\pytest_tmp\\case_86b513e6eb184e268fccea22385fc7ea\\profile_full_board.json",
-  "profile_v2_json": "D:\\brain\\brain_code\\02_SSVEP\\.tmp_test_artifacts\\pytest_tmp\\case_86b513e6eb184e268fccea22385fc7ea\\profile_full_board_v2.json",
+  "run_tag": "case_f5473c6c7e0e4778bb8e97ac86c6d345",
+  "run_dir": "D:\\brain\\brain_code\\02_SSVEP\\.tmp_test_artifacts\\pytest_tmp\\case_f5473c6c7e0e4778bb8e97ac86c6d345",
+  "report_json": "D:\\brain\\brain_code\\02_SSVEP\\.tmp_test_artifacts\\pytest_tmp\\case_f5473c6c7e0e4778bb8e97ac86c6d345\\report_full_board.json",
+  "profile_json": "D:\\brain\\brain_code\\02_SSVEP\\.tmp_test_artifacts\\pytest_tmp\\case_f5473c6c7e0e4778bb8e97ac86c6d345\\profile_full_board.json",
+  "profile_v2_json": "D:\\brain\\brain_code\\02_SSVEP\\.tmp_test_artifacts\\pytest_tmp\\case_f5473c6c7e0e4778bb8e97ac86c6d345\\profile_full_board_v2.json",
   "published_profile_json": "D:\\brain\\brain_code\\02_SSVEP\\artifacts\\deployed_profiles\\default_profile.json",
   "published_profile_v2_json": "D:\\brain\\brain_code\\02_SSVEP\\artifacts\\deployed_profiles\\default_profile_v2.json",
   "metadata": {

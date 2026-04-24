@@ -238,7 +238,7 @@ def _import_paramiko():
     except Exception as exc:  # pragma: no cover - depends on user environment
         raise RuntimeError(
             "paramiko is required for the SSVEP server helper. "
-            "Install it in the local brain-vision environment first."
+            "Install it in the repo .venv or your local brain_code environment first."
         ) from exc
     return paramiko
 
@@ -615,8 +615,7 @@ def build_train_command(
     report_json = assert_remote_ssvep_path(posixpath.join(report_dir, "report.json"))
     args = [
         sh_quote(REMOTE_ENV_PYTHON),
-        sh_quote(posixpath.join(REMOTE_CODE_DIR, "entrypoints", "start_training_eval.py")),
-        "--headless",
+        sh_quote(posixpath.join(REMOTE_CODE_DIR, "tools", "training_evaluation_cli.py")),
         "--task",
         sh_quote(task),
         "--dataset-manifest",

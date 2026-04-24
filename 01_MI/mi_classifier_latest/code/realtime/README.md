@@ -37,7 +37,8 @@ python run_05_channel_monitor.py
 
 - 运行时会对旧版 realtime artifact 做内存内兼容补齐，自动补回缺失的 `epoch_window` / `window_offset_sec` / `window_offset_secs_used`
 - 如果工件缺少更关键的字段，仍会拒绝启动并提示重新导出模型
-- Windows 下串口下拉会额外读取系统 Ports 设备清单，尽量避开 `Problem/Error` 的坏端口条目
+- Windows 下串口下拉会额外读取系统 Ports 设备清单，并优先过滤 `Problem/Error/Disconnected` 的坏端口条目
+- 如果系统已经枚举到可用串口，则实时推理和通道监看都要求所选端口出现在检测列表里；只有在当前完全枚举不到可用串口时，才允许人工输入端口尝试连接
 
 ## 3. 实时模式
 
@@ -97,6 +98,7 @@ guided 默认协议参数：
 3. 如果两者不一致，必须显式设置 `board_channel_positions`
 4. `board_channel_positions` 长度必须等于模型通道数
 5. 位置索引不能重复，不能为负，不能超过板卡 EEG 行数
+6. 若 BrainFlow 元数据查询因运行环境缺依赖而失败，标准 Cyton/Cyton Daisy/Ganglion/Synthetic 会使用内置通道数兜底；其他板卡仍需修复 BrainFlow 环境或显式配置通道位置
 
 ## 7. 常见问题
 

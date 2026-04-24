@@ -27,7 +27,7 @@ def main() -> int:
         show_startup_error(
             "Startup Failed",
             f"Missing dependency: {missing_name}\n\n"
-            "Please switch PyCharm interpreter to MI env, then install:\n"
+            "Please switch PyCharm interpreter to the repo .venv or your brain_code environment, then install:\n"
             "pip install -r requirements.txt\n"
             "pip install -r requirements-realtime.txt",
         )

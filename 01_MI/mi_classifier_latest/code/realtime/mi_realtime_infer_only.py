@@ -18,6 +18,13 @@ import time
 from pathlib import Path
 
 import numpy as np
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+SHARED_ROOT = PROJECT_ROOT / "code" / "shared"
+if str(SHARED_ROOT) not in sys.path:
+    sys.path.insert(0, str(SHARED_ROOT))
+
+import src  # noqa: F401
+
 from brainflow.board_shim import BoardIds, BoardShim, BrainFlowInputParams
 from PyQt5.QtCore import QObject, QThread, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QFont
@@ -38,13 +45,8 @@ from PyQt5.QtWidgets import (
 )
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-SHARED_ROOT = PROJECT_ROOT / "code" / "shared"
-if str(SHARED_ROOT) not in sys.path:
-    sys.path.insert(0, str(SHARED_ROOT))
-
 from src.realtime_mi import RealtimeMIPredictor, load_realtime_model  # noqa: E402
-from src.serial_ports import detect_serial_ports  # noqa: E402
+from src.serial_ports import detect_serial_ports, validate_serial_port_selection  # noqa: E402
 
 
 USER_CONFIG = {
@@ -112,6 +114,76 @@ PHASE_BANNER_STYLES = {
 }
 
 
+def _format_serial_port_validation_error(serial_port: str, validation: dict[str, object]) -> str:
+    selected_port = str(validation.get("requested_port") or serial_port).strip() or str(serial_port).strip()
+    detected_ports = [str(item) for item in validation.get("detected_ports", []) if str(item).strip()]
+    windows_status = str(validation.get("windows_status", "")).strip()
+    problem_code = str(validation.get("problem_code", "")).strip()
+    problem_status = str(validation.get("problem_status", "")).strip()
+
+    if str(validation.get("reason", "")) == "windows_unavailable":
+        details = [f"Serial port {selected_port} is marked unavailable by Windows."]
+        if windows_status:
+            details.append(f" status={windows_status}.")
+        if problem_code:
+            details.append(f" problem_code={problem_code}.")
+        if problem_status:
+            details.append(f" problem_status={problem_status}.")
+        if detected_ports:
+            details.append(f" Detected ports: {', '.join(detected_ports)}.")
+        details.append(" Check the cable, driver, and whether another app is holding the port.")
+        return "".join(details)
+
+    if detected_ports:
+        return (
+            f"Serial port {selected_port} is not in the detected device list. "
+            f"Detected ports: {', '.join(detected_ports)}. Refresh ports and confirm the device port."
+        )
+    return "No usable serial ports were detected. Check power, cable, and driver, then refresh the port list."
+
+
+def _serial_port_override_note(validation: dict[str, object]) -> str:
+    selected_port = str(validation.get("requested_port", "")).strip()
+    return (
+        f"No usable serial ports were detected, but the app will still try the manually entered port {selected_port}. "
+        "If connection fails, recheck power, cable, driver, and port occupancy."
+    )
+
+
+def _board_id_value(name: str) -> int | None:
+    board = getattr(BoardIds, name, None)
+    if board is None:
+        return None
+    return int(board.value)
+
+
+def _fallback_eeg_channel_count(board_id: int) -> int | None:
+    """Return EEG channel counts for common boards when BrainFlow metadata import fails."""
+    known_counts = {
+        _board_id_value("CYTON_BOARD"): 8,
+        _board_id_value("CYTON_DAISY_BOARD"): 16,
+        _board_id_value("GANGLION_BOARD"): 4,
+        _board_id_value("SYNTHETIC_BOARD"): 16,
+    }
+    return known_counts.get(int(board_id))
+
+
+def _brainflow_eeg_channel_count(board_id: int) -> int:
+    """Resolve the board EEG row count, with a conservative fallback for bundled presets."""
+    try:
+        available_eeg_rows = BoardShim.get_eeg_channels(int(board_id))
+        return int(len(available_eeg_rows))
+    except Exception as exc:
+        fallback_count = _fallback_eeg_channel_count(int(board_id))
+        if fallback_count is not None:
+            return int(fallback_count)
+        raise RuntimeError(
+            "Unable to query BrainFlow EEG channel metadata for board_id="
+            f"{int(board_id)}. Install a complete BrainFlow runtime or set "
+            "board_channel_positions explicitly after verifying the board layout."
+        ) from exc
+
+
 def build_balanced_protocol_sequence(trials_per_class: int, random_seed: int, class_names: list[str]) -> list[str]:
     """Build a block-balanced MI prompt order for the guided realtime protocol."""
     if trials_per_class <= 0:
@@ -162,8 +234,7 @@ def resolve_board_channel_positions(
     model_channel_names: list[str] | tuple[str, ...],
 ) -> list[int]:
     """Normalize or auto-resolve realtime board channel positions."""
-    available_eeg_rows = BoardShim.get_eeg_channels(int(board_id))
-    available_count = int(len(available_eeg_rows))
+    available_count = _brainflow_eeg_channel_count(int(board_id))
     if expected_channels <= 0:
         raise ValueError("Expected at least one realtime channel.")
 
@@ -891,6 +962,19 @@ class MIRealtimeWindow(QMainWindow):
         selected_config = dict(self.config)
         selected_config["board_id"] = self.current_board_id()
         selected_config["serial_port"] = self.serial_combo.currentText().strip()
+        synthetic_board = getattr(BoardIds, "SYNTHETIC_BOARD", None)
+        is_synthetic = synthetic_board is not None and int(selected_config["board_id"]) == int(synthetic_board.value)
+
+        if not is_synthetic:
+            if not str(selected_config["serial_port"]).strip():
+                self.show_error("Select a serial port before connecting to a physical board.")
+                return
+            serial_validation = validate_serial_port_selection(selected_config["serial_port"])
+            if not bool(serial_validation.get("ok")):
+                self.show_error(_format_serial_port_validation_error(selected_config["serial_port"], serial_validation))
+                return
+            if str(serial_validation.get("reason", "")) == "manual_override":
+                self.log(_serial_port_override_note(serial_validation))
 
         try:
             normalized_positions = resolve_board_channel_positions(

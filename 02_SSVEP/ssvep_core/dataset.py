@@ -64,6 +64,10 @@ def summarize_trial_roles(records: Sequence[dict[str, Any]]) -> dict[str, int]:
     return summary
 
 
+def _now_iso_timestamp() -> str:
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
 def _atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> None:
     target = Path(path).expanduser().resolve()
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -141,7 +145,8 @@ def _build_collection_records(
     segments: Sequence[tuple[TrialSpec, np.ndarray]],
     *,
     npz_arrays: dict[str, np.ndarray],
-    target_samples: int,
+    default_target_samples: int,
+    sampling_rate: int,
     quality_rows: Optional[Sequence[dict[str, Any]]] = None,
 ) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
@@ -166,11 +171,17 @@ def _build_collection_records(
         matrix = np.ascontiguousarray(np.asarray(segment, dtype=np.float32))
         npz_arrays[npz_key] = matrix
         quality = quality_by_order.get(int(order_index), {})
-        effective_target = int(quality.get("target_samples", target_samples))
+        if quality:
+            effective_target = int(quality.get("target_samples", default_target_samples))
+        else:
+            # Without per-trial quality metadata, treat the saved segment itself as
+            # the nominal target so heterogeneous trial lengths remain readable.
+            effective_target = int(matrix.shape[0])
         effective_target = max(1, int(effective_target))
         used_samples = int(matrix.shape[0])
         retry_count = max(0, int(quality.get("retry_count", 0)))
         shortfall_ratio = float(max(effective_target - used_samples, 0) / effective_target)
+        sample_ratio = _safe_float(quality.get("sample_ratio", used_samples / max(effective_target, 1)), 0.0)
         label_text = str(trial.label)
         label_lower = label_text.strip().lower()
         stage_name = "long_idle" if ("long_idle" in label_lower or "long idle" in label_lower) else "collection"
@@ -178,23 +189,39 @@ def _build_collection_records(
             label=label_text,
             expected_freq=None if trial.expected_freq is None else float(trial.expected_freq),
         )
-        records.append(
-            {
-                "stage": stage_name,
-                "trial_role": trial_role,
-                "label": label_text,
-                "expected_freq": None if trial.expected_freq is None else float(trial.expected_freq),
-                "trial_id": int(trial.trial_id),
-                "block_index": int(trial.block_index),
-                "order_index": int(order_index),
-                "used_samples": used_samples,
-                "target_samples": effective_target,
-                "shortfall_ratio": shortfall_ratio,
-                "retry_count": retry_count,
-                "channels": int(matrix.shape[1]),
-                "npz_key": npz_key,
-            }
-        )
+        record = {
+            "stage": stage_name,
+            "trial_role": trial_role,
+            "label": label_text,
+            "expected_freq": None if trial.expected_freq is None else float(trial.expected_freq),
+            "trial_id": int(trial.trial_id),
+            "block_index": int(trial.block_index),
+            "order_index": int(order_index),
+            "used_samples": used_samples,
+            "target_samples": effective_target,
+            "sample_ratio": float(sample_ratio),
+            "shortfall_ratio": shortfall_ratio,
+            "retry_count": retry_count,
+            "channels": int(matrix.shape[1]),
+            "npz_key": npz_key,
+        }
+        if "active_sec" in quality:
+            record["active_sec"] = _safe_float(quality.get("active_sec", 0.0), 0.0)
+        elif int(sampling_rate) > 0:
+            record["active_sec"] = float(used_samples / float(sampling_rate))
+        if "available_samples" in quality:
+            record["available_samples"] = _safe_int(quality.get("available_samples", 0), 0)
+        for key in (
+            "active_start_tone_started_at",
+            "active_window_started_at",
+            "active_window_ended_at",
+            "segment_captured_at",
+            "active_end_tone_started_at",
+        ):
+            value = str(quality.get(key, "")).strip()
+            if value:
+                record[key] = value
+        records.append(record)
     return records
 
 
@@ -232,6 +259,13 @@ def _protocol_signature_payload(
         "target_repeats": _safe_int(cfg.get("target_repeats", 0), 0),
         "idle_repeats": _safe_int(cfg.get("idle_repeats", 0), 0),
         "switch_trials": _safe_int(cfg.get("switch_trials", 0), 0),
+        "stimulus_mode": str(cfg.get("stimulus_mode", "")),
+        "stimulus_backend": str(cfg.get("stimulus_backend", "")),
+        "stim_refresh_rate_hz": round(_safe_float(cfg.get("stim_refresh_rate_hz", 0.0), 0.0), 6),
+        "active_start_cue_sec": round(_safe_float(cfg.get("active_start_cue_sec", 0.0), 0.0), 6),
+        "active_start_buffer_clear_timing": str(cfg.get("active_start_buffer_clear_timing", "")),
+        "active_saved_window": str(cfg.get("active_saved_window", "")),
+        "active_end_cue_timing": str(cfg.get("active_end_cue_timing", "")),
         "freqs": [round(float(freq), 6) for freq in freqs],
         "board_eeg_channels": [int(channel) for channel in board_eeg_channels],
     }
@@ -296,7 +330,8 @@ def save_collection_dataset_bundle(
     trial_records = _build_collection_records(
         trial_segments,
         npz_arrays=npz_arrays,
-        target_samples=target_samples,
+        default_target_samples=target_samples,
+        sampling_rate=int(sampling_rate),
         quality_rows=quality_rows,
     )
     npz_path = session_dir / "raw_trials.npz"
@@ -311,11 +346,24 @@ def save_collection_dataset_bundle(
     protocol_payload = dict(protocol_config)
     protocol_payload["protocol_signature"] = str(protocol_signature)
     quality_summary = _build_quality_summary(trial_records)
+    quality_summary.update(
+        {
+            "collection_aborted": bool(protocol_config.get("collection_aborted", False)),
+            "planned_trial_count": _safe_int(
+                protocol_config.get("planned_total_trials", len(trial_records)),
+                len(trial_records),
+            ),
+            "saved_trial_count": _safe_int(
+                protocol_config.get("saved_trial_count", len(trial_records)),
+                len(trial_records),
+            ),
+        }
+    )
     manifest_payload = {
         "data_schema_version": COLLECTION_DATA_SCHEMA_VERSION,
         "session_id": str(session_id),
         "subject_id": str(subject_id),
-        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "generated_at": _now_iso_timestamp(),
         "serial_port": str(serial_port),
         "board_id": int(board_id),
         "sampling_rate": int(sampling_rate),

@@ -161,6 +161,7 @@ python D:\brain\brain_code\02_SSVEP\tools\training_evaluation_cli.py ^
 ### 当前约束
 
 - 远端路径严格限制在 `/data1/zkx/...`
+- 远端训练只调用 `tools/training_evaluation_cli.py`，不走 PyQt UI 入口；服务器环境可以不安装 `PyQt5`
 - 同步时会跳过：
   - `_archive`
   - `artifacts`

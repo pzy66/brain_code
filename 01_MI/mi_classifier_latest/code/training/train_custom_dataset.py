@@ -703,6 +703,7 @@ def load_custom_task_datasets(dataset_root: Path, subject_filter: str | None = N
         session_id = str(token.get("session_id", ""))
         save_index = token.get("save_index")
         schema_version = 2
+        protocol_mode = "full"
         sidecar_probe_path = next((path for path in (mi_path, gate_path, artifact_path, continuous_path) if path is not None), None)
         sidecar_probe = _load_derivative_sidecar(sidecar_probe_path) if sidecar_probe_path is not None else {}
         if sidecar_probe.get("schema_version") is not None:
@@ -710,6 +711,8 @@ def load_custom_task_datasets(dataset_root: Path, subject_filter: str | None = N
                 schema_version = int(sidecar_probe.get("schema_version") or schema_version)
             except Exception:
                 schema_version = 2
+        if sidecar_probe.get("protocol_mode") is not None:
+            protocol_mode = str(sidecar_probe.get("protocol_mode") or protocol_mode)
 
         file_record = {
             "run_stem": run_stem,
@@ -717,6 +720,7 @@ def load_custom_task_datasets(dataset_root: Path, subject_filter: str | None = N
             "session_id": session_id,
             "save_index": save_index,
             "schema_version": int(schema_version),
+            "protocol_mode": protocol_mode,
             "mi_file": "" if mi_path is None else str(mi_path.relative_to(dataset_root)),
             "gate_file": "" if gate_path is None else str(gate_path.relative_to(dataset_root)),
             "artifact_file": "" if artifact_path is None else str(artifact_path.relative_to(dataset_root)),
@@ -763,6 +767,7 @@ def load_custom_task_datasets(dataset_root: Path, subject_filter: str | None = N
                 )
                 subject_id = _load_npz_text(data, "subject_id", subject_id)
                 session_id = _load_npz_text(data, "session_id", session_id)
+                protocol_mode = _load_npz_text(data, "protocol_mode", protocol_mode)
                 schema_version = _load_npz_int(data, "schema_version", schema_version)
                 save_index = _load_npz_int(data, "save_index", save_index or 0)
                 run_stem = _load_npz_text(data, "run_stem", run_stem) or run_stem
@@ -793,6 +798,7 @@ def load_custom_task_datasets(dataset_root: Path, subject_filter: str | None = N
                     sampling_rate=sampling_rate,
                 )
                 schema_version = _load_npz_int(data, "schema_version", schema_version)
+                protocol_mode = _load_npz_text(data, "protocol_mode", protocol_mode)
                 save_index = _load_npz_int(data, "save_index", save_index or 0)
                 run_stem = _load_npz_text(data, "run_stem", run_stem) or run_stem
                 gate_pos = (
@@ -840,6 +846,7 @@ def load_custom_task_datasets(dataset_root: Path, subject_filter: str | None = N
                     sampling_rate=sampling_rate,
                 )
                 schema_version = _load_npz_int(data, "schema_version", schema_version)
+                protocol_mode = _load_npz_text(data, "protocol_mode", protocol_mode)
                 save_index = _load_npz_int(data, "save_index", save_index or 0)
                 run_stem = _load_npz_text(data, "run_stem", run_stem) or run_stem
                 if "X_artifact" in data.files:
@@ -863,6 +870,7 @@ def load_custom_task_datasets(dataset_root: Path, subject_filter: str | None = N
                     sampling_rate=sampling_rate,
                 )
                 schema_version = _load_npz_int(data, "schema_version", schema_version)
+                protocol_mode = _load_npz_text(data, "protocol_mode", protocol_mode)
                 save_index = _load_npz_int(data, "save_index", save_index or 0)
                 run_stem = _load_npz_text(data, "run_stem", run_stem) or run_stem
 
@@ -933,6 +941,7 @@ def load_custom_task_datasets(dataset_root: Path, subject_filter: str | None = N
         file_record["session_id"] = session_token
         file_record["save_index"] = save_index
         file_record["schema_version"] = int(schema_version)
+        file_record["protocol_mode"] = protocol_mode
         if run_issues:
             file_record["dropped_reason"] = "|".join(run_issues)
 

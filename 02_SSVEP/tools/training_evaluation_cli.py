@@ -75,22 +75,18 @@ from ssvep_core.fbcca_local_opt import (
     FBCCALocalOptConfig,
     run_fbcca_local_opt,
 )
-from ssvep_core.fbcca_external_replay_opt import (
-    DEFAULT_FBCCA_EXTERNAL_DATASET_ROOT,
-    DEFAULT_FBCCA_EXTERNAL_OUTER_EVAL,
-    DEFAULT_FBCCA_EXTERNAL_REPLAY_SPEED,
-    DEFAULT_FBCCA_EXTERNAL_SEARCH_PRESET,
-    FBCCA_EXTERNAL_OUTER_EVALS,
-    FBCCA_EXTERNAL_REPLAY_SPEEDS,
-    FBCCA_EXTERNAL_SEARCH_PRESETS,
-    FBCCAExternalReplayOptConfig,
-    run_fbcca_external_replay_opt,
-)
 from ssvep_core.registry import ModelRegistry
 
 THIS_DIR = Path(__file__).resolve().parent
 DEFAULT_DATASET_ROOT = PROJECT_DIR / "artifacts" / "datasets"
 DEFAULT_REPORT_ROOT = PROJECT_DIR / "artifacts" / "runs" / "local"
+DEFAULT_FBCCA_EXTERNAL_DATASET_ROOT = DEFAULT_DATASET_ROOT / "external" / "dataset_ssvep_led_github"
+DEFAULT_FBCCA_EXTERNAL_SEARCH_PRESET = "reduced24"
+FBCCA_EXTERNAL_SEARCH_PRESETS = ("smoke8", "reduced24")
+DEFAULT_FBCCA_EXTERNAL_OUTER_EVAL = "loso4"
+FBCCA_EXTERNAL_OUTER_EVALS = ("chronological-last", "loso4")
+DEFAULT_FBCCA_EXTERNAL_REPLAY_SPEED = "1x"
+FBCCA_EXTERNAL_REPLAY_SPEEDS = ("1x", "2x", "5x", "max")
 TRAIN_EVAL_DEFAULT_COMPUTE_BACKEND = "cuda"
 TRAIN_EVAL_DEFAULT_GPU_PRECISION = "float32"
 
@@ -496,6 +492,16 @@ def _apply_fbcca_external_replay_args(args: argparse.Namespace, provided_options
     )
 
 
+def _load_fbcca_external_replay_runner() -> tuple[Any, Any]:
+    # Keep external replay dependencies lazy so normal server training does not require mne.
+    from ssvep_core.fbcca_external_replay_opt import (  # noqa: PLC0415
+        FBCCAExternalReplayOptConfig,
+        run_fbcca_external_replay_opt,
+    )
+
+    return FBCCAExternalReplayOptConfig, run_fbcca_external_replay_opt
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="SSVEP 训练评测纯 CLI（服务器友好）")
     parser.add_argument("--dataset-manifest", type=Path, default=None, help="session1 manifest path")
@@ -608,22 +614,31 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     task = _parse_task(args.task)
     if bool(int(args.quick_mode)) or task == "fbcca-weights":
         _apply_quick_mode_args(args, provided_options)
+        task = _parse_task(args.task)
     elif task == "fbcca-weighted-compare":
         _apply_weighted_compare_args(args, provided_options)
+        task = _parse_task(args.task)
     elif task == "focused-compare":
         _apply_focused_compare_args(args, provided_options)
+        task = _parse_task(args.task)
     elif task == "classifier-compare":
         _apply_classifier_compare_args(args, provided_options)
+        task = _parse_task(args.task)
     elif task == "model-compare":
         _apply_model_compare_args(args, provided_options)
+        task = _parse_task(args.task)
     elif task == "profile-eval":
         _apply_profile_eval_args(args, provided_options)
+        task = _parse_task(args.task)
     elif task == "fbcca-local-opt":
         _apply_fbcca_local_opt_args(args, provided_options)
+        task = _parse_task(args.task)
     elif task == "fbcca-external-replay-opt":
         _apply_fbcca_external_replay_args(args, provided_options)
+        task = _parse_task(args.task)
     elif task == "tdca-local-opt":
         _apply_tdca_local_opt_args(args, provided_options)
+        task = _parse_task(args.task)
 
     include_manifests = _parse_manifest_csv(args.include_manifests)
     session1 = include_manifests[0] if include_manifests else args.dataset_manifest
@@ -687,6 +702,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if task == "fbcca-external-replay-opt":
         if not str(args.subject or "").strip():
             raise ValueError("--subject is required for fbcca-external-replay-opt")
+        FBCCAExternalReplayOptConfig, run_fbcca_external_replay_opt = _load_fbcca_external_replay_runner()
         external_config = FBCCAExternalReplayOptConfig(
             external_dataset_root=Path(args.external_dataset_root).expanduser().resolve(),
             subject=str(args.subject).strip(),

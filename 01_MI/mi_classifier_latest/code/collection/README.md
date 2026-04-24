@@ -38,40 +38,48 @@ python code/collection/mi_data_collector.py --subject-id 001 --session-id 202604
 
 ## 2. 关键代码文件
 
-- [mi_data_collector.py](C:/Users/P1233/Desktop/brain/mi_classifier/code/collection/mi_data_collector.py)
+- [mi_data_collector.py](./mi_data_collector.py)
   采集 UI、会话状态机、显示逻辑、用户操作、设备线程协调。
-- [mi_collection.py](C:/Users/P1233/Desktop/brain/mi_classifier/code/shared/src/mi_collection.py)
+- [mi_collection.py](../shared/src/mi_collection.py)
   保存导出、事件映射、segments 构建、manifest 写入。
 
 ## 3. 开始采集前必须满足
 
-1. 使用 `MI` 环境并安装 requirements。
+1. 使用当前仓库的 `.venv`，或任意一台机器上你自己准备好的 `brain_code` 环境，并安装 requirements。
 2. 非 synthetic 板卡必须选择有效串口。
+   - 如果当前已经枚举到可用串口，则所选端口必须出现在列表里。
+   - 如果当前完全没有枚举到任何可用串口，仍允许操作员手工输入端口尝试连接一次。
+   - Windows 明确标记为 `Problem/Disconnected` 的端口会在开始前直接拒绝。
 3. 通道配置必须固定：
    - `channel_names=C3,Cz,C4,PO3,PO4,O1,Oz,O2`
    - `channel_positions=0,1,2,3,4,5,6,7`
-4. 输出目录可写，默认是 `datasets/custom_mi`。
+4. 当前采集 UI 只开放以下板卡：
+   - `Cyton（8 通道）`
+   - `Cyton Daisy（仅前 8 通道）`
+   - `Synthetic`
+   当前流程是固定 8 通道协议，因此不会再暴露 `Ganglion（4 通道）` 这类必然无法满足通道约束的板卡选项。
+5. 输出目录可写，默认是 `datasets/custom_mi`。
 
 ## 4. 默认会话流程
 
 默认顺序：
 
 1. 连接设备后，操作员先在预览面板检查连接质量。
-2. `quality_check`
-3. `calibration`
-4. `MI run 1`
-5. `MI run 2`
-6. `continuous block 1`
-7. `MI run 3`
-8. `continuous block 2`
-9. `idle_block`
-10. `idle_prepare`
-11. 自动保存
+2. `calibration`
+3. `MI run 1`
+4. `MI run 2`
+5. `continuous block 1`
+6. `MI run 3`
+7. `continuous block 2`
+8. `idle_block`
+9. 自动保存
 
 说明：
 
-- `quality_check_sec` 是建议观察时长，不是必须自动计时的独立协议阶段。
+- 连接设备后，操作员仍应先在预览面板手工观察信号质量；正式流程现在直接从 `calibration` 开始，不再插入单独的 `quality_check` 阶段。
+- 连接设备后，控制区会额外显示 `显示完整流程计划` 和 `显示 MI 主任务计划` 两个按钮；它们会按当前界面参数动态列出后续阶段和每段时长，并汇总预计正式计时总长，便于开始前快速核对。
 - `practice` 仍然保留；只有当 `practice_sec > 0` 时，才会插入到 `calibration` 和 `MI run 1` 之间。默认关闭。
+- 正式采集、实时推理和通道监看现在使用同一套串口校验规则，避免不同入口表现不一致。
 - continuous 插入位置由 `run_count` 和 `continuous_block_count` 自动决定。
 - 默认 `run_count=3`、`continuous_block_count=2` 时，continuous 插在 MI run 2 和 MI run 3 之后。
 
@@ -87,7 +95,6 @@ python code/collection/mi_data_collector.py --subject-id 001 --session-id 202604
 - `calibration_open/closed/eye/blink/swallow/jaw/head = 60/60/30/20/20/20/20s`
 - `practice_sec=0`（保留功能，默认关闭）
 - `idle_block = 2 x 60s`
-- `idle_prepare = 2 x 60s`
 - `continuous = 2 x 240s`
 - `continuous_command = 4-5s`
 - `continuous_gap = 2-3s`
@@ -100,6 +107,7 @@ continuous 约束：
 - `continuous_command_max_sec >= continuous_command_min_sec`
 - `continuous_gap_max_sec >= continuous_gap_min_sec`
 - `continuous_block_sec >= continuous_command_min_sec`
+- 计划弹窗中的“总时间”按上述正式计时配置直接累加，只展示流程名、各段时长与总时间，不包含语音播报、提示音、人工暂停、切屏与保存耗时。
 
 ## 5. 现在到底采集并保存什么
 
@@ -190,14 +198,12 @@ continuous 约束：
 - `cue`
 - `imagery`
 - `iti`
-- `quality_check`
 - `calibration`
 - `practice`
 - `run_rest`
 - `eyes_open_rest`
 - `eyes_closed_rest`
 - `idle_block`
-- `idle_prepare`
 - `continuous_block`
 - `artifact_block`
 - `continuous_prompt`
@@ -338,8 +344,11 @@ continuous 约束：
 
 提示音：
 
-- `imagery_start` 播放开始音
-- `imagery_end` 播放结束音
+- 每段正式计时前都会先播报流程名，然后播报“准备”，最后播放一声开始滴声。
+- start marker 写入发生在开始滴声结束之后；也就是说，保存出来的 `baseline`、`cue`、`imagery`、`iti`、校准段、休息段、idle 段和 continuous block 都从滴声结束后的采样点开始。
+- 每段正常结束时先写 end marker，再立刻播放结束提示音。结束提示音不放进下一段数据窗口。
+- `cue` 现在额外写入 `cue_end` marker，用于把任务提示段和后面的“准备——滴”分开；旧数据如果没有 `cue_end`，保存逻辑仍会回退到 `imagery_start` 作为 cue 结束。
+- 这些提示音会让两个 phase 之间出现额外准备时间，但不会改变各 phase 配置的正式采集时长。
 
 ## 9. 保存完成后的目录结果
 
