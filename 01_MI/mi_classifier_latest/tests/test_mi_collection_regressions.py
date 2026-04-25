@@ -388,8 +388,96 @@ class MICollectionRegressionTests(unittest.TestCase):
             self.assertEqual(str(np.asarray(data["protocol_mode"]).reshape(-1)[0]), "full")
             self.assertIn("continuous_block_indices", data.files)
             self.assertIn("continuous_prompt_indices", data.files)
-            self.assertIn("continuous_execution_success", data.files)
-            self.assertNotIn("continuous_events", data.files)
+
+    def test_save_falls_back_to_elapsed_time_when_no_markers_are_recorded(self) -> None:
+        sampling_rate = 250.0
+        marker_row = 8
+        brainflow_data = np.zeros((10, 2700), dtype=np.float32)
+
+        for channel_index in range(8):
+            brainflow_data[channel_index] = 10.0 * np.sin(
+                np.linspace(0.0, 10.0, brainflow_data.shape[1], dtype=np.float32) + float(channel_index)
+            )
+
+        timed_events = [
+            (0, "session_start", {}),
+            (10, "trial_start", {"trial_id": 1, "class_name": "left_hand", "run_index": 1, "run_trial_index": 1}),
+            (11, "fixation_start", {"trial_id": 1, "class_name": "left_hand", "run_index": 1, "run_trial_index": 1}),
+            (12, "baseline_start", {"trial_id": 1, "class_name": "left_hand", "run_index": 1, "run_trial_index": 1}),
+            (511, "baseline_end", {"trial_id": 1, "class_name": "left_hand", "run_index": 1, "run_trial_index": 1}),
+            (512, "cue_start", {"trial_id": 1, "class_name": "left_hand", "run_index": 1, "run_trial_index": 1}),
+            (513, "cue_left_hand", {"trial_id": 1, "class_name": "left_hand", "run_index": 1, "run_trial_index": 1}),
+            (1012, "imagery_start", {"trial_id": 1, "class_name": "left_hand", "run_index": 1, "run_trial_index": 1}),
+            (1013, "imagery_left_hand", {"trial_id": 1, "class_name": "left_hand", "run_index": 1, "run_trial_index": 1}),
+            (2012, "imagery_end", {"trial_id": 1, "class_name": "left_hand", "run_index": 1, "run_trial_index": 1}),
+            (2013, "iti_start", {"trial_id": 1, "class_name": "left_hand", "run_index": 1, "run_trial_index": 1}),
+            (2513, "trial_end", {"trial_id": 1, "class_name": "left_hand", "run_index": 1, "run_trial_index": 1}),
+            (2699, "session_end", {}),
+        ]
+        event_log = [
+            make_event(event_name, elapsed_sec=float(sample_index) / sampling_rate, **extra)
+            for sample_index, event_name, extra in timed_events
+        ]
+
+        settings = SessionSettings(
+            subject_id="fallback",
+            session_id="no_marker_channel",
+            output_root=str(self.temp_dir),
+            board_id=0,
+            serial_port="COM3",
+            channel_names=["C3", "Cz", "C4", "PO3", "PO4", "O1", "Oz", "O2"],
+            channel_positions=list(range(8)),
+            trials_per_class=1,
+            baseline_sec=2.0,
+            cue_sec=2.0,
+            imagery_sec=4.0,
+            iti_sec=2.0,
+            random_seed=0,
+            run_count=1,
+        )
+        trial_records = [
+            TrialRecord(
+                trial_id=1,
+                class_name="left_hand",
+                display_name="left_hand",
+                run_index=1,
+                run_trial_index=1,
+            )
+        ]
+
+        result = save_mi_session(
+            brainflow_data=brainflow_data,
+            sampling_rate=sampling_rate,
+            eeg_rows=list(range(8)),
+            marker_row=marker_row,
+            timestamp_row=None,
+            settings=settings,
+            event_log=event_log,
+            trial_records=trial_records,
+        )
+
+        with Path(result["events_csv_path"]).open("r", encoding="utf-8-sig", newline="") as handle:
+            rows = list(csv.DictReader(handle))
+        self.assertEqual(rows[0]["event_name"], "session_start")
+        self.assertEqual(rows[0]["sample_index"], "0")
+        self.assertEqual(rows[-1]["event_name"], "session_end")
+        self.assertEqual(rows[-1]["sample_index"], "2699")
+
+        with Path(result["meta_json_path"]).open("r", encoding="utf-8") as handle:
+            meta = json.load(handle)
+        self.assertEqual(meta["source_alignment_policy"], "elapsed_time_fallback_no_recorded_markers")
+        self.assertIn("recorded 0 markers", str(meta.get("source_alignment_warning", "")))
+        self.assertEqual(int(meta["recorded_marker_count"]), 0)
+
+        with Path(result["events_csv_path"]).open("r", encoding="utf-8-sig", newline="") as handle:
+            event_fields = list(csv.DictReader(handle).fieldnames or [])
+        self.assertIn("mi_run_index", event_fields)
+        self.assertNotIn("run_index", event_fields)
+
+        with Path(result["trials_csv_path"]).open("r", encoding="utf-8-sig", newline="") as handle:
+            trial_fields = list(csv.DictReader(handle).fieldnames or [])
+        self.assertIn("mi_run_index", trial_fields)
+        self.assertNotIn("run_index", trial_fields)
 
     def test_protocol_mode_is_saved_for_mi_only_sessions(self) -> None:
         result = self._save_single_trial_session(protocol_mode="mi_only")

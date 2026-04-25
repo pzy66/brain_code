@@ -404,6 +404,12 @@ continuous 约束：
 - marker 写入
 - board 数据读取是否稳定
 
+补充说明：
+
+- 正式会话开始前，采集线程会先清空连接后预览阶段累计的缓存样本，避免把“预览波形”混入本次会话。
+- 保存时仍优先使用 `strict_marker_sequence_1_to_1` 对齐；如果 BrainFlow marker 通道完全没有录到 marker，但 `event_log.elapsed_sec` 存在，则会回退到 `elapsed_time_fallback_no_recorded_markers`，先把会话保存下来。
+- 是否触发了 fallback，会写进 `*_session_meta.json` 的 `source_alignment_policy` 和 `source_alignment_warning`，后续训练或人工复核时应先检查这两个字段。
+
 ### 10.4 `collection_manifest.csv` 报 schema mismatch
 
 当前仓库已经不做旧 manifest 自动迁移。如果你手工留下了旧表头 manifest，需要先删除或整理该文件，再继续采集。

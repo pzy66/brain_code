@@ -1077,6 +1077,7 @@ class BoardCaptureWorker(QObject):
         self.poll_interval_sec = float(poll_interval_sec)
         self.stop_event = threading.Event()
         self.board_lock = threading.Lock()
+        self.data_chunks_lock = threading.Lock()
         self.board: BoardShim | None = None
         self.selected_rows: list[int] = []
         self.marker_row: int | None = None
@@ -1084,10 +1085,31 @@ class BoardCaptureWorker(QObject):
         self.package_num_row: int | None = None
         self.board_descr: dict[str, object] = {}
         self.sampling_rate: float | None = None
+        self._data_chunks: list[np.ndarray] = []
         self.current_quality_mode = self.MODE_EEG
         self._hw_impedance_channel: int | None = None
         self.quality_mode_request_lock = threading.Lock()
         self._pending_quality_mode_request: dict[str, object] | None = None
+
+    def _append_data_chunk(self, chunk_array: np.ndarray) -> None:
+        with self.data_chunks_lock:
+            self._data_chunks.append(np.asarray(chunk_array, dtype=np.float32))
+
+    def reset_capture_buffer_sync(self) -> int:
+        cleared_samples = 0
+        with self.board_lock:
+            if self.board is not None:
+                try:
+                    drained = self.board.get_board_data()
+                except Exception:
+                    drained = None
+                if drained is not None and np.size(drained):
+                    drained_array = np.asarray(drained, dtype=np.float32)
+                    if drained_array.ndim == 2:
+                        cleared_samples = int(drained_array.shape[1])
+            with self.data_chunks_lock:
+                self._data_chunks.clear()
+        return int(cleared_samples)
 
     @staticmethod
     def build_impedance_command(channel: int, test_p: bool = True, test_n: bool = False) -> str:
@@ -1303,9 +1325,10 @@ class BoardCaptureWorker(QObject):
     @pyqtSlot()
     def run(self) -> None:
         final_payload = None
-        data_chunks: list[np.ndarray] = []
         try:
             self.stop_event.clear()
+            with self.data_chunks_lock:
+                self._data_chunks = []
             try:
                 BoardShim.release_all_sessions()
             except Exception:
@@ -1388,7 +1411,7 @@ class BoardCaptureWorker(QObject):
                     chunk = None
                 if chunk is not None and np.size(chunk):
                     chunk_array = np.asarray(chunk, dtype=np.float32)
-                    data_chunks.append(chunk_array)
+                    self._append_data_chunk(chunk_array)
                     if self.selected_rows:
                         try:
                             preview_chunk = np.asarray(chunk_array[self.selected_rows, :], dtype=np.float32)
@@ -1406,8 +1429,10 @@ class BoardCaptureWorker(QObject):
                 except Exception:
                     tail_chunk = None
                 if tail_chunk is not None and np.size(tail_chunk):
-                    data_chunks.append(np.asarray(tail_chunk, dtype=np.float32))
+                    self._append_data_chunk(np.asarray(tail_chunk, dtype=np.float32))
 
+                with self.data_chunks_lock:
+                    data_chunks = list(self._data_chunks)
                 if data_chunks:
                     try:
                         full_data = np.concatenate(data_chunks, axis=1)
@@ -4910,6 +4935,12 @@ class MIDataCollectorWindow(QMainWindow):
         self.session_paused = False
         self.waiting_for_save = False
         self.capture_on_stop = True
+        cleared_preview_samples = 0
+        if self.worker is not None:
+            try:
+                cleared_preview_samples = int(self.worker.reset_capture_buffer_sync())
+            except Exception as error:
+                self.log(f"警告：正式采集前清空预览缓存失败：{error}")
         self.session_start_perf = time.perf_counter()
 
         self._update_sequence_label()
@@ -4925,6 +4956,10 @@ class MIDataCollectorWindow(QMainWindow):
         self.log(
             f"开始采集：被试 {settings.subject_id} | 会话 {settings.session_id} | "
             f"轮次 {settings.run_count} | 每类 {settings.trials_per_class} 试次"
+        )
+        self.log(
+            f"正式会话开始前已清空预览缓存样本 {cleared_preview_samples} 个；"
+            "后续保存只保留本次会话开始后的数据。"
         )
         self.log(f"本次会话随机种子（自动生成）：{settings.random_seed}")
         if self.continuous_schedule_after_runs:

@@ -524,6 +524,46 @@ def _attach_sample_indices(
     return enriched
 
 
+def _attach_sample_indices_from_elapsed_time(
+    event_log: list[dict[str, object]],
+    *,
+    sample_count: int,
+    sampling_rate: float,
+    crop_start: int,
+) -> list[dict[str, object]]:
+    """Fallback alignment when the marker channel is empty but elapsed times exist."""
+    total_samples = max(1, int(sample_count))
+    sfreq = float(sampling_rate)
+    if not np.isfinite(sfreq) or sfreq <= 0.0:
+        raise ValueError("sampling_rate must be positive for elapsed-time fallback.")
+    has_elapsed_reference = any(
+        event.get("elapsed_sec") is not None and np.isfinite(float(event.get("elapsed_sec")))
+        for event in event_log
+    )
+    if not has_elapsed_reference:
+        raise ValueError("Elapsed-time fallback requires at least one finite elapsed_sec value.")
+
+    enriched: list[dict[str, object]] = []
+    previous_sample_index = 0
+    for event_index, event in enumerate(event_log):
+        raw_elapsed = event.get("elapsed_sec")
+        if raw_elapsed is None:
+            sample_index = int(previous_sample_index)
+        else:
+            elapsed_sec = float(raw_elapsed)
+            if not np.isfinite(elapsed_sec):
+                raise ValueError(f"Non-finite elapsed_sec for event index {event_index}.")
+            sample_index = int(round(elapsed_sec * sfreq))
+        sample_index = max(int(previous_sample_index), sample_index)
+        sample_index = min(sample_index, total_samples - 1)
+        merged = dict(event)
+        merged["sample_index"] = int(sample_index)
+        merged["absolute_sample_index"] = int(sample_index + int(crop_start))
+        enriched.append(merged)
+        previous_sample_index = int(sample_index)
+    return enriched
+
+
 def _update_trials_from_events(
     trial_records: list[TrialRecord],
     events: list[dict[str, object]],
@@ -1159,7 +1199,21 @@ def save_mi_session(
     eeg_uvolts = np.asarray(cropped[eeg_rows], dtype=np.float32)
     eeg_volts = eeg_uvolts * 1e-6
     recorded_markers = _extract_marker_occurrences(cropped_marker, crop_start=crop_start)
-    enriched_events = _attach_sample_indices(event_log, recorded_markers)
+    alignment_policy = "strict_marker_sequence_1_to_1"
+    alignment_warning = ""
+    try:
+        enriched_events = _attach_sample_indices(event_log, recorded_markers)
+    except ValueError as error:
+        if recorded_markers:
+            raise
+        enriched_events = _attach_sample_indices_from_elapsed_time(
+            event_log,
+            sample_count=int(cropped.shape[1]),
+            sampling_rate=float(sampling_rate),
+            crop_start=int(crop_start),
+        )
+        alignment_policy = "elapsed_time_fallback_no_recorded_markers"
+        alignment_warning = str(error)
     updated_trials = _update_trials_from_events(trial_records, enriched_events)
     semantic_segment_rows = _build_segment_rows(enriched_events, updated_trials, sampling_rate=float(sampling_rate))
 
@@ -1692,6 +1746,7 @@ def save_mi_session(
         "epochs_unit": "volt",
         "quality_report": quality_summary,
         "event_count": len(enriched_events),
+        "recorded_marker_count": int(len(recorded_markers)),
         "segment_count": int(len(segment_rows)),
         "trials_per_run": int(trials_per_run),
         "mi_run_count": int(settings.run_count),
@@ -1707,7 +1762,8 @@ def save_mi_session(
         "continuous_prompts": int(continuous_event_labels.shape[0]),
         "raw_preservation_level": "cropped_full_board_matrix",
         "board_data_sha256": board_data_sha256,
-        "source_alignment_policy": "strict_marker_sequence_1_to_1",
+        "source_alignment_policy": alignment_policy,
+        "source_alignment_warning": alignment_warning,
         "session_start_wall_time": event_log[0]["iso_time"] if event_log else "",
         "session_end_wall_time": event_log[-1]["iso_time"] if event_log else "",
         "first_board_timestamp": None if cropped_timestamps is None or cropped_timestamps.size == 0 else float(cropped_timestamps[0]),

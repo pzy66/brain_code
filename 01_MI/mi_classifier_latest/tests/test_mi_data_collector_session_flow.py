@@ -466,6 +466,61 @@ class MIDataCollectorSessionFlowTests(unittest.TestCase):
         finally:
             window.close()
 
+    def test_begin_session_resets_worker_capture_history_before_recording_session_start(self) -> None:
+        class FakeWorker:
+            def __init__(self) -> None:
+                self.reset_calls = 0
+
+            def supports_impedance_mode(self) -> bool:
+                return False
+
+            def reset_capture_buffer_sync(self) -> int:
+                self.reset_calls += 1
+                return 321
+
+        window = MIDataCollectorWindow()
+        log_messages: list[str] = []
+        recorded_events: list[str] = []
+        worker = FakeWorker()
+        window.worker = worker
+        window.log = log_messages.append
+        window.show_error = lambda message: None
+        window._start_formal_protocol = lambda: log_messages.append("formal_protocol_started")
+
+        def fake_record_event(
+            event_name: str,
+            *,
+            trial_id: int | None = None,
+            class_name: str | None = None,
+            run_index: int | None = None,
+            run_trial_index: int | None = None,
+            block_index: int | None = None,
+            prompt_index: int | None = None,
+            command_duration_sec: float | None = None,
+            execution_success: int | bool | None = None,
+        ) -> None:
+            del trial_id, class_name, run_index, run_trial_index, block_index, prompt_index, command_duration_sec, execution_success
+            recorded_events.append(event_name)
+            window.event_log.append(make_event(event_name, elapsed_sec=0.0))
+
+        window.record_event = fake_record_event
+        settings = self._build_settings()
+        sequence_by_run = [["left_hand"] for _ in range(int(settings.run_count))]
+        try:
+            window._begin_session_with_settings(settings, sequence_by_run)
+
+            self.assertEqual(worker.reset_calls, 1)
+            self.assertEqual(recorded_events[:1], ["session_start"])
+            self.assertTrue(
+                any("清空预览缓存样本 321 个" in message for message in log_messages),
+                "expected session start log to mention the cleared preview sample count",
+            )
+        finally:
+            window.session_running = False
+            window.waiting_for_save = False
+            window.worker_thread = None
+            window.close()
+
     def test_baseline_to_cue_transition_places_audio_between_markers(self) -> None:
         window = self._build_window_with_fake_session()
         prompt_calls: list[tuple[str, str, str | None, int]] = []
