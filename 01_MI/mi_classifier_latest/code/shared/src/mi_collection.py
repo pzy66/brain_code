@@ -177,6 +177,7 @@ COLLECTION_MANIFEST_FIELDS = [
     "session_meta_json",
     "quality_report_json",
 ]
+PAUSE_REJECTED_TRIAL_NOTE = "会话中发生暂停，自动标记为坏试次"
 
 
 @dataclass
@@ -357,26 +358,31 @@ def build_balanced_trial_sequence(
     total_count = int(trials_per_class) * len(class_names)
     consecutive_limit = max(0, int(max_consecutive_same_class))
 
-    for _ in range(2000):
-        counts = {name: int(trials_per_class) for name in class_names}
-        sequence: list[str] = []
-        while len(sequence) < total_count:
-            candidates = [name for name in class_names if counts[name] > 0]
-            if consecutive_limit > 0 and len(sequence) >= consecutive_limit:
-                tail = sequence[-consecutive_limit:]
-                candidates = [name for name in candidates if not all(item == name for item in tail)]
-            if not candidates:
-                break
+    counts = {name: int(trials_per_class) for name in class_names}
+    sequence: list[str] = []
+    last_name = ""
+    streak_length = 0
+    while len(sequence) < total_count:
+        candidates = [name for name in class_names if counts[name] > 0]
+        if consecutive_limit > 0 and streak_length >= consecutive_limit and last_name:
+            candidates = [name for name in candidates if name != last_name]
+        if not candidates:
+            break
 
-            min_count = min(counts[name] for name in candidates)
-            preferred = [name for name in candidates if counts[name] == min_count]
-            chosen_token = rng.choice(np.asarray(preferred, dtype=object))
-            chosen = str(chosen_token.item() if hasattr(chosen_token, "item") else chosen_token)
-            sequence.append(chosen)
-            counts[chosen] -= 1
+        max_count = max(counts[name] for name in candidates)
+        preferred = [name for name in candidates if counts[name] == max_count]
+        chosen_index = int(rng.integers(0, len(preferred)))
+        chosen = str(preferred[chosen_index])
+        sequence.append(chosen)
+        counts[chosen] -= 1
+        if chosen == last_name:
+            streak_length += 1
+        else:
+            last_name = chosen
+            streak_length = 1
 
-        if len(sequence) == total_count:
-            return sequence
+    if len(sequence) == total_count:
+        return sequence
 
     # Fallback to legacy block-wise shuffle.
     sequence = []
@@ -617,21 +623,129 @@ def _maybe_set_standard_montage(raw: mne.io.BaseRaw, channel_names: list[str]) -
 
 def _build_quality_summary(eeg_uvolts: np.ndarray, channel_names: list[str]) -> dict[str, object]:
     """Compute simple post-session quality statistics."""
+    def _stats(values: np.ndarray) -> dict[str, object]:
+        array = np.asarray(values, dtype=np.float64).reshape(-1)
+        finite_values = array[np.isfinite(array)]
+        non_finite_count = int(array.size - finite_values.size)
+        if finite_values.size == 0:
+            return {
+                "std_uV": 0.0,
+                "peak_to_peak_uV": 0.0,
+                "rms_uV": 0.0,
+                "sample_count": int(array.size),
+                "finite_sample_count": 0,
+                "non_finite_sample_count": non_finite_count,
+            }
+        return {
+            "std_uV": float(np.std(finite_values)),
+            "peak_to_peak_uV": float(np.ptp(finite_values)),
+            "rms_uV": float(np.sqrt(np.mean(np.square(finite_values)))),
+            "sample_count": int(array.size),
+            "finite_sample_count": int(finite_values.size),
+            "non_finite_sample_count": non_finite_count,
+        }
+
+    overall = _stats(eeg_uvolts)
     summary = {
-        "overall_std_uV": float(np.std(eeg_uvolts)),
-        "overall_peak_to_peak_uV": float(np.ptp(eeg_uvolts)),
+        "overall_std_uV": float(overall["std_uV"]),
+        "overall_peak_to_peak_uV": float(overall["peak_to_peak_uV"]),
+        "overall_rms_uV": float(overall["rms_uV"]),
+        "sample_count": int(overall["sample_count"]),
+        "finite_sample_count": int(overall["finite_sample_count"]),
+        "non_finite_sample_count": int(overall["non_finite_sample_count"]),
         "channels": [],
     }
     for index, channel_name in enumerate(channel_names):
         channel_data = eeg_uvolts[index]
+        channel_stats = _stats(channel_data)
         summary["channels"].append(
             {
                 "channel_name": channel_name,
-                "std_uV": float(np.std(channel_data)),
-                "peak_to_peak_uV": float(np.ptp(channel_data)),
-                "rms_uV": float(np.sqrt(np.mean(np.square(channel_data)))),
+                "std_uV": float(channel_stats["std_uV"]),
+                "peak_to_peak_uV": float(channel_stats["peak_to_peak_uV"]),
+                "rms_uV": float(channel_stats["rms_uV"]),
+                "sample_count": int(channel_stats["sample_count"]),
+                "finite_sample_count": int(channel_stats["finite_sample_count"]),
+                "non_finite_sample_count": int(channel_stats["non_finite_sample_count"]),
             }
         )
+    return summary
+
+
+def _build_data_flow_summary(
+    *,
+    cropped: np.ndarray,
+    marker_channel: np.ndarray,
+    timestamp_row: int | None,
+    package_num_row: int | None,
+    sampling_rate: float,
+    event_count: int,
+) -> dict[str, object]:
+    """Summarize hardware data-flow rows preserved in the raw BrainFlow matrix."""
+    sample_count = int(cropped.shape[1])
+    row_count = int(cropped.shape[0])
+    expected_sampling_rate = float(sampling_rate)
+    marker_values = np.asarray(marker_channel, dtype=np.float64).reshape(-1)
+    finite_markers = marker_values[np.isfinite(marker_values)]
+    marker_count = int(np.count_nonzero(np.abs(finite_markers) > 1e-9))
+    summary: dict[str, object] = {
+        "row_count": row_count,
+        "sample_count": sample_count,
+        "expected_sampling_rate_hz": expected_sampling_rate,
+        "duration_sec_from_samples": (
+            float(sample_count / expected_sampling_rate) if expected_sampling_rate > 0 else 0.0
+        ),
+        "marker_count": marker_count,
+        "event_count": int(event_count),
+        "marker_event_count_match": bool(marker_count == int(event_count)),
+        "timestamp_available": False,
+        "timestamp_monotonic": None,
+        "timestamp_non_finite_count": None,
+        "timestamp_span_sec": None,
+        "effective_sampling_rate_hz": None,
+        "package_num_available": False,
+        "package_non_finite_count": None,
+        "package_first": None,
+        "package_last": None,
+        "package_jump_count": None,
+    }
+
+    if timestamp_row is not None and 0 <= int(timestamp_row) < row_count:
+        timestamps = np.asarray(cropped[int(timestamp_row)], dtype=np.float64).reshape(-1)
+        finite_timestamps = timestamps[np.isfinite(timestamps)]
+        summary["timestamp_available"] = True
+        summary["timestamp_non_finite_count"] = int(timestamps.size - finite_timestamps.size)
+        if finite_timestamps.size >= 2:
+            diffs = np.diff(finite_timestamps)
+            summary["timestamp_monotonic"] = bool(np.all(diffs >= 0.0))
+            timestamp_span_sec = float(finite_timestamps[-1] - finite_timestamps[0])
+            summary["timestamp_span_sec"] = timestamp_span_sec
+            summary["effective_sampling_rate_hz"] = (
+                float((finite_timestamps.size - 1) / timestamp_span_sec)
+                if timestamp_span_sec > 0.0
+                else None
+            )
+        elif finite_timestamps.size == 1:
+            summary["timestamp_monotonic"] = True
+            summary["timestamp_span_sec"] = 0.0
+        else:
+            summary["timestamp_monotonic"] = False
+
+    if package_num_row is not None and 0 <= int(package_num_row) < row_count:
+        packages = np.asarray(cropped[int(package_num_row)], dtype=np.float64).reshape(-1)
+        finite_packages = packages[np.isfinite(packages)]
+        summary["package_num_available"] = True
+        summary["package_non_finite_count"] = int(packages.size - finite_packages.size)
+        if finite_packages.size:
+            package_ints = np.asarray(np.rint(finite_packages), dtype=np.int64) % 256
+            summary["package_first"] = int(package_ints[0])
+            summary["package_last"] = int(package_ints[-1])
+            if package_ints.size >= 2:
+                expected_next = (package_ints[:-1] + 1) % 256
+                summary["package_jump_count"] = int(np.count_nonzero(package_ints[1:] != expected_next))
+            else:
+                summary["package_jump_count"] = 0
+
     return summary
 
 
@@ -801,6 +915,171 @@ def _extract_intervals(events: list[dict[str, object]], start_name: str, end_nam
     return intervals
 
 
+def _normalize_intervals(intervals: list[tuple[int, int]], *, total_samples: int) -> list[tuple[int, int]]:
+    cleaned: list[tuple[int, int]] = []
+    total = max(0, int(total_samples))
+    for start, stop in intervals:
+        s = max(0, int(start))
+        t = min(total, int(stop))
+        if t > s:
+            cleaned.append((s, t))
+    if not cleaned:
+        return []
+    cleaned.sort()
+    merged: list[tuple[int, int]] = [cleaned[0]]
+    for start, stop in cleaned[1:]:
+        last_start, last_stop = merged[-1]
+        if start <= last_stop:
+            merged[-1] = (last_start, max(last_stop, stop))
+        else:
+            merged.append((start, stop))
+    return merged
+
+
+def _extract_pause_intervals(events: list[dict[str, object]], *, total_samples: int) -> list[tuple[int, int]]:
+    pause_intervals: list[tuple[int, int]] = []
+    pause_start: int | None = None
+    for event in events:
+        sample = event.get("sample_index")
+        if sample is None:
+            continue
+        sample_index = int(sample)
+        event_name = str(event.get("event_name", ""))
+        if event_name == "pause":
+            if pause_start is None:
+                pause_start = sample_index
+            continue
+        if event_name == "resume" and pause_start is not None:
+            pause_intervals.append((pause_start, max(pause_start + 1, sample_index)))
+            pause_start = None
+    if pause_start is not None:
+        pause_intervals.append((pause_start, max(pause_start + 1, int(total_samples))))
+    return _normalize_intervals(pause_intervals, total_samples=total_samples)
+
+
+def _interval_overlaps_any(start: int, stop: int, intervals: list[tuple[int, int]]) -> bool:
+    s = int(start)
+    t = int(stop)
+    if t <= s:
+        return False
+    for excluded_start, excluded_stop in intervals:
+        if int(excluded_start) < t and s < int(excluded_stop):
+            return True
+    return False
+
+
+def _subtract_intervals(interval: tuple[int, int], excluded_intervals: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    start, stop = int(interval[0]), int(interval[1])
+    if stop <= start:
+        return []
+    if not excluded_intervals:
+        return [(start, stop)]
+    fragments: list[tuple[int, int]] = []
+    cursor = start
+    for excluded_start, excluded_stop in excluded_intervals:
+        excluded_s = int(excluded_start)
+        excluded_t = int(excluded_stop)
+        if excluded_t <= cursor:
+            continue
+        if excluded_s >= stop:
+            break
+        if excluded_s > cursor:
+            fragments.append((cursor, min(excluded_s, stop)))
+        cursor = max(cursor, excluded_t)
+        if cursor >= stop:
+            break
+    if cursor < stop:
+        fragments.append((cursor, stop))
+    return [(s, t) for s, t in fragments if t > s]
+
+
+def _append_note_once(note: str, addition: str) -> str:
+    base = str(note).strip()
+    extra = str(addition).strip()
+    if not extra:
+        return base
+    if not base:
+        return extra
+    if extra in base:
+        return base
+    return f"{base}; {extra}"
+
+
+def _mark_trials_overlapping_intervals(
+    trials: list[TrialRecord],
+    events: list[dict[str, object]],
+    excluded_intervals: list[tuple[int, int]],
+    *,
+    note: str,
+) -> set[int]:
+    rejected_trial_ids: set[int] = set()
+    if not excluded_intervals:
+        return rejected_trial_ids
+    for trial in trials:
+        trial_id = int(trial.trial_id)
+        trial_start = _first_event_sample(
+            events,
+            trial_id=trial_id,
+            event_names=["trial_start", "fixation_start", "baseline_start", "cue_start", "imagery_start"],
+        )
+        trial_end = trial.trial_end_sample
+        if trial_end is None:
+            trial_end = _first_event_sample(
+                events,
+                trial_id=trial_id,
+                event_names=["trial_end", "imagery_end", "iti_start"],
+            )
+        if trial_start is None or trial_end is None or int(trial_end) <= int(trial_start):
+            continue
+        if _interval_overlaps_any(int(trial_start), int(trial_end), excluded_intervals):
+            trial.accepted = False
+            trial.note = _append_note_once(trial.note, note)
+            rejected_trial_ids.add(trial_id)
+    return rejected_trial_ids
+
+
+def _normalize_execution_success(value: object) -> int | None:
+    if value is None:
+        return None
+    try:
+        return 0 if int(value) == 0 else 1
+    except Exception:
+        return 1 if bool(value) else 0
+
+
+def _mark_continuous_prompts_overlapping_intervals(
+    prompts: list[dict[str, object]],
+    excluded_intervals: list[tuple[int, int]],
+) -> list[dict[str, object]]:
+    normalized: list[dict[str, object]] = []
+    for prompt in prompts:
+        updated = dict(prompt)
+        updated["execution_success"] = _normalize_execution_success(updated.get("execution_success"))
+        start_sample = int(updated.get("start_sample") or 0)
+        end_sample = int(updated.get("end_sample") or (start_sample + 1))
+        if _interval_overlaps_any(start_sample, end_sample, excluded_intervals):
+            updated["execution_success"] = 0
+        normalized.append(updated)
+    return normalized
+
+
+def _append_clean_interval(
+    intervals: list[tuple[int, int]],
+    sources: list[str],
+    *,
+    interval: tuple[int, int],
+    source: str,
+    excluded_intervals: list[tuple[int, int]],
+    base_lengths: list[int] | None = None,
+) -> None:
+    base_length = max(0, int(interval[1]) - int(interval[0]))
+    for fragment in _subtract_intervals(interval, excluded_intervals):
+        intervals.append(fragment)
+        sources.append(str(source))
+        if base_lengths is not None:
+            base_lengths.append(base_length)
+
+
 def _extract_event_pairs(
     events: list[dict[str, object]],
     start_names: str | list[str] | tuple[str, ...],
@@ -829,6 +1108,7 @@ def _build_segment_rows(
     trials: list[TrialRecord],
     *,
     sampling_rate: float,
+    continuous_prompts: list[dict[str, object]] | None = None,
 ) -> list[dict[str, object]]:
     """Build interval-style semantic segments from atomic event markers."""
     rows: list[dict[str, object]] = []
@@ -1028,7 +1308,7 @@ def _build_segment_rows(
                 source_end_event=str(end_event.get("event_name", "")),
             )
 
-    for prompt in _extract_continuous_prompts(events):
+    for prompt in (continuous_prompts if continuous_prompts is not None else _extract_continuous_prompts(events)):
         _append_segment(
             segment_type="continuous_prompt",
             start_sample=prompt.get("start_sample"),
@@ -1051,6 +1331,8 @@ def _split_intervals_to_windows(
     window_samples: int,
     step_samples: int,
     source_name: str,
+    allow_short_interval: bool = False,
+    min_short_interval_samples: int | None = None,
 ) -> tuple[list[np.ndarray], list[str]]:
     """Slice intervals into fixed-size channel-first windows."""
     windows: list[np.ndarray] = []
@@ -1063,6 +1345,14 @@ def _split_intervals_to_windows(
         s = max(0, int(start))
         t = min(total_samples, int(stop))
         if t - s < window_samples:
+            minimum = int(min_short_interval_samples or window_samples)
+            if allow_short_interval and t > s and t - s >= minimum:
+                short_window = np.asarray(signal[:, s:t], dtype=np.float32)
+                pad_samples = int(window_samples - short_window.shape[1])
+                if pad_samples > 0:
+                    short_window = np.pad(short_window, ((0, 0), (0, pad_samples)), mode="edge")
+                windows.append(np.asarray(short_window[:, :window_samples], dtype=np.float32))
+                sources.append(str(source_name))
             continue
         cursor = s
         while cursor + window_samples <= t:
@@ -1143,25 +1433,77 @@ def save_mi_session(
     trial_records: list[TrialRecord],
 ) -> dict[str, object]:
     """Persist one collected MI session to disk."""
+    brainflow_data = np.asarray(brainflow_data)
     if brainflow_data.ndim != 2:
         raise ValueError("brainflow_data must have shape (rows, samples).")
+    if brainflow_data.shape[1] <= 0:
+        raise ValueError("brainflow_data must contain at least one sample.")
+    if float(sampling_rate) <= 0:
+        raise ValueError("sampling_rate must be positive.")
     if not eeg_rows:
         raise ValueError("eeg_rows cannot be empty.")
+    row_count = int(brainflow_data.shape[0])
+    normalized_eeg_rows = [int(row) for row in eeg_rows]
+    invalid_eeg_rows = [row for row in normalized_eeg_rows if row < 0 or row >= row_count]
+    if invalid_eeg_rows:
+        raise ValueError(f"eeg_rows contains out-of-range rows for data with {row_count} rows: {invalid_eeg_rows}.")
+    marker_row = int(marker_row)
+    if marker_row < 0 or marker_row >= row_count:
+        raise ValueError(f"marker_row {marker_row} is out of range for data with {row_count} rows.")
+    if timestamp_row is not None:
+        timestamp_row = int(timestamp_row)
+        if timestamp_row < 0 or timestamp_row >= row_count:
+            raise ValueError(f"timestamp_row {timestamp_row} is out of range for data with {row_count} rows.")
+    if package_num_row is not None:
+        package_num_row = int(package_num_row)
+        if package_num_row < 0 or package_num_row >= row_count:
+            raise ValueError(f"package_num_row {package_num_row} is out of range for data with {row_count} rows.")
+    eeg_rows = normalized_eeg_rows
 
-    marker_channel = np.asarray(brainflow_data[marker_row], dtype=np.float32)
+    marker_channel = np.asarray(brainflow_data[marker_row], dtype=np.float64)
     crop_start, crop_end = _detect_session_bounds(marker_channel)
-    cropped = np.asarray(brainflow_data[:, crop_start : crop_end + 1], dtype=np.float32)
+    cropped = np.asarray(brainflow_data[:, crop_start : crop_end + 1], dtype=np.float64)
     cropped_marker = marker_channel[crop_start : crop_end + 1]
     cropped_timestamps = None
     if timestamp_row is not None:
         cropped_timestamps = np.asarray(brainflow_data[timestamp_row, crop_start : crop_end + 1], dtype=np.float64)
 
+    channel_names = settings.channel_names
     eeg_uvolts = np.asarray(cropped[eeg_rows], dtype=np.float32)
-    eeg_volts = eeg_uvolts * 1e-6
+    quality_summary = _build_quality_summary(eeg_uvolts, channel_names)
+    if int(quality_summary.get("non_finite_sample_count", 0)) > 0:
+        eeg_uvolts_for_derivatives = np.nan_to_num(eeg_uvolts, nan=0.0, posinf=0.0, neginf=0.0)
+    else:
+        eeg_uvolts_for_derivatives = eeg_uvolts
+    eeg_volts = eeg_uvolts_for_derivatives * 1e-6
     recorded_markers = _extract_marker_occurrences(cropped_marker, crop_start=crop_start)
+    data_flow_summary = _build_data_flow_summary(
+        cropped=cropped,
+        marker_channel=cropped_marker,
+        timestamp_row=timestamp_row,
+        package_num_row=package_num_row,
+        sampling_rate=float(sampling_rate),
+        event_count=len(event_log),
+    )
     enriched_events = _attach_sample_indices(event_log, recorded_markers)
+    pause_intervals = _extract_pause_intervals(enriched_events, total_samples=int(eeg_volts.shape[1]))
     updated_trials = _update_trials_from_events(trial_records, enriched_events)
-    semantic_segment_rows = _build_segment_rows(enriched_events, updated_trials, sampling_rate=float(sampling_rate))
+    pause_rejected_trial_ids = _mark_trials_overlapping_intervals(
+        updated_trials,
+        enriched_events,
+        pause_intervals,
+        note=PAUSE_REJECTED_TRIAL_NOTE,
+    )
+    continuous_prompts = _mark_continuous_prompts_overlapping_intervals(
+        _extract_continuous_prompts(enriched_events),
+        pause_intervals,
+    )
+    semantic_segment_rows = _build_segment_rows(
+        enriched_events,
+        updated_trials,
+        sampling_rate=float(sampling_rate),
+        continuous_prompts=continuous_prompts,
+    )
 
     session_dir = create_session_folder(settings.output_root, settings.subject_id, settings.session_id)
     dataset_root = Path(settings.output_root).resolve()
@@ -1194,9 +1536,7 @@ def save_mi_session(
     gate_epochs_meta_path = gate_epochs_path.with_suffix(".meta.json")
     artifact_epochs_meta_path = artifact_epochs_path.with_suffix(".meta.json")
     continuous_meta_path = continuous_npz_path.with_suffix(".meta.json")
-    channel_names = settings.channel_names
-
-    np.save(board_data_path, np.asarray(cropped, dtype=np.float32), allow_pickle=False)
+    np.save(board_data_path, np.asarray(cropped, dtype=np.float64), allow_pickle=False)
     board_map = {
         "schema_version": int(COLLECTION_SCHEMA_VERSION),
         "exporter_name": COLLECTION_EXPORTER_NAME,
@@ -1216,6 +1556,11 @@ def save_mi_session(
         "marker_row": int(marker_row),
         "timestamp_row": None if timestamp_row is None else int(timestamp_row),
         "package_num_row": None if package_num_row is None else int(package_num_row),
+        "selected_eeg_non_finite_sample_count": int(quality_summary.get("non_finite_sample_count", 0)),
+        "derivative_non_finite_replacement": (
+            "Selected EEG NaN/Inf values are preserved in board_data.npy and replaced with 0.0 only in FIF/epoch derivatives."
+        ),
+        "data_flow_report": data_flow_summary,
         "channel_rows": [
             {"channel_name": str(name), "board_row": int(row)}
             for name, row in zip(channel_names, eeg_rows)
@@ -1339,7 +1684,6 @@ def save_mi_session(
         ],
     )
 
-    quality_summary = _build_quality_summary(eeg_uvolts, channel_names)
     _write_json(quality_json_path, quality_summary)
 
     class_names = [item["key"] for item in MI_CLASSES]
@@ -1372,12 +1716,12 @@ def save_mi_session(
 
         baseline_start = _first_event_sample(enriched_events, trial_id=int(trial.trial_id), event_names=["fixation_start", "baseline_start"])
         baseline_end = _first_event_sample(enriched_events, trial_id=int(trial.trial_id), event_names=["baseline_end", "cue_start"])
-        if baseline_start is not None and baseline_end is not None and baseline_end > baseline_start:
+        if trial.accepted and baseline_start is not None and baseline_end is not None and baseline_end > baseline_start:
             baseline_windows.append(np.asarray(eeg_volts[:, baseline_start:baseline_end], dtype=np.float32))
 
         iti_start = _first_event_sample(enriched_events, trial_id=int(trial.trial_id), event_names=["iti_start"])
         trial_end = trial_end_lookup.get(int(trial.trial_id))
-        if iti_start is not None and trial_end is not None and trial_end > iti_start:
+        if trial.accepted and iti_start is not None and trial_end is not None and trial_end > iti_start:
             iti_windows.append(np.asarray(eeg_volts[:, int(iti_start):int(trial_end)], dtype=np.float32))
 
     mi_target_samples = min((window.shape[1] for window in mi_windows), default=window_samples)
@@ -1392,48 +1736,92 @@ def save_mi_session(
     gate_positive = np.asarray(X_mi, dtype=np.float32)
     gate_negative_intervals: list[tuple[int, int]] = []
     gate_negative_sources: list[str] = []
+    gate_negative_base_lengths: list[int] = []
     for trial in updated_trials:
+        if not trial.accepted:
+            continue
         baseline_start = _first_event_sample(enriched_events, trial_id=int(trial.trial_id), event_names=["fixation_start", "baseline_start"])
         baseline_end = _first_event_sample(enriched_events, trial_id=int(trial.trial_id), event_names=["baseline_end", "cue_start"])
         if baseline_start is not None and baseline_end is not None and baseline_end > baseline_start:
-            gate_negative_intervals.append((int(baseline_start), int(baseline_end)))
-            gate_negative_sources.append("baseline")
+            _append_clean_interval(
+                gate_negative_intervals,
+                gate_negative_sources,
+                interval=(int(baseline_start), int(baseline_end)),
+                source="baseline",
+                excluded_intervals=pause_intervals,
+                base_lengths=gate_negative_base_lengths,
+            )
 
         iti_start = _first_event_sample(enriched_events, trial_id=int(trial.trial_id), event_names=["iti_start"])
         trial_end = trial_end_lookup.get(int(trial.trial_id))
         if iti_start is not None and trial_end is not None and trial_end > iti_start:
-            gate_negative_intervals.append((int(iti_start), int(trial_end)))
-            gate_negative_sources.append("iti")
+            _append_clean_interval(
+                gate_negative_intervals,
+                gate_negative_sources,
+                interval=(int(iti_start), int(trial_end)),
+                source="iti",
+                excluded_intervals=pause_intervals,
+                base_lengths=gate_negative_base_lengths,
+            )
 
     for interval in _extract_intervals(enriched_events, "eyes_open_rest_start", "eyes_open_rest_end"):
-        gate_negative_intervals.append(interval)
-        gate_negative_sources.append("eyes_open_rest")
+        _append_clean_interval(
+            gate_negative_intervals,
+            gate_negative_sources,
+            interval=interval,
+            source="eyes_open_rest",
+            excluded_intervals=pause_intervals,
+            base_lengths=gate_negative_base_lengths,
+        )
     if bool(settings.include_eyes_closed_rest_in_gate_neg):
         for interval in _extract_intervals(enriched_events, "eyes_closed_rest_start", "eyes_closed_rest_end"):
-            gate_negative_intervals.append(interval)
-            gate_negative_sources.append("eyes_closed_rest")
+            _append_clean_interval(
+                gate_negative_intervals,
+                gate_negative_sources,
+                interval=interval,
+                source="eyes_closed_rest",
+                excluded_intervals=pause_intervals,
+                base_lengths=gate_negative_base_lengths,
+            )
     for interval in _extract_intervals(enriched_events, "idle_block_start", "idle_block_end"):
-        gate_negative_intervals.append(interval)
-        gate_negative_sources.append("idle_block")
+        _append_clean_interval(
+            gate_negative_intervals,
+            gate_negative_sources,
+            interval=interval,
+            source="idle_block",
+            excluded_intervals=pause_intervals,
+            base_lengths=gate_negative_base_lengths,
+        )
     for interval in _extract_intervals(enriched_events, "idle_prepare_start", "idle_prepare_end"):
-        gate_negative_intervals.append(interval)
-        gate_negative_sources.append("idle_prepare")
+        _append_clean_interval(
+            gate_negative_intervals,
+            gate_negative_sources,
+            interval=interval,
+            source="idle_prepare",
+            excluded_intervals=pause_intervals,
+            base_lengths=gate_negative_base_lengths,
+        )
 
-    continuous_prompts = _extract_continuous_prompts(enriched_events)
     for prompt in continuous_prompts:
-        if str(prompt["class_label"]) == "no_control":
+        if str(prompt["class_label"]) == "no_control" and _normalize_execution_success(prompt.get("execution_success")) != 0:
             start_sample = int(prompt["start_sample"])
             end_sample = int(prompt["end_sample"])
             if end_sample > start_sample:
-                gate_negative_intervals.append((start_sample, end_sample))
-                gate_negative_sources.append("continuous_no_control")
+                _append_clean_interval(
+                    gate_negative_intervals,
+                    gate_negative_sources,
+                    interval=(start_sample, end_sample),
+                    source="continuous_no_control",
+                    excluded_intervals=pause_intervals,
+                    base_lengths=gate_negative_base_lengths,
+                )
 
     min_gate_negative_samples = max(1, rest_step_samples)
     gate_negative_window_samples = int(window_samples)
     eligible_gate_negative_lengths = [
-        int(stop - start)
-        for start, stop in gate_negative_intervals
-        if int(stop - start) >= min_gate_negative_samples
+        int(base_length)
+        for base_length in gate_negative_base_lengths
+        if int(base_length) >= min_gate_negative_samples
     ]
     if eligible_gate_negative_lengths:
         gate_negative_window_samples = min(int(window_samples), min(eligible_gate_negative_lengths))
@@ -1447,6 +1835,8 @@ def save_mi_session(
             window_samples=gate_negative_window_samples,
             step_samples=rest_step_samples,
             source_name=str(source),
+            allow_short_interval=True,
+            min_short_interval_samples=min_gate_negative_samples,
         )
         gate_negative_windows.extend(windows)
         gate_negative_sources_windows.extend(sources)
@@ -1462,22 +1852,43 @@ def save_mi_session(
     for artifact_type in normalize_artifact_types(settings.artifact_types):
         start_name, end_name = ARTIFACT_EVENT_INTERVALS[artifact_type]
         for interval in _extract_intervals(enriched_events, start_name, end_name):
-            hard_negative_intervals.append(interval)
-            hard_negative_sources.append(f"artifact_{artifact_type}")
+            _append_clean_interval(
+                hard_negative_intervals,
+                hard_negative_sources,
+                interval=interval,
+                source=f"artifact_{artifact_type}",
+                excluded_intervals=pause_intervals,
+            )
     for trial in updated_trials:
         if trial.accepted:
+            continue
+        if int(trial.trial_id) in pause_rejected_trial_ids:
             continue
         start_sample = trial_start_lookup.get(int(trial.trial_id))
         end_sample = trial_end_lookup.get(int(trial.trial_id))
         if start_sample is None or end_sample is None or end_sample <= start_sample:
             continue
-        hard_negative_intervals.append((int(start_sample), int(end_sample)))
-        hard_negative_sources.append("rejected_trial")
+        _append_clean_interval(
+            hard_negative_intervals,
+            hard_negative_sources,
+            interval=(int(start_sample), int(end_sample)),
+            source="rejected_trial",
+            excluded_intervals=pause_intervals,
+        )
 
     hard_negative_windows: list[np.ndarray] = []
     hard_negative_sources_windows: list[str] = []
     for interval, source in zip(hard_negative_intervals, hard_negative_sources):
-        windows, sources = _split_intervals_to_windows(signal=eeg_volts, intervals=[interval], window_samples=window_samples, step_samples=rest_step_samples, source_name=str(source))
+        is_artifact_source = str(source).startswith("artifact_")
+        windows, sources = _split_intervals_to_windows(
+            signal=eeg_volts,
+            intervals=[interval],
+            window_samples=window_samples,
+            step_samples=rest_step_samples,
+            source_name=str(source),
+            allow_short_interval=is_artifact_source,
+            min_short_interval_samples=max(1, int(round(0.8 * float(window_samples)))),
+        )
         hard_negative_windows.extend(windows)
         hard_negative_sources_windows.extend(sources)
     X_gate_hard_neg = _stack_windows(hard_negative_windows, channel_count=len(channel_names), sample_count=window_samples)
@@ -1502,7 +1913,7 @@ def save_mi_session(
     continuous_prompt_indices = np.asarray([int(item.get("prompt_index", 0)) for item in continuous_prompts], dtype=np.int32)
     continuous_execution_success = np.asarray(
         [
-            -1 if item.get("execution_success") is None else int(bool(item.get("execution_success")))
+            -1 if _normalize_execution_success(item.get("execution_success")) is None else int(_normalize_execution_success(item.get("execution_success")))
             for item in continuous_prompts
         ],
         dtype=np.int8,
@@ -1609,6 +2020,8 @@ def save_mi_session(
         "subject_id": sanitize_session_token(settings.subject_id),
         "session_id": sanitize_session_token(settings.session_id),
         "protocol_mode": str(settings.protocol_mode or "full"),
+        "source_data_flow_report": data_flow_summary,
+        "source_quality_report": quality_summary,
     }
     _write_json(
         mi_epochs_meta_path,
@@ -1691,6 +2104,7 @@ def save_mi_session(
         "saved_fif_unit": "volt",
         "epochs_unit": "volt",
         "quality_report": quality_summary,
+        "data_flow_report": data_flow_summary,
         "event_count": len(enriched_events),
         "segment_count": int(len(segment_rows)),
         "trials_per_run": int(trials_per_run),
@@ -1777,6 +2191,8 @@ def save_mi_session(
         "trial_count": trial_count_total,
         "accepted_trial_count": accepted_count_total,
         "rejected_trial_count": rejected_count_total,
+        "quality_report": quality_summary,
+        "data_flow_report": data_flow_summary,
         "manifest_csv_path": str(manifest_path),
     }
 

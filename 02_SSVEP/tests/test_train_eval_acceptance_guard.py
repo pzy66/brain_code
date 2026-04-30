@@ -11,14 +11,15 @@ PROJECT_DIR = Path(__file__).resolve().parents[1]
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
-from ssvep_core.async_fbcca_idle_standalone import DEFAULT_PROFILE_PATH, TrialSpec
+from ssvep_core.async_fbcca_idle_standalone import TrialSpec
 from ssvep_core.dataset import LoadedDataset, build_protocol_signature
 from ssvep_core.train_eval import OfflineTrainEvalConfig, run_offline_train_eval
-from apps.realtime_online_ui import DEFAULT_REALTIME_PROFILE_PATH
+from apps.realtime_online_ui import DEFAULT_REALTIME_PROFILE_PATH, _profile_model_name
 
 
-def test_realtime_default_profile_path_matches_training_default() -> None:
-    assert Path(DEFAULT_REALTIME_PROFILE_PATH).resolve() == Path(DEFAULT_PROFILE_PATH).resolve()
+def test_realtime_default_profile_path_uses_fbcca_profile() -> None:
+    assert Path(DEFAULT_REALTIME_PROFILE_PATH).exists()
+    assert "fbcca" in _profile_model_name(Path(DEFAULT_REALTIME_PROFILE_PATH))
 
 
 def test_train_eval_does_not_save_profile_when_no_model_meets_acceptance(

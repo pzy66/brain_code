@@ -713,6 +713,16 @@ def load_custom_task_datasets(dataset_root: Path, subject_filter: str | None = N
                 schema_version = 2
         if sidecar_probe.get("protocol_mode") is not None:
             protocol_mode = str(sidecar_probe.get("protocol_mode") or protocol_mode)
+        data_flow_probe = sidecar_probe.get("source_data_flow_report")
+        if not isinstance(data_flow_probe, dict):
+            data_flow_probe = sidecar_probe.get("data_flow_report")
+        if not isinstance(data_flow_probe, dict):
+            data_flow_probe = {}
+        quality_probe = sidecar_probe.get("source_quality_report")
+        if not isinstance(quality_probe, dict):
+            quality_probe = sidecar_probe.get("quality_report")
+        if not isinstance(quality_probe, dict):
+            quality_probe = {}
 
         file_record = {
             "run_stem": run_stem,
@@ -734,6 +744,12 @@ def load_custom_task_datasets(dataset_root: Path, subject_filter: str | None = N
             "artifact_segments": 0,
             "continuous_blocks": 0,
             "continuous_prompts": 0,
+            "data_flow_sample_count": int(data_flow_probe.get("sample_count") or 0),
+            "data_flow_timestamp_monotonic": data_flow_probe.get("timestamp_monotonic"),
+            "data_flow_effective_sampling_rate_hz": data_flow_probe.get("effective_sampling_rate_hz"),
+            "data_flow_package_jump_count": data_flow_probe.get("package_jump_count"),
+            "data_flow_marker_event_count_match": data_flow_probe.get("marker_event_count_match"),
+            "quality_non_finite_sample_count": int(quality_probe.get("non_finite_sample_count") or 0),
             "dropped_reason": "",
         }
         if run_issues:
@@ -899,6 +915,11 @@ def load_custom_task_datasets(dataset_root: Path, subject_filter: str | None = N
                     if "continuous_block_end_samples" in data.files
                     else np.asarray([], dtype=np.int64)
                 )
+                event_execution_success = (
+                    np.asarray(data["continuous_execution_success"], dtype=np.int8).reshape(-1)
+                    if "continuous_execution_success" in data.files
+                    else np.asarray([], dtype=np.int8)
+                )
                 event_block_indices = np.full(event_labels.shape[0], -1, dtype=np.int64)
                 if "continuous_block_indices" in data.files:
                     raw_block_indices = np.asarray(data["continuous_block_indices"], dtype=np.int64).reshape(-1)
@@ -926,6 +947,7 @@ def load_custom_task_datasets(dataset_root: Path, subject_filter: str | None = N
                         "X": np.asarray(continuous_X, dtype=np.float32),
                         "event_labels": np.asarray(event_labels, dtype=object),
                         "event_samples": np.asarray(event_samples, dtype=np.int64),
+                        "event_execution_success": np.asarray(event_execution_success, dtype=np.int8),
                         "event_block_indices": np.asarray(event_block_indices, dtype=np.int64),
                         "block_start_samples": np.asarray(block_starts, dtype=np.int64),
                         "block_end_samples": np.asarray(block_ends, dtype=np.int64),
@@ -2555,6 +2577,7 @@ def evaluate_continuous_online_like(
 
         event_labels = np.asarray(record.get("event_labels", []), dtype=object)
         event_samples = np.asarray(record.get("event_samples", []), dtype=np.int64)
+        event_execution_success = np.asarray(record.get("event_execution_success", []), dtype=np.int8)
         event_block_indices = np.asarray(record.get("event_block_indices", []), dtype=np.int64)
         block_starts = np.asarray(record.get("block_start_samples", []), dtype=np.int64)
         block_ends = np.asarray(record.get("block_end_samples", []), dtype=np.int64)
@@ -2563,6 +2586,9 @@ def evaluate_continuous_online_like(
 
         for event_index in range(event_count):
             prompt_total += 1
+            if event_execution_success.shape[0] > event_index and int(event_execution_success[event_index]) == 0:
+                prompt_skipped += 1
+                continue
             raw_label = _decode_npz_text(event_labels[event_index]).strip().lower()
             sample_index = int(event_samples[event_index])
             block_index = -1

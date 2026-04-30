@@ -8,7 +8,7 @@ import sys
 
 
 def main() -> int:
-    target = Path(__file__).resolve().parent / "code" / "collection" / "run_collection_pycharm.py"
+    target = Path(__file__).resolve().parent / "code" / "collection" / "mi_data_collector.py"
     target_dir = str(target.parent)
     if target_dir not in sys.path:
         sys.path.insert(0, target_dir)

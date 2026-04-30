@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import threading
 import time
@@ -70,12 +71,58 @@ from apps.async_fbcca_validation_ui import (
 
 
 THIS_DIR = Path(__file__).resolve().parent
-DEFAULT_REALTIME_PROFILE_PATH = DEFAULT_PROFILE_PATH
+REALTIME_FBCCA_PROFILE_CANDIDATES = (
+    PROJECT_DIR
+    / "artifacts"
+    / "deployed_profiles"
+    / "fbcca_profile.json",
+    PROJECT_DIR
+    / "artifacts"
+    / "runs"
+    / "_legacy_imported"
+    / "legacy_2026-04_async_fbcca_idle_decoder"
+    / "server_profiles"
+    / "model_compare_20260413_223538__profile_best_fbcca_weighted.json",
+    PROJECT_DIR
+    / "_archive"
+    / "legacy_2026-04_async_fbcca_idle_decoder"
+    / "profiles"
+    / "server_profiles"
+    / "model_compare_20260413_223538__profile_best_fbcca_weighted.json",
+    PROJECT_DIR
+    / "_archive"
+    / "legacy_2026-04_async_fbcca_idle_decoder"
+    / "profiles"
+    / "default_profile.json",
+)
+
+
+def _profile_model_name(path: Path) -> str:
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    except Exception:
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    return normalize_model_name(str(payload.get("model_name", "")))
+
+
+def resolve_default_realtime_profile_path() -> Path:
+    if "fbcca" in _profile_model_name(DEFAULT_PROFILE_PATH):
+        return DEFAULT_PROFILE_PATH
+    for candidate in REALTIME_FBCCA_PROFILE_CANDIDATES:
+        if candidate.exists() and "fbcca" in _profile_model_name(candidate):
+            return candidate
+    return DEFAULT_PROFILE_PATH
+
+
+DEFAULT_REALTIME_PROFILE_PATH = resolve_default_realtime_profile_path()
 MODEL_OPTIONS = (DEFAULT_MODEL_NAME,) + tuple(item for item in DEFAULT_BENCHMARK_MODELS if item != DEFAULT_MODEL_NAME)
 DEFAULT_STIM_REFRESH_RATE_HZ = 60.0
 DEFAULT_STIM_MEAN = 0.5
 DEFAULT_STIM_AMP = 0.5
 DEFAULT_STIM_PHI = 0.0
+REALTIME_STIMULUS_PHASE_APPLY_TIMEOUT_SEC = 1.0
 
 
 @dataclass(frozen=True)
@@ -257,6 +304,23 @@ def _suggest_refresh_rate_hz() -> float:
     return float(hz)
 
 
+def _read_probe_window(board: Any, *, sampling_rate: int, profile_win_sec: float) -> tuple[int, int, np.ndarray]:
+    fs = int(sampling_rate)
+    probe_samples = max(int(round(float(profile_win_sec) * fs)), 1)
+    wait_sec = max(float(profile_win_sec), DEFAULT_STREAM_WARMUP_SEC, 0.1)
+    timeout_sec = max(3.0, wait_sec + DEFAULT_STREAM_WARMUP_SEC + 1.0)
+    ready = int(ensure_stream_ready(board, fs, minimum_sec=wait_sec, timeout_sec=timeout_sec))
+    sample_matrix = board.get_current_board_data(max(probe_samples, ready))
+    available = int(sample_matrix.shape[1])
+    if available < probe_samples:
+        raise RuntimeError(
+            "buffered probe window is too short after warmup: "
+            f"{available}/{probe_samples} samples; "
+            f"need {float(profile_win_sec):g}s at {fs}Hz before realtime decoder starts"
+        )
+    return ready, probe_samples, sample_matrix
+
+
 class DeviceCheckWorker(QObject):
     connected = pyqtSignal(object)
     error = pyqtSignal(str)
@@ -311,9 +375,29 @@ class RealtimeWorker(QObject):
         super().__init__()
         self.config = config
         self._stop_event = threading.Event()
+        self._stimulus_phase_applied_event = threading.Event()
+        self._last_stimulus_phase_payload: dict[str, Any] = {}
 
     def request_stop(self) -> None:
         self._stop_event.set()
+        self._stimulus_phase_applied_event.set()
+
+    def notify_stimulus_phase_presented(self, payload: Optional[dict[str, Any]] = None) -> None:
+        if payload is None or str(payload.get("mode", "")) == PHASE_VALIDATION:
+            self._last_stimulus_phase_payload = dict(payload or {})
+            self._stimulus_phase_applied_event.set()
+
+    def _wait_for_stimulus_phase_presented(self) -> bool:
+        if self._stop_event.is_set():
+            return False
+        ready = self._stimulus_phase_applied_event.wait(float(REALTIME_STIMULUS_PHASE_APPLY_TIMEOUT_SEC))
+        if not ready and not self._stop_event.is_set():
+            self.log.emit(
+                "warning: realtime stimulus first-frame acknowledgement timed out; "
+                "online decoding will not start because the visual onset is not trustworthy"
+            )
+            return False
+        return bool(ready)
 
     @pyqtSlot()
     def run(self) -> None:
@@ -370,13 +454,11 @@ class RealtimeWorker(QObject):
                     }
                     self.log.emit(f"shadow runtime disabled: {exc}")
             board.start_stream(450000)
-            ready = ensure_stream_ready(board, fs)
-            probe_samples = max(int(round(profile.win_sec * fs)), 1)
-            sample_matrix = board.get_current_board_data(max(probe_samples, ready))
-            if sample_matrix.shape[1] < probe_samples:
-                raise RuntimeError(
-                    f"buffered probe window is too short: {sample_matrix.shape[1]}/{probe_samples}"
-                )
+            ready, probe_samples, sample_matrix = _read_probe_window(
+                board,
+                sampling_rate=fs,
+                profile_win_sec=float(profile.win_sec),
+            )
             probe_window = np.ascontiguousarray(
                 sample_matrix[eeg_channels, -probe_samples:].T,
                 dtype=np.float64,
@@ -428,6 +510,8 @@ class RealtimeWorker(QObject):
             self.log.emit(
                 f"实时识别已启动 | 模型={profile.model_name} | fs={fs}Hz | 通道={list(eeg_channels)} | 缓冲={ready}"
             )
+            self._stimulus_phase_applied_event.clear()
+            self._last_stimulus_phase_payload = {}
             self.phase_changed.emit(
                 {
                     "mode": PHASE_VALIDATION,
@@ -437,7 +521,19 @@ class RealtimeWorker(QObject):
                     "cue_freq": None,
                 }
             )
+            stimulus_ready = self._wait_for_stimulus_phase_presented()
+            if self._stop_event.is_set():
+                return
+            if not stimulus_ready:
+                raise RuntimeError("未收到实时刺激首帧确认，已停止识别以避免视觉起点不可信")
             board.get_board_data()
+            if self._last_stimulus_phase_payload:
+                payload = dict(self._last_stimulus_phase_payload)
+                self.log.emit(
+                    "realtime stimulus first-frame acknowledged | "
+                    f"frame={payload.get('frame_index', 'unknown')} | "
+                    f"t={payload.get('presented_t_sec', 'unknown')}"
+                )
             consecutive_errors = 0
             while not self._stop_event.is_set():
                 try:
@@ -649,6 +745,7 @@ class RealtimeOnlineWindow(QMainWindow):
         self.btn_connect.clicked.connect(self._connect_device)
         self.btn_start.clicked.connect(self._start_realtime)
         self.btn_stop.clicked.connect(self._stop_realtime)
+        self.stim.active_phase_frame_presented.connect(self._on_active_phase_frame_presented)
 
     def _log(self, text: str) -> None:
         stamp = time.strftime("%H:%M:%S")
@@ -837,6 +934,10 @@ class RealtimeOnlineWindow(QMainWindow):
         title = str(phase.get("title", ""))
         self.phase_label.setText(title or "实时识别")
         self.stim.apply_phase(phase)
+
+    def _on_active_phase_frame_presented(self, payload: dict[str, Any]) -> None:
+        if self.worker is not None:
+            self.worker.notify_stimulus_phase_presented(dict(payload))
 
     def _on_finished(self) -> None:
         self.worker = None

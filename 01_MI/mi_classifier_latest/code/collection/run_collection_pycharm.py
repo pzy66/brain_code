@@ -20,8 +20,7 @@ def show_startup_error(title: str, message: str) -> None:
 def main() -> int:
     """Launch collection UI."""
     try:
-        from PyQt5.QtWidgets import QApplication
-        from mi_data_collector import MIDataCollectorWindow
+        from mi_data_collector import main as collector_main
     except ModuleNotFoundError as error:
         missing_name = getattr(error, "name", None) or str(error)
         show_startup_error(
@@ -37,11 +36,7 @@ def main() -> int:
         return 1
 
     try:
-        app = QApplication(sys.argv)
-        app.setApplicationName("MI Collection Only")
-        window = MIDataCollectorWindow()
-        window.show()
-        return app.exec_()
+        return int(collector_main())
     except Exception:
         show_startup_error("Startup Failed", traceback.format_exc())
         return 1

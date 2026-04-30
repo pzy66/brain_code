@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from pathlib import Path
 import re
 from typing import Optional, Sequence
+
+_MNE_HOME_DIR = Path(__file__).resolve().parents[1] / "runtime" / "mne_home"
+_MNE_HOME_DIR.mkdir(parents=True, exist_ok=True)
+os.environ.setdefault("_MNE_FAKE_HOME_DIR", str(_MNE_HOME_DIR))
 
 import mne
 import numpy as np

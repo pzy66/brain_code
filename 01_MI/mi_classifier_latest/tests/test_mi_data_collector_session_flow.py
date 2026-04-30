@@ -20,8 +20,8 @@ if str(COLLECTION_ROOT) not in sys.path:
 if str(SHARED_ROOT) not in sys.path:
     sys.path.insert(0, str(SHARED_ROOT))
 
-from mi_data_collector import MIDataCollectorWindow
-from src.mi_collection import SessionSettings, make_event
+from mi_data_collector import BoardCaptureWorker, MIDataCollectorWindow, MISSING_SAVE_RESULT_GRACE_MS
+from src.mi_collection import PAUSE_REJECTED_TRIAL_NOTE, SessionSettings, TrialRecord, make_event
 
 
 class MIDataCollectorSessionFlowTests(unittest.TestCase):
@@ -235,6 +235,319 @@ class MIDataCollectorSessionFlowTests(unittest.TestCase):
             window.worker_thread = None
             window.close()
 
+    def test_operator_notice_and_control_tooltips_are_contextual(self) -> None:
+        window = MIDataCollectorWindow()
+        try:
+            self.assertIsNotNone(window.operator_notice_label)
+            self.assertIn("质量检查", window.operator_notice_label.text())
+            self.assertIn("BrainFlow", window.connect_button.toolTip())
+
+            window.session_running = True
+            window.current_phase = "continuous"
+            window.current_continuous_prompt = {"class_label": "no_control", "prompt_index": 1}
+            window.update_button_states()
+
+            self.assertIn("连续命令失败", window.bad_trial_button.toolTip())
+        finally:
+            window.session_running = False
+            window.worker_thread = None
+            window.close()
+
+    def test_bad_trial_button_matches_all_mi_trial_phases(self) -> None:
+        window = self._build_window_with_fake_session()
+        try:
+            window.sequence = ["left_hand"]
+            window.current_trial_index = 0
+            window.current_trial = TrialRecord(
+                trial_id=1,
+                class_name="left_hand",
+                display_name="左手",
+                run_index=1,
+                run_trial_index=1,
+            )
+            window.trial_records = [window.current_trial]
+
+            for phase in ["baseline", "cue", "imagery", "iti"]:
+                with self.subTest(phase=phase):
+                    window.current_phase = phase
+                    window.current_trial.accepted = True
+                    window.update_button_states()
+                    self.assertTrue(window.bad_trial_button.isEnabled())
+
+            window.current_phase = "baseline"
+            window.mark_bad_trial()
+
+            self.assertFalse(window.current_trial.accepted)
+            self.assertEqual([str(event["event_name"]) for event in window.event_log], ["bad_trial_marked"])
+            self.assertFalse(window.bad_trial_button.isEnabled())
+            self.assertIn("不会进入训练集", window.operator_notice_label.text())
+        finally:
+            window.session_running = False
+            window.waiting_for_save = False
+            window.worker_thread = None
+            window.close()
+
+    def test_failed_continuous_prompt_disables_mark_button(self) -> None:
+        window = self._build_window_with_fake_session()
+        try:
+            window.current_phase = "continuous"
+            window.current_continuous_prompt = {
+                "class_label": "left_hand",
+                "prompt_index": 1,
+                "execution_success": 1,
+            }
+            window.update_button_states()
+            self.assertTrue(window.bad_trial_button.isEnabled())
+
+            window.mark_continuous_prompt_failed()
+
+            self.assertEqual(int(window.current_continuous_prompt["execution_success"]), 0)
+            self.assertFalse(window.bad_trial_button.isEnabled())
+            self.assertIn("已标记失败", window.bad_trial_button.toolTip())
+            self.assertIn("不会参与连续评估", window.operator_notice_label.text())
+        finally:
+            window.session_running = False
+            window.waiting_for_save = False
+            window.worker_thread = None
+            window.close()
+
+    def test_new_connection_clears_previous_save_path_tooltips(self) -> None:
+        window = MIDataCollectorWindow()
+        try:
+            window.current_label.setToolTip("old-session")
+            window.next_task_label.setToolTip("old-session")
+
+            window.on_connection_ready(
+                {
+                    "sampling_rate": 250.0,
+                    "channel_names": ["C3", "Cz", "C4", "PO3", "PO4", "O1", "Oz", "O2"],
+                    "selected_rows": list(range(8)),
+                }
+            )
+
+            self.assertEqual(window.current_label.toolTip(), "")
+            self.assertEqual(window.next_task_label.toolTip(), "")
+        finally:
+            window.worker_thread = None
+            window.close()
+
+    def test_mi_only_ignores_full_protocol_continuous_count_limit(self) -> None:
+        class FakeWorker:
+            def supports_impedance_mode(self) -> bool:
+                return False
+
+            def insert_marker_sync(self, marker_code: float) -> tuple[bool, str]:
+                del marker_code
+                return True, ""
+
+        window = MIDataCollectorWindow()
+        errors: list[str] = []
+        try:
+            window.show_error = errors.append
+            window.audio_prompts_enabled = False
+            window.device_info = {
+                "sampling_rate": 250.0,
+                "channel_names": ["C3", "Cz", "C4", "PO3", "PO4", "O1", "Oz", "O2"],
+                "selected_rows": list(range(8)),
+            }
+            window.worker = FakeWorker()
+            window.serial_combo.setCurrentText("COM4")
+            window.run_count_spin.setValue(1)
+            window.continuous_count_spin.setValue(2)
+            window.continuous_sec_spin.setValue(1.0)
+            window.cont_cmd_min_spin.setValue(0.5)
+            window.cont_cmd_max_spin.setValue(0.5)
+
+            with mock.patch(
+                "mi_data_collector.validate_serial_port_selection",
+                return_value={"ok": True, "reason": "detected", "requested_port": "COM4", "detected_ports": ["COM4"]},
+            ):
+                window.start_mi_only_session()
+
+            self.assertEqual(errors, [])
+            self.assertTrue(window.session_running)
+            self.assertIsNotNone(window.current_settings)
+            self.assertEqual(window.current_settings.protocol_mode, "mi_only")
+            self.assertEqual(int(window.current_settings.continuous_block_count), 0)
+        finally:
+            window.phase_timer.stop()
+            window.session_running = False
+            window.waiting_for_save = False
+            window.worker = None
+            window.close()
+
+    def test_full_protocol_still_rejects_too_many_continuous_blocks(self) -> None:
+        class FakeWorker:
+            def supports_impedance_mode(self) -> bool:
+                return False
+
+            def insert_marker_sync(self, marker_code: float) -> tuple[bool, str]:
+                del marker_code
+                return True, ""
+
+        window = MIDataCollectorWindow()
+        errors: list[str] = []
+        try:
+            window.show_error = errors.append
+            window.device_info = {
+                "sampling_rate": 250.0,
+                "channel_names": ["C3", "Cz", "C4", "PO3", "PO4", "O1", "Oz", "O2"],
+                "selected_rows": list(range(8)),
+            }
+            window.worker = FakeWorker()
+            window.serial_combo.setCurrentText("COM4")
+            window.run_count_spin.setValue(1)
+            window.continuous_count_spin.setValue(2)
+            window.continuous_sec_spin.setValue(1.0)
+            window.cont_cmd_min_spin.setValue(0.5)
+            window.cont_cmd_max_spin.setValue(0.5)
+
+            with mock.patch(
+                "mi_data_collector.validate_serial_port_selection",
+                return_value={"ok": True, "reason": "detected", "requested_port": "COM4", "detected_ports": ["COM4"]},
+            ):
+                window.start_session()
+
+            self.assertFalse(window.session_running)
+            self.assertTrue(any("连续模式段数不能大于 MI run 数" in message for message in errors))
+        finally:
+            window.phase_timer.stop()
+            window.session_running = False
+            window.waiting_for_save = False
+            window.worker = None
+            window.close()
+
+    def test_pause_marks_active_mi_trial_rejected(self) -> None:
+        window = self._build_window_with_fake_session()
+        try:
+            window.current_phase = "imagery"
+            window.phase_started_perf = time.perf_counter()
+            window.phase_deadline = time.perf_counter() + 2.0
+            window.current_trial = TrialRecord(
+                trial_id=1,
+                class_name="left_hand",
+                display_name="left_hand",
+                run_index=1,
+                run_trial_index=1,
+            )
+            window.trial_records = [window.current_trial]
+
+            window.toggle_pause()
+
+            self.assertTrue(window.session_paused)
+            self.assertFalse(window.current_trial.accepted)
+            self.assertIn(PAUSE_REJECTED_TRIAL_NOTE, window.current_trial.note)
+            self.assertIn("不会进入训练集", window.summary_label.text())
+            self.assertIn("不会进入训练集", window.operator_notice_label.text())
+            self.assertEqual([str(item["event_name"]) for item in window.event_log], ["pause"])
+        finally:
+            window.phase_timer.stop()
+            window.session_running = False
+            window.waiting_for_save = False
+            window.worker_thread = None
+            window.close()
+
+    def test_pause_marks_active_continuous_prompt_failed(self) -> None:
+        window = self._build_window_with_fake_session()
+        try:
+            window.current_phase = "continuous"
+            window.phase_started_perf = time.perf_counter()
+            window.phase_deadline = time.perf_counter() + 2.0
+            window.current_continuous_prompt = {
+                "class_label": "no_control",
+                "prompt_index": 2,
+                "execution_success": 1,
+            }
+
+            window.toggle_pause()
+
+            self.assertTrue(window.session_paused)
+            self.assertEqual(int(window.current_continuous_prompt["execution_success"]), 0)
+            self.assertIn("不会参与连续评估", window.summary_label.text())
+            self.assertIn("不会参与连续评估", window.operator_notice_label.text())
+            self.assertEqual([str(item["event_name"]) for item in window.event_log], ["pause"])
+        finally:
+            window.phase_timer.stop()
+            window.session_running = False
+            window.waiting_for_save = False
+            window.worker_thread = None
+            window.close()
+
+    def test_save_thread_keeps_controls_locked_until_cleanup(self) -> None:
+        window = MIDataCollectorWindow()
+        try:
+            window.device_info = {
+                "sampling_rate": 250.0,
+                "channel_names": ["C3", "Cz", "C4", "PO3", "PO4", "O1", "Oz", "O2"],
+                "selected_rows": list(range(8)),
+            }
+            window.worker_thread = None
+            window.session_running = False
+            window.waiting_for_save = False
+            window.save_thread = object()
+
+            window.update_button_states()
+
+            self.assertFalse(window.connect_button.isEnabled())
+            self.assertFalse(window.start_button.isEnabled())
+            self.assertFalse(window.start_mi_only_button.isEnabled())
+            self.assertFalse(window.show_plan_button.isEnabled())
+            self.assertFalse(window.disconnect_button.isEnabled())
+
+            errors: list[str] = []
+            window.show_error = errors.append
+            window.disconnect_device()
+            self.assertTrue(errors)
+            self.assertIn("保存", errors[0])
+        finally:
+            window.save_thread = None
+            window.worker_thread = None
+            window.close()
+
+    def test_quality_warning_flags_flat_saved_channels(self) -> None:
+        window = MIDataCollectorWindow()
+        try:
+            warnings = window._quality_warnings_from_report(
+                {
+                    "channels": [
+                        {"channel_name": "C3", "std_uV": 0.0, "peak_to_peak_uV": 0.0},
+                        {"channel_name": "Cz", "std_uV": 25.0, "peak_to_peak_uV": 120.0},
+                        {"channel_name": "C4", "std_uV": 25.0, "peak_to_peak_uV": 120.0, "non_finite_sample_count": 2},
+                    ]
+                }
+            )
+
+            self.assertEqual(len(warnings), 1)
+            self.assertIn("C3", warnings[0])
+            self.assertIn("C4", warnings[0])
+            self.assertNotIn("Cz", warnings[0])
+        finally:
+            window.close()
+
+    def test_data_flow_warning_flags_packet_and_timestamp_problems(self) -> None:
+        window = MIDataCollectorWindow()
+        try:
+            warnings = window._data_flow_warnings_from_report(
+                {
+                    "marker_event_count_match": False,
+                    "marker_count": 3,
+                    "event_count": 4,
+                    "timestamp_available": True,
+                    "timestamp_monotonic": False,
+                    "timestamp_non_finite_count": 2,
+                    "package_jump_count": 1,
+                    "package_non_finite_count": 1,
+                }
+            )
+
+            joined = "\n".join(warnings)
+            self.assertIn("Marker", joined)
+            self.assertIn("timestamp", joined)
+            self.assertIn("包号跳变", joined)
+            self.assertIn("package number", joined)
+        finally:
+            window.close()
+
     def test_full_session_plan_lists_calibration_continuous_and_total_duration(self) -> None:
         window = MIDataCollectorWindow()
         try:
@@ -271,6 +584,69 @@ class MIDataCollectorSessionFlowTests(unittest.TestCase):
             self.assertIn("连续模式 1：10 秒", plan_text)
             self.assertIn("无控制 1：8 秒", plan_text)
         finally:
+            window.close()
+
+    def test_session_plan_keeps_run_rest_after_interleaved_continuous_block(self) -> None:
+        window = MIDataCollectorWindow()
+        try:
+            settings = self._build_settings()
+            settings.run_count = 2
+            settings.trials_per_class = 1
+            settings.practice_sec = 0.0
+            settings.calibration_open_sec = 0.0
+            settings.calibration_closed_sec = 0.0
+            settings.artifact_types = []
+            settings.run_rest_sec = 9.0
+            settings.long_run_rest_every = 0
+            settings.long_run_rest_sec = 0.0
+            settings.continuous_block_count = 2
+            settings.continuous_block_sec = 10.0
+            settings.idle_block_count = 0
+            settings.idle_block_sec = 0.0
+
+            plan = window._build_session_plan(settings)
+            stage_titles = [str(item["title"]) for item in plan["stages"]]
+
+            self.assertEqual(
+                stage_titles,
+                [
+                    "MI run 1（4 个试次）",
+                    "连续模式 1",
+                    "轮次间休息（run 1 后）",
+                    "MI run 2（4 个试次）",
+                    "连续模式 2",
+                ],
+            )
+            self.assertAlmostEqual(float(plan["total_duration_sec"]), 69.0)
+        finally:
+            window.close()
+
+    def test_continuous_block_returns_to_run_rest_before_next_mi_run(self) -> None:
+        window = self._build_window_with_fake_session()
+        next_run_calls: list[str] = []
+        try:
+            settings = self._build_settings()
+            settings.run_count = 2
+            settings.run_rest_sec = 3.0
+            settings.long_run_rest_every = 0
+            settings.long_run_rest_sec = 0.0
+            window.current_settings = settings
+            window.current_phase = "continuous"
+            window.current_run_index = 1
+            window.continuous_block_index = 1
+            window.current_continuous_prompt = None
+            window._start_next_mi_run = lambda: next_run_calls.append("next_run")
+
+            window._finish_continuous_block()
+
+            self.assertEqual([str(event["event_name"]) for event in window.event_log], ["continuous_block_end", "run_rest_start"])
+            self.assertEqual(window.current_phase, "run_rest")
+            self.assertEqual(next_run_calls, [])
+        finally:
+            window.phase_timer.stop()
+            window.session_running = False
+            window.waiting_for_save = False
+            window.worker_thread = None
             window.close()
 
     def test_mi_only_session_plan_removes_calibration_rest_and_post_blocks(self) -> None:
@@ -570,6 +946,56 @@ class MIDataCollectorSessionFlowTests(unittest.TestCase):
             window.worker_thread = None
             window.close()
 
+    def test_marker_writes_are_spaced_by_sampling_rate(self) -> None:
+        class FakeBoard:
+            def __init__(self) -> None:
+                self.markers: list[float] = []
+
+            def insert_marker(self, marker_code: float) -> None:
+                self.markers.append(float(marker_code))
+
+        worker = BoardCaptureWorker(
+            board_id=0,
+            serial_port="",
+            channel_positions=list(range(8)),
+            channel_names=["C3", "Cz", "C4", "PO3", "PO4", "O1", "Oz", "O2"],
+        )
+        fake_board = FakeBoard()
+        worker.board = fake_board
+        worker.sampling_rate = 250.0
+        sleep_calls: list[float] = []
+
+        with mock.patch("mi_data_collector.time.sleep", side_effect=lambda seconds: sleep_calls.append(float(seconds))):
+            self.assertEqual(worker.insert_marker_sync(200.0), (True, ""))
+            self.assertEqual(worker.insert_marker_sync(210.0), (True, ""))
+
+        self.assertEqual(fake_board.markers, [200.0, 210.0])
+        self.assertEqual(sleep_calls, [0.008, 0.008])
+
+    def test_worker_finish_waits_before_declaring_missing_save_payload(self) -> None:
+        window = MIDataCollectorWindow()
+        scheduled: list[tuple[int, object]] = []
+        try:
+            window.waiting_for_save = True
+            window.current_label.setText("当前任务：保存中")
+            window.worker = object()
+            window.worker_thread = object()
+
+            with mock.patch(
+                "mi_data_collector.QTimer.singleShot",
+                side_effect=lambda delay_ms, callback: scheduled.append((int(delay_ms), callback)),
+            ):
+                window.on_worker_thread_finished()
+
+            self.assertEqual(len(scheduled), 1)
+            self.assertEqual(scheduled[0][0], MISSING_SAVE_RESULT_GRACE_MS)
+            self.assertEqual(window.current_label.text(), "当前任务：等待保存数据")
+            self.assertTrue(window.waiting_for_save)
+        finally:
+            window.waiting_for_save = False
+            window.worker_thread = None
+            window.close()
+
     def test_session_data_ready_saves_in_background_and_updates_ui_on_completion(self) -> None:
         window = MIDataCollectorWindow()
         logs: list[str] = []
@@ -602,6 +1028,8 @@ class MIDataCollectorSessionFlowTests(unittest.TestCase):
             release_save.wait(timeout=1.0)
             return {
                 "trial_count": 1,
+                "accepted_trial_count": 1,
+                "rejected_trial_count": 0,
                 "session_dir": str(PROJECT_ROOT / "runtime" / "async_save"),
                 "fif_path": str(PROJECT_ROOT / "runtime" / "async_save" / "run_raw.fif"),
                 "board_data_path": "",
@@ -635,7 +1063,9 @@ class MIDataCollectorSessionFlowTests(unittest.TestCase):
                 self.assertIsNone(window.save_thread)
                 self.assertIsNone(window.save_worker)
                 self.assertEqual(errors, [])
-                self.assertIn("当前任务：数据已保存到", window.current_label.text())
+                self.assertEqual(window.current_label.text(), "当前任务：数据已保存")
+                self.assertIn("runtime", window.current_label.toolTip())
+                self.assertIn("本次已保存 1 个试次", window.sequence_summary_label.text())
                 self.assertTrue(any("开始后台写盘" in item for item in logs))
         finally:
             release_save.set()

@@ -82,10 +82,26 @@ def test_collection_dataset_bundle_roundtrip() -> None:
                     "active_window_ended_at": "2026-04-24T10:00:04.120+08:00",
                     "segment_captured_at": "2026-04-24T10:00:04.130+08:00",
                     "active_end_tone_started_at": "2026-04-24T10:00:04.131+08:00",
+                    "stimulus_phase_apply_requested_at": "2026-04-24T10:00:00.010+08:00",
+                    "stimulus_first_frame_presented_at": "2026-04-24T10:00:00.026+08:00",
+                    "stimulus_first_frame_presented_t_sec": 0.016,
+                    "stimulus_first_frame_frame_index": 0,
+                    "stimulus_first_frame_cue_freq": 8.0,
+                    "stimulus_first_frame_mode": "calibration_active",
+                    "stimulus_first_frame_ack_latency_sec": 0.016,
+                    "stimulus_first_frame_ack_timed_out": False,
+                    "board_buffer_cleared_at": "2026-04-24T10:00:00.027+08:00",
+                    "board_buffer_clear_samples": 32,
                 },
                 {"order_index": 1, "target_samples": 1000, "active_sec": 4.0, "sample_ratio": 0.98, "retry_count": 2},
                 {"order_index": 2, "target_samples": 1000, "active_sec": 4.0, "sample_ratio": 1.0, "retry_count": 1},
             ],
+            continuous_board_data=np.arange(6 * 24, dtype=np.float64).reshape(6, 24),
+            continuous_board_info={
+                "marker_channel": 4,
+                "timestamp_channel": 5,
+                "source": "unit_test",
+            },
         )
         loaded = load_collection_dataset(Path(payload["dataset_manifest"]))
         assert loaded.session_id == "session_test_001"
@@ -127,6 +143,13 @@ def test_collection_dataset_bundle_roundtrip() -> None:
         assert int(quality_summary.get("planned_trial_count", 0)) == len(segments)
         assert int(quality_summary.get("saved_trial_count", 0)) == len(segments)
         assert int(quality_summary.get("short_segment_excluded", -1)) == 0
+        assert int(quality_summary.get("stimulus_first_frame_ack_timeout_count", -1)) == 0
+        files = dict(loaded.manifest.get("files", {}))
+        continuous_path = Path(str(files.get("continuous_board_npz", "")))
+        assert continuous_path.exists()
+        continuous_meta = dict(loaded.manifest.get("continuous_board", {}))
+        assert continuous_meta.get("shape") == [6, 24]
+        assert continuous_meta.get("marker_channel") == 4
         for row in trial_rows:
             assert int(row.get("target_samples", 0)) == 1000
             assert abs(float(row.get("active_sec", 0.0)) - 4.0) < 1e-9
@@ -135,6 +158,9 @@ def test_collection_dataset_bundle_roundtrip() -> None:
             assert int(row.get("retry_count", 0)) >= 0
         assert int(trial_rows[1].get("retry_count", 0)) == 2
         assert str(trial_rows[0].get("active_start_tone_started_at", "")) == "2026-04-24T10:00:00+08:00"
+        assert str(trial_rows[0].get("stimulus_first_frame_presented_at", "")).strip()
+        assert int(trial_rows[0].get("stimulus_first_frame_frame_index", -1)) == 0
+        assert int(trial_rows[0].get("board_buffer_clear_samples", 0)) == 32
         assert datetime.fromisoformat(str(trial_rows[0].get("active_window_started_at", ""))).tzinfo is not None
         assert datetime.fromisoformat(str(trial_rows[0].get("segment_captured_at", ""))).tzinfo is not None
         for (trial_a, seg_a), (trial_b, seg_b) in zip(segments, loaded.trial_segments):

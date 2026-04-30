@@ -4,6 +4,7 @@ import shutil
 import sys
 import unittest
 import uuid
+from unittest import mock
 from pathlib import Path
 
 import numpy as np
@@ -17,8 +18,16 @@ TRAINING_ROOT = PROJECT_ROOT / "code" / "training"
 if str(TRAINING_ROOT) not in sys.path:
     sys.path.insert(0, str(TRAINING_ROOT))
 
-from src.mi_collection import CLASS_NAME_TO_LABEL, SessionSettings, TrialRecord, make_event, save_mi_session
-from train_custom_dataset import load_custom_task_datasets
+from src.mi_collection import (
+    CLASS_NAME_TO_LABEL,
+    PAUSE_REJECTED_TRIAL_NOTE,
+    SessionSettings,
+    TrialRecord,
+    build_balanced_trial_sequence,
+    make_event,
+    save_mi_session,
+)
+from train_custom_dataset import evaluate_continuous_online_like, load_custom_task_datasets
 
 
 class MICollectionRegressionTests(unittest.TestCase):
@@ -29,15 +38,36 @@ class MICollectionRegressionTests(unittest.TestCase):
     def tearDown(self) -> None:
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
-    def _save_single_trial_session(self, *, protocol_mode: str = "full") -> dict[str, str]:
+    def _save_single_trial_session(
+        self,
+        *,
+        protocol_mode: str = "full",
+        eeg_uvolts: np.ndarray | None = None,
+        include_data_flow_rows: bool = False,
+    ) -> dict[str, str]:
         sampling_rate = 250.0
-        brainflow_data = np.zeros((10, 2700), dtype=np.float32)
+        row_count = 11 if include_data_flow_rows else 10
+        raw_dtype = np.float64 if include_data_flow_rows else np.float32
+        brainflow_data = np.zeros((row_count, 2700), dtype=raw_dtype)
         marker_row = 8
+        timestamp_row = 9 if include_data_flow_rows else None
+        package_num_row = 10 if include_data_flow_rows else None
 
-        for channel_index in range(8):
-            brainflow_data[channel_index] = 10.0 * np.sin(
-                np.linspace(0.0, 10.0, brainflow_data.shape[1], dtype=np.float32) + float(channel_index)
+        if eeg_uvolts is None:
+            for channel_index in range(8):
+                brainflow_data[channel_index] = 10.0 * np.sin(
+                    np.linspace(0.0, 10.0, brainflow_data.shape[1], dtype=np.float32) + float(channel_index)
+                )
+        else:
+            eeg_override = np.asarray(eeg_uvolts, dtype=np.float32)
+            self.assertEqual(tuple(eeg_override.shape), (8, brainflow_data.shape[1]))
+            brainflow_data[:8] = eeg_override
+        if timestamp_row is not None:
+            brainflow_data[timestamp_row] = (
+                1_800_000_000.0 + np.arange(brainflow_data.shape[1], dtype=np.float64) / float(sampling_rate)
             )
+        if package_num_row is not None:
+            brainflow_data[package_num_row] = np.arange(brainflow_data.shape[1], dtype=np.float32) % 256.0
 
         markers = [
             (0, "session_start", {}),
@@ -93,7 +123,8 @@ class MICollectionRegressionTests(unittest.TestCase):
             sampling_rate=sampling_rate,
             eeg_rows=list(range(8)),
             marker_row=marker_row,
-            timestamp_row=None,
+            timestamp_row=timestamp_row,
+            package_num_row=package_num_row,
             settings=settings,
             event_log=event_log,
             trial_records=trial_records,
@@ -285,6 +316,210 @@ class MICollectionRegressionTests(unittest.TestCase):
             trial_records=trial_records,
         )
 
+    def _save_paused_trial_session(self) -> dict[str, str]:
+        sampling_rate = 250.0
+        brainflow_data = np.zeros((10, 1200), dtype=np.float32)
+        marker_row = 8
+
+        for channel_index in range(8):
+            brainflow_data[channel_index] = 5.0 * np.sin(
+                np.linspace(0.0, 12.0, brainflow_data.shape[1], dtype=np.float32) + float(channel_index)
+            )
+
+        markers = [
+            (0, "session_start", {}),
+            (10, "trial_start", {"trial_id": 1, "class_name": "left_hand", "run_index": 1, "run_trial_index": 1}),
+            (11, "fixation_start", {"trial_id": 1, "class_name": "left_hand", "run_index": 1, "run_trial_index": 1}),
+            (12, "baseline_start", {"trial_id": 1, "class_name": "left_hand", "run_index": 1, "run_trial_index": 1}),
+            (261, "baseline_end", {"trial_id": 1, "class_name": "left_hand", "run_index": 1, "run_trial_index": 1}),
+            (262, "cue_start", {"trial_id": 1, "class_name": "left_hand", "run_index": 1, "run_trial_index": 1}),
+            (263, "cue_left_hand", {"trial_id": 1, "class_name": "left_hand", "run_index": 1, "run_trial_index": 1}),
+            (512, "imagery_start", {"trial_id": 1, "class_name": "left_hand", "run_index": 1, "run_trial_index": 1}),
+            (513, "imagery_left_hand", {"trial_id": 1, "class_name": "left_hand", "run_index": 1, "run_trial_index": 1}),
+            (620, "pause", {"trial_id": 1, "class_name": "left_hand", "run_index": 1, "run_trial_index": 1}),
+            (760, "resume", {"trial_id": 1, "class_name": "left_hand", "run_index": 1, "run_trial_index": 1}),
+            (1012, "imagery_end", {"trial_id": 1, "class_name": "left_hand", "run_index": 1, "run_trial_index": 1}),
+            (1013, "iti_start", {"trial_id": 1, "class_name": "left_hand", "run_index": 1, "run_trial_index": 1}),
+            (1113, "trial_end", {"trial_id": 1, "class_name": "left_hand", "run_index": 1, "run_trial_index": 1}),
+            (1199, "session_end", {}),
+        ]
+
+        event_log: list[dict[str, object]] = []
+        for sample_index, event_name, extra in markers:
+            event = make_event(event_name, **extra)
+            event_log.append(event)
+            brainflow_data[marker_row, sample_index] = float(event["marker_code"])
+
+        settings = SessionSettings(
+            subject_id="regression",
+            session_id="paused_trial",
+            output_root=str(self.temp_dir),
+            board_id=0,
+            serial_port="COM3",
+            channel_names=["C3", "Cz", "C4", "PO3", "PO4", "O1", "Oz", "O2"],
+            channel_positions=list(range(8)),
+            trials_per_class=1,
+            baseline_sec=1.0,
+            cue_sec=1.0,
+            imagery_sec=2.0,
+            iti_sec=0.4,
+            random_seed=0,
+            run_count=1,
+        )
+        trial_records = [
+            TrialRecord(
+                trial_id=1,
+                class_name="left_hand",
+                display_name="left_hand",
+                run_index=1,
+                run_trial_index=1,
+            )
+        ]
+
+        return save_mi_session(
+            brainflow_data=brainflow_data,
+            sampling_rate=sampling_rate,
+            eeg_rows=list(range(8)),
+            marker_row=marker_row,
+            timestamp_row=None,
+            settings=settings,
+            event_log=event_log,
+            trial_records=trial_records,
+        )
+
+    def _save_continuous_pause_session(self) -> dict[str, str]:
+        sampling_rate = 250.0
+        brainflow_data = np.zeros((10, 620), dtype=np.float32)
+        marker_row = 8
+
+        for channel_index in range(8):
+            brainflow_data[channel_index] = (
+                np.sin(np.linspace(0.0, 8.0, brainflow_data.shape[1], dtype=np.float32) + float(channel_index))
+            ).astype(np.float32)
+
+        markers = [
+            (0, "session_start", {}),
+            (10, "continuous_block_start", {"block_index": 1}),
+            (
+                20,
+                "continuous_command_no_control",
+                {"class_name": "no_control", "block_index": 1, "prompt_index": 1, "command_duration_sec": 1.0, "execution_success": 1},
+            ),
+            (80, "pause", {}),
+            (140, "resume", {}),
+            (
+                270,
+                "continuous_command_end",
+                {"class_name": "no_control", "block_index": 1, "prompt_index": 1, "command_duration_sec": 1.0, "execution_success": 1},
+            ),
+            (
+                300,
+                "continuous_command_no_control",
+                {"class_name": "no_control", "block_index": 1, "prompt_index": 2, "command_duration_sec": 1.0, "execution_success": 1},
+            ),
+            (
+                550,
+                "continuous_command_end",
+                {"class_name": "no_control", "block_index": 1, "prompt_index": 2, "command_duration_sec": 1.0, "execution_success": 1},
+            ),
+            (580, "continuous_block_end", {"block_index": 1}),
+            (619, "session_end", {}),
+        ]
+
+        event_log: list[dict[str, object]] = []
+        for sample_index, event_name, extra in markers:
+            event = make_event(event_name, **extra)
+            event_log.append(event)
+            brainflow_data[marker_row, sample_index] = float(event["marker_code"])
+
+        settings = SessionSettings(
+            subject_id="regression",
+            session_id="continuous_pause",
+            output_root=str(self.temp_dir),
+            board_id=0,
+            serial_port="COM3",
+            channel_names=["C3", "Cz", "C4", "PO3", "PO4", "O1", "Oz", "O2"],
+            channel_positions=list(range(8)),
+            trials_per_class=1,
+            baseline_sec=1.0,
+            cue_sec=1.0,
+            imagery_sec=1.0,
+            iti_sec=1.0,
+            random_seed=0,
+            run_count=1,
+            continuous_block_count=1,
+            continuous_block_sec=2.0,
+        )
+
+        return save_mi_session(
+            brainflow_data=brainflow_data,
+            sampling_rate=sampling_rate,
+            eeg_rows=list(range(8)),
+            marker_row=marker_row,
+            timestamp_row=None,
+            settings=settings,
+            event_log=event_log,
+            trial_records=[],
+        )
+
+    def _save_rest_pause_session(self) -> dict[str, str]:
+        sampling_rate = 250.0
+        brainflow_data = np.zeros((10, 760), dtype=np.float32)
+        marker_row = 8
+
+        for channel_index in range(8):
+            brainflow_data[channel_index] = np.linspace(
+                0.0,
+                1.0 + 0.1 * channel_index,
+                brainflow_data.shape[1],
+                dtype=np.float32,
+            )
+
+        markers = [
+            (0, "session_start", {}),
+            (10, "eyes_open_rest_start", {}),
+            (100, "pause", {}),
+            (160, "resume", {}),
+            (310, "eyes_open_rest_end", {}),
+            (330, "idle_block_start", {"block_index": 1}),
+            (630, "idle_block_end", {"block_index": 1}),
+            (759, "session_end", {}),
+        ]
+
+        event_log: list[dict[str, object]] = []
+        for sample_index, event_name, extra in markers:
+            event = make_event(event_name, **extra)
+            event_log.append(event)
+            brainflow_data[marker_row, sample_index] = float(event["marker_code"])
+
+        settings = SessionSettings(
+            subject_id="regression",
+            session_id="rest_pause",
+            output_root=str(self.temp_dir),
+            board_id=0,
+            serial_port="COM3",
+            channel_names=["C3", "Cz", "C4", "PO3", "PO4", "O1", "Oz", "O2"],
+            channel_positions=list(range(8)),
+            trials_per_class=1,
+            baseline_sec=1.0,
+            cue_sec=1.0,
+            imagery_sec=1.0,
+            iti_sec=1.0,
+            random_seed=0,
+            run_count=1,
+        )
+
+        return save_mi_session(
+            brainflow_data=brainflow_data,
+            sampling_rate=sampling_rate,
+            eeg_rows=list(range(8)),
+            marker_row=marker_row,
+            timestamp_row=None,
+            settings=settings,
+            event_log=event_log,
+            trial_records=[],
+        )
+
     def test_trial_onsets_keep_earliest_generic_marker(self) -> None:
         result = self._save_single_trial_session()
 
@@ -307,6 +542,120 @@ class MICollectionRegressionTests(unittest.TestCase):
         self.assertEqual(gate_neg.shape[1:], (8, 500))
         self.assertEqual(gate_neg.shape[0], 2)
         self.assertEqual(gate_neg_sources, ["baseline", "iti"])
+
+    def test_balanced_trial_sequence_respects_counts_and_streak_limit(self) -> None:
+        for seed in [0, 7, 19, 2026]:
+            with self.subTest(seed=seed):
+                sequence = build_balanced_trial_sequence(20, seed, max_consecutive_same_class=2)
+                self.assertEqual(len(sequence), 80)
+                counts = {name: sequence.count(name) for name in CLASS_NAME_TO_LABEL}
+                self.assertEqual(counts, {name: 20 for name in CLASS_NAME_TO_LABEL})
+
+                longest_streak = 0
+                current_name = ""
+                current_streak = 0
+                for item in sequence:
+                    if item == current_name:
+                        current_streak += 1
+                    else:
+                        current_name = item
+                        current_streak = 1
+                    longest_streak = max(longest_streak, current_streak)
+                self.assertLessEqual(longest_streak, 2)
+
+    def test_pause_overlap_rejects_trial_and_removes_training_windows(self) -> None:
+        result = self._save_paused_trial_session()
+
+        with Path(result["trials_csv_path"]).open("r", encoding="utf-8-sig", newline="") as handle:
+            trial_row = next(csv.DictReader(handle))
+        self.assertEqual(int(trial_row["accepted"]), 0)
+        self.assertIn(PAUSE_REJECTED_TRIAL_NOTE, trial_row["note"])
+
+        with np.load(result["mi_epochs_path"], allow_pickle=False) as data:
+            self.assertEqual(int(np.asarray(data["X_mi"]).shape[0]), 0)
+        with np.load(result["gate_epochs_path"], allow_pickle=False) as data:
+            self.assertEqual(int(np.asarray(data["X_gate_neg"]).shape[0]), 0)
+            self.assertEqual(np.asarray(data["gate_neg_sources"]).tolist(), [])
+            self.assertEqual(int(np.asarray(data["X_gate_hard_neg"]).shape[0]), 0)
+
+    def test_pause_overlap_marks_continuous_prompt_failed_and_excludes_gate_negative(self) -> None:
+        result = self._save_continuous_pause_session()
+
+        with Path(result["segments_csv_path"]).open("r", encoding="utf-8-sig", newline="") as handle:
+            continuous_rows = [row for row in csv.DictReader(handle) if row["segment_type"] == "continuous_prompt"]
+        self.assertEqual([row["execution_success"] for row in continuous_rows], ["0", "1"])
+
+        with np.load(result["continuous_path"], allow_pickle=False) as data:
+            self.assertEqual(np.asarray(data["continuous_event_labels"]).tolist(), ["no_control", "no_control"])
+            self.assertEqual(np.asarray(data["continuous_execution_success"], dtype=np.int8).tolist(), [0, 1])
+
+        with np.load(result["gate_epochs_path"], allow_pickle=False) as data:
+            gate_neg_sources = [str(item) for item in np.asarray(data["gate_neg_sources"]).tolist()]
+        self.assertEqual(gate_neg_sources, ["continuous_no_control"])
+
+    def test_pause_fragment_does_not_shrink_all_gate_negative_windows(self) -> None:
+        result = self._save_rest_pause_session()
+
+        with np.load(result["gate_epochs_path"], allow_pickle=False) as data:
+            gate_neg = np.asarray(data["X_gate_neg"], dtype=np.float32)
+            gate_neg_sources = [str(item) for item in np.asarray(data["gate_neg_sources"]).tolist()]
+
+        self.assertEqual(tuple(gate_neg.shape), (2, 8, 250))
+        self.assertEqual(gate_neg_sources, ["eyes_open_rest", "idle_block"])
+
+    def test_short_artifact_block_is_padded_instead_of_dropped(self) -> None:
+        sampling_rate = 250.0
+        brainflow_data = np.zeros((10, 320), dtype=np.float32)
+        marker_row = 8
+        for channel_index in range(8):
+            brainflow_data[channel_index] = np.linspace(0.0, 1.0 + channel_index, brainflow_data.shape[1], dtype=np.float32)
+
+        markers = [
+            (10, "session_start"),
+            (20, "calibration_start"),
+            (21, "eye_movement_block_start"),
+            (145, "eye_movement_block_end"),
+            (146, "calibration_end"),
+            (220, "session_end"),
+        ]
+        event_log = []
+        for sample_index, event_name in markers:
+            event = make_event(event_name)
+            event_log.append(event)
+            brainflow_data[marker_row, sample_index] = float(event["marker_code"])
+
+        settings = SessionSettings(
+            subject_id="regression",
+            session_id="short_artifact",
+            output_root=str(self.temp_dir),
+            board_id=0,
+            serial_port="COM3",
+            channel_names=["C3", "Cz", "C4", "PO3", "PO4", "O1", "Oz", "O2"],
+            channel_positions=list(range(8)),
+            trials_per_class=1,
+            baseline_sec=0.5,
+            cue_sec=0.5,
+            imagery_sec=0.5,
+            iti_sec=0.5,
+            random_seed=0,
+            run_count=1,
+            artifact_types=["eye_movement"],
+        )
+
+        result = save_mi_session(
+            brainflow_data=brainflow_data,
+            sampling_rate=sampling_rate,
+            eeg_rows=list(range(8)),
+            marker_row=marker_row,
+            timestamp_row=None,
+            settings=settings,
+            event_log=event_log,
+            trial_records=[],
+        )
+
+        with np.load(result["artifact_epochs_path"], allow_pickle=False) as data:
+            self.assertEqual(tuple(data["X_artifact"].shape), (1, 8, 125))
+            self.assertEqual([str(item) for item in data["artifact_labels"].tolist()], ["eye_movement"])
 
     def test_v2_schema_outputs_board_segments_and_relative_manifest(self) -> None:
         result = self._save_single_trial_session()
@@ -357,6 +706,9 @@ class MICollectionRegressionTests(unittest.TestCase):
         self.assertEqual(meta["session"]["protocol_mode"], "full")
         self.assertEqual(meta["raw_preservation_level"], "cropped_full_board_matrix")
         self.assertEqual(meta["session"]["output_root"], ".")
+        self.assertIn("quality_report", result)
+        self.assertIn("quality_report", meta)
+        self.assertEqual(len(result["quality_report"]["channels"]), 8)
         self.assertIn("board_data_npy", meta["files"])
         self.assertIn("segments_csv", meta["files"])
         self.assertNotIn(":", str(meta["files"]["events_csv"]))
@@ -390,6 +742,41 @@ class MICollectionRegressionTests(unittest.TestCase):
             self.assertIn("continuous_prompt_indices", data.files)
             self.assertIn("continuous_execution_success", data.files)
             self.assertNotIn("continuous_events", data.files)
+
+    def test_data_flow_report_tracks_timestamp_package_and_loader_fields(self) -> None:
+        result = self._save_single_trial_session(include_data_flow_rows=True)
+
+        board_data = np.load(result["board_data_path"], allow_pickle=False)
+        self.assertEqual(board_data.dtype, np.float64)
+        self.assertAlmostEqual(float(board_data[9, -1] - board_data[9, 0]), 2699 / 250.0, delta=0.01)
+
+        with Path(result["meta_json_path"]).open("r", encoding="utf-8") as handle:
+            meta = json.load(handle)
+        data_flow = meta["data_flow_report"]
+        self.assertEqual(int(data_flow["sample_count"]), 2700)
+        self.assertEqual(int(data_flow["row_count"]), 11)
+        self.assertEqual(int(data_flow["marker_count"]), 13)
+        self.assertEqual(int(data_flow["event_count"]), 13)
+        self.assertTrue(bool(data_flow["marker_event_count_match"]))
+        self.assertTrue(bool(data_flow["timestamp_available"]))
+        self.assertTrue(bool(data_flow["timestamp_monotonic"]))
+        self.assertAlmostEqual(float(data_flow["effective_sampling_rate_hz"]), 250.0, delta=0.05)
+        self.assertTrue(bool(data_flow["package_num_available"]))
+        self.assertEqual(int(data_flow["package_first"]), 0)
+        self.assertEqual(int(data_flow["package_last"]), 2699 % 256)
+        self.assertEqual(int(data_flow["package_jump_count"]), 0)
+
+        with Path(result["board_map_path"]).open("r", encoding="utf-8") as handle:
+            board_map = json.load(handle)
+        self.assertEqual(board_map["data_flow_report"], data_flow)
+
+        loaded = load_custom_task_datasets(self.temp_dir)
+        record = loaded["source_records"][0]
+        self.assertEqual(int(record["data_flow_sample_count"]), 2700)
+        self.assertTrue(bool(record["data_flow_timestamp_monotonic"]))
+        self.assertAlmostEqual(float(record["data_flow_effective_sampling_rate_hz"]), 250.0, delta=0.05)
+        self.assertEqual(int(record["data_flow_package_jump_count"]), 0)
+        self.assertTrue(bool(record["data_flow_marker_event_count_match"]))
 
     def test_protocol_mode_is_saved_for_mi_only_sessions(self) -> None:
         result = self._save_single_trial_session(protocol_mode="mi_only")
@@ -481,10 +868,11 @@ class MICollectionRegressionTests(unittest.TestCase):
             gate_neg_sources = [str(item) for item in np.asarray(data["gate_neg_sources"]).tolist()]
             gate_hard_neg_sources = [str(item) for item in np.asarray(data["gate_hard_neg_sources"]).tolist()]
         self.assertTrue(
-            {"baseline", "iti", "eyes_open_rest", "eyes_closed_rest", "idle_block", "idle_prepare", "continuous_no_control"}.issubset(
+            {"baseline", "iti", "eyes_open_rest", "eyes_closed_rest", "idle_block", "idle_prepare"}.issubset(
                 set(gate_neg_sources)
             )
         )
+        self.assertNotIn("continuous_no_control", set(gate_neg_sources))
         self.assertTrue(
             {"artifact_eye_movement", "artifact_blink", "artifact_swallow", "artifact_jaw", "artifact_head_motion", "rejected_trial"}.issubset(
                 set(gate_hard_neg_sources)
@@ -514,6 +902,133 @@ class MICollectionRegressionTests(unittest.TestCase):
         self.assertEqual(str(record["session_id"]), "single_trial")
         self.assertEqual(str(record["protocol_mode"]), "full")
         self.assertEqual(int(loaded["mi"]["X"].shape[0]), 1)
+
+    def test_flat_low_quality_eeg_still_saves_trainable_files(self) -> None:
+        result = self._save_single_trial_session(eeg_uvolts=np.zeros((8, 2700), dtype=np.float32))
+
+        for path_key in [
+            "board_data_path",
+            "fif_path",
+            "events_csv_path",
+            "trials_csv_path",
+            "quality_json_path",
+            "mi_epochs_path",
+            "gate_epochs_path",
+        ]:
+            self.assertTrue(Path(result[path_key]).exists(), path_key)
+
+        with Path(result["quality_json_path"]).open("r", encoding="utf-8") as handle:
+            quality = json.load(handle)
+        self.assertEqual(float(quality["overall_std_uV"]), 0.0)
+        self.assertEqual(int(quality["non_finite_sample_count"]), 0)
+        self.assertTrue(all(float(channel["std_uV"]) == 0.0 for channel in quality["channels"]))
+
+        with np.load(result["mi_epochs_path"], allow_pickle=False) as data:
+            self.assertEqual(tuple(data["X_mi"].shape), (1, 8, 1000))
+            self.assertTrue(np.all(np.isfinite(data["X_mi"])))
+        with np.load(result["gate_epochs_path"], allow_pickle=False) as data:
+            self.assertGreaterEqual(int(data["X_gate_pos"].shape[0]), 1)
+            self.assertTrue(np.all(np.isfinite(data["X_gate_pos"])))
+
+        loaded = load_custom_task_datasets(self.temp_dir)
+        self.assertEqual(int(loaded["mi"]["X"].shape[0]), 1)
+
+    def test_non_finite_eeg_preserves_board_data_and_saves_sanitized_epochs(self) -> None:
+        bad_eeg = np.zeros((8, 2700), dtype=np.float32)
+        bad_eeg[0, 1012:1020] = np.nan
+        bad_eeg[1, 1200] = np.inf
+        bad_eeg[2, 1300] = -np.inf
+
+        result = self._save_single_trial_session(eeg_uvolts=bad_eeg)
+
+        board_data = np.load(result["board_data_path"], allow_pickle=False)
+        self.assertTrue(np.isnan(board_data[0, 1012:1020]).all())
+        self.assertTrue(np.isposinf(board_data[1, 1200]))
+        self.assertTrue(np.isneginf(board_data[2, 1300]))
+
+        with Path(result["quality_json_path"]).open("r", encoding="utf-8") as handle:
+            quality = json.load(handle)
+        self.assertEqual(int(quality["non_finite_sample_count"]), 10)
+        self.assertEqual(int(quality["channels"][0]["non_finite_sample_count"]), 8)
+        self.assertEqual(int(quality["channels"][1]["non_finite_sample_count"]), 1)
+        self.assertEqual(int(quality["channels"][2]["non_finite_sample_count"]), 1)
+
+        with Path(result["board_map_path"]).open("r", encoding="utf-8") as handle:
+            board_map = json.load(handle)
+        self.assertEqual(int(board_map["selected_eeg_non_finite_sample_count"]), 10)
+        self.assertIn("board_data.npy", board_map["derivative_non_finite_replacement"])
+
+        with np.load(result["mi_epochs_path"], allow_pickle=False) as data:
+            mi_epochs = np.asarray(data["X_mi"], dtype=np.float32)
+        self.assertEqual(tuple(mi_epochs.shape), (1, 8, 1000))
+        self.assertTrue(np.all(np.isfinite(mi_epochs)))
+
+        loaded = load_custom_task_datasets(self.temp_dir)
+        self.assertEqual(int(loaded["mi"]["X"].shape[0]), 1)
+        self.assertTrue(np.all(np.isfinite(loaded["mi"]["X"])))
+
+    def test_evaluate_continuous_online_like_skips_failed_prompts(self) -> None:
+        records = [
+            {
+                "X": np.zeros((1, 8, 200), dtype=np.float32),
+                "event_labels": np.asarray(["left_hand", "right_hand"], dtype=object),
+                "event_samples": np.asarray([0, 100], dtype=np.int64),
+                "event_execution_success": np.asarray([0, 1], dtype=np.int8),
+                "event_block_indices": np.asarray([0, 0], dtype=np.int64),
+                "block_start_samples": np.asarray([0], dtype=np.int64),
+                "block_end_samples": np.asarray([200], dtype=np.int64),
+            }
+        ]
+
+        fake_probs = np.asarray([[0.05, 0.85, 0.05, 0.05]], dtype=np.float64)
+        with mock.patch("train_custom_dataset.evaluate_bank_on_raw_windows", return_value=(fake_probs, None)) as mocked_eval:
+            result = evaluate_continuous_online_like(
+                continuous_records=records,
+                main_member_artifacts=[{"window_sec": 1.0}],
+                main_fusion_weights=[1.0],
+                main_fusion_method="mean",
+                main_probability_calibration=None,
+                class_names=["left_hand", "right_hand", "feet", "tongue"],
+                sampling_rate=100.0,
+                main_runtime=None,
+            )
+
+        self.assertEqual(mocked_eval.call_count, 1)
+        self.assertEqual(int(result["prompt_count"]), 2)
+        self.assertEqual(int(result["evaluated_prompt_count"]), 1)
+        self.assertEqual(int(result["skipped_prompt_count"]), 1)
+        self.assertEqual(int(result["mi_prompt_total"]), 1)
+        self.assertEqual(int(result["mi_prompt_correct"]), 1)
+
+    def test_save_rejects_out_of_range_marker_row_with_clear_error(self) -> None:
+        settings = SessionSettings(
+            subject_id="bad",
+            session_id="bad_marker",
+            output_root=str(self.temp_dir),
+            board_id=0,
+            serial_port="COM3",
+            channel_names=["C3", "Cz"],
+            channel_positions=[0, 1],
+            trials_per_class=1,
+            baseline_sec=1.0,
+            cue_sec=1.0,
+            imagery_sec=1.0,
+            iti_sec=1.0,
+            random_seed=0,
+            run_count=1,
+        )
+
+        with self.assertRaisesRegex(ValueError, "marker_row 99 is out of range"):
+            save_mi_session(
+                brainflow_data=np.zeros((4, 16), dtype=np.float32),
+                sampling_rate=250.0,
+                eeg_rows=[0, 1],
+                marker_row=99,
+                timestamp_row=None,
+                settings=settings,
+                event_log=[],
+                trial_records=[],
+            )
 
 
 if __name__ == "__main__":

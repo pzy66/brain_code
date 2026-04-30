@@ -98,6 +98,18 @@ def _atomic_save_npz(path: Path, arrays: dict[str, np.ndarray]) -> None:
         raise
 
 
+def _jsonable(value: Any) -> Any:
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    return value
+
+
 @dataclass(frozen=True)
 class LoadedDataset:
     manifest_path: Path
@@ -217,10 +229,26 @@ def _build_collection_records(
             "active_window_ended_at",
             "segment_captured_at",
             "active_end_tone_started_at",
+            "stimulus_phase_apply_requested_at",
+            "stimulus_first_frame_presented_at",
+            "stimulus_first_frame_mode",
+            "board_buffer_cleared_at",
         ):
             value = str(quality.get(key, "")).strip()
             if value:
                 record[key] = value
+        for key in (
+            "stimulus_first_frame_presented_t_sec",
+            "stimulus_first_frame_cue_freq",
+            "stimulus_first_frame_ack_latency_sec",
+        ):
+            if key in quality and quality.get(key) is not None:
+                record[key] = _safe_float(quality.get(key), 0.0)
+        for key in ("stimulus_first_frame_frame_index", "board_buffer_clear_samples"):
+            if key in quality and quality.get(key) is not None:
+                record[key] = _safe_int(quality.get(key), 0)
+        if "stimulus_first_frame_ack_timed_out" in quality:
+            record["stimulus_first_frame_ack_timed_out"] = bool(quality.get("stimulus_first_frame_ack_timed_out"))
         records.append(record)
     return records
 
@@ -293,6 +321,10 @@ def _build_quality_summary(trial_records: Sequence[dict[str, Any]]) -> dict[str,
     total_trials = int(len(trial_records))
     shortfalls = [_safe_float(row.get("shortfall_ratio", 0.0), 0.0) for row in trial_records]
     retries = [_safe_int(row.get("retry_count", 0), 0) for row in trial_records]
+    ack_timeouts = [
+        bool(row.get("stimulus_first_frame_ack_timed_out", False))
+        for row in trial_records
+    ]
     role_counts = summarize_trial_roles(trial_records)
     return {
         "valid_trial_count": total_trials,
@@ -302,6 +334,7 @@ def _build_quality_summary(trial_records: Sequence[dict[str, Any]]) -> dict[str,
         "retry_max": int(np.max(np.asarray(retries, dtype=int))) if retries else 0,
         "shortfall_ratio_mean": float(np.mean(np.asarray(shortfalls, dtype=float))) if shortfalls else 0.0,
         "shortfall_ratio_max": float(np.max(np.asarray(shortfalls, dtype=float))) if shortfalls else 0.0,
+        "stimulus_first_frame_ack_timeout_count": int(sum(1 for item in ack_timeouts if item)),
         "trial_role_counts": role_counts,
     }
 
@@ -319,6 +352,8 @@ def save_collection_dataset_bundle(
     protocol_config: dict[str, Any],
     trial_segments: Sequence[tuple[TrialSpec, np.ndarray]],
     quality_rows: Optional[Sequence[dict[str, Any]]] = None,
+    continuous_board_data: Optional[np.ndarray] = None,
+    continuous_board_info: Optional[dict[str, Any]] = None,
 ) -> dict[str, str]:
     dataset_root = Path(dataset_root).expanduser().resolve()
     session_dir = dataset_root / str(session_id)
@@ -336,6 +371,20 @@ def save_collection_dataset_bundle(
     )
     npz_path = session_dir / "raw_trials.npz"
     _atomic_save_npz(npz_path, npz_arrays)
+    files_payload: dict[str, str] = {"raw_trials_npz": str(npz_path)}
+    continuous_payload: dict[str, Any] = {}
+    if continuous_board_data is not None:
+        continuous_matrix = np.ascontiguousarray(np.asarray(continuous_board_data, dtype=np.float64))
+        if continuous_matrix.ndim != 2:
+            raise ValueError("continuous_board_data must be a 2-D BrainFlow matrix")
+        continuous_path = session_dir / "continuous_board.npz"
+        _atomic_save_npz(continuous_path, {"board_data": continuous_matrix})
+        files_payload["continuous_board_npz"] = str(continuous_path)
+        continuous_payload = {
+            "shape": [int(continuous_matrix.shape[0]), int(continuous_matrix.shape[1])],
+            "dtype": str(continuous_matrix.dtype),
+            **dict(continuous_board_info or {}),
+        }
 
     protocol_signature = build_protocol_signature(
         sampling_rate=int(sampling_rate),
@@ -374,16 +423,21 @@ def save_collection_dataset_bundle(
         "quality_summary": quality_summary,
         "trials": trial_records,
         "splits": {"train": [], "gate": [], "holdout": []},
-        "files": {"raw_trials_npz": str(npz_path)},
+        "files": files_payload,
     }
+    if continuous_payload:
+        manifest_payload["continuous_board"] = _jsonable(continuous_payload)
     manifest_path = session_dir / "session_manifest.json"
-    _atomic_write_text(manifest_path, json_dumps(manifest_payload) + "\n", encoding="utf-8")
-    return {
+    _atomic_write_text(manifest_path, json_dumps(_jsonable(manifest_payload)) + "\n", encoding="utf-8")
+    result = {
         "dataset_dir": str(session_dir),
         "dataset_manifest": str(manifest_path),
         "dataset_npz": str(npz_path),
         "data_schema_version": COLLECTION_DATA_SCHEMA_VERSION,
     }
+    if "continuous_board_npz" in files_payload:
+        result["dataset_continuous_board_npz"] = files_payload["continuous_board_npz"]
+    return result
 
 
 def load_collection_dataset(manifest_path: Path) -> LoadedDataset:

@@ -21,6 +21,7 @@ from apps.data_collection_ui import (
     CollectionConfig,
     CollectionWorker,
     DatasetCollectionWindow,
+    SpeechPromptPlayer,
     ACTIVE_START_CUE_SEC,
     ACTIVE_STIMULUS_ARM_SEC,
     PHASE_CAL_ACTIVE,
@@ -59,6 +60,7 @@ from apps.data_collection_ui import (
 )
 from apps.async_fbcca_validation_ui import (
     FourArrowStimWidget,
+    PHASE_VALIDATION,
     STIMULUS_MODE_ELAPSED_TIME_SINE,
     STIMULUS_MODE_FRAME_LOCKED_SINE,
     stimulus_frame_qc_report,
@@ -99,6 +101,20 @@ def test_stable_12m_round_estimate_matches_plan() -> None:
         long_idle_sec=DEFAULT_STABLE_LONG_IDLE_SEC,
     )
     assert abs(float(round_sec) - (808.08 + 74.0 * float(ACTIVE_STIMULUS_ARM_SEC))) < 1e-9
+
+
+def test_round_estimate_uses_selected_stim_refresh_rate() -> None:
+    round_sec = estimate_round_seconds(
+        prepare_sec=1.0,
+        active_sec=5.0,
+        rest_sec=4.0,
+        target_repeats=1,
+        idle_repeats=0,
+        switch_trials=0,
+        refresh_rate_hz=60.0,
+    )
+    expected = 4.0 * (1.0 + ACTIVE_START_CUE_SEC + 0.8 + (1.0 / 60.0) + 5.0 + 4.0)
+    assert abs(float(round_sec) - expected) < 1e-9
 
 
 def test_resolve_cli_protocol_uses_preset_values() -> None:
@@ -307,8 +323,20 @@ def test_collection_worker_can_ack_active_stimulus_phase() -> None:
         sync_stimulus_phase=True,
     )
     worker = CollectionWorker(config)
-    worker.notify_stimulus_phase_applied({"mode": "calibration_active"})
+    worker.notify_stimulus_phase_applied(
+        {
+            "mode": "calibration_active",
+            "frame_index": 3,
+            "presented_t_sec": 0.05,
+            "cue_freq": 8.0,
+        }
+    )
     assert worker._stimulus_phase_applied_event.is_set()
+    ready, payload = worker._wait_for_stimulus_phase_applied()
+    assert ready is True
+    assert int(payload["frame_index"]) == 3
+    assert abs(float(payload["presented_t_sec"]) - 0.05) < 1e-9
+    assert str(payload.get("ack_wall_time", "")).strip()
 
 
 def test_collection_worker_sleep_interrupts_after_stop_request() -> None:
@@ -608,6 +636,14 @@ def test_collection_cli_defaults_to_elapsed_time_stimulus_mode() -> None:
     assert str(args.stimulus_mode) == STIMULUS_MODE_FRAME_LOCKED_SINE
 
 
+def test_collection_cli_defaults_to_legacy_manual_refresh_rate() -> None:
+    parser = build_parser()
+    args = parser.parse_args([])
+    assert abs(float(args.stim_refresh_rate_hz) - float(STIM_REFRESH_RATE_HZ)) < 1e-9
+    args = parser.parse_args(["--stim-refresh-rate-hz", "0"])
+    assert float(args.stim_refresh_rate_hz) == 0.0
+
+
 def test_stimulus_backend_metadata_marks_headless_as_not_rendered() -> None:
     headless = stimulus_backend_metadata(STIMULUS_BACKEND_HEADLESS_NO_VISUAL)
     assert headless["stimulus_backend"] == STIMULUS_BACKEND_HEADLESS_NO_VISUAL
@@ -654,6 +690,49 @@ def test_resolve_collection_stim_refresh_rate_hz_falls_back_to_default_on_invali
     assert abs(resolve_collection_stim_refresh_rate_hz(_ErrorScreen()) - float(STIM_REFRESH_RATE_HZ)) < 1e-9
 
 
+def test_dataset_collection_window_refresh_rate_override_prefers_manual_value() -> None:
+    _ = _get_qapp()
+    window = DatasetCollectionWindow(serial_port="auto", board_id=0, freqs=(8.0, 10.0, 12.0, 15.0))
+    try:
+        window.stim_refresh_rate_spin.setValue(240.0)
+        assert abs(window._resolve_stim_refresh_rate_hz() - 240.0) < 1e-9
+    finally:
+        window.close()
+
+
+def test_dataset_collection_window_refresh_rate_zero_uses_screen_value() -> None:
+    _ = _get_qapp()
+    window = DatasetCollectionWindow(serial_port="auto", board_id=0, freqs=(8.0, 10.0, 12.0, 15.0))
+
+    class _Screen:
+        def refreshRate(self) -> float:
+            return 144.0
+
+    try:
+        window._stim_target_screen = lambda: _Screen()  # type: ignore[method-assign]
+        window.stim_refresh_rate_spin.setValue(0.0)
+        assert abs(window._resolve_stim_refresh_rate_hz() - 144.0) < 1e-9
+    finally:
+        window.close()
+
+
+def test_speech_prompt_player_fallback_finishes_only_matching_request() -> None:
+    _ = _get_qapp()
+    player = SpeechPromptPlayer()
+    finished: list[int] = []
+    player.playback_finished.connect(lambda request_id: finished.append(int(request_id)))  # type: ignore[arg-type]
+
+    player._awaiting_completion = True
+    player._pending_request_id = 11
+    player._finish_if_pending(10)
+    assert finished == []
+
+    player._finish_if_pending(11)
+    assert finished == [11]
+    assert player._awaiting_completion is False
+    assert player._pending_request_id == 0
+
+
 def test_four_arrow_stim_widget_emits_active_phase_frame_presented_once() -> None:
     _ = _get_qapp()
     widget = FourArrowStimWidget(
@@ -685,6 +764,152 @@ def test_four_arrow_stim_widget_emits_active_phase_frame_presented_once() -> Non
         assert str(payloads[0]["mode"]) == PHASE_CAL_ACTIVE
         assert bool(payloads[0]["flicker"]) is True
         assert int(payloads[0]["frame_index"]) == 0
+    finally:
+        widget.stop_clock()
+        widget.close()
+
+
+def test_four_arrow_stim_widget_does_not_rearm_active_ack_during_same_active_phase() -> None:
+    _ = _get_qapp()
+    widget = FourArrowStimWidget(
+        freqs=(8.0, 10.0, 12.0, 15.0),
+        refresh_rate_hz=60.0,
+        mean=0.5,
+        amp=0.5,
+        phi=0.0,
+        stimulus_mode=STIMULUS_MODE_FRAME_LOCKED_SINE,
+    )
+    try:
+        payloads: list[dict[str, object]] = []
+        widget.active_phase_frame_presented.connect(  # type: ignore[arg-type]
+            lambda payload: payloads.append(dict(payload))
+        )
+        active_payload = {
+            "mode": PHASE_CAL_ACTIVE,
+            "title": "active",
+            "detail": "",
+            "flicker": True,
+            "cue_freq": 8.0,
+        }
+
+        widget.apply_phase(active_payload)
+        widget._maybe_emit_active_phase_frame_presented(t_sec=0.0, frame_index=0)
+        widget.apply_phase({**active_payload, "title": "still active"})
+        widget._maybe_emit_active_phase_frame_presented(t_sec=0.1, frame_index=6)
+
+        assert len(payloads) == 1
+    finally:
+        widget.stop_clock()
+        widget.close()
+
+
+def test_four_arrow_stim_widget_keeps_pending_ack_on_same_phase_reapply() -> None:
+    _ = _get_qapp()
+    widget = FourArrowStimWidget(
+        freqs=(8.0, 10.0, 12.0, 15.0),
+        refresh_rate_hz=60.0,
+        mean=0.5,
+        amp=0.5,
+        phi=0.0,
+        stimulus_mode=STIMULUS_MODE_ELAPSED_TIME_SINE,
+    )
+    try:
+        payloads: list[dict[str, object]] = []
+        widget.active_phase_frame_presented.connect(  # type: ignore[arg-type]
+            lambda payload: payloads.append(dict(payload))
+        )
+        active_payload = {
+            "mode": PHASE_CAL_ACTIVE,
+            "title": "active",
+            "detail": "",
+            "flicker": True,
+            "cue_freq": 8.0,
+        }
+
+        widget.apply_phase(active_payload)
+        widget.apply_phase({**active_payload, "title": "active updated"})
+        widget._maybe_emit_active_phase_frame_presented(t_sec=0.02, frame_index=0)
+
+        assert len(payloads) == 1
+        assert payloads[0]["mode"] == PHASE_CAL_ACTIVE
+    finally:
+        widget.stop_clock()
+        widget.close()
+
+
+def test_four_arrow_stim_widget_rearms_ack_when_ack_phase_changes() -> None:
+    _ = _get_qapp()
+    widget = FourArrowStimWidget(
+        freqs=(8.0, 10.0, 12.0, 15.0),
+        refresh_rate_hz=60.0,
+        mean=0.5,
+        amp=0.5,
+        phi=0.0,
+        stimulus_mode=STIMULUS_MODE_ELAPSED_TIME_SINE,
+    )
+    try:
+        payloads: list[dict[str, object]] = []
+        widget.active_phase_frame_presented.connect(  # type: ignore[arg-type]
+            lambda payload: payloads.append(dict(payload))
+        )
+
+        widget.apply_phase(
+            {
+                "mode": PHASE_VALIDATION,
+                "title": "validation",
+                "detail": "",
+                "flicker": True,
+                "cue_freq": None,
+            }
+        )
+        widget._maybe_emit_active_phase_frame_presented(t_sec=0.0, frame_index=0)
+        widget.apply_phase(
+            {
+                "mode": PHASE_CAL_ACTIVE,
+                "title": "active",
+                "detail": "",
+                "flicker": True,
+                "cue_freq": 8.0,
+            }
+        )
+        widget._maybe_emit_active_phase_frame_presented(t_sec=0.1, frame_index=6)
+
+        assert [payload["mode"] for payload in payloads] == [PHASE_VALIDATION, PHASE_CAL_ACTIVE]
+    finally:
+        widget.stop_clock()
+        widget.close()
+
+
+def test_four_arrow_stim_widget_emits_validation_frame_presented_once() -> None:
+    _ = _get_qapp()
+    widget = FourArrowStimWidget(
+        freqs=(8.0, 10.0, 12.0, 15.0),
+        refresh_rate_hz=60.0,
+        mean=0.5,
+        amp=0.5,
+        phi=0.0,
+        stimulus_mode=STIMULUS_MODE_ELAPSED_TIME_SINE,
+    )
+    try:
+        payloads: list[dict[str, object]] = []
+        widget.active_phase_frame_presented.connect(  # type: ignore[arg-type]
+            lambda payload: payloads.append(dict(payload))
+        )
+        validation_payload = {
+            "mode": PHASE_VALIDATION,
+            "title": "validation",
+            "detail": "",
+            "flicker": True,
+            "cue_freq": None,
+        }
+
+        widget.apply_phase(validation_payload)
+        widget._maybe_emit_active_phase_frame_presented(t_sec=0.0, frame_index=0)
+        widget.apply_phase({**validation_payload, "title": "still validation"})
+        widget._maybe_emit_active_phase_frame_presented(t_sec=0.1, frame_index=6)
+
+        assert len(payloads) == 1
+        assert payloads[0]["mode"] == PHASE_VALIDATION
     finally:
         widget.stop_clock()
         widget.close()

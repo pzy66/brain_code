@@ -1,19 +1,41 @@
 param(
     [string]$ProjectRoot = (Split-Path -Parent $PSScriptRoot),
-    [string]$SdkName = "brain_code (.venv)"
+    [string]$SdkName = "",
+    [string]$PythonExe = ""
 )
 
 $projectRootPath = (Resolve-Path -LiteralPath $ProjectRoot).Path
 $ideaDir = Join-Path $projectRootPath ".idea"
-$pythonExe = Join-Path $projectRootPath ".venv\python.exe"
 $moduleFile = Join-Path $ideaDir "brain_code.iml"
 $modulesFile = Join-Path $ideaDir "modules.xml"
 $miscFile = Join-Path $ideaDir "misc.xml"
 $nameFile = Join-Path $ideaDir ".name"
 
+if (-not $PythonExe) {
+    $resolveScript = Join-Path $PSScriptRoot "resolve_brain_python.ps1"
+    if (-not (Test-Path -LiteralPath $resolveScript)) {
+        Write-Error "[configure-pycharm] Missing interpreter resolver: $resolveScript"
+        exit 1
+    }
+    $PythonExe = (& $resolveScript | Select-Object -Last 1)
+}
+
+$pythonExe = [string]$PythonExe
 if (-not (Test-Path -LiteralPath $pythonExe)) {
     Write-Error "[configure-pycharm] Missing interpreter: $pythonExe"
     exit 1
+}
+
+$pythonVersionJson = & $pythonExe -c "import json, sys; print(json.dumps({'major': sys.version_info.major, 'minor': sys.version_info.minor, 'micro': sys.version_info.micro}))"
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "[configure-pycharm] Failed to inspect interpreter version: $pythonExe"
+    exit 1
+}
+$pythonVersion = $pythonVersionJson | ConvertFrom-Json
+$pythonSdkVersion = "Python $($pythonVersion.major).$($pythonVersion.minor).$($pythonVersion.micro)"
+if (-not $SdkName) {
+    $sdkPrefix = if ($pythonExe -match 'brain-vision') { "brain-vision" } elseif ($pythonExe -match '\\\.venv\\') { "brain_code-venv" } else { "brain-python" }
+    $SdkName = "$sdkPrefix-$($pythonVersion.major)$($pythonVersion.minor)"
 }
 
 function New-XmlElement {
@@ -36,7 +58,8 @@ function Register-PyCharmSdk {
     param(
         [string]$ProjectRootPath,
         [string]$InterpreterPath,
-        [string]$SdkDisplayName
+        [string]$SdkDisplayName,
+        [string]$SdkVersion
     )
 
     $roamingJetBrains = Join-Path $env:APPDATA "JetBrains"
@@ -89,7 +112,7 @@ function Register-PyCharmSdk {
         $jdk = New-XmlElement -Document $xml -Name "jdk" -Attributes @{ version = "2" }
         [void]$jdk.AppendChild((New-XmlElement -Document $xml -Name "name" -Attributes @{ value = $SdkDisplayName }))
         [void]$jdk.AppendChild((New-XmlElement -Document $xml -Name "type" -Attributes @{ value = "Python SDK" }))
-        [void]$jdk.AppendChild((New-XmlElement -Document $xml -Name "version" -Attributes @{ value = "Python 3.10.20" }))
+        [void]$jdk.AppendChild((New-XmlElement -Document $xml -Name "version" -Attributes @{ value = $SdkVersion }))
         [void]$jdk.AppendChild((New-XmlElement -Document $xml -Name "homePath" -Attributes @{ value = $InterpreterPath }))
 
         $roots = New-XmlElement -Document $xml -Name "roots"
@@ -182,11 +205,16 @@ $modulesXml = @"
 [System.IO.File]::WriteAllText($modulesFile, $modulesXml, [System.Text.UTF8Encoding]::new($false))
 [System.IO.File]::WriteAllText($nameFile, "brain_code`n", [System.Text.UTF8Encoding]::new($false))
 
-$updatedTables = Register-PyCharmSdk -ProjectRootPath $projectRootPath -InterpreterPath $pythonExe -SdkDisplayName $SdkName
+$updatedTables = Register-PyCharmSdk `
+    -ProjectRootPath $projectRootPath `
+    -InterpreterPath $pythonExe `
+    -SdkDisplayName $SdkName `
+    -SdkVersion $pythonSdkVersion
 
 Write-Output "[configure-pycharm] ProjectRoot = $projectRootPath"
 Write-Output "[configure-pycharm] Interpreter = $pythonExe"
 Write-Output "[configure-pycharm] SDK Name = $SdkName"
+Write-Output "[configure-pycharm] SDK Version = $pythonSdkVersion"
 foreach ($tablePath in $updatedTables) {
     Write-Output "[configure-pycharm] Updated SDK table: $tablePath"
 }

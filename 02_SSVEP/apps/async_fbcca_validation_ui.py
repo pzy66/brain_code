@@ -11,7 +11,7 @@ from typing import Any, Optional, Sequence
 
 import numpy as np
 from PyQt5.QtCore import QObject, QRect, Qt, QThread, pyqtSignal, pyqtSlot
-from PyQt5.QtGui import QBrush, QColor, QFont, QPainter, QPen
+from PyQt5.QtGui import QBrush, QColor, QFont, QPainter, QPen, QSurfaceFormat
 from PyQt5.QtWidgets import (
     QApplication,
     QDoubleSpinBox,
@@ -21,6 +21,7 @@ from PyQt5.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
+    QOpenGLWidget,
     QPlainTextEdit,
     QPushButton,
     QSizePolicy,
@@ -206,7 +207,8 @@ class StimClockThread(QThread):
                 if self._stop_event.is_set():
                     break
 
-                t_sec = (next_tick_ns - start_ns) / 1_000_000_000.0
+                emit_ns = time.perf_counter_ns()
+                t_sec = (emit_ns - start_ns) / 1_000_000_000.0
                 self.tick.emit(t_sec, frame_index)
                 frame_index += 1
                 next_tick_ns = start_ns + frame_index * self.period_ns
@@ -313,7 +315,7 @@ def stimulus_frame_qc_report(
     }
 
 
-class FourArrowStimWidget(QWidget):
+class FourArrowStimWidget(QOpenGLWidget):
     active_phase_frame_presented = pyqtSignal(object)
 
     def __init__(
@@ -340,6 +342,7 @@ class FourArrowStimWidget(QWidget):
         self.current_t = 0.0
         self.current_frame = -1
         self.clock_start_ns: Optional[int] = None
+        self._last_frame_swap_ns: Optional[int] = None
 
         self.phase_mode = PHASE_IDLE
         self.phase_title = "Ready"
@@ -351,22 +354,40 @@ class FourArrowStimWidget(QWidget):
         self.selected_freq: Optional[float] = None
         self.decoder_state = "idle"
         self._pending_active_phase_frame_presented = False
+        self._queued_active_phase_frame_payload: Optional[dict[str, Any]] = None
 
+        surface_format = QSurfaceFormat()
+        surface_format.setSwapInterval(1)
+        self.setFormat(surface_format)
+        self.setUpdateBehavior(QOpenGLWidget.NoPartialUpdate)
+        self.frameSwapped.connect(self._on_frame_swapped)
         self.setStyleSheet("background-color: black;")
         self.setAttribute(Qt.WA_OpaquePaintEvent)
         self.setAttribute(Qt.WA_NoSystemBackground, True)
         self.setAutoFillBackground(False)
+
+    @staticmethod
+    def _phase_requires_presented_ack(mode: str) -> bool:
+        return str(mode) in (PHASE_CAL_ACTIVE, PHASE_VALIDATION)
+
+    @staticmethod
+    def _same_cue_freq(left: Any, right: Any) -> bool:
+        if left is None or right is None:
+            return left is None and right is None
+        try:
+            return abs(float(left) - float(right)) < 1e-8
+        except Exception:
+            return left == right
 
     def start_clock(self) -> None:
         if self.clock_running:
             return
         self.clock_running = True
         self.current_t = 0.0
-        self.current_frame = -1
+        self.current_frame = 0
         self.clock_start_ns = time.perf_counter_ns()
-        self.clock_thread = StimClockThread(self.refresh_rate_hz)
-        self.clock_thread.tick.connect(self.on_tick, type=Qt.QueuedConnection)
-        self.clock_thread.start(QThread.TimeCriticalPriority)
+        self._last_frame_swap_ns = None
+        self.update()
 
     def stop_clock(self) -> None:
         if not self.clock_running:
@@ -381,6 +402,7 @@ class FourArrowStimWidget(QWidget):
         self.current_t = 0.0
         self.current_frame = -1
         self.clock_start_ns = None
+        self._last_frame_swap_ns = None
         self.update()
 
     @pyqtSlot(float, int)
@@ -392,15 +414,26 @@ class FourArrowStimWidget(QWidget):
         self.update()
 
     def apply_phase(self, payload: dict[str, Any]) -> None:
+        previous_mode = str(self.phase_mode)
+        previous_cue_freq = self.cue_freq
+        previous_ack_flicker = bool(self._phase_requires_presented_ack(previous_mode) and self.flicker_enabled)
+        previous_pending_ack = bool(self._pending_active_phase_frame_presented)
         self.phase_mode = str(payload.get("mode", PHASE_IDLE))
         self.phase_title = str(payload.get("title", ""))
         self.phase_detail = str(payload.get("detail", ""))
         self.remaining_sec = int(payload.get("remaining_sec", 0) or 0)
         self.flicker_enabled = bool(payload.get("flicker", False))
         self.cue_freq = payload.get("cue_freq")
-        self._pending_active_phase_frame_presented = bool(
-            self.phase_mode == PHASE_CAL_ACTIVE and self.flicker_enabled
+        requires_ack = bool(self._phase_requires_presented_ack(self.phase_mode) and self.flicker_enabled)
+        same_ack_phase = bool(
+            previous_ack_flicker
+            and previous_mode == self.phase_mode
+            and self._same_cue_freq(previous_cue_freq, self.cue_freq)
         )
+        if requires_ack:
+            self._pending_active_phase_frame_presented = bool(previous_pending_ack if same_ack_phase else True)
+        else:
+            self._pending_active_phase_frame_presented = False
 
         if self.phase_mode == PHASE_STOPPED:
             self.pred_freq = None
@@ -455,33 +488,67 @@ class FourArrowStimWidget(QWidget):
             return QPen(QColor(64, 220, 140), 9)
         return QPen(QColor(70, 70, 70), 2)
 
+    def _build_active_phase_frame_payload(self, *, t_sec: float, frame_index: int) -> dict[str, Any]:
+        return {
+            "mode": str(self.phase_mode),
+            "flicker": bool(self.flicker_enabled),
+            "frame_index": int(frame_index),
+            "presented_t_sec": float(t_sec),
+            "cue_freq": self.cue_freq,
+            "stimulus_mode": str(self.stimulus_mode),
+            "refresh_rate_hz": float(self.refresh_rate_hz),
+            "presented_perf_counter_ns": int(time.perf_counter_ns()),
+        }
+
     def _maybe_emit_active_phase_frame_presented(self, *, t_sec: float, frame_index: int) -> None:
         if not self._pending_active_phase_frame_presented:
             return
-        if not self.flicker_enabled or self.phase_mode != PHASE_CAL_ACTIVE:
+        if not self.flicker_enabled or not self._phase_requires_presented_ack(self.phase_mode):
             self._pending_active_phase_frame_presented = False
             return
         if int(frame_index) < 0:
             return
         self._pending_active_phase_frame_presented = False
         self.active_phase_frame_presented.emit(
-            {
-                "mode": str(self.phase_mode),
-                "flicker": bool(self.flicker_enabled),
-                "frame_index": int(frame_index),
-                "presented_t_sec": float(t_sec),
-                "cue_freq": self.cue_freq,
-            }
+            self._build_active_phase_frame_payload(t_sec=t_sec, frame_index=frame_index)
         )
 
-    def paintEvent(self, event) -> None:
+    def _queue_active_phase_frame_presented(self, *, t_sec: float, frame_index: int) -> None:
+        if not self._pending_active_phase_frame_presented:
+            return
+        if not self.flicker_enabled or not self._phase_requires_presented_ack(self.phase_mode):
+            self._pending_active_phase_frame_presented = False
+            return
+        if int(frame_index) < 0:
+            return
+        self._pending_active_phase_frame_presented = False
+        self._queued_active_phase_frame_payload = self._build_active_phase_frame_payload(
+            t_sec=t_sec,
+            frame_index=frame_index,
+        )
+
+    def _on_frame_swapped(self) -> None:
+        payload = self._queued_active_phase_frame_payload
+        self._queued_active_phase_frame_payload = None
+        if payload is not None:
+            self.active_phase_frame_presented.emit(payload)
+        if not self.clock_running or not self.flicker_enabled:
+            return
+        now_ns = time.perf_counter_ns()
+        if self.clock_start_ns is not None:
+            self.current_t = max(0.0, (now_ns - int(self.clock_start_ns)) / 1_000_000_000.0)
+        self.current_frame = max(0, int(self.current_frame) + 1)
+        self._last_frame_swap_ns = now_ns
+        self.update()
+
+    def paintGL(self) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, False)
         painter.fillRect(self.rect(), Qt.black)
-        if self.flicker_enabled and self.clock_running and self.clock_start_ns is not None:
-            paint_t_sec = float((time.perf_counter_ns() - self.clock_start_ns) / 1_000_000_000.0)
-        else:
-            paint_t_sec = self.current_t
+        paint_frame_index = max(0, int(self.current_frame))
+        paint_t_sec = self.current_t if int(self.current_frame) >= 0 else 0.0
+        if self.clock_running and self.clock_start_ns is not None:
+            paint_t_sec = max(0.0, (time.perf_counter_ns() - int(self.clock_start_ns)) / 1_000_000_000.0)
 
         width = self.width()
         height = self.height()
@@ -508,13 +575,14 @@ class FourArrowStimWidget(QWidget):
             rect = QRect(x, y, side, side)
 
             painter.setPen(Qt.NoPen)
-            painter.setBrush(QBrush(self._box_color(freq, paint_t_sec, self.current_frame)))
+            painter.setBrush(QBrush(self._box_color(freq, paint_t_sec, paint_frame_index)))
             painter.drawRect(rect)
 
             painter.setPen(self._border_pen(freq))
             painter.setBrush(Qt.NoBrush)
             painter.drawRect(rect)
-        self._maybe_emit_active_phase_frame_presented(t_sec=paint_t_sec, frame_index=self.current_frame)
+        painter.end()
+        self._queue_active_phase_frame_presented(t_sec=paint_t_sec, frame_index=paint_frame_index)
 
 
 class DeviceConnectWorker(QObject):

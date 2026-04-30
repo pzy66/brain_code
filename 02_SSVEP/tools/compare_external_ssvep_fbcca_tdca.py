@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import sys
 import time
 from collections import Counter, defaultdict
@@ -10,16 +11,19 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-import mne
 import numpy as np
 
 
 THIS_FILE = Path(__file__).resolve()
 SSVEP_ROOT = THIS_FILE.parents[1]
 REPO_ROOT = SSVEP_ROOT.parent
+MNE_HOME_DIR = SSVEP_ROOT / "runtime" / "mne_home"
+MNE_HOME_DIR.mkdir(parents=True, exist_ok=True)
+os.environ.setdefault("_MNE_FAKE_HOME_DIR", str(MNE_HOME_DIR))
 if str(SSVEP_ROOT) not in sys.path:
     sys.path.insert(0, str(SSVEP_ROOT))
 
+import mne  # noqa: E402
 from ssvep_core.async_fbcca_idle_standalone import TrialSpec, create_decoder  # noqa: E402
 
 
