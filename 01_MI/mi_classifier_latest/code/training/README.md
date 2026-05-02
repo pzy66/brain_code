@@ -4,8 +4,8 @@
 
 配套文档：
 
-- [README_DATA_LOADING.md](C:/Users/P1233/Desktop/brain/mi_classifier/code/training/README_DATA_LOADING.md)
-- [README_DATA_ADMISSION.md](C:/Users/P1233/Desktop/brain/mi_classifier/code/training/README_DATA_ADMISSION.md)
+- [README_DATA_LOADING.md](<workspace>/mi_classifier/code/training/README_DATA_LOADING.md)
+- [README_DATA_ADMISSION.md](<workspace>/mi_classifier/code/training/README_DATA_ADMISSION.md)
 
 ## 1. 入口
 

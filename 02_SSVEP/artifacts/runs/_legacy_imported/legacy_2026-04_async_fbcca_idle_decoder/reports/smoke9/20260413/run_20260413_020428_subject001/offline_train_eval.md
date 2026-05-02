@@ -20,7 +20,7 @@
 
 ## 数据质量与协议一致性
 
-- Session1：`C:\Users\P1233\Desktop\brain\brain_code\02_SSVEP\2026-04_async_fbcca_idle_decoder\profiles\datasets\subject001_collection_20260411_220406_r01\session_manifest.json`
+- Session1：`<repo>\02_SSVEP\2026-04_async_fbcca_idle_decoder\profiles\datasets\subject001_collection_20260411_220406_r01\session_manifest.json`
 - Session2：`None`
 - 保留trial：`0` / `0`
 - 最小样本比例：`0.900`

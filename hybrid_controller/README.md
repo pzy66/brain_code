@@ -34,7 +34,7 @@
 
 ### PyCharm 推荐设置
 
-1. 从仓库根目录打开项目：`C:\Users\P1233\Desktop\brain`
+1. 从仓库根目录打开项目：`<workspace>`
 2. `Settings -> Python Interpreter` 选择 repo 内 `.venv`，或你自己的 `brain_code` 环境
 3. 确认解释器路径是：
    - `.\.venv\Scripts\python.exe`

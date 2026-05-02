@@ -1,2 +1,2 @@
-[16:02:24] [tdca-local-opt] report directory prepared: D:\brain\brain_code\02_SSVEP\artifacts\runs\local\tdca-local-opt\20260415\run_20260415_160224_tdca-local-opt
+[16:02:24] [tdca-local-opt] report directory prepared: <repo>\02_SSVEP\artifacts\runs\local\tdca-local-opt\20260415\run_20260415_160224_tdca-local-opt
 [16:02:24] [tdca-local-opt] compute backend prepared: requested=cuda effective=cuda

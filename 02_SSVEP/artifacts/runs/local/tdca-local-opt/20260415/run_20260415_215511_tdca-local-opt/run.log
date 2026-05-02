@@ -1,4 +1,4 @@
-[21:55:11] [tdca-local-opt] report directory prepared: D:\brain\brain_code\02_SSVEP\artifacts\runs\local\tdca-local-opt\20260415\run_20260415_215511_tdca-local-opt
+[21:55:11] [tdca-local-opt] report directory prepared: <repo>\02_SSVEP\artifacts\runs\local\tdca-local-opt\20260415\run_20260415_215511_tdca-local-opt
 [21:55:11] [tdca-local-opt] compute backend prepared: requested=auto effective=cuda
 [21:56:16] [tdca-local-opt] repeat=1/5 candidate=1/40 variant=tdca_like_legacy|win=2|delay=2|n_components=2
 [21:56:25] [tdca-local-opt] repeat=1/5 candidate=2/40 variant=tdca_like_legacy|win=2|delay=3|n_components=2
@@ -40,4 +40,4 @@
 [22:01:20] [tdca-local-opt] repeat=5/5 candidate=38/40 variant=tdca_paper_aligned|win=2|delay=3|n_components=2
 [22:01:30] [tdca-local-opt] repeat=5/5 candidate=39/40 variant=tdca_paper_aligned|win=3|delay=2|n_components=2
 [22:01:37] [tdca-local-opt] repeat=5/5 candidate=40/40 variant=tdca_paper_aligned|win=3|delay=3|n_components=2
-[22:02:46] [tdca-local-opt] report saved: D:\brain\brain_code\02_SSVEP\artifacts\runs\local\tdca-local-opt\20260415\run_20260415_215511_tdca-local-opt\report.json
+[22:02:46] [tdca-local-opt] report saved: <repo>\02_SSVEP\artifacts\runs\local\tdca-local-opt\20260415\run_20260415_215511_tdca-local-opt\report.json

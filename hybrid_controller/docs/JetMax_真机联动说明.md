@@ -10,7 +10,7 @@
 
 ## JetMax 端放置目录
 
-- 复制源：`C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller`
+- 复制源：`<repo>\hybrid_controller`
 - JetMax 目标：`/home/hiwonder/brain_code/hybrid_controller`
 
 ## JetMax 端启动
@@ -24,7 +24,7 @@ bash run_hybrid_controller_ros_runtime.sh
 ## 电脑端启动
 
 ```bash
-cd C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller
+cd <repo>\hybrid_controller
 python run_real.py
 # 或
 python run_real_ssvep.py

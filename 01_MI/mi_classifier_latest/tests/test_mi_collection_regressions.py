@@ -711,8 +711,17 @@ class MICollectionRegressionTests(unittest.TestCase):
         self.assertEqual(len(result["quality_report"]["channels"]), 8)
         self.assertIn("board_data_npy", meta["files"])
         self.assertIn("segments_csv", meta["files"])
+        self.assertIn("raw_capture_checkpoint_json", meta["files"])
         self.assertNotIn(":", str(meta["files"]["events_csv"]))
         self.assertTrue(str(meta["files"]["mi_epochs_meta_json"]).endswith("_mi_epochs.meta.json"))
+
+        checkpoint_path = Path(result["raw_checkpoint_path"])
+        self.assertTrue(checkpoint_path.exists())
+        with checkpoint_path.open("r", encoding="utf-8") as handle:
+            checkpoint = json.load(handle)
+        self.assertEqual(checkpoint["status"], "complete")
+        self.assertEqual(int(checkpoint["sample_count"]), 2700)
+        self.assertIn("board_data_npy", checkpoint["files"])
 
         with manifest_path.open("r", encoding="utf-8-sig", newline="") as handle:
             manifest_rows = list(csv.DictReader(handle))
@@ -755,6 +764,7 @@ class MICollectionRegressionTests(unittest.TestCase):
         data_flow = meta["data_flow_report"]
         self.assertEqual(int(data_flow["sample_count"]), 2700)
         self.assertEqual(int(data_flow["row_count"]), 11)
+        self.assertAlmostEqual(float(data_flow["sample_span_sec_from_indices"]), 2699 / 250.0, delta=1e-9)
         self.assertEqual(int(data_flow["marker_count"]), 13)
         self.assertEqual(int(data_flow["event_count"]), 13)
         self.assertTrue(bool(data_flow["marker_event_count_match"]))
@@ -769,6 +779,24 @@ class MICollectionRegressionTests(unittest.TestCase):
         with Path(result["board_map_path"]).open("r", encoding="utf-8") as handle:
             board_map = json.load(handle)
         self.assertEqual(board_map["data_flow_report"], data_flow)
+
+        with Path(result["events_csv_path"]).open("r", encoding="utf-8-sig", newline="") as handle:
+            event_rows = list(csv.DictReader(handle))
+        imagery_start = next(row for row in event_rows if row["event_name"] == "imagery_start")
+        self.assertEqual(int(imagery_start["sample_index"]), 1012)
+        self.assertAlmostEqual(float(imagery_start["sample_time_sec"]), 1012 / 250.0, delta=1e-9)
+        self.assertAlmostEqual(float(imagery_start["board_elapsed_sec"]), 1012 / 250.0, delta=1e-6)
+        self.assertAlmostEqual(float(imagery_start["board_timestamp"]), 1_800_000_000.0 + 1012 / 250.0, delta=1e-6)
+
+        with Path(result["segments_csv_path"]).open("r", encoding="utf-8-sig", newline="") as handle:
+            segment_rows = list(csv.DictReader(handle))
+        imagery_segment = next(row for row in segment_rows if row["segment_type"] == "imagery")
+        self.assertEqual(int(imagery_segment["start_sample"]), 1012)
+        self.assertEqual(int(imagery_segment["end_sample"]), 2012)
+        self.assertAlmostEqual(float(imagery_segment["start_time_sec"]), 1012 / 250.0, delta=1e-9)
+        self.assertAlmostEqual(float(imagery_segment["end_time_sec"]), 2012 / 250.0, delta=1e-9)
+        self.assertAlmostEqual(float(imagery_segment["duration_sec"]), 4.0, delta=1e-9)
+        self.assertAlmostEqual(float(imagery_segment["board_duration_sec"]), 4.0, delta=1e-6)
 
         loaded = load_custom_task_datasets(self.temp_dir)
         record = loaded["source_records"][0]

@@ -5,7 +5,7 @@
 - Chosen model: `tdca`
 - Decoder variant: `tdca_like_legacy`
 - Profile saved: `True`
-- Profile path: `D:\brain\brain_code\02_SSVEP\artifacts\runs\local\tdca-local-opt\20260415\run_20260415_214933_tdca-local-opt\default_profile.json`
+- Profile path: `<repo>\02_SSVEP\artifacts\runs\local\tdca-local-opt\20260415\run_20260415_214933_tdca-local-opt\default_profile.json`
 - Report status: `ok`
 - Status reasons: `none`
 - Chosen model rationale: `tdca_superior_on_primary_ranking`

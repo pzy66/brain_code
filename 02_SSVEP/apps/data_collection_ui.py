@@ -37,6 +37,7 @@ except Exception:
     QTextToSpeech = None
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
+BRAIN_CODE_ROOT = PROJECT_DIR.parent
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
@@ -68,6 +69,7 @@ from ssvep_core.dataset import (
     CollectionProtocol,
     build_collection_trials,
     save_collection_dataset_bundle,
+    sanitize_collection_token,
 )
 
 try:
@@ -81,6 +83,8 @@ DEFAULT_DATASET_DIR = PROJECT_DIR / "artifacts" / "datasets"
 MIN_TRIAL_QUALITY_RATIO = 0.90
 MAX_TRIAL_RETRIES = 3
 MIN_ACTIVE_SEC_FOR_TRAINING = 1.5
+MIN_PREPARE_SEC_FOR_VOICE = 1.0
+MIN_REST_SEC_BETWEEN_TRIALS = 2.0
 
 ACTIVE_START_TONE_HZ = 1200
 ACTIVE_START_TONE_MS = 120
@@ -98,6 +102,7 @@ TONE_EVENT_ACTIVE_END = "active_end"
 ACTIVE_START_CUE_SEC = float(ACTIVE_START_TONE_MS) / 1000.0
 VOICE_PROMPT_GUARD_SEC = 0.8
 VOICE_PROMPT_FINISH_TIMEOUT_SEC = 5.0
+VOICE_PROMPT_RATE = 0.0
 VOICE_PROMPT_DIRECTIONS_CN = ("看上方", "看左方", "看下方", "看右方")
 STIM_REFRESH_RATE_HZ = 240.0
 STIM_MEAN = 0.5
@@ -110,6 +115,25 @@ STIMULUS_PHASE_APPLY_TIMEOUT_SEC = 1.0
 STIMULUS_BACKEND_PYQT_FULLSCREEN = "pyqt_fullscreen"
 STIMULUS_BACKEND_HEADLESS_NO_VISUAL = "headless_no_visual"
 STIMULUS_BACKENDS = (STIMULUS_BACKEND_PYQT_FULLSCREEN, STIMULUS_BACKEND_HEADLESS_NO_VISUAL)
+
+
+def _path_is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        Path(path).resolve().relative_to(Path(root).resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def resolve_dataset_dir(value: str | Path | None = None) -> Path:
+    raw = "" if value is None else str(value).strip()
+    candidate = Path(raw).expanduser() if raw else DEFAULT_DATASET_DIR
+    if not candidate.is_absolute():
+        candidate = PROJECT_DIR / candidate
+    resolved = candidate.resolve()
+    if not _path_is_relative_to(resolved, BRAIN_CODE_ROOT):
+        raise ValueError(f"SSVEP dataset dir must be inside brain_code: {resolved}")
+    return resolved
 
 
 def wallclock_iso_timestamp() -> str:
@@ -151,10 +175,10 @@ STABLE_12M_PRESET = ProtocolPreset(
 )
 ENHANCED_45M_PRESET = ProtocolPreset(
     key="enhanced_45m",
-    display="增强45分钟 (1+4+1, 目标24 空闲48 切换32)",
+    display="增强长程 (1+4+2, 目标24 空闲48 切换32)",
     prepare_sec=float(ENHANCED_45M_PROTOCOL.prepare_sec),
     active_sec=float(ENHANCED_45M_PROTOCOL.active_sec),
-    rest_sec=float(ENHANCED_45M_PROTOCOL.rest_sec),
+    rest_sec=max(float(MIN_REST_SEC_BETWEEN_TRIALS), float(ENHANCED_45M_PROTOCOL.rest_sec)),
     target_repeats=int(ENHANCED_45M_PROTOCOL.target_repeats),
     idle_repeats=int(ENHANCED_45M_PROTOCOL.idle_repeats),
     switch_trials=int(ENHANCED_45M_PROTOCOL.switch_trials),
@@ -218,11 +242,7 @@ def estimate_round_seconds(
         switch_trials,
         long_idle_sec=0.0,
     )
-    trial_cue_sec = float(
-        ACTIVE_START_CUE_SEC
-        + VOICE_PROMPT_GUARD_SEC
-        + estimate_active_stimulus_arm_sec(refresh_rate_hz)
-    )
+    trial_cue_sec = float(ACTIVE_START_CUE_SEC + estimate_active_stimulus_arm_sec(refresh_rate_hz))
     total_sec = float(base_trial_count) * float(
         max(0.0, prepare_sec) + trial_cue_sec + max(0.0, active_sec) + max(0.0, rest_sec)
     )
@@ -480,7 +500,7 @@ class SpeechPromptPlayer(QObject):
         self._awaiting_completion = False
         if self._engine is not None:
             try:
-                self._engine.setRate(0.08)
+                self._engine.setRate(float(VOICE_PROMPT_RATE))
                 self._engine.setVolume(1.0)
                 self._engine.stateChanged.connect(self._on_state_changed)
             except Exception:
@@ -610,9 +630,19 @@ def _validate_collection_protocol_legacy_unused(*, active_sec: float) -> None:
         )
 
 
-def _validate_collection_protocol(*, active_sec: float, long_idle_sec: float = 0.0) -> None:
+def _validate_collection_protocol(
+    *,
+    active_sec: float,
+    long_idle_sec: float = 0.0,
+    prepare_sec: float = DEFAULT_STABLE_PREPARE_SEC,
+    rest_sec: float = DEFAULT_STABLE_REST_SEC,
+) -> None:
+    if float(prepare_sec) < float(MIN_PREPARE_SEC_FOR_VOICE):
+        raise ValueError(f"prepare_sec must be >= {MIN_PREPARE_SEC_FOR_VOICE:.1f}s")
     if float(active_sec) < float(MIN_ACTIVE_SEC_FOR_TRAINING):
         raise ValueError(f"active_sec must be >= {MIN_ACTIVE_SEC_FOR_TRAINING:.1f}s")
+    if float(rest_sec) < float(MIN_REST_SEC_BETWEEN_TRIALS):
+        raise ValueError(f"rest_sec must be >= {MIN_REST_SEC_BETWEEN_TRIALS:.1f}s")
     if float(long_idle_sec) < 0.0:
         raise ValueError("long_idle_sec must be >= 0")
     if 0.0 < float(long_idle_sec) < float(MIN_ACTIVE_SEC_FOR_TRAINING):
@@ -621,7 +651,7 @@ def _validate_collection_protocol(*, active_sec: float, long_idle_sec: float = 0
 
 def _auto_session_base_id(subject_id: str) -> str:
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    clean_subject = (subject_id or "subject").strip().replace(" ", "_")
+    clean_subject = sanitize_collection_token(subject_id or "subject", default="subject")
     return f"{clean_subject}_collection_{stamp}"
 
 
@@ -630,7 +660,7 @@ def _strip_round_suffix(session_base: str) -> str:
 
 
 def _build_round_session_id(session_base: str, round_index: int) -> str:
-    base = _strip_round_suffix(session_base) or "session"
+    base = sanitize_collection_token(_strip_round_suffix(session_base), default="session")
     return f"{base}_r{int(round_index):02d}"
 
 
@@ -641,7 +671,7 @@ def build_collection_output_session_id(
     dataset_dir: Optional[Path] = None,
     stamp: Optional[str] = None,
 ) -> str:
-    base = str(session_id or "session").strip() or "session"
+    base = sanitize_collection_token(session_id or "session", default="session")
     suffix = str(stamp or datetime.now().strftime("%Y%m%d_%H%M%S")).strip()
     suffix = re.sub(r"[^0-9A-Za-z_-]+", "_", suffix) or datetime.now().strftime("%Y%m%d_%H%M%S")
     candidate = f"{base}_aborted_{suffix}" if bool(collection_aborted) else base
@@ -816,19 +846,27 @@ class CollectionWorker(QObject):
         trial_index: int = 0,
         total_trials: int = 0,
         retry_index: int = 0,
+        timeout_sec: Optional[float] = None,
+        log_timeout: bool = True,
     ) -> float:
         if not bool(self.config.sync_voice_prompt):
             return 0.0
         if int(request_id) <= 0 or self._stop_event.is_set():
             return 0.0
+        timeout = (
+            float(VOICE_PROMPT_FINISH_TIMEOUT_SEC)
+            if timeout_sec is None
+            else max(0.0, float(timeout_sec))
+        )
         start = time.perf_counter()
-        ready = self._voice_prompt_finished_event.wait(float(VOICE_PROMPT_FINISH_TIMEOUT_SEC))
+        ready = self._voice_prompt_finished_event.wait(timeout)
         elapsed = float(max(time.perf_counter() - start, 0.0))
         if not ready and not self._stop_event.is_set():
-            self.log.emit(
-                "警告：未在超时时间内收到语音提示完成确认；"
-                "将先强制停止当前语音，避免与后续提示音重叠。"
-            )
+            if bool(log_timeout):
+                self.log.emit(
+                    "警告：未在超时时间内收到语音提示完成确认；"
+                    "将先强制停止当前语音，避免与后续提示音重叠。"
+                )
             self._emit_voice_prompt(
                 stop=True,
                 trial_index=int(trial_index),
@@ -837,6 +875,56 @@ class CollectionWorker(QObject):
             )
             self._voice_prompt_finished_event.set()
         return elapsed
+
+    def _run_prepare_window(
+        self,
+        *,
+        request_id: int,
+        trial_index: int,
+        total_trials: int,
+        retry_index: int,
+    ) -> bool:
+        prepare_sec = max(0.0, float(self.config.prepare_sec))
+        started = time.perf_counter()
+        voice_wait_sec = 0.0
+        if int(request_id) > 0 and prepare_sec > 0.0:
+            voice_wait_sec = self._wait_for_voice_prompt_finished(
+                int(request_id),
+                trial_index=int(trial_index),
+                total_trials=int(total_trials),
+                retry_index=int(retry_index),
+                timeout_sec=prepare_sec,
+                log_timeout=False,
+            )
+        elif int(request_id) > 0:
+            self._emit_voice_prompt(
+                stop=True,
+                trial_index=int(trial_index),
+                total_trials=int(total_trials),
+                retry_index=int(retry_index),
+            )
+            self._voice_prompt_finished_event.set()
+        elapsed = max(float(voice_wait_sec), max(0.0, time.perf_counter() - started))
+        remaining_sec = max(0.0, prepare_sec - elapsed)
+        prepare_tone_sec = tone_sequence_duration_sec(TONE_EVENT_PREPARE_START)
+        if prepare_sec > 0.0 and remaining_sec >= prepare_tone_sec:
+            tone_payload = self._emit_tone(
+                event=TONE_EVENT_PREPARE_START,
+                trial_index=int(trial_index),
+                total_trials=int(total_trials),
+                retry_index=int(retry_index),
+            )
+            play_collection_tone_event(tone_payload)
+            elapsed = max(float(voice_wait_sec), max(0.0, time.perf_counter() - started))
+        if self._sleep_interruptible(max(0.0, prepare_sec - elapsed)):
+            return True
+        self._emit_voice_prompt(
+            stop=True,
+            trial_index=int(trial_index),
+            total_trials=int(total_trials),
+            retry_index=int(retry_index),
+        )
+        return False
 
     def _emit_tone(self, *, event: str, trial_index: int, total_trials: int, retry_index: int) -> dict[str, Any]:
         payload = {
@@ -908,6 +996,7 @@ class CollectionWorker(QObject):
         total_trials: int,
         saved_trial_count: int,
         failure_reason: str = "",
+        continuous_board_error: str = "",
     ) -> dict[str, Any]:
         protocol_config = {
             "collection_aborted": bool(collection_aborted),
@@ -930,6 +1019,9 @@ class CollectionWorker(QObject):
             "preset_name": str(self.config.protocol_name),
             "estimated_round_sec": float(self.config.estimated_round_sec),
             "voice_prompt_guard_sec": float(VOICE_PROMPT_GUARD_SEC),
+            "voice_prompt_timing_policy": "voice_then_prepare_tone_inside_prepare_window_stop_before_active",
+            "voice_prompt_extra_wait_sec": 0.0,
+            "voice_prompt_finish_timeout_sec": float(VOICE_PROMPT_FINISH_TIMEOUT_SEC),
             "active_start_cue_sec": float(ACTIVE_START_CUE_SEC),
             "active_start_buffer_clear_timing": "before_start_cue",
             "active_saved_window": "last_active_sec_after_start_cue",
@@ -958,6 +1050,8 @@ class CollectionWorker(QObject):
             protocol_config["aborted_reason"] = "runtime_failure" if str(failure_reason).strip() else "user_stop"
         if str(failure_reason or "").strip():
             protocol_config["failure_reason"] = str(failure_reason)
+        if str(continuous_board_error or "").strip():
+            protocol_config["continuous_board_error"] = str(continuous_board_error)
         return protocol_config
 
     def _save_collected_dataset(
@@ -972,6 +1066,7 @@ class CollectionWorker(QObject):
         collection_aborted: bool,
         failure_reason: str = "",
         continuous_board_data: Optional[np.ndarray] = None,
+        continuous_board_error: str = "",
     ) -> dict[str, Any]:
         output_session_id = build_collection_output_session_id(
             self.config.session_id,
@@ -984,6 +1079,7 @@ class CollectionWorker(QObject):
             total_trials=total_trials,
             saved_trial_count=len(trial_segments),
             failure_reason=failure_reason,
+            continuous_board_error=continuous_board_error,
         )
         return save_collection_dataset_bundle(
             dataset_root=self.config.dataset_dir,
@@ -999,6 +1095,32 @@ class CollectionWorker(QObject):
             quality_rows=quality_rows,
             continuous_board_data=continuous_board_data,
             continuous_board_info=self._continuous_board_info(continuous_board_data),
+        )
+
+    def _save_raw_board_fallback(
+        self,
+        *,
+        active_serial: str,
+        sampling_rate: int,
+        eeg_channels: Sequence[int],
+        total_trials: int,
+        raw_board_chunks: Sequence[np.ndarray],
+        failure_reason: str,
+    ) -> Optional[dict[str, Any]]:
+        continuous_board_data, continuous_board_error = self._try_concat_board_data_chunks(raw_board_chunks)
+        if continuous_board_data is None:
+            return None
+        return self._save_collected_dataset(
+            active_serial=active_serial,
+            sampling_rate=int(sampling_rate),
+            eeg_channels=eeg_channels,
+            total_trials=int(total_trials),
+            trial_segments=[],
+            quality_rows=[],
+            collection_aborted=True,
+            failure_reason=failure_reason,
+            continuous_board_data=continuous_board_data,
+            continuous_board_error=continuous_board_error,
         )
 
     def _build_trial_plan(self) -> list[Any]:
@@ -1050,6 +1172,13 @@ class CollectionWorker(QObject):
         if not compatible:
             return None
         return np.ascontiguousarray(np.concatenate(compatible, axis=1), dtype=np.float64)
+
+    @classmethod
+    def _try_concat_board_data_chunks(cls, chunks: Sequence[np.ndarray]) -> tuple[Optional[np.ndarray], str]:
+        try:
+            return cls._concat_board_data_chunks(chunks), ""
+        except Exception as error:
+            return None, str(error)
 
     def _continuous_board_info(self, continuous_board_data: Optional[np.ndarray]) -> dict[str, Any]:
         if continuous_board_data is None:
@@ -1106,33 +1235,13 @@ class CollectionWorker(QObject):
                 total_trials=total,
                 retry_index=0,
             )
-            voice_wait_sec = self._wait_for_voice_prompt_finished(
-                request_id,
+            if self._run_prepare_window(
+                request_id=request_id,
                 trial_index=index,
                 total_trials=total,
                 retry_index=0,
-            )
-            remaining_voice_guard_sec = max(float(VOICE_PROMPT_GUARD_SEC) - float(voice_wait_sec), 0.0)
-            if self._sleep_interruptible(remaining_voice_guard_sec):
+            ):
                 break
-            prepare_sec = max(0.0, float(self.config.prepare_sec))
-            if prepare_sec > 0.0:
-                tone_payload = self._emit_tone(
-                    event=TONE_EVENT_PREPARE_START,
-                    trial_index=index,
-                    total_trials=total,
-                    retry_index=0,
-                )
-                play_collection_tone_event(tone_payload)
-            if self._sleep_interruptible(prepare_sec):
-                break
-
-            self._emit_voice_prompt(
-                stop=True,
-                trial_index=index,
-                total_trials=total,
-                retry_index=0,
-            )
             self._clear_stimulus_phase_ack()
             self._emit_phase(PHASE_CAL_ACTIVE, "采样即将开始", prompt_base, flicker=True, cue_freq=cue_freq)
             self._wait_for_stimulus_phase_applied()
@@ -1227,17 +1336,36 @@ class CollectionWorker(QObject):
                 f"轮次={self.config.round_index}/{self.config.rounds_planned}"
             )
             if self._sleep_interruptible(max(2.0, DEFAULT_STREAM_WARMUP_SEC)):
-                self._emit_phase(PHASE_STOPPED, "采集已停止", "尚未进入 Trial，未保存数据。", flicker=False, cue_freq=None)
+                metadata = None
+                try:
+                    self._drain_board_data(board, raw_board_chunks)
+                    metadata = self._save_raw_board_fallback(
+                        active_serial=active_serial,
+                        sampling_rate=fs,
+                        eeg_channels=eeg_channels,
+                        total_trials=0,
+                        raw_board_chunks=raw_board_chunks,
+                        failure_reason="user_stop_during_warmup",
+                    )
+                except Exception as save_exc:
+                    self.error.emit(
+                        "预热阶段停止后原始板卡数据保存失败："
+                        f"{describe_runtime_error(save_exc, serial_port=active_serial)}"
+                    )
+                stopped_detail = (
+                    "尚未进入 Trial，但已保存原始板卡数据。"
+                    if metadata
+                    else "尚未进入 Trial，未保存数据。"
+                )
+                self._emit_phase(PHASE_STOPPED, "采集已停止", stopped_detail, flicker=False, cue_freq=None)
                 self.done.emit(
-                    {
-                        "collection_aborted": True,
-                        "collected_trials": 0,
-                        "total_trials": 0,
-                        "round_index": int(self.config.round_index),
-                        "rounds_planned": int(self.config.rounds_planned),
-                        "dataset_manifest": "",
-                        "dataset_npz": "",
-                    }
+                    self._build_done_payload(
+                        collection_aborted=True,
+                        collected_trials=0,
+                        total_trials=0,
+                        metadata=metadata,
+                        failure_reason="user_stop_during_warmup",
+                    )
                 )
                 return
             self._drain_board_data(board, raw_board_chunks)
@@ -1301,33 +1429,13 @@ class CollectionWorker(QObject):
                         total_trials=total,
                         retry_index=retry_count,
                     )
-                    voice_wait_sec = self._wait_for_voice_prompt_finished(
-                        request_id,
+                    if self._run_prepare_window(
+                        request_id=request_id,
                         trial_index=index,
                         total_trials=total,
                         retry_index=retry_count,
-                    )
-                    remaining_voice_guard_sec = max(float(VOICE_PROMPT_GUARD_SEC) - float(voice_wait_sec), 0.0)
-                    if self._sleep_interruptible(remaining_voice_guard_sec):
+                    ):
                         break
-                    prepare_sec = max(0.0, float(self.config.prepare_sec))
-                    if prepare_sec > 0.0:
-                        tone_payload = self._emit_tone(
-                            event=TONE_EVENT_PREPARE_START,
-                            trial_index=index,
-                            total_trials=total,
-                            retry_index=retry_count,
-                        )
-                        play_collection_tone_event(tone_payload)
-                    if self._sleep_interruptible(prepare_sec):
-                        break
-
-                    self._emit_voice_prompt(
-                        stop=True,
-                        trial_index=index,
-                        total_trials=total,
-                        retry_index=retry_count,
-                    )
                     self._clear_stimulus_phase_ack()
                     stimulus_phase_apply_requested_at = wallclock_iso_timestamp()
                     stimulus_phase_apply_perf = time.perf_counter()
@@ -1482,14 +1590,64 @@ class CollectionWorker(QObject):
 
             collection_aborted = bool(self._stop_event.is_set() and len(collected) < len(trials))
             if not collected:
+                if board is not None:
+                    try:
+                        self._drain_board_data(board, raw_board_chunks)
+                    except Exception:
+                        pass
+                metadata = None
+                if int(fs) > 0 and eeg_channels:
+                    fallback_reason = "user_stop_before_valid_trial" if collection_aborted else "no_valid_trial"
+                    try:
+                        metadata = self._save_raw_board_fallback(
+                            active_serial=active_serial,
+                            sampling_rate=fs,
+                            eeg_channels=eeg_channels,
+                            total_trials=total,
+                            raw_board_chunks=raw_board_chunks,
+                            failure_reason=fallback_reason,
+                        )
+                    except Exception as save_exc:
+                        self.error.emit(
+                            "未采到有效 Trial，且原始板卡数据保存失败："
+                            f"{describe_runtime_error(save_exc, serial_port=active_serial)}"
+                        )
                 if collection_aborted:
-                    self._emit_phase(PHASE_STOPPED, "采集已停止", "未采到有效 Trial，未保存数据。", flicker=False, cue_freq=None)
+                    saved_message = (
+                        "未采到有效 Trial，但已保存原始板卡数据。"
+                        if metadata
+                        else "未采到有效 Trial，未保存数据。"
+                    )
+                    self._emit_phase(PHASE_STOPPED, "采集已停止", saved_message, flicker=False, cue_freq=None)
                     self.done.emit(
                         self._build_done_payload(
                             collection_aborted=True,
                             collected_trials=0,
                             total_trials=len(trials),
+                            metadata=metadata,
                         )
+                    )
+                    return
+                if metadata:
+                    self._emit_phase(
+                        PHASE_STOPPED,
+                        "采集已停止",
+                        "未采到有效 Trial，但已保存原始板卡数据。",
+                        flicker=False,
+                        cue_freq=None,
+                    )
+                    self.done.emit(
+                        self._build_done_payload(
+                            collection_aborted=True,
+                            collected_trials=0,
+                            total_trials=len(trials),
+                            metadata=metadata,
+                            failure_reason="no_valid_trial",
+                        )
+                    )
+                    self.error.emit(
+                        "没有采集到任何有效 Trial，但已保存原始板卡数据："
+                        f"manifest={metadata.get('dataset_manifest', '')}"
                     )
                     return
                 raise RuntimeError("没有采集到任何 Trial")
@@ -1498,7 +1656,7 @@ class CollectionWorker(QObject):
                     self._drain_board_data(board, raw_board_chunks)
                 except Exception:
                     pass
-            continuous_board_data = self._concat_board_data_chunks(raw_board_chunks)
+            continuous_board_data, continuous_board_error = self._try_concat_board_data_chunks(raw_board_chunks)
             metadata = self._save_collected_dataset(
                 active_serial=active_serial,
                 sampling_rate=fs,
@@ -1508,6 +1666,7 @@ class CollectionWorker(QObject):
                 quality_rows=quality_rows,
                 collection_aborted=collection_aborted,
                 continuous_board_data=continuous_board_data,
+                continuous_board_error=continuous_board_error,
             )
             self._emit_phase(
                 PHASE_STOPPED,
@@ -1526,43 +1685,57 @@ class CollectionWorker(QObject):
             )
         except Exception as exc:
             failure_reason = str(exc)
-            if collected and int(fs) > 0 and eeg_channels:
+            if int(fs) > 0 and eeg_channels:
                 try:
                     if board is not None:
                         try:
                             self._drain_board_data(board, raw_board_chunks)
                         except Exception:
                             pass
-                    continuous_board_data = self._concat_board_data_chunks(raw_board_chunks)
-                    metadata = self._save_collected_dataset(
-                        active_serial=active_serial,
-                        sampling_rate=fs,
-                        eeg_channels=eeg_channels,
-                        total_trials=max(int(total), len(trials)),
-                        trial_segments=collected,
-                        quality_rows=quality_rows,
-                        collection_aborted=True,
-                        failure_reason=failure_reason,
-                        continuous_board_data=continuous_board_data,
-                    )
+                    if collected:
+                        continuous_board_data, continuous_board_error = self._try_concat_board_data_chunks(raw_board_chunks)
+                        metadata = self._save_collected_dataset(
+                            active_serial=active_serial,
+                            sampling_rate=fs,
+                            eeg_channels=eeg_channels,
+                            total_trials=max(int(total), len(trials)),
+                            trial_segments=collected,
+                            quality_rows=quality_rows,
+                            collection_aborted=True,
+                            failure_reason=failure_reason,
+                            continuous_board_data=continuous_board_data,
+                            continuous_board_error=continuous_board_error,
+                        )
+                    else:
+                        metadata = self._save_raw_board_fallback(
+                            active_serial=active_serial,
+                            sampling_rate=fs,
+                            eeg_channels=eeg_channels,
+                            total_trials=max(int(total), len(trials)),
+                            raw_board_chunks=raw_board_chunks,
+                            failure_reason=failure_reason,
+                        )
+                        if metadata is None:
+                            raise RuntimeError("没有可保存的原始板卡数据")
                 except Exception as save_exc:
                     self.error.emit(
-                        "采集失败，且部分数据保存失败："
+                        "采集失败，且兜底数据保存失败："
                         f"{describe_runtime_error(exc, serial_port=active_serial)}；"
                         f"save_error={describe_runtime_error(save_exc, serial_port=active_serial)}"
                     )
                     self._emit_phase(
                         PHASE_ERROR,
                         "采集错误",
-                        f"{exc}；部分数据保存失败：{save_exc}",
+                        f"{exc}；兜底数据保存失败：{save_exc}",
                         flicker=False,
                         cue_freq=None,
                     )
                     return
+                saved_detail = "部分数据" if collected else "原始板卡数据"
                 self._emit_phase(
                     PHASE_STOPPED,
                     "采集已停止",
-                    "采集中途失败，但已保存部分数据，本轮未计为完成。",
+                    f"采集中途失败，但已保存{saved_detail}，本轮未计为完成。",
                     flicker=False,
                     cue_freq=None,
                 )
@@ -1576,7 +1749,7 @@ class CollectionWorker(QObject):
                     )
                 )
                 self.error.emit(
-                    "采集失败，但已保存部分数据："
+                    f"采集失败，但已保存{saved_detail}："
                     f"{describe_runtime_error(exc, serial_port=active_serial)}；"
                     f"manifest={metadata.get('dataset_manifest', '')}；"
                     f"npz={metadata.get('dataset_npz', '')}"
@@ -1670,6 +1843,7 @@ class DatasetCollectionWindow(QMainWindow):
         self.completed_rounds_value = QLabel("0")
         self.session_base_edit = QLineEdit("")
         self.dataset_dir_edit = QLineEdit(str(DEFAULT_DATASET_DIR))
+        self._set_dataset_dir_text(DEFAULT_DATASET_DIR)
         self.preset_combo = QComboBox()
         for preset in (STABLE_12M_PRESET, ENHANCED_45M_PRESET, CUSTOM_PRESET):
             self.preset_combo.addItem(preset.display, preset.key)
@@ -1687,7 +1861,7 @@ class DatasetCollectionWindow(QMainWindow):
         self.stim_refresh_rate_spin.setSpecialValueText("Auto")
         self.stim_refresh_rate_spin.setValue(0.0)
         self.prepare_spin = QDoubleSpinBox()
-        self.prepare_spin.setRange(0.0, 20.0)
+        self.prepare_spin.setRange(MIN_PREPARE_SEC_FOR_VOICE, 20.0)
         self.prepare_spin.setDecimals(1)
         self.prepare_spin.setSingleStep(0.5)
         self.active_spin = QDoubleSpinBox()
@@ -1695,7 +1869,7 @@ class DatasetCollectionWindow(QMainWindow):
         self.active_spin.setDecimals(1)
         self.active_spin.setSingleStep(0.5)
         self.rest_spin = QDoubleSpinBox()
-        self.rest_spin.setRange(0.0, 20.0)
+        self.rest_spin.setRange(MIN_REST_SEC_BETWEEN_TRIALS, 20.0)
         self.rest_spin.setDecimals(1)
         self.rest_spin.setSingleStep(0.5)
         self.long_idle_spin = QDoubleSpinBox()
@@ -1824,10 +1998,16 @@ class DatasetCollectionWindow(QMainWindow):
         for widget in self.config_widgets:
             widget.setEnabled(not running)
 
+    def _set_dataset_dir_text(self, value: str | Path) -> None:
+        text = str(value)
+        self.dataset_dir_edit.setText(text)
+        self.dataset_dir_edit.setToolTip(text)
+        self.dataset_dir_edit.setCursorPosition(0)
+
     def _pick_dataset_dir(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "选择数据集目录", self.dataset_dir_edit.text().strip())
         if path:
-            self.dataset_dir_edit.setText(path)
+            self._set_dataset_dir_text(path)
 
     def _on_session_base_source_changed(self, _value: str) -> None:
         if self.worker_thread is not None:
@@ -2017,22 +2197,27 @@ class DatasetCollectionWindow(QMainWindow):
         serial_port = normalize_serial_port(self.serial_edit.text().strip())
         board_id = int(self.board_edit.text().strip())
         freqs = parse_freqs(self.freqs_edit.text().strip())
-        subject_id = self.subject_edit.text().strip() or "subject001"
+        subject_id = sanitize_collection_token(self.subject_edit.text().strip() or "subject001", default="subject001")
         simulation_only = bool(self.simulation_only_check.isChecked())
         rounds_planned = int(self.rounds_planned_spin.value())
         round_index = int(round_index_override) if round_index_override is not None else int(self.session_index_spin.value())
         session_base = self._resolve_session_base(subject_id)
         session_id = _build_round_session_id(session_base, round_index)
-        dataset_dir = Path(self.dataset_dir_edit.text().strip()).expanduser().resolve()
+        dataset_dir = resolve_dataset_dir(self.dataset_dir_edit.text().strip())
         protocol_name = self._current_preset_name()
         stimulus_mode = self._current_stimulus_mode()
         prepare_sec = float(self.prepare_spin.value())
         active_sec = float(self.active_spin.value())
         long_idle_sec = float(self.long_idle_spin.value())
-        _validate_collection_protocol(active_sec=active_sec, long_idle_sec=long_idle_sec)
+        rest_sec = float(self.rest_spin.value())
+        _validate_collection_protocol(
+            prepare_sec=prepare_sec,
+            active_sec=active_sec,
+            rest_sec=rest_sec,
+            long_idle_sec=long_idle_sec,
+        )
         stim_refresh_rate_hz = self._resolve_stim_refresh_rate_hz()
         validate_stimulus_frequency_set(freqs, refresh_rate_hz=stim_refresh_rate_hz)
-        rest_sec = float(self.rest_spin.value())
         target_repeats = int(self.target_spin.value())
         idle_repeats = int(self.idle_spin.value())
         switch_trials = int(self.switch_spin.value())
@@ -2270,10 +2455,11 @@ class DatasetCollectionWindow(QMainWindow):
             manifest = str(payload.get("dataset_manifest", "") or "")
             npz_path = str(payload.get("dataset_npz", "") or "")
             if manifest:
+                saved_label = "原始板卡数据" if collected <= 0 else "部分数据"
                 self._log(
                     f"第 {payload.get('round_index', self._round_index_for_next_run())}/"
                     f"{payload.get('rounds_planned', self.rounds_planned_spin.value())} 轮已停止："
-                    f"已保存部分数据 {collected}/{total}，manifest={manifest}，npz={npz_path}；"
+                    f"已保存{saved_label} {collected}/{total}，manifest={manifest}，npz={npz_path}；"
                     "本轮未计入完成轮次。"
                 )
             else:
@@ -2300,16 +2486,17 @@ class DatasetCollectionWindow(QMainWindow):
         self._set_running(False)
 
     def closeEvent(self, event) -> None:
-        if self.worker is not None:
-            self.worker.request_stop()
+        if self.worker_thread is not None:
+            self._stop_collection()
+            self._log("正在停止采集并保存数据，请等待完成后再关闭窗口。")
+            event.ignore()
+            return
+        if self.connect_thread is not None:
+            self._log("正在连接设备，请等待连接结束后再关闭窗口。")
+            event.ignore()
+            return
         self.speech_prompt_player.stop()
         self._close_fullscreen_stimulus()
-        if self.worker_thread is not None:
-            self.worker_thread.quit()
-            self.worker_thread.wait(3000)
-        if self.connect_thread is not None:
-            self.connect_thread.quit()
-            self.connect_thread.wait(3000)
         try:
             self.stim.stop_clock()
         except Exception:
@@ -2437,7 +2624,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         idle_repeats=int(args.idle_repeats),
         switch_trials=int(args.switch_trials),
     )
-    subject_id = str(args.subject_id).strip() or "subject001"
+    subject_id = sanitize_collection_token(str(args.subject_id).strip() or "subject001", default="subject001")
     round_index = int(args.round_index) if int(args.round_index) > 0 else int(args.session_index)
     session_base = _strip_round_suffix(str(args.session_id).strip()) or _auto_session_base_id(subject_id)
     session_id = _build_round_session_id(session_base, round_index)
@@ -2451,7 +2638,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         long_idle_sec=long_idle_sec,
         refresh_rate_hz=stim_refresh_rate_hz,
     )
-    _validate_collection_protocol(active_sec=active_sec, long_idle_sec=long_idle_sec)
+    _validate_collection_protocol(
+        prepare_sec=prepare_sec,
+        active_sec=active_sec,
+        rest_sec=rest_sec,
+        long_idle_sec=long_idle_sec,
+    )
     config = CollectionConfig(
         serial_port=normalize_serial_port(args.serial_port),
         board_id=int(args.board_id),
@@ -2459,7 +2651,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         subject_id=subject_id,
         session_id=session_id,
         session_index=round_index,
-        dataset_dir=Path(args.dataset_dir).expanduser().resolve(),
+        dataset_dir=resolve_dataset_dir(args.dataset_dir),
         protocol_name=protocol_name,
         prepare_sec=prepare_sec,
         active_sec=active_sec,
@@ -2506,7 +2698,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         simulation_only_default=config.simulation_only,
     )
     window.stim_refresh_rate_spin.setValue(float(config.stim_refresh_rate_hz) if refresh_rate_is_manual else 0.0)
-    window.dataset_dir_edit.setText(str(config.dataset_dir))
+    window._set_dataset_dir_text(config.dataset_dir)
     window.subject_edit.setText(config.subject_id)
     window.session_index_spin.setValue(config.session_index)
     window.rounds_planned_spin.setValue(config.rounds_planned)

@@ -174,3 +174,28 @@ def test_runtime_uses_default_profile_when_available_and_no_current_or_latest(tm
 
     assert source == "default"
     assert active_path == default_path.resolve()
+
+
+def test_runtime_config_change_marks_device_disconnected(tmp_path: Path) -> None:
+    profile_dir = tmp_path / "dataset" / "ssvep_profiles"
+    current_path = profile_dir / "current_fbcca_profile.json"
+    config = AppConfig(
+        ssvep_profile_dir=profile_dir,
+        ssvep_current_profile_path=current_path,
+        ssvep_default_profile_path=profile_dir / "default_fbcca_profile.json",
+    )
+    states: list[dict[str, object]] = []
+    runtime = SSVEPRuntime(
+        config,
+        command_callback=lambda command: None,
+        status_callback=lambda message: None,
+        state_callback=states.append,
+    )
+    runtime.connected = True
+    runtime.device_info = {"serial_port": "COM3"}
+
+    runtime.set_runtime_config(serial_port="COM9", board_id=1)
+
+    assert runtime.connected is False
+    assert runtime.device_info == {}
+    assert states[-1]["connected"] is False

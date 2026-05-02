@@ -78,7 +78,15 @@ class SSVEPRuntime:
         self._emit_state()
 
     def set_runtime_config(self, **kwargs: Any) -> None:
+        reconnect_keys = {"serial_port", "board_id"}
+        requires_reconnect = any(
+            key in kwargs and kwargs[key] != self._runtime_config.get(key)
+            for key in reconnect_keys
+        )
         self._runtime_config.update(kwargs)
+        if requires_reconnect:
+            self.connected = False
+            self.device_info = {}
         if "profile_dir" in kwargs or "current_profile_path" in kwargs or "default_profile_path" in kwargs:
             self._ensure_profile_dir()
         self._emit_state()

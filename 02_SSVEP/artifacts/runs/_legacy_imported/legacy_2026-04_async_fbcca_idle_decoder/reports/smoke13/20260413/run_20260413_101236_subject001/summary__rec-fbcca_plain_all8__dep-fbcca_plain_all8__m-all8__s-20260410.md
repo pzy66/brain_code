@@ -9,7 +9,7 @@
 - 是否达到验收阈值：`否`
 - 默认实时profile是否覆盖：`否`
 - 最佳候选profile：`None`
-- 最佳加权FBCCA profile：`C:\Users\P1233\Desktop\brain\brain_code\02_SSVEP\2026-04_async_fbcca_idle_decoder\profiles\reports\smoke13\20260413\run_20260413_101236_subject001\summary__rec-fbcca_plain_all8__dep-fbcca_plain_all8__m-all8__s-20260410__profile.json`
+- 最佳加权FBCCA profile：`<repo>\02_SSVEP\2026-04_async_fbcca_idle_decoder\profiles\reports\smoke13\20260413\run_20260413_101236_subject001\summary__rec-fbcca_plain_all8__dep-fbcca_plain_all8__m-all8__s-20260410__profile.json`
 
 ## 权重定义
 
@@ -20,7 +20,7 @@
 
 ## 数据质量与协议一致性
 
-- Session1：`C:\Users\P1233\Desktop\brain\brain_code\02_SSVEP\2026-04_async_fbcca_idle_decoder\profiles\datasets\subject001_collection_20260411_220406_r01\session_manifest.json`
+- Session1：`<repo>\02_SSVEP\2026-04_async_fbcca_idle_decoder\profiles\datasets\subject001_collection_20260411_220406_r01\session_manifest.json`
 - Session2：`None`
 - 保留trial：`0` / `0`
 - 最小样本比例：`0.900`
@@ -72,7 +72,7 @@
 
 ## 图表文件
 
-- 四分类混淆矩阵：`C:\Users\P1233\Desktop\brain\brain_code\02_SSVEP\2026-04_async_fbcca_idle_decoder\profiles\reports\smoke13\20260413\run_20260413_101236_subject001\figures\confusion_4class.png`
-- 二分类混淆矩阵：`C:\Users\P1233\Desktop\brain\brain_code\02_SSVEP\2026-04_async_fbcca_idle_decoder\profiles\reports\smoke13\20260413\run_20260413_101236_subject001\figures\confusion_2class.png`
-- 决策时间直方图：`C:\Users\P1233\Desktop\brain\brain_code\02_SSVEP\2026-04_async_fbcca_idle_decoder\profiles\reports\smoke13\20260413\run_20260413_101236_subject001\figures\decision_time_hist.png`
-- 模型雷达图：`C:\Users\P1233\Desktop\brain\brain_code\02_SSVEP\2026-04_async_fbcca_idle_decoder\profiles\reports\smoke13\20260413\run_20260413_101236_subject001\figures\model_radar_async_vs_cls.png`
+- 四分类混淆矩阵：`<repo>\02_SSVEP\2026-04_async_fbcca_idle_decoder\profiles\reports\smoke13\20260413\run_20260413_101236_subject001\figures\confusion_4class.png`
+- 二分类混淆矩阵：`<repo>\02_SSVEP\2026-04_async_fbcca_idle_decoder\profiles\reports\smoke13\20260413\run_20260413_101236_subject001\figures\confusion_2class.png`
+- 决策时间直方图：`<repo>\02_SSVEP\2026-04_async_fbcca_idle_decoder\profiles\reports\smoke13\20260413\run_20260413_101236_subject001\figures\decision_time_hist.png`
+- 模型雷达图：`<repo>\02_SSVEP\2026-04_async_fbcca_idle_decoder\profiles\reports\smoke13\20260413\run_20260413_101236_subject001\figures\model_radar_async_vs_cls.png`

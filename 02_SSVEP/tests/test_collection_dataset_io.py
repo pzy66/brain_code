@@ -15,6 +15,7 @@ if str(PROJECT_DIR) not in sys.path:
 from ssvep_core.async_fbcca_idle_standalone import TrialSpec
 from apps.async_fbcca_validation_ui import STIMULUS_MODE_FRAME_LOCKED_SINE
 from apps.data_collection_ui import STIMULUS_BACKEND_PYQT_FULLSCREEN
+import ssvep_core.dataset as dataset_module
 from ssvep_core.dataset import load_collection_dataset, save_collection_dataset_bundle
 
 
@@ -202,6 +203,89 @@ def test_collection_dataset_bundle_infers_heterogeneous_trial_metadata_without_q
         assert abs(float(trial_rows[0].get("active_sec", 0.0)) - 1.5) < 1e-9
         assert abs(float(trial_rows[1].get("active_sec", 0.0)) - (512.0 / 250.0)) < 1e-9
         assert abs(float(trial_rows[2].get("active_sec", 0.0)) - 6.0) < 1e-9
+    finally:
+        shutil.rmtree(case_dir, ignore_errors=True)
+
+
+def test_collection_dataset_bundle_sanitizes_session_directory() -> None:
+    artifacts = PROJECT_DIR / ".tmp_test_artifacts" / "datasets_test_artifacts"
+    artifacts.mkdir(parents=True, exist_ok=True)
+    case_dir = artifacts / "collection_session_sanitize_case"
+    case_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        payload = save_collection_dataset_bundle(
+            dataset_root=case_dir,
+            session_id=r"..\outside/session:bad",
+            subject_id=r"subject/name:bad",
+            serial_port="COM4",
+            board_id=0,
+            sampling_rate=250,
+            freqs=(8.0, 10.0, 12.0, 15.0),
+            board_eeg_channels=(0, 1, 2, 3),
+            protocol_config={"protocol_name": "custom", "active_sec": 1.5},
+            trial_segments=[
+                (TrialSpec(label="8Hz", expected_freq=8.0, trial_id=0, block_index=0), _mock_segment(375, 4, 31)),
+            ],
+        )
+
+        manifest_path = Path(payload["dataset_manifest"]).resolve()
+        manifest_path.relative_to(case_dir.resolve())
+        assert manifest_path.parent.name == "outside_session_bad"
+
+        loaded = load_collection_dataset(manifest_path)
+        assert loaded.session_id == "outside_session_bad"
+        assert loaded.subject_id == "subject_name_bad"
+        protocol_config = dict(loaded.manifest.get("protocol_config", {}))
+        assert protocol_config["requested_session_id"] == r"..\outside/session:bad"
+        assert protocol_config["saved_session_id"] == "outside_session_bad"
+        assert protocol_config["requested_subject_id"] == r"subject/name:bad"
+        assert protocol_config["saved_subject_id"] == "subject_name_bad"
+        assert not (case_dir.parent / "outside" / "session:bad").exists()
+    finally:
+        shutil.rmtree(case_dir, ignore_errors=True)
+
+
+def test_collection_dataset_bundle_falls_back_when_continuous_npz_save_fails(monkeypatch) -> None:
+    artifacts = PROJECT_DIR / ".tmp_test_artifacts" / "datasets_test_artifacts"
+    artifacts.mkdir(parents=True, exist_ok=True)
+    case_dir = artifacts / "collection_continuous_fallback_case"
+    case_dir.mkdir(parents=True, exist_ok=True)
+    original_save_npz = dataset_module._atomic_save_npz
+
+    def flaky_save_npz(path: Path, arrays: dict[str, np.ndarray]) -> None:
+        if Path(path).name == "continuous_board.npz":
+            raise OSError("simulated continuous npz failure")
+        original_save_npz(path, arrays)
+
+    monkeypatch.setattr(dataset_module, "_atomic_save_npz", flaky_save_npz)
+    try:
+        payload = save_collection_dataset_bundle(
+            dataset_root=case_dir,
+            session_id="fallback_session",
+            subject_id="subject001",
+            serial_port="COM4",
+            board_id=0,
+            sampling_rate=250,
+            freqs=(8.0, 10.0, 12.0, 15.0),
+            board_eeg_channels=(0, 1, 2, 3),
+            protocol_config={"protocol_name": "custom", "active_sec": 1.5},
+            trial_segments=[
+                (TrialSpec(label="8Hz", expected_freq=8.0, trial_id=0, block_index=0), _mock_segment(375, 4, 41)),
+            ],
+            continuous_board_data=_mock_segment(750, 6, 42).T,
+        )
+
+        manifest_path = Path(payload["dataset_manifest"])
+        assert manifest_path.exists()
+        assert Path(payload["dataset_npz"]).exists()
+        assert Path(payload["dataset_continuous_board_npy"]).exists()
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        assert manifest["continuous_board"]["saved"] is True
+        assert manifest["continuous_board"]["format"] == "npy"
+        assert "simulated continuous npz failure" in manifest["continuous_board"]["compressed_npz_save_error"]
+        loaded = load_collection_dataset(manifest_path)
+        assert loaded.session_id == "fallback_session"
+        assert len(loaded.trial_segments) == 1
     finally:
         shutil.rmtree(case_dir, ignore_errors=True)
 

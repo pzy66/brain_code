@@ -4,7 +4,7 @@
 
 程序入口文件：
 
-- `C:\Users\P1233\Desktop\brain\brain_code\06_Data_Collection\2026-04_jetmax_block_dataset_collection\block_dataset_collector.py`
+- `<repo>\06_Data_Collection\2026-04_jetmax_block_dataset_collection\block_dataset_collector.py`
 
 默认相机源：
 
@@ -12,7 +12,7 @@
 
 默认保存根目录：
 
-- `C:\Users\P1233\Desktop\brain\dataset\camara\captures`
+- `<workspace>\dataset\camara\captures`
 
 ## 这个程序能做什么
 
@@ -30,7 +30,7 @@
 最方便的方式：
 
 - 双击运行：
-  - `C:\Users\P1233\Desktop\brain\brain_code\06_Data_Collection\2026-04_jetmax_block_dataset_collection\START_BLOCK_DATASET_COLLECTOR.cmd`
+  - `<repo>\06_Data_Collection\2026-04_jetmax_block_dataset_collection\START_BLOCK_DATASET_COLLECTOR.cmd`
 - 或者在 PyCharm 里直接选择运行配置：
   - `Block_Dataset_Collector`
 
@@ -39,8 +39,8 @@
 在 PowerShell 中运行：
 
 ```powershell
-& "C:\Users\P1233\miniconda3\envs\brain-vision\python.exe" `
-  "C:\Users\P1233\Desktop\brain\brain_code\06_Data_Collection\2026-04_jetmax_block_dataset_collection\block_dataset_collector.py"
+& "%BRAIN_PYTHON_EXE%" `
+  "<repo>\06_Data_Collection\2026-04_jetmax_block_dataset_collection\block_dataset_collector.py"
 ```
 
 ### 方式 2：PyCharm 启动
@@ -52,11 +52,11 @@
 如果需要手动创建，配置如下：
 
 - `Script path`
-  - `C:\Users\P1233\Desktop\brain\brain_code\06_Data_Collection\2026-04_jetmax_block_dataset_collection\block_dataset_collector.py`
+  - `<repo>\06_Data_Collection\2026-04_jetmax_block_dataset_collection\block_dataset_collector.py`
 - `Python interpreter`
-  - `C:\Users\P1233\miniconda3\envs\brain-vision\python.exe`
+  - `%BRAIN_PYTHON_EXE%`
 - `Working directory`
-  - `C:\Users\P1233\Desktop\brain`
+  - `<workspace>`
 
 默认情况下不需要额外参数，直接运行即可连接 JetMax 相机流。
 
@@ -64,12 +64,12 @@
 
 默认所有采集数据都会保存到：
 
-`C:\Users\P1233\Desktop\brain\dataset\camara\captures`
+`<workspace>\dataset\camara\captures`
 
 每次创建新 session 后，会生成一个独立目录，例如：
 
 ```text
-C:\Users\P1233\Desktop\brain\dataset\camara\captures\
+<workspace>\dataset\camara\captures\
   block_collect_20260407_163955\
     session_meta.json
     manifest.jsonl
@@ -174,10 +174,10 @@ C:\Users\P1233\Desktop\brain\dataset\camara\captures\
 示例：
 
 ```powershell
-& "C:\Users\P1233\miniconda3\envs\brain-vision\python.exe" `
-  "C:\Users\P1233\Desktop\brain\brain_code\06_Data_Collection\2026-04_jetmax_block_dataset_collection\block_dataset_collector.py" `
+& "%BRAIN_PYTHON_EXE%" `
+  "<repo>\06_Data_Collection\2026-04_jetmax_block_dataset_collection\block_dataset_collector.py" `
   --source "0" `
-  --output-root "C:\Users\P1233\Desktop\brain\dataset\camara\captures" `
+  --output-root "<workspace>\dataset\camara\captures" `
   --session-prefix "block_collect" `
   --image-ext "jpg" `
   --jpeg-quality 95 `
@@ -220,4 +220,4 @@ C:\Users\P1233\Desktop\brain\dataset\camara\captures\
 
 示例 session 目录：
 
-- `C:\Users\P1233\Desktop\brain\dataset\camara\captures\block_collect_20260407_163955`
+- `<workspace>\dataset\camara\captures\block_collect_20260407_163955`

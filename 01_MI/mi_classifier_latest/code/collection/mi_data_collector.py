@@ -16,6 +16,8 @@ from pathlib import Path
 
 import numpy as np
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+BRAIN_CODE_ROOT = PROJECT_ROOT.parents[1]
+DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "datasets" / "custom_mi"
 SHARED_ROOT = PROJECT_ROOT / "code" / "shared"
 if str(SHARED_ROOT) not in sys.path:
     sys.path.insert(0, str(SHARED_ROOT))
@@ -24,8 +26,12 @@ import src  # noqa: F401
 
 from brainflow.board_shim import BoardIds, BoardShim, BrainFlowInputParams
 from brainflow.data_filter import DataFilter, FilterTypes, NoiseTypes
-from PyQt5.QtCore import QObject, QPointF, QRect, QRectF, Qt, QThread, QTimer, pyqtSignal, pyqtSlot
+from PyQt5.QtCore import QObject, QPointF, QRect, QRectF, Qt, QEventLoop, QThread, QTimer, pyqtSignal, pyqtSlot
 from PyQt5.QtGui import QBrush, QColor, QFont, QFontMetrics, QImage, QLinearGradient, QPainter, QPainterPath, QPen
+try:
+    from PyQt5.QtTextToSpeech import QTextToSpeech
+except Exception:  # pragma: no cover - optional Qt module
+    QTextToSpeech = None
 from PyQt5.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -71,18 +77,41 @@ from src.mi_collection import (
     normalize_artifact_types,
     parse_channel_names,
     parse_channel_positions,
+    save_mi_emergency_raw_capture,
     save_mi_session,
 )
 from src.serial_ports import describe_serial_port, detect_serial_ports, validate_serial_port_selection
+
+
+def _path_is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        Path(path).resolve().relative_to(Path(root).resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def resolve_output_root(value: str | Path | None = None) -> Path:
+    raw = "" if value is None else str(value).strip()
+    candidate = Path(raw).expanduser() if raw else DEFAULT_OUTPUT_ROOT
+    if not candidate.is_absolute():
+        candidate = PROJECT_ROOT / candidate
+    resolved = candidate.resolve()
+    if not _path_is_relative_to(resolved, BRAIN_CODE_ROOT):
+        raise ValueError(f"MI output_root must be inside brain_code: {resolved}")
+    return resolved
 
 
 DEFAULT_CHANNEL_NAMES = ["C3", "Cz", "C4", "PO3", "PO4", "O1", "Oz", "O2"]
 PROTOCOL_MODE_FULL = "full"
 PROTOCOL_MODE_MI_ONLY = "mi_only"
 IMAGERY_START_TONE_HZ = 1200
-IMAGERY_START_TONE_MS = 140
+IMAGERY_START_TONE_MS = 180
+IMAGERY_START_POST_TONE_GUARD_MS = 80
 IMAGERY_END_TONE_HZ = 800
 IMAGERY_END_TONE_MS = 180
+CUE_WARNING_TONE_HZ = 980
+CUE_WARNING_TONE_MS = 90
 PHASE_START_TONE_HZ = 1200
 PHASE_START_TONE_MS = 180
 PHASE_END_TONE_HZ = 720
@@ -97,15 +126,24 @@ QUALITY_FLAT_CHANNEL_STD_UV = 0.5
 QUALITY_FLAT_CHANNEL_PTP_UV = 1.0
 QUALITY_WARNING_CHANNEL_LIMIT = 4
 CUE_VOICE_PROMPTS = {
-    "left_hand": "想象左手",
-    "right_hand": "想象右手",
-    "feet": "想象双脚",
-    "tongue": "想象舌头",
+    "left_hand": "左手",
+    "right_hand": "右手",
+    "feet": "双脚",
+    "tongue": "舌头",
 }
+CUE_VOICE_PROMPT_TIMEOUT_SEC = 2.0
+PHASE_VOICE_PROMPT_TIMEOUT_SEC = 3.0
+VOICE_PROMPT_FINISH_GUARD_MS = 250
+PHASE_START_POST_TONE_GUARD_MS = 80
+STANDARD_MI_CUE_SEC = 2.0
+MIN_MI_CUE_SEC_FOR_STANDARD_VISUAL = 2.0
+MIN_MI_CUE_SEC_FOR_NATURAL_AUDIO = 2.0
+MIN_MI_ITI_SEC_BETWEEN_TRIALS = 2.0
 PHASE_LABELS = {
     "idle": "等待开始",
     "baseline": "准备阶段",
     "cue": "任务提示",
+    "imagery_ready": "开始音",
     "imagery": "想象执行",
     "iti": "休息恢复",
     "paused": "已暂停",
@@ -125,6 +163,7 @@ PHASE_ACCENT_COLORS = {
     "idle": "#64748B",
     "baseline": "#0F766E",
     "cue": "#2563EB",
+    "imagery_ready": "#7C3AED",
     "imagery": "#8B5CF6",
     "iti": "#D97706",
     "paused": "#475569",
@@ -144,6 +183,7 @@ PHASE_BACKGROUND_COLORS = {
     "idle": ("#E2E8F0", "#CBD5E1"),
     "baseline": ("#DCFCE7", "#BBF7D0"),
     "cue": ("#DBEAFE", "#BFDBFE"),
+    "imagery_ready": ("#EDE9FE", "#DDD6FE"),
     "imagery": ("#F3E8FF", "#E9D5FF"),
     "iti": ("#FEF3C7", "#FDE68A"),
     "paused": ("#E5E7EB", "#CBD5E1"),
@@ -184,12 +224,12 @@ DEFAULT_CONFIG = {
     "board_id": BoardIds.CYTON_BOARD.value,
     "subject_id": "001",
     "session_id": datetime.now().strftime("%Y%m%d_%H%M%S"),
-    "output_root": str(PROJECT_ROOT / "datasets" / "custom_mi"),
+    "output_root": str(DEFAULT_OUTPUT_ROOT),
     "channel_names": ",".join(DEFAULT_CHANNEL_NAMES),
     "channel_positions": "0,1,2,3,4,5,6,7",
     "trials_per_class": 10,
     "baseline_sec": 2.0,
-    "cue_sec": 2.0,
+    "cue_sec": STANDARD_MI_CUE_SEC,
     "imagery_sec": 4.0,
     "iti_sec": 2.0,
     "run_count": 3,
@@ -225,6 +265,7 @@ DEFAULT_CONFIG = {
     "sleep_note": "",
     "random_seed": 0,
     "use_separate_participant_screen": True,
+    "training_cue_voice_enabled": False,
     "notes": "",
 }
 
@@ -303,7 +344,7 @@ class CueIllustrationWidget(QWidget):
         self.update()
 
     def _resolve_accent(self) -> QColor:
-        if self.class_name in CLASS_LOOKUP:
+        if self.class_name in CLASS_LOOKUP and self.phase in {"cue", "imagery"}:
             return QColor(str(CLASS_LOOKUP[self.class_name]["color"]))
         return QColor(PHASE_ACCENT_COLORS.get(self.phase, "#64748B"))
 
@@ -413,7 +454,7 @@ class CueIllustrationWidget(QWidget):
         drawing_top = max(card.top() + 188.0, subtitle_rect.bottom() + 24.0 if subtitle_height > 0 else title_rect.bottom() + 24.0)
         drawing_bottom = card.bottom() - 36.0
         drawing_rect = QRectF(card.left() + 60, drawing_top, card.width() - 120, max(120.0, drawing_bottom - drawing_top))
-        if self.phase in {"idle", "baseline", "iti", "paused"} or self.class_name is None:
+        if self.phase in {"idle", "baseline", "imagery_ready", "imagery", "iti", "paused"} or self.class_name is None:
             self._draw_fixation(painter, drawing_rect, accent)
             return
 
@@ -1148,6 +1189,24 @@ class BoardCaptureWorker(QObject):
         except Exception:
             pass
 
+    @staticmethod
+    def _concat_capture_chunks(chunks: list[np.ndarray]) -> np.ndarray:
+        valid = [np.asarray(chunk, dtype=np.float64) for chunk in chunks if np.asarray(chunk).ndim == 2]
+        valid = [chunk for chunk in valid if int(chunk.shape[1]) > 0]
+        if not valid:
+            raise ValueError("no BrainFlow samples were captured")
+        row_count = int(valid[0].shape[0])
+        if any(int(chunk.shape[0]) != row_count for chunk in valid):
+            raise ValueError("captured BrainFlow chunks have inconsistent row counts")
+        total_samples = int(sum(int(chunk.shape[1]) for chunk in valid))
+        merged = np.empty((row_count, total_samples), dtype=np.float64)
+        cursor = 0
+        for chunk in valid:
+            width = int(chunk.shape[1])
+            merged[:, cursor : cursor + width] = chunk
+            cursor += width
+        return merged
+
     def _start_stream_with_retry(
         self,
         board: BoardShim,
@@ -1433,9 +1492,10 @@ class BoardCaptureWorker(QObject):
 
                 if data_chunks:
                     try:
-                        full_data = np.concatenate(data_chunks, axis=1)
-                    except Exception:
-                        full_data = data_chunks[-1]
+                        full_data = self._concat_capture_chunks(data_chunks)
+                    except Exception as error:
+                        self.error_occurred.emit(f"合并采集数据失败：{error}")
+                        full_data = None
                 else:
                     full_data = None
 
@@ -1479,13 +1539,14 @@ class BoardCaptureWorker(QObject):
         except Exception as error:
             self.error_occurred.emit(f"写入标记失败：{error}")
 
-    def insert_marker_sync(self, marker_code: float) -> tuple[bool, str]:
+    def insert_marker_sync(self, marker_code: float, *, wait_for_flush: bool = True) -> tuple[bool, str]:
         with self.board_lock:
             if self.board is None:
                 return False, "设备未连接，无法写入标记。"
             try:
                 self.board.insert_marker(float(marker_code))
-                time.sleep(self._marker_flush_delay_sec())
+                if wait_for_flush:
+                    time.sleep(self._marker_flush_delay_sec())
             except Exception as error:
                 return False, f"写入标记失败：{error}"
         return True, ""
@@ -1497,6 +1558,197 @@ class BoardCaptureWorker(QObject):
     @pyqtSlot()
     def request_stop(self) -> None:
         self.stop_event.set()
+
+
+class MiSpeechPromptPlayer(QObject):
+    playback_finished = pyqtSignal(int)
+    _fallback_finished = pyqtSignal(int)
+
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._engine = None
+        self._pending_request_id = 0
+        self._awaiting_completion = False
+        self._fallback_lock = threading.Lock()
+        self._fallback_process: subprocess.Popen | None = None
+        self._fallback_generation = 0
+        self._fallback_finished.connect(self._finish_if_pending)
+        if QTextToSpeech is not None:
+            try:
+                self._engine = QTextToSpeech(self)
+                self._engine.setRate(0.0)
+                self._engine.setVolume(1.0)
+                self._engine.stateChanged.connect(self._on_state_changed)
+            except Exception:
+                self._engine = None
+
+    def say(self, text: str, *, request_id: int, timeout_sec: float = PHASE_VOICE_PROMPT_TIMEOUT_SEC) -> None:
+        rid = int(request_id)
+        message = str(text or "").strip()
+        if rid <= 0:
+            return
+        self.stop()
+        if not message:
+            QTimer.singleShot(0, lambda rid=rid: self.playback_finished.emit(rid))
+            return
+        if self._should_prefer_windows_fallback() and self._start_windows_fallback(
+            message,
+            request_id=rid,
+            timeout_sec=timeout_sec,
+        ):
+            return
+        if self._try_qt_say(message, request_id=rid, timeout_sec=timeout_sec):
+            return
+        if self._start_windows_fallback(message, request_id=rid, timeout_sec=timeout_sec):
+            return
+        QTimer.singleShot(0, lambda rid=rid: self.playback_finished.emit(rid))
+
+    def _should_prefer_windows_fallback(self) -> bool:
+        if not sys.platform.startswith("win"):
+            return False
+        if self._engine is None:
+            return True
+        return self._engine.__class__.__name__ == "QTextToSpeech"
+
+    def stop(self) -> None:
+        self._awaiting_completion = False
+        self._pending_request_id = 0
+        if self._engine is not None:
+            try:
+                self._engine.stop()
+            except Exception:
+                pass
+        with self._fallback_lock:
+            self._fallback_generation += 1
+            process = self._fallback_process
+            self._fallback_process = None
+        if process is not None and process.poll() is None:
+            try:
+                process.terminate()
+            except Exception:
+                pass
+
+    def _try_qt_say(self, text: str, *, request_id: int, timeout_sec: float) -> bool:
+        if self._engine is None:
+            return False
+        try:
+            self._pending_request_id = int(request_id)
+            self._awaiting_completion = True
+            self._engine.say(str(text))
+            timeout_ms = int(max(0.1, float(timeout_sec)) * 1000)
+            QTimer.singleShot(timeout_ms, lambda rid=int(request_id): self._timeout_if_pending(rid))
+            return True
+        except Exception:
+            self._awaiting_completion = False
+            self._pending_request_id = 0
+            return False
+
+    def _start_windows_fallback(self, text: str, *, request_id: int, timeout_sec: float) -> bool:
+        if not sys.platform.startswith("win"):
+            return False
+        self._pending_request_id = int(request_id)
+        self._awaiting_completion = True
+        with self._fallback_lock:
+            generation = int(self._fallback_generation)
+        threading.Thread(
+            target=self._run_windows_fallback,
+            args=(str(text), int(request_id), generation, float(timeout_sec)),
+            daemon=True,
+        ).start()
+        return True
+
+    def _run_windows_fallback(self, text: str, request_id: int, generation: int, timeout_sec: float) -> None:
+        quoted_text = str(text).replace("'", "''")
+        script = (
+            "Add-Type -AssemblyName System.Speech\n"
+            "$synth = New-Object System.Speech.Synthesis.SpeechSynthesizer\n"
+            "try {\n"
+            "    $synth.Volume = 100\n"
+            "    $synth.Rate = 0\n"
+            f"    $synth.Speak('{quoted_text}')\n"
+            "} finally {\n"
+            "    $synth.Dispose()\n"
+            "}\n"
+        )
+        encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
+        command = [
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-EncodedCommand",
+            encoded,
+        ]
+        process: subprocess.Popen | None = None
+        should_finish = True
+        try:
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            with self._fallback_lock:
+                if int(self._fallback_generation) != int(generation):
+                    should_finish = False
+                else:
+                    self._fallback_process = process
+            if not should_finish:
+                try:
+                    process.terminate()
+                except Exception:
+                    pass
+                return
+            process.wait(timeout=max(0.1, float(timeout_sec)))
+        except Exception:
+            if process is not None:
+                try:
+                    process.terminate()
+                except Exception:
+                    pass
+        finally:
+            with self._fallback_lock:
+                if self._fallback_process is process:
+                    self._fallback_process = None
+            if should_finish:
+                self._fallback_finished.emit(int(request_id))
+
+    def _finish_if_pending(self, request_id: int) -> None:
+        if not self._awaiting_completion:
+            return
+        if int(request_id) != int(self._pending_request_id):
+            return
+        self._awaiting_completion = False
+        self._pending_request_id = 0
+        self.playback_finished.emit(int(request_id))
+
+    def _timeout_if_pending(self, request_id: int) -> None:
+        if not self._awaiting_completion:
+            return
+        if int(request_id) != int(self._pending_request_id):
+            return
+        self._awaiting_completion = False
+        self._pending_request_id = 0
+        if self._engine is not None:
+            try:
+                self._engine.stop()
+            except Exception:
+                pass
+        self.playback_finished.emit(int(request_id))
+
+    def _on_state_changed(self, state) -> None:
+        if not self._awaiting_completion:
+            return
+        ready_state = getattr(QTextToSpeech, "Ready", None) if QTextToSpeech is not None else None
+        if ready_state is None:
+            return
+        try:
+            is_ready = int(state) == int(ready_state)
+        except Exception:
+            is_ready = state == ready_state
+        if is_ready:
+            self._finish_if_pending(int(self._pending_request_id))
 
 
 class SessionSaveWorker(QObject):
@@ -1513,34 +1765,82 @@ class SessionSaveWorker(QObject):
         settings: SessionSettings,
         event_log: list[dict[str, object]],
         trial_records: list[TrialRecord],
+        emergency_only: bool = False,
+        emergency_reason: str = "",
     ) -> None:
         super().__init__()
         self.payload = dict(payload)
         self.settings = settings
         self.event_log = list(event_log)
         self.trial_records = list(trial_records)
+        self.emergency_only = bool(emergency_only)
+        self.emergency_reason = str(emergency_reason or "")
+
+    def _save_emergency_raw(self, *, original_error: str) -> dict[str, object]:
+        recovery = save_mi_emergency_raw_capture(
+            brainflow_data=np.asarray(self.payload["brainflow_data"]),
+            sampling_rate=float(self.payload["sampling_rate"]),
+            eeg_rows=list(self.payload["selected_rows"]),
+            marker_row=None if self.payload.get("marker_row") is None else int(self.payload["marker_row"]),
+            timestamp_row=(
+                None if self.payload["timestamp_row"] is None else int(self.payload["timestamp_row"])
+            ),
+            package_num_row=(
+                None if self.payload.get("package_num_row") is None else int(self.payload["package_num_row"])
+            ),
+            board_descr=dict(self.payload.get("board_descr") or {}),
+            settings=self.settings,
+            event_log=self.event_log,
+            trial_records=self.trial_records,
+            original_error=str(original_error),
+        )
+        return {
+            **dict(recovery),
+            "emergency_raw_only": True,
+            "full_save_error": str(original_error),
+            "trial_count": int(len(self.trial_records)),
+            "accepted_trial_count": int(sum(1 for trial in self.trial_records if bool(trial.accepted))),
+            "rejected_trial_count": int(sum(1 for trial in self.trial_records if not bool(trial.accepted))),
+            "session_dir": str(recovery.get("session_dir", "")),
+            "board_data_path": str(recovery.get("emergency_board_data_path", "")),
+            "fif_path": "",
+            "segments_csv_path": "",
+            "mi_epochs_path": "",
+            "gate_epochs_path": "",
+            "artifact_epochs_path": "",
+            "continuous_path": "",
+            "manifest_csv_path": "",
+        }
 
     @pyqtSlot()
     def run(self) -> None:
         try:
-            result = save_mi_session(
-                brainflow_data=np.asarray(self.payload["brainflow_data"]),
-                sampling_rate=float(self.payload["sampling_rate"]),
-                eeg_rows=list(self.payload["selected_rows"]),
-                marker_row=int(self.payload["marker_row"]),
-                timestamp_row=(
-                    None if self.payload["timestamp_row"] is None else int(self.payload["timestamp_row"])
-                ),
-                package_num_row=(
-                    None if self.payload.get("package_num_row") is None else int(self.payload["package_num_row"])
-                ),
-                board_descr=dict(self.payload.get("board_descr") or {}),
-                settings=self.settings,
-                event_log=self.event_log,
-                trial_records=self.trial_records,
-            )
+            if self.emergency_only:
+                result = self._save_emergency_raw(original_error=self.emergency_reason or "emergency_raw_only")
+            else:
+                result = save_mi_session(
+                    brainflow_data=np.asarray(self.payload["brainflow_data"]),
+                    sampling_rate=float(self.payload["sampling_rate"]),
+                    eeg_rows=list(self.payload["selected_rows"]),
+                    marker_row=int(self.payload["marker_row"]),
+                    timestamp_row=(
+                        None if self.payload["timestamp_row"] is None else int(self.payload["timestamp_row"])
+                    ),
+                    package_num_row=(
+                        None if self.payload.get("package_num_row") is None else int(self.payload["package_num_row"])
+                    ),
+                    board_descr=dict(self.payload.get("board_descr") or {}),
+                    settings=self.settings,
+                    event_log=self.event_log,
+                    trial_records=self.trial_records,
+                )
         except Exception as error:
-            self.save_failed.emit(f"保存会话失败：{error}")
+            try:
+                recovery = self._save_emergency_raw(original_error=str(error))
+            except Exception as recovery_error:
+                self.save_failed.emit(f"保存会话失败：{error}\n\n紧急原始数据保存也失败：{recovery_error}")
+            else:
+                self.save_completed.emit(recovery)
         else:
             self.save_completed.emit(result)
         finally:
@@ -1568,7 +1868,10 @@ class MIDataCollectorWindow(QMainWindow):
         self.capture_on_stop = False
         self.session_running = False
         self.session_paused = False
+        self.phase_prompt_pending = False
         self.waiting_for_save = False
+        self.emergency_save_only = False
+        self.emergency_save_reason = ""
         self.current_phase = "idle"
         self.phase_deadline = 0.0
         self.phase_started_perf = 0.0
@@ -1600,6 +1903,8 @@ class MIDataCollectorWindow(QMainWindow):
         self.next_continuous_schedule_index = 0
         self.marker_failure_active = False
         self.marker_failure_message = ""
+        self.runtime_failure_active = False
+        self.runtime_failure_message = ""
         self.config_panel_widget: QWidget | None = None
         self.config_panel_layout: QVBoxLayout | None = None
         self.config_bottom_panel: QWidget | None = None
@@ -1636,8 +1941,8 @@ class MIDataCollectorWindow(QMainWindow):
         self.preview_mode_switch_target: dict[str, object] | None = None
         self.pending_session_start_context: tuple[SessionSettings, list[list[str]]] | None = None
         self.audio_prompts_enabled = True
-        self.voice_prompt_lock = threading.Lock()
-        self.voice_prompt_process: subprocess.Popen | None = None
+        self.voice_prompt_request_id = 0
+        self.speech_prompt_player = MiSpeechPromptPlayer(self)
         self.log_group: QGroupBox | None = None
         self.log_text: QTextEdit | None = None
         self.protocol_text_label: QLabel | None = None
@@ -1650,8 +1955,9 @@ class MIDataCollectorWindow(QMainWindow):
         self._preview_focus_layout_active = False
 
         self.phase_timer = QTimer(self)
-        self.phase_timer.setInterval(100)
-        self.phase_timer.timeout.connect(self.on_phase_tick)
+        self.phase_timer.setTimerType(Qt.PreciseTimer)
+        self.phase_timer.setInterval(20)
+        self.phase_timer.timeout.connect(self._on_phase_tick_guarded)
 
         self._init_ui()
         self.participant_window = ParticipantDisplayWindow()
@@ -2084,7 +2390,7 @@ class MIDataCollectorWindow(QMainWindow):
         if self.hero_title_label is not None:
             self.hero_title_label.setVisible(ui_mode == "startup")
         if self.config_tip_label is not None:
-            self.config_tip_label.setVisible(ui_mode == "startup" and not ultra_compact)
+            self.config_tip_label.setVisible(ui_mode == "startup" and not compact)
         if self.preview_group is not None:
             self.preview_group.setVisible(ui_mode != "startup")
         if self.session_tabs is not None:
@@ -2349,19 +2655,19 @@ class MIDataCollectorWindow(QMainWindow):
             return (
                 "操作员：先完成连接质量检查，再开始正式采集。\n"
                 "入口：完整流程，或仅 MI 主任务（跳过静息/伪迹/无控制/连续仿真）。\n"
-                "单试次默认：注视 2s → 提示 1s → 想象 4s → 放松 2.5s。"
+                "单试次默认：注视 2s → 提示 2s → 想象 4s → 放松 2.5s。"
             )
         if compact:
             return (
                 "操作员：连接后先检查波形和接触质量，稳定后开始正式采集。\n"
                 "入口：完整流程，或仅 MI 主任务（跳过静息/伪迹/无控制/连续仿真）。\n"
-                "单试次默认：注视 2s → 提示 1s → 想象 4s → 放松 2.5s。"
+                "单试次默认：注视 2s → 提示 2s → 想象 4s → 放松 2.5s。"
             )
         return (
             "操作员流程：连接设备后先在当前界面观察原始波形并调整参数，确认稳定后再开始正式采集。\n"
             "入口一：完整流程，包含静息/伪迹校准 → 多轮次主任务 → 无控制 → 连续仿真；想象训练保留为可选阶段，默认关闭。\n"
             "入口二：仅 MI 主任务，直接进入四分类 MI trial，跳过静息、伪迹、无控制和连续仿真块。\n"
-            "主任务单试次固定顺序：注视 2s → 提示(1s) → 想象(4s) → 放松(2.5s)。\n"
+            "主任务单试次固定顺序：注视 2s → 提示(2s) → 想象(4s) → 放松(2.5s)。\n"
             "点击开始后，如勾选受试者全屏，当前屏幕会直接切到受试者提示界面。"
         )
 
@@ -2609,9 +2915,12 @@ class MIDataCollectorWindow(QMainWindow):
             group.setFont(group_font)
 
         form_font = QFont("Microsoft YaHei", int(profile["form"]))
+        form_control_height = max(30, int(QFontMetrics(form_font).height() + 12))
         for widget_type in (QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QCheckBox):
             for widget in self.findChildren(widget_type):
                 widget.setFont(form_font)
+                if widget_type is not QCheckBox:
+                    widget.setMinimumHeight(form_control_height)
 
         for text_edit in self.findChildren(QTextEdit):
             if text_edit is self.log_text:
@@ -2718,15 +3027,20 @@ class MIDataCollectorWindow(QMainWindow):
         self.baseline_spin.setDecimals(1)
         self.baseline_spin.setSingleStep(0.5)
         self.cue_spin = QDoubleSpinBox()
-        self.cue_spin.setRange(0.5, 20.0)
+        self.cue_spin.setRange(MIN_MI_CUE_SEC_FOR_STANDARD_VISUAL, 20.0)
         self.cue_spin.setDecimals(1)
         self.cue_spin.setSingleStep(0.5)
+        self.cue_voice_check = QCheckBox("训练用 cue 语音")
+        self.cue_voice_check.setToolTip(
+            "默认关闭：正式采集只使用视觉 cue 和短提示音。打开后每个 cue 会短语音播报类别，并自动要求提示阶段至少 2 秒。"
+        )
+        self.cue_voice_check.toggled.connect(self._sync_cue_voice_timing_constraints)
         self.imagery_spin = QDoubleSpinBox()
         self.imagery_spin.setRange(0.5, 20.0)
         self.imagery_spin.setDecimals(1)
         self.imagery_spin.setSingleStep(0.5)
         self.iti_spin = QDoubleSpinBox()
-        self.iti_spin.setRange(0.5, 30.0)
+        self.iti_spin.setRange(MIN_MI_ITI_SEC_BETWEEN_TRIALS, 30.0)
         self.iti_spin.setDecimals(1)
         self.iti_spin.setSingleStep(0.5)
         self.seed_spin = QSpinBox()
@@ -2738,6 +3052,7 @@ class MIDataCollectorWindow(QMainWindow):
         self.notes_edit.setMinimumHeight(64)
         self.run_count_spin = QSpinBox()
         self.run_count_spin.setRange(1, 12)
+        self.run_count_spin.setToolTip("MI 主任务 run 数；可以设为 1。")
         self.max_consecutive_spin = QSpinBox()
         self.max_consecutive_spin.setRange(1, 6)
         self.run_rest_spin = QDoubleSpinBox()
@@ -2782,6 +3097,7 @@ class MIDataCollectorWindow(QMainWindow):
 
         self.continuous_count_spin = QSpinBox()
         self.continuous_count_spin.setRange(0, 10)
+        self.continuous_count_spin.setToolTip("连续模式段只能插在 MI run 结束边界；设为 0 可关闭连续模式。")
         self.continuous_sec_spin = QDoubleSpinBox()
         self.continuous_sec_spin.setRange(0.0, 1200.0)
         self.continuous_sec_spin.setDecimals(1)
@@ -2797,6 +3113,8 @@ class MIDataCollectorWindow(QMainWindow):
         self.cont_gap_max_spin = QDoubleSpinBox()
         self.cont_gap_max_spin.setRange(0.0, 30.0)
         self.cont_gap_max_spin.setDecimals(1)
+        self.run_count_spin.valueChanged.connect(self._sync_continuous_count_limit)
+        self._sync_continuous_count_limit()
 
         self.artifact_types_edit = QLineEdit()
         self.reference_edit = QLineEdit()
@@ -2849,6 +3167,7 @@ class MIDataCollectorWindow(QMainWindow):
         timing_form.addRow("提示阶段（秒）", self.cue_spin)
         timing_form.addRow("想象阶段（秒）", self.imagery_spin)
         timing_form.addRow("休息阶段（秒）", self.iti_spin)
+        timing_form.addRow("", self.cue_voice_check)
 
         run_group = QGroupBox("轮次与导出")
         run_form = QFormLayout(run_group)
@@ -3228,6 +3547,13 @@ class MIDataCollectorWindow(QMainWindow):
         self.session_panel_layout.addWidget(self.session_tabs, stretch=2)
         return panel
 
+    def _sync_continuous_count_limit(self, _value: int = 0) -> None:
+        run_count = max(1, int(self.run_count_spin.value()))
+        limit = min(run_count, 10)
+        self.continuous_count_spin.setMaximum(limit)
+        if int(self.continuous_count_spin.value()) > limit:
+            self.continuous_count_spin.setValue(limit)
+
     def apply_default_values(self) -> None:
         self.subject_edit.setText(self.config["subject_id"])
         self.session_edit.setText(self.config["session_id"])
@@ -3238,7 +3564,9 @@ class MIDataCollectorWindow(QMainWindow):
         self.channel_positions_edit.setText(self.config["channel_positions"])
         self.trials_spin.setValue(int(self.config["trials_per_class"]))
         self.baseline_spin.setValue(float(self.config["baseline_sec"]))
+        self.cue_voice_check.setChecked(bool(self.config.get("training_cue_voice_enabled", False)))
         self.cue_spin.setValue(float(self.config["cue_sec"]))
+        self._sync_cue_voice_timing_constraints()
         self.imagery_spin.setValue(float(self.config["imagery_sec"]))
         self.iti_spin.setValue(float(self.config["iti_sec"]))
         self.run_count_spin.setValue(int(self.config["run_count"]))
@@ -3333,7 +3661,7 @@ class MIDataCollectorWindow(QMainWindow):
         return str(self.board_combo.currentText())
 
     def browse_output_directory(self) -> None:
-        selected = QFileDialog.getExistingDirectory(self, "选择输出目录", self.output_edit.text().strip() or str(PROJECT_ROOT))
+        selected = QFileDialog.getExistingDirectory(self, "选择输出目录", self.output_edit.text().strip() or str(DEFAULT_OUTPUT_ROOT))
         if selected:
             self.output_edit.setText(selected)
 
@@ -3493,11 +3821,12 @@ class MIDataCollectorWindow(QMainWindow):
             if log_serial_warning and str(serial_validation.get("reason", "")) == "manual_override":
                 self.log(self._build_serial_port_override_note(serial_validation))
 
-        output_root = self.output_edit.text().strip() or str(PROJECT_ROOT / "datasets" / "custom_mi")
+        output_root_path = resolve_output_root(self.output_edit.text().strip())
         try:
-            Path(output_root).mkdir(parents=True, exist_ok=True)
+            output_root_path.mkdir(parents=True, exist_ok=True)
         except Exception as error:
             raise ValueError(f"输出目录不可用：{error}") from error
+        output_root = str(output_root_path)
 
         continuous_command_min_sec = float(self.cont_cmd_min_spin.value())
         continuous_command_max_sec = float(self.cont_cmd_max_spin.value())
@@ -3506,6 +3835,9 @@ class MIDataCollectorWindow(QMainWindow):
         run_count = int(self.run_count_spin.value())
         continuous_block_count = int(self.continuous_count_spin.value())
         continuous_block_sec = float(self.continuous_sec_spin.value())
+        cue_sec = float(self.cue_spin.value())
+        if self._training_cue_voice_enabled():
+            cue_sec = max(cue_sec, MIN_MI_CUE_SEC_FOR_NATURAL_AUDIO)
 
         raw_artifact_types = self.artifact_types_edit.text().strip()
         artifact_types = normalize_artifact_types(raw_artifact_types)
@@ -3526,7 +3858,7 @@ class MIDataCollectorWindow(QMainWindow):
             channel_positions=channel_positions,
             trials_per_class=int(self.trials_spin.value()),
             baseline_sec=float(self.baseline_spin.value()),
-            cue_sec=float(self.cue_spin.value()),
+            cue_sec=cue_sec,
             imagery_sec=float(self.imagery_spin.value()),
             iti_sec=float(self.iti_spin.value()),
             protocol_mode=PROTOCOL_MODE_FULL,
@@ -3585,7 +3917,11 @@ class MIDataCollectorWindow(QMainWindow):
         if gap_max < gap_min:
             raise ValueError("连续模式间隔最长时长不能小于最短时长。")
         if continuous_block_count > run_count:
-            raise ValueError("连续模式段数不能大于 MI run 数。当前流程每个 run 边界最多插入一段连续模式。")
+            raise ValueError(
+                f"连续模式段数不能大于 MI run 数（当前连续模式 {continuous_block_count} 段，"
+                f"MI run {run_count} 轮）。如果只采一轮 MI，请把连续模式段数设为 0 或 1；"
+                "点击“直接进入 MI 主任务”会自动关闭连续模式。"
+            )
         if continuous_block_sec < command_min:
             raise ValueError("连续模式时长不能小于命令最短时长，否则无法生成任何连续命令。")
 
@@ -3643,17 +3979,24 @@ class MIDataCollectorWindow(QMainWindow):
             return max(0.0, float(settings.long_run_rest_sec))
         return max(0.0, float(settings.run_rest_sec))
 
+    def _planned_imagery_start_prompt_overhead_sec(self) -> float:
+        if not bool(getattr(self, "audio_prompts_enabled", True)):
+            return 0.0
+        return max(0.0, float(IMAGERY_START_TONE_MS + IMAGERY_START_POST_TONE_GUARD_MS) / 1000.0)
+
     def _build_session_plan(self, settings: SessionSettings) -> dict[str, object]:
         run_count = max(0, int(settings.run_count))
         class_count = len(CLASS_LOOKUP)
         trials_per_run = max(0, int(settings.trials_per_class)) * class_count
         total_trials = trials_per_run * run_count
-        trial_duration_sec = (
+        trial_phase_duration_sec = (
             max(0.0, float(settings.baseline_sec))
             + max(0.0, float(settings.cue_sec))
             + max(0.0, float(settings.imagery_sec))
             + max(0.0, float(settings.iti_sec))
         )
+        trial_start_prompt_overhead_sec = self._planned_imagery_start_prompt_overhead_sec()
+        trial_duration_sec = trial_phase_duration_sec + trial_start_prompt_overhead_sec
         mi_duration_sec = run_count * trials_per_run * trial_duration_sec
         calibration_plan = self._build_calibration_plan(settings)
         continuous_schedule = self._build_continuous_schedule(settings)
@@ -3701,6 +4044,8 @@ class MIDataCollectorWindow(QMainWindow):
             "trials_per_class": int(settings.trials_per_class),
             "trials_per_run": trials_per_run,
             "total_trials": total_trials,
+            "trial_phase_duration_sec": trial_phase_duration_sec,
+            "trial_start_prompt_overhead_sec": trial_start_prompt_overhead_sec,
             "trial_duration_sec": trial_duration_sec,
             "mi_duration_sec": mi_duration_sec,
             "total_duration_sec": total_duration_sec,
@@ -3719,9 +4064,14 @@ class MIDataCollectorWindow(QMainWindow):
             str(plan.get("title", "采集计划")),
             "",
             f"总时间：{self._format_duration_text(float(plan.get('total_duration_sec', 0.0)))}",
-            "",
-            "阶段列表：",
         ]
+        prompt_overhead_sec = float(plan.get("trial_start_prompt_overhead_sec", 0.0))
+        if prompt_overhead_sec > 0:
+            lines.append(
+                f"每试次开始音过渡：{self._format_duration_text(prompt_overhead_sec)}"
+                "（用于对齐 UI、提示音和 imagery_start marker，不计入正式 imagery segment）"
+            )
+        lines.extend(["", "阶段列表："])
 
         for index, stage in enumerate(stages, start=1):
             duration_sec = float(stage.get("duration_sec", 0.0))
@@ -3777,6 +4127,9 @@ class MIDataCollectorWindow(QMainWindow):
         self.log(message)
 
     def on_worker_error(self, message: str) -> None:
+        if self.session_running and not self.waiting_for_save:
+            self._abort_session_due_to_runtime_failure(str(message), source="worker_error")
+            return
         self.show_error(message)
 
     def set_config_enabled(self, enabled: bool) -> None:
@@ -3824,11 +4177,27 @@ class MIDataCollectorWindow(QMainWindow):
             self.sleep_edit,
             self.seed_spin,
             self.separate_screen_check,
+            self.cue_voice_check,
             self.notes_edit,
         ]
         for widget in widgets:
             widget.setEnabled(enabled)
         self.refresh_board_input_state()
+
+    def _training_cue_voice_enabled(self) -> bool:
+        return bool(getattr(self, "cue_voice_check", None) is not None and self.cue_voice_check.isChecked())
+
+    def _sync_cue_voice_timing_constraints(self, _checked: bool | None = None) -> None:
+        if getattr(self, "cue_spin", None) is None:
+            return
+        if self._training_cue_voice_enabled():
+            self.cue_spin.setMinimum(MIN_MI_CUE_SEC_FOR_NATURAL_AUDIO)
+            if float(self.cue_spin.value()) < MIN_MI_CUE_SEC_FOR_NATURAL_AUDIO:
+                self.cue_spin.setValue(MIN_MI_CUE_SEC_FOR_NATURAL_AUDIO)
+            self.cue_spin.setToolTip("训练用 cue 语音已开启：提示阶段至少 2.0 秒，避免语音压到开始音。")
+        else:
+            self.cue_spin.setMinimum(MIN_MI_CUE_SEC_FOR_STANDARD_VISUAL)
+            self.cue_spin.setToolTip("标准校准默认 2.0 秒视觉 cue，让受试者确认任务；正式 imagery 从开始音和 imagery_start marker 后开始。")
 
     def _class_ui_name(self, class_name: str | None) -> str:
         if not class_name:
@@ -3868,6 +4237,8 @@ class MIDataCollectorWindow(QMainWindow):
             return "想象训练", "强调本体感觉想象：想象肌肉发力和关节感觉，而不是视觉动画。"
         if phase == "baseline":
             return "准备阶段", "请注视中央十字，保持放松稳定；任务类别会在下一阶段出现。"
+        if phase == "imagery_ready":
+            return "开始音", "保持注视，听到短提示音完整结束后立即开始想象。"
         if phase == "iti":
             return "休息恢复", "放空当前想象内容，等待下一轮任务提示。"
         if phase == "run_rest":
@@ -3898,7 +4269,7 @@ class MIDataCollectorWindow(QMainWindow):
             if phase == "cue":
                 return f"任务提示：{name}", self._class_prep_hint(class_name)
             if phase == "imagery":
-                return f"正在想象：{name}", self._class_imagery_hint(class_name)
+                return f"想象：{name}", self._class_imagery_hint(class_name)
         return PHASE_LABELS.get(phase, phase), ""
 
     def _participant_prompt(self) -> tuple[str, str, str, str | None]:
@@ -3922,6 +4293,8 @@ class MIDataCollectorWindow(QMainWindow):
             return ("训练", "想象训练", "想象真实发力和关节感觉，不要做真实动作。", None)
         if self.current_phase == "baseline":
             return ("准备", "准备阶段", "请注视中央标记，保持放松与稳定。", None)
+        if self.current_phase == "imagery_ready":
+            return ("开始音", "听提示音", "滴声结束后立即开始想象。", None)
         if self.current_phase == "iti":
             return ("休息", "休息恢复", "请放空当前想象，等待下一个试次。", None)
         if self.current_phase == "run_rest":
@@ -3945,12 +4318,16 @@ class MIDataCollectorWindow(QMainWindow):
             if self.current_phase == "cue":
                 return ("任务提示", name, self._class_prep_hint(class_name), class_name)
             if self.current_phase == "imagery":
-                return ("想象执行", name, self._class_imagery_hint(class_name), class_name)
+                return ("想象执行", f"想象：{name}", self._class_imagery_hint(class_name), class_name)
         return ("等待开始", "等待开始", "请等待实验开始。", None)
 
     def _participant_countdown_text(self) -> str:
         if self.current_phase == "idle":
             return "--"
+        if self.current_phase == "imagery_ready":
+            return "--"
+        if self.phase_prompt_pending:
+            return "听提示"
         if self.session_paused:
             return f"{self.remaining_phase_sec:.1f}s"
         return f"{max(0.0, self.remaining_phase_sec):.1f}s"
@@ -3977,6 +4354,53 @@ class MIDataCollectorWindow(QMainWindow):
         self.participant_window.activateWindow()
         self.operator_hidden_for_session = True
         self.hide()
+        self._process_ui_events()
+
+    def _process_ui_events(self) -> None:
+        app = QApplication.instance()
+        if app is None:
+            return
+        try:
+            app.processEvents(QEventLoop.ExcludeUserInputEvents | QEventLoop.ExcludeSocketNotifiers, 50)
+        except Exception:
+            pass
+
+    def _current_marker_flush_delay_sec(self) -> float:
+        delay_func = getattr(self.worker, "_marker_flush_delay_sec", None)
+        if callable(delay_func):
+            try:
+                return max(0.0, float(delay_func()))
+            except Exception:
+                pass
+        return MARKER_FLUSH_FALLBACK_SEC
+
+    def _wait_remaining_marker_flush_since(self, marker_insert_started_perf: float) -> None:
+        delay_sec = self._current_marker_flush_delay_sec()
+        elapsed_sec = max(0.0, time.perf_counter() - float(marker_insert_started_perf))
+        remaining_sec = max(0.0, delay_sec - elapsed_sec)
+        if remaining_sec > 0:
+            time.sleep(remaining_sec)
+
+    def _show_phase_visuals_before_prompt(
+        self,
+        *,
+        phase: str,
+        duration_sec: float,
+        class_name: str | None,
+    ) -> None:
+        self.phase_timer.stop()
+        self.current_phase = str(phase)
+        self.session_paused = False
+        self.phase_prompt_pending = True
+        self.pause_started_perf = 0.0
+        self.remaining_phase_sec = max(0.0, float(duration_sec))
+        now = time.perf_counter()
+        self.phase_started_perf = now
+        self.phase_deadline = now + self.remaining_phase_sec
+        self._refresh_phase_display()
+        self.update_countdown_text()
+        self.update_button_states()
+        self._process_ui_events()
 
     def restore_operator_window(self) -> None:
         if not self.use_separate_participant_screen:
@@ -4030,6 +4454,8 @@ class MIDataCollectorWindow(QMainWindow):
         if phase == "cue":
             name = self._class_ui_name(class_name)
             return (f"提示：{name}，听到开始音后再执行想象。", "active")
+        if phase == "imagery_ready":
+            return ("开始音：提示音完整结束后才写入 imagery_start marker 并启动想象计时。", "active")
         if phase == "imagery":
             name = self._class_ui_name(class_name)
             return (f"执行：持续想象{name}，不要真实移动。", "active")
@@ -4455,7 +4881,12 @@ class MIDataCollectorWindow(QMainWindow):
         else:
             self.participant_window.hide()
         if self.calibration_plan:
-            self._play_phase_start_prompt_blocking("calibration")
+            first_step = self.calibration_plan[0]
+            self._show_phase_visuals_before_prompt(
+                phase=str(first_step["phase"]),
+                duration_sec=float(first_step["duration"]),
+                class_name=None,
+            )
             self.record_event("calibration_start")
             if self.marker_failure_active:
                 return
@@ -4543,6 +4974,7 @@ class MIDataCollectorWindow(QMainWindow):
         prompt_index: int | None = None,
         command_duration_sec: float | None = None,
         execution_success: int | bool | None = None,
+        wait_for_marker_flush: bool = True,
     ) -> None:
         if self._event_already_recorded(
             event_name,
@@ -4564,6 +4996,7 @@ class MIDataCollectorWindow(QMainWindow):
             prompt_index=prompt_index,
             command_duration_sec=command_duration_sec,
             execution_success=execution_success,
+            wait_for_marker_flush=wait_for_marker_flush,
         )
 
     def connect_device(self) -> None:
@@ -4701,7 +5134,8 @@ class MIDataCollectorWindow(QMainWindow):
         self._apply_control_button_visibility()
 
         preview_controls_enabled = connected and not self.session_running and not save_busy and not preview_switch_busy
-        supports_impedance = self.worker is not None and self.worker.supports_impedance_mode()
+        supports_impedance_fn = getattr(self.worker, "supports_impedance_mode", None)
+        supports_impedance = bool(supports_impedance_fn()) if callable(supports_impedance_fn) else False
         if self.preview_to_eeg_button is not None:
             self.preview_to_eeg_button.setEnabled(preview_controls_enabled)
         if self.preview_to_imp_button is not None:
@@ -4796,13 +5230,15 @@ class MIDataCollectorWindow(QMainWindow):
         if phase == "cue":
             prompt = CUE_VOICE_PROMPTS.get(str(class_name or ""))
             if prompt:
-                return f"{prompt}，听到开始音后开始"
+                return prompt
             name = self._class_ui_name(class_name)
-            return f"想象{name}，听到开始音后开始" if name else "任务提示，听到开始音后开始"
+            return name or "任务"
+        if phase == "run_rest":
+            return "休息"
         if phase in MI_TRIAL_PHASES:
             return ""
         label = self._phase_audio_label(phase, class_name)
-        return f"{label}，准备" if label else ""
+        return label if label else ""
 
     def _should_play_phase_start_tone(self, phase: str) -> bool:
         if phase == "imagery":
@@ -4832,14 +5268,107 @@ class MIDataCollectorWindow(QMainWindow):
             app.beep()
         time.sleep(max(0.0, float(duration_ms) / 1000.0))
 
-    def _play_phase_start_prompt_blocking(self, phase: str, class_name: str | None = None) -> None:
+    def _play_imagery_start_tone_blocking(self) -> None:
         if not self.audio_prompts_enabled:
             return
+        self._play_prompt_tone_blocking(frequency=IMAGERY_START_TONE_HZ, duration_ms=IMAGERY_START_TONE_MS)
+        time.sleep(max(0.0, float(IMAGERY_START_POST_TONE_GUARD_MS) / 1000.0))
+
+    def _play_prompt_tone_async(self, *, frequency: int, duration_ms: int) -> None:
+        if not self.audio_prompts_enabled:
+            return
+
+        def _play() -> None:
+            if winsound is not None:
+                try:
+                    winsound.Beep(int(frequency), int(duration_ms))
+                    return
+                except Exception:
+                    pass
+            app = QApplication.instance()
+            if app is not None:
+                QTimer.singleShot(0, app.beep)
+
+        threading.Thread(target=_play, daemon=True).start()
+
+    def _next_voice_prompt_request_id(self) -> int:
+        self.voice_prompt_request_id += 1
+        return int(self.voice_prompt_request_id)
+
+    def _play_voice_prompt_blocking(self, text: str, *, timeout_sec: float) -> None:
+        voice_text = str(text or "").strip()
+        if not self.audio_prompts_enabled or not voice_text:
+            return
+        request_id = self._next_voice_prompt_request_id()
+        finished = False
+        loop = QEventLoop(self)
+
+        def _on_finished(finished_id: int) -> None:
+            nonlocal finished
+            if int(finished_id) != int(request_id):
+                return
+            finished = True
+            loop.quit()
+
+        self.speech_prompt_player.playback_finished.connect(_on_finished)
+        try:
+            self.speech_prompt_player.say(
+                voice_text,
+                request_id=request_id,
+                timeout_sec=max(0.1, float(timeout_sec)),
+            )
+            QTimer.singleShot(int(max(0.1, float(timeout_sec)) * 1000) + 50, loop.quit)
+            if not finished:
+                loop.exec_(QEventLoop.ExcludeUserInputEvents | QEventLoop.ExcludeSocketNotifiers)
+        finally:
+            try:
+                self.speech_prompt_player.playback_finished.disconnect(_on_finished)
+            except Exception:
+                pass
+        if not finished:
+            self.speech_prompt_player.stop()
+        time.sleep(max(0.0, float(VOICE_PROMPT_FINISH_GUARD_MS) / 1000.0))
+
+    def _play_voice_prompt_async(self, text: str, *, timeout_sec: float) -> None:
+        voice_text = str(text or "").strip()
+        if not self.audio_prompts_enabled or not voice_text:
+            return
+        self.speech_prompt_player.say(
+            voice_text,
+            request_id=self._next_voice_prompt_request_id(),
+            timeout_sec=max(0.1, float(timeout_sec)),
+        )
+
+    def _play_phase_start_prompt_blocking(self, phase: str, class_name: str | None = None) -> None:
+        if phase == "imagery":
+            self._stop_voice_prompt()
+        if not self.audio_prompts_enabled:
+            return
+        self._process_ui_events()
         voice_text = self._phase_start_voice_text(phase, class_name)
         if voice_text:
-            self._speak_windows_prompt(voice_text)
+            timeout_sec = CUE_VOICE_PROMPT_TIMEOUT_SEC if str(phase) == "cue" else PHASE_VOICE_PROMPT_TIMEOUT_SEC
+            self._play_voice_prompt_blocking(voice_text, timeout_sec=timeout_sec)
         if self._should_play_phase_start_tone(phase):
-            self._play_prompt_tone_blocking(frequency=PHASE_START_TONE_HZ, duration_ms=PHASE_START_TONE_MS)
+            if phase == "imagery":
+                self._play_imagery_start_tone_blocking()
+            else:
+                self._play_prompt_tone_blocking(frequency=PHASE_START_TONE_HZ, duration_ms=PHASE_START_TONE_MS)
+                time.sleep(max(0.0, float(PHASE_START_POST_TONE_GUARD_MS) / 1000.0))
+
+    def _play_cue_prompt_during_phase(self, class_name: str | None) -> None:
+        if not self.audio_prompts_enabled:
+            return
+        self._play_prompt_tone_async(frequency=CUE_WARNING_TONE_HZ, duration_ms=CUE_WARNING_TONE_MS)
+        if not self._training_cue_voice_enabled():
+            return
+        voice_text = self._phase_start_voice_text("cue", class_name)
+        if not voice_text:
+            return
+        timeout_sec = CUE_VOICE_PROMPT_TIMEOUT_SEC
+        if self.current_settings is not None:
+            timeout_sec = min(timeout_sec, max(0.5, float(self.current_settings.cue_sec)))
+        self._play_voice_prompt_async(voice_text, timeout_sec=timeout_sec)
 
     def _play_phase_end_prompt_blocking(self, phase: str, class_name: str | None = None) -> None:
         del class_name
@@ -4871,76 +5400,9 @@ class MIDataCollectorWindow(QMainWindow):
 
         threading.Thread(target=_play, daemon=True).start()
 
-    def _stop_voice_prompt(self) -> None:
-        with self.voice_prompt_lock:
-            process = self.voice_prompt_process
-            self.voice_prompt_process = None
-        if process is None or process.poll() is not None:
-            return
-        try:
-            process.terminate()
-        except Exception:
-            pass
-
-    def _speak_windows_prompt(self, text: str) -> None:
-        safe_text = str(text).strip()
-        if not safe_text:
-            return
-        if not sys.platform.startswith("win"):
-            return
-
-        self._stop_voice_prompt()
-        quoted_text = safe_text.replace("'", "''")
-        script = (
-            "Add-Type -AssemblyName System.Speech\n"
-            "$synth = New-Object System.Speech.Synthesis.SpeechSynthesizer\n"
-            "try {\n"
-            "    $synth.Volume = 100\n"
-            "    $synth.Rate = 0\n"
-            f"    $synth.Speak('{quoted_text}')\n"
-            "} finally {\n"
-            "    $synth.Dispose()\n"
-            "}\n"
-        )
-        encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
-        command = [
-            "powershell.exe",
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-EncodedCommand",
-            encoded,
-        ]
-
-        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        process: subprocess.Popen | None = None
-        try:
-            process = subprocess.Popen(
-                command,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                creationflags=creationflags,
-            )
-            with self.voice_prompt_lock:
-                self.voice_prompt_process = process
-            process.wait(timeout=8.0)
-        except Exception:
-            if process is not None:
-                try:
-                    process.terminate()
-                except Exception:
-                    pass
-        finally:
-            with self.voice_prompt_lock:
-                if self.voice_prompt_process is process:
-                    self.voice_prompt_process = None
-
-    def _speak_cue_prompt(self, class_name: str | None) -> None:
-        prompt = CUE_VOICE_PROMPTS.get(str(class_name or ""))
-        if not prompt:
-            return
-        threading.Thread(target=self._speak_windows_prompt, args=(prompt,), daemon=True).start()
+    def _stop_voice_prompt(self) -> int:
+        self.speech_prompt_player.stop()
+        return int(self.voice_prompt_request_id)
 
     def _maybe_start_scheduled_continuous(self) -> bool:
         if self.current_settings is None:
@@ -4958,6 +5420,11 @@ class MIDataCollectorWindow(QMainWindow):
         if self.current_settings is None:
             return
         if self.current_settings.practice_sec > 0:
+            self._show_phase_visuals_before_prompt(
+                phase="practice",
+                duration_sec=float(self.current_settings.practice_sec),
+                class_name=None,
+            )
             self._play_phase_start_prompt_blocking("practice")
             self.record_event("practice_start")
             if self.marker_failure_active:
@@ -4986,13 +5453,16 @@ class MIDataCollectorWindow(QMainWindow):
             return
 
         step = self.calibration_plan[self.calibration_step_index]
-        self._play_phase_start_prompt_blocking(str(step["phase"]))
+        phase = str(step["phase"])
+        duration_sec = float(step["duration"])
+        self._show_phase_visuals_before_prompt(phase=phase, duration_sec=duration_sec, class_name=None)
+        self._play_phase_start_prompt_blocking(phase)
         self.record_event(str(step["start_event"]))
         if self.marker_failure_active:
             return
         self.enter_phase(
-            phase=str(step["phase"]),
-            duration_sec=float(step["duration"]),
+            phase=phase,
+            duration_sec=duration_sec,
             class_name=None,
             title="",
             subtitle="",
@@ -5014,6 +5484,11 @@ class MIDataCollectorWindow(QMainWindow):
         if self.current_run_index < int(self.current_settings.run_count):
             rest_duration = self._run_rest_duration_for_completed_run(self.current_run_index)
             if rest_duration > 0:
+                self._show_phase_visuals_before_prompt(
+                    phase="run_rest",
+                    duration_sec=rest_duration,
+                    class_name=None,
+                )
                 self._play_phase_start_prompt_blocking("run_rest")
                 self.record_event("run_rest_start", run_index=self.current_run_index)
                 if self.marker_failure_active:
@@ -5063,6 +5538,11 @@ class MIDataCollectorWindow(QMainWindow):
         if self.current_settings is None:
             return
         self.idle_block_index += 1
+        self._show_phase_visuals_before_prompt(
+            phase="idle_block",
+            duration_sec=float(self.current_settings.idle_block_sec),
+            class_name=None,
+        )
         self._play_phase_start_prompt_blocking("idle_block")
         self.record_event("idle_block_start", block_index=self.idle_block_index)
         if self.marker_failure_active:
@@ -5186,6 +5666,7 @@ class MIDataCollectorWindow(QMainWindow):
             return
         self.continuous_prompt_index = -1
         self.current_continuous_prompt = None
+        self._show_phase_visuals_before_prompt(phase="continuous", duration_sec=duration_sec, class_name=None)
         self._play_phase_start_prompt_blocking("continuous")
         self.record_event("continuous_block_start", block_index=self.continuous_block_index)
         if self.marker_failure_active:
@@ -5247,8 +5728,11 @@ class MIDataCollectorWindow(QMainWindow):
         self.current_continuous_prompt = None
         self.marker_failure_active = False
         self.marker_failure_message = ""
+        self.runtime_failure_active = False
+        self.runtime_failure_message = ""
         self.session_running = True
         self.session_paused = False
+        self.phase_prompt_pending = False
         self.waiting_for_save = False
         self.capture_on_stop = True
         self.session_start_perf = time.perf_counter()
@@ -5341,26 +5825,44 @@ class MIDataCollectorWindow(QMainWindow):
 
         self._begin_session_with_settings(settings, sequence_by_run)
 
-    def enter_phase(self, *, phase: str, duration_sec: float, class_name: str | None, title: str, subtitle: str) -> None:
+    def enter_phase(
+        self,
+        *,
+        phase: str,
+        duration_sec: float,
+        class_name: str | None,
+        title: str,
+        subtitle: str,
+        started_perf: float | None = None,
+    ) -> None:
         del title, subtitle
         self.current_phase = phase
         self.session_paused = False
+        self.phase_prompt_pending = False
         self.pause_started_perf = 0.0
-        self.remaining_phase_sec = max(0.0, float(duration_sec))
-        self.phase_started_perf = time.perf_counter()
-        self.phase_deadline = time.perf_counter() + self.remaining_phase_sec
+        now = time.perf_counter()
+        start_perf = now if started_perf is None else min(float(started_perf), now)
+        duration_value = max(0.0, float(duration_sec))
+        self.phase_started_perf = start_perf
+        self.phase_deadline = start_perf + duration_value
+        self.remaining_phase_sec = max(0.0, self.phase_deadline - now)
         self._refresh_phase_display()
         self.update_countdown_text()
         if self.remaining_phase_sec > 0:
             self.phase_timer.start()
         else:
             self.phase_timer.stop()
-            QTimer.singleShot(0, self.on_phase_tick)
+            QTimer.singleShot(0, self._on_phase_tick_guarded)
         self.update_button_states()
 
     def update_countdown_text(self) -> None:
         if self.current_phase == "idle":
             self.countdown_label.setText("剩余时间：--")
+            self._sync_participant_display()
+            return
+
+        if self.phase_prompt_pending:
+            self.countdown_label.setText("提示中：倒计时将在提示音结束后开始")
             self._sync_participant_display()
             return
 
@@ -5373,6 +5875,12 @@ class MIDataCollectorWindow(QMainWindow):
         self.remaining_phase_sec = remaining
         self.countdown_label.setText(f"当前阶段剩余 {remaining:.1f} 秒")
         self._sync_participant_display()
+
+    def _on_phase_tick_guarded(self) -> None:
+        try:
+            self.on_phase_tick()
+        except Exception as error:
+            self._abort_session_due_to_runtime_failure(f"采集流程异常：{error}", source="phase_tick_exception")
 
     def on_phase_tick(self) -> None:
         if not self.session_running or self.session_paused:
@@ -5437,7 +5945,11 @@ class MIDataCollectorWindow(QMainWindow):
                 if self.marker_failure_active:
                     return
                 self._play_phase_end_prompt_blocking("baseline", self.current_trial.class_name)
-                self._play_phase_start_prompt_blocking("cue", self.current_trial.class_name)
+                self._show_phase_visuals_before_prompt(
+                    phase="cue",
+                    duration_sec=self.current_settings.cue_sec if self.current_settings is not None else 0.0,
+                    class_name=self.current_trial.class_name,
+                )
                 self.record_event(
                     "cue_start",
                     trial_id=self.current_trial.trial_id,
@@ -5464,6 +5976,7 @@ class MIDataCollectorWindow(QMainWindow):
                     title="",
                     subtitle="",
                 )
+                self._play_cue_prompt_during_phase(self.current_trial.class_name)
             return
 
         if self.current_phase == "cue":
@@ -5493,6 +6006,11 @@ class MIDataCollectorWindow(QMainWindow):
                 if self.marker_failure_active:
                     return
                 self._play_phase_end_prompt_blocking("imagery", self.current_trial.class_name)
+                self._show_phase_visuals_before_prompt(
+                    phase="iti",
+                    duration_sec=self.current_settings.iti_sec if self.current_settings is not None else 0.0,
+                    class_name=None,
+                )
                 self._play_phase_start_prompt_blocking("iti", self.current_trial.class_name)
                 self.record_event(
                     "iti_start",
@@ -5564,6 +6082,11 @@ class MIDataCollectorWindow(QMainWindow):
         self.current_trial = trial
         self.trial_records.append(trial)
 
+        self._show_phase_visuals_before_prompt(
+            phase="baseline",
+            duration_sec=float(self.current_settings.baseline_sec),
+            class_name=None,
+        )
         self._play_phase_start_prompt_blocking("baseline", class_name=class_name)
         self.record_event(
             "trial_start",
@@ -5606,25 +6129,21 @@ class MIDataCollectorWindow(QMainWindow):
             return
 
         class_name = self.current_trial.class_name
+        self._show_phase_visuals_before_prompt(
+            phase="imagery_ready",
+            duration_sec=0.0,
+            class_name=None,
+        )
         self._play_phase_start_prompt_blocking("imagery", class_name=class_name)
+        imagery_started_perf = time.perf_counter()
         self.record_event(
             "imagery_start",
             trial_id=self.current_trial.trial_id,
             class_name=class_name,
             run_index=self.current_trial.run_index,
             run_trial_index=self.current_trial.run_trial_index,
+            wait_for_marker_flush=False,
         )
-        self.record_event(
-            f"imagery_{class_name}",
-            trial_id=self.current_trial.trial_id,
-            class_name=class_name,
-            run_index=self.current_trial.run_index,
-            run_trial_index=self.current_trial.run_trial_index,
-        )
-        self.current_label.setText(
-            f"当前任务：第 {self.current_trial.trial_id} 个试次 - {CLASS_LOOKUP[class_name]['display_name']}（想象中）"
-        )
-        self.summary_label.setText(f"状态：正在执行第 {self.current_trial.trial_id} / {len(self.sequence)} 个试次")
         if self.marker_failure_active:
             return
         self.enter_phase(
@@ -5633,7 +6152,23 @@ class MIDataCollectorWindow(QMainWindow):
             class_name=class_name,
             title="",
             subtitle="",
+            started_perf=imagery_started_perf,
         )
+        self.current_label.setText(
+            f"当前任务：第 {self.current_trial.trial_id} 个试次 - {CLASS_LOOKUP[class_name]['display_name']}（想象中）"
+        )
+        self.summary_label.setText(f"状态：正在执行第 {self.current_trial.trial_id} / {len(self.sequence)} 个试次")
+        self._process_ui_events()
+        self._wait_remaining_marker_flush_since(imagery_started_perf)
+        self.record_event(
+            f"imagery_{class_name}",
+            trial_id=self.current_trial.trial_id,
+            class_name=class_name,
+            run_index=self.current_trial.run_index,
+            run_trial_index=self.current_trial.run_trial_index,
+        )
+        if self.marker_failure_active:
+            return
 
     @staticmethod
     def _append_note_once(note: str, addition: str) -> str:
@@ -5680,6 +6215,7 @@ class MIDataCollectorWindow(QMainWindow):
             self.pause_started_perf = pause_perf
             self.session_paused = True
             self.phase_timer.stop()
+            self._stop_voice_prompt()
             trial_invalidated = self._auto_reject_current_trial_for_pause()
             prompt_failed = self._auto_fail_current_prompt_for_pause()
             if self.current_trial is not None:
@@ -5754,7 +6290,7 @@ class MIDataCollectorWindow(QMainWindow):
         self.remaining_phase_sec = 0.0
         self.phase_timer.stop()
         self.update_countdown_text()
-        self.on_phase_tick()
+        self._on_phase_tick_guarded()
 
     def mark_bad_trial(self) -> None:
         if self.waiting_for_save or self.session_paused:
@@ -5880,6 +6416,7 @@ class MIDataCollectorWindow(QMainWindow):
             return
 
         self.phase_timer.stop()
+        self._stop_voice_prompt()
         self.session_paused = False
         self.pause_started_perf = 0.0
 
@@ -6076,6 +6613,7 @@ class MIDataCollectorWindow(QMainWindow):
         prompt_index: int | None = None,
         command_duration_sec: float | None = None,
         execution_success: int | bool | None = None,
+        wait_for_marker_flush: bool = True,
     ) -> None:
         if self.marker_failure_active:
             return
@@ -6097,7 +6635,13 @@ class MIDataCollectorWindow(QMainWindow):
         if self.worker is None:
             self._abort_session_due_to_marker_failure("采集线程未就绪，无法写入标记。")
             return
-        ok, error_message = self.worker.insert_marker_sync(float(event["marker_code"]))
+        try:
+            ok, error_message = self.worker.insert_marker_sync(
+                float(event["marker_code"]),
+                wait_for_flush=bool(wait_for_marker_flush),
+            )
+        except TypeError:
+            ok, error_message = self.worker.insert_marker_sync(float(event["marker_code"]))
         if not ok:
             self._abort_session_due_to_marker_failure(error_message or "写入标记失败。")
             return
@@ -6106,44 +6650,134 @@ class MIDataCollectorWindow(QMainWindow):
     def _abort_session_due_to_marker_failure(self, message: str) -> None:
         if self.marker_failure_active:
             return
+        can_emergency_save = self.worker is not None and self.worker_thread is not None and self.current_settings is not None
         self.marker_failure_active = True
         self.marker_failure_message = str(message)
-        self.capture_on_stop = False
-        self.waiting_for_save = False
+        self.capture_on_stop = bool(can_emergency_save)
+        self.waiting_for_save = bool(can_emergency_save)
+        self.emergency_save_only = bool(can_emergency_save)
+        self.emergency_save_reason = f"marker_write_failed: {message}"
         self.phase_timer.stop()
+        self._stop_voice_prompt()
         self.session_running = False
         self.session_paused = False
+        self.phase_prompt_pending = False
         self.pause_started_perf = 0.0
         self.current_phase = "idle"
         self._clear_session_result_tooltips()
         self.phase_label.setText("标记失败")
-        self.countdown_label.setText("本次会话未保存，请检查设备连接和标记写入后重试。")
-        self.summary_label.setText("状态：标记写入失败，本次会话已中止")
-        self.current_label.setText("当前任务：请检查设备后重新采集")
-        self._set_operator_notice("错误：marker 写入失败，本次会话未保存。", "error")
+        self.countdown_label.setText(
+            "正在停止设备并保存紧急原始数据…" if can_emergency_save else "本次会话未保存，请检查设备连接和标记写入后重试。"
+        )
+        self.summary_label.setText(
+            "状态：标记写入失败，正在保存紧急原始数据" if can_emergency_save else "状态：标记写入失败，本次会话已中止"
+        )
+        self.current_label.setText("当前任务：保存紧急原始数据" if can_emergency_save else "当前任务：请检查设备后重新采集")
+        self._set_operator_notice(
+            "错误：marker 写入失败，正在保存紧急原始数据。" if can_emergency_save else "错误：marker 写入失败，本次会话未保存。",
+            "saving" if can_emergency_save else "error",
+        )
         self._apply_phase_theme("idle", None)
         self.cue_widget.set_state(
             phase="idle",
             class_name=None,
             title="标记失败",
-            subtitle="本次会话未保存，请检查设备连接和标记写入后重新开始。",
+            subtitle=(
+                "正在保存紧急原始数据，请等待完成。"
+                if can_emergency_save
+                else "本次会话未保存，请检查设备连接和标记写入后重新开始。"
+            ),
         )
         self.participant_window.set_prompt(
             phase="idle",
             class_name=None,
             stage_text="标记失败",
             title="实验已中止",
-            subtitle="检测到标记写入失败，本次会话不会保存，请联系操作员重新开始。",
+            subtitle=(
+                "检测到标记写入失败，正在保存原始数据，请保持静止。"
+                if can_emergency_save
+                else "检测到标记写入失败，本次会话不会保存，请联系操作员重新开始。"
+            ),
             countdown_text="-",
         )
         self.update_button_states()
         if self.worker_thread is not None:
             self.worker_stop_requested.emit()
-        self.show_error(f"{message}\n\n本次会话不会保存，请检查设备连接后重新采集。")
+        if can_emergency_save:
+            self.show_error(f"{message}\n\n已停止正式流程，正在保存紧急原始数据。该数据不一定可直接训练，但不会丢失原始矩阵。")
+        else:
+            self.show_error(f"{message}\n\n本次会话不会保存，请检查设备连接后重新采集。")
+
+    def _abort_session_due_to_runtime_failure(self, message: str, *, source: str) -> None:
+        if self.runtime_failure_active or self.waiting_for_save:
+            return
+        can_emergency_save = self.worker is not None and self.worker_thread is not None and self.current_settings is not None
+        self.runtime_failure_active = True
+        self.runtime_failure_message = str(message)
+        self.capture_on_stop = bool(can_emergency_save)
+        self.waiting_for_save = bool(can_emergency_save)
+        self.emergency_save_only = bool(can_emergency_save)
+        self.emergency_save_reason = f"{source}: {message}"
+        self.phase_timer.stop()
+        self._stop_voice_prompt()
+        self.session_running = False
+        self.session_paused = False
+        self.phase_prompt_pending = False
+        self.pause_started_perf = 0.0
+        self.current_phase = "idle"
+        self._clear_session_result_tooltips()
+        self.phase_label.setText("运行异常")
+        self.countdown_label.setText(
+            "正在停止设备并保存紧急原始数据…" if can_emergency_save else "当前没有可保存的采样数据，请检查设备后重新开始。"
+        )
+        self.summary_label.setText(
+            "状态：采集流程异常，正在保存紧急原始数据" if can_emergency_save else "状态：采集流程异常，本次会话已中止"
+        )
+        self.current_label.setText("当前任务：保存紧急原始数据" if can_emergency_save else "当前任务：请检查错误后重新采集")
+        self._set_operator_notice(
+            "错误：采集流程异常，正在保存紧急原始数据。" if can_emergency_save else "错误：采集流程异常，本次会话未保存。",
+            "saving" if can_emergency_save else "error",
+        )
+        self._apply_phase_theme("idle", None)
+        self.cue_widget.set_state(
+            phase="idle",
+            class_name=None,
+            title="采集异常",
+            subtitle=(
+                "正在保存紧急原始数据，请等待完成。"
+                if can_emergency_save
+                else "当前没有可保存的采样数据，请检查设备后重新开始。"
+            ),
+        )
+        self.participant_window.set_prompt(
+            phase="idle",
+            class_name=None,
+            stage_text="采集异常",
+            title="实验已中止",
+            subtitle=(
+                "检测到采集流程异常，正在保存原始数据，请保持静止。"
+                if can_emergency_save
+                else "检测到采集流程异常，请联系操作员重新开始。"
+            ),
+            countdown_text="-",
+        )
+        self.update_button_states()
+        if self.worker_thread is not None:
+            self.worker_stop_requested.emit()
+        if can_emergency_save:
+            self.show_error(f"{message}\n\n已停止正式流程，正在保存紧急原始数据。该数据不一定可直接训练，但会尽量保住当前原始矩阵。")
+        else:
+            self.show_error(f"{message}\n\n当前没有可保存的采样数据，请检查设备连接后重新采集。")
 
     def _set_save_failed_state(self, message: str) -> None:
         self.waiting_for_save = False
         self.capture_on_stop = False
+        self.emergency_save_only = False
+        self.emergency_save_reason = ""
+        self.marker_failure_active = False
+        self.marker_failure_message = ""
+        self.runtime_failure_active = False
+        self.runtime_failure_message = ""
         self._clear_session_result_tooltips()
         self.phase_label.setText("保存失败")
         self.countdown_label.setText("本次会话未保存，请检查原因后重新采集。")
@@ -6172,7 +6806,8 @@ class MIDataCollectorWindow(QMainWindow):
         self._set_save_failed_state("保存失败：设备线程已结束，但没有返回完整会话数据。本次会话未保存，请重新采集。")
 
     def on_session_data_ready(self, payload: dict) -> None:
-        if not self.capture_on_stop or self.current_settings is None or not self.event_log:
+        has_regular_events = bool(self.event_log)
+        if not self.capture_on_stop or self.current_settings is None or (not has_regular_events and not self.emergency_save_only):
             self.log("设备停止，但没有需要保存的有效会话。")
             return
 
@@ -6180,9 +6815,14 @@ class MIDataCollectorWindow(QMainWindow):
             self._set_save_failed_state("保存失败：检测到重复的保存任务，请重新采集。")
             return
 
-        self.countdown_label.setText("正在后台写入采集数据，请等待保存完成…")
-        self._set_operator_notice("保存：后台写盘中，请等待完成。", "saving")
-        self.log("设备线程已返回完整数据，开始后台写盘。")
+        if self.emergency_save_only:
+            self.countdown_label.setText("正在后台写入紧急原始数据，请等待保存完成…")
+            self._set_operator_notice("保存：紧急原始数据写盘中，请等待完成。", "saving")
+            self.log("设备线程已返回数据，开始保存紧急原始矩阵。")
+        else:
+            self.countdown_label.setText("正在后台写入采集数据，请等待保存完成…")
+            self._set_operator_notice("保存：后台写盘中，请等待完成。", "saving")
+            self.log("设备线程已返回完整数据，开始后台写盘。")
 
         self.save_thread = QThread(self)
         self.save_worker = SessionSaveWorker(
@@ -6190,6 +6830,8 @@ class MIDataCollectorWindow(QMainWindow):
             settings=self.current_settings,
             event_log=list(self.event_log),
             trial_records=list(self.trial_records),
+            emergency_only=bool(self.emergency_save_only),
+            emergency_reason=str(self.emergency_save_reason),
         )
         self.save_worker.moveToThread(self.save_thread)
         self.save_thread.started.connect(self.save_worker.run)
@@ -6204,29 +6846,45 @@ class MIDataCollectorWindow(QMainWindow):
     def on_session_save_completed(self, result: dict) -> None:
         self.waiting_for_save = False
         self.capture_on_stop = False
-        self.summary_label.setText(f"状态：保存完成，共保存 {result['trial_count']} 个试次")
+        emergency_raw_only = bool(result.get("emergency_raw_only", False))
+        self.emergency_save_only = False
+        self.emergency_save_reason = ""
+        self.marker_failure_active = False
+        self.marker_failure_message = ""
+        self.runtime_failure_active = False
+        self.runtime_failure_message = ""
+        trial_count = int(result.get("trial_count", 0))
+        if emergency_raw_only:
+            self.summary_label.setText(f"状态：已保存紧急原始数据，记录到 {trial_count} 个试次元数据")
+        else:
+            self.summary_label.setText(f"状态：保存完成，共保存 {trial_count} 个试次")
         saved_session_dir = str(result["session_dir"])
-        self.current_label.setText("当前任务：数据已保存")
+        self.current_label.setText("当前任务：紧急原始数据已保存" if emergency_raw_only else "当前任务：数据已保存")
         self.current_label.setToolTip(saved_session_dir)
-        self.phase_label.setText("保存完成")
+        self.phase_label.setText("原始数据已保存" if emergency_raw_only else "保存完成")
         self.countdown_label.setText("当前会话已完成，可重新连接并开始新的采集。")
-        self._set_operator_notice("完成：数据已保存，可以开始下一次采集。", "ok")
+        self._set_operator_notice(
+            "完成：紧急原始数据已保存；请检查 marker/设备后再继续。" if emergency_raw_only else "完成：数据已保存，可以开始下一次采集。",
+            "warning" if emergency_raw_only else "ok",
+        )
         self._apply_phase_theme("idle", None)
         self.cue_widget.set_state(
             phase="idle",
             class_name=None,
-            title="保存完成",
-            subtitle="可以开始下一次采集，或关闭程序。",
+            title="原始数据已保存" if emergency_raw_only else "保存完成",
+            subtitle="本次只保存了紧急原始矩阵，请检查设备和 marker。" if emergency_raw_only else "可以开始下一次采集，或关闭程序。",
         )
         self.refresh_trial_counters()
-        self.trial_banner_label.setText(f"当前试次：本次会话已完成，共 {result['trial_count']} 个试次")
+        self.trial_banner_label.setText(f"当前试次：本次会话已完成，共 {trial_count} 个试次")
         self.sequence_summary_label.setText(
-            f"计划：本次已保存 {int(result['trial_count'])} 个试次 | "
+            f"计划：本次已保存 {trial_count} 个试次 | "
             f"有效 {int(result.get('accepted_trial_count', 0))} | 坏试次 {int(result.get('rejected_trial_count', 0))}"
         )
         self.next_task_label.setText("下一任务：可以开始新的会话")
         self.next_task_label.setToolTip(saved_session_dir)
-        self.log(f"会话已保存：{saved_session_dir}")
+        self.log(("紧急原始数据已保存：" if emergency_raw_only else "会话已保存：") + saved_session_dir)
+        if emergency_raw_only and result.get("full_save_error"):
+            self.log(f"紧急保存原因：{result['full_save_error']}")
         quality_warnings = self._quality_warnings_from_report(result.get("quality_report"))
         if quality_warnings:
             warning_text = "；".join(quality_warnings)
@@ -6247,9 +6905,12 @@ class MIDataCollectorWindow(QMainWindow):
             self.log(f"数据流警告：{warning_text}")
         if "save_index" in result and "run_stem" in result:
             self.log(f"采集编号：save-{int(result['save_index']):03d} | 标识：{result['run_stem']}")
-        self.log(f"原始数据：{result['fif_path']}")
+        if result.get("fif_path"):
+            self.log(f"原始数据：{result['fif_path']}")
         if result.get("board_data_path"):
             self.log(f"Board matrix: {result['board_data_path']}")
+        if result.get("emergency_meta_path"):
+            self.log(f"Emergency metadata: {result['emergency_meta_path']}")
         if result.get("segments_csv_path"):
             self.log(f"Segments CSV: {result['segments_csv_path']}")
         if result.get("mi_epochs_path"):
@@ -6272,10 +6933,14 @@ class MIDataCollectorWindow(QMainWindow):
     def on_save_thread_finished(self) -> None:
         self.save_worker = None
         self.save_thread = None
+        self.update_button_states()
 
     def on_worker_thread_finished(self) -> None:
         marker_failure_active = self.marker_failure_active
-        saved_completed = self.current_label.text().startswith("当前任务：数据已保存")
+        runtime_failure_active = self.runtime_failure_active
+        saved_completed = self.current_label.text().startswith("当前任务：数据已保存") or self.current_label.text().startswith(
+            "当前任务：紧急原始数据已保存"
+        )
         save_failed = self.current_label.text().startswith("当前任务：保存失败")
         pending_save_result = self.waiting_for_save
         self._stop_voice_prompt()
@@ -6284,6 +6949,7 @@ class MIDataCollectorWindow(QMainWindow):
         self.device_info = None
         self.session_running = False
         self.session_paused = False
+        self.phase_prompt_pending = False
         self.current_phase = "idle"
         self.phase_started_perf = 0.0
         self.pause_started_perf = 0.0
@@ -6312,12 +6978,30 @@ class MIDataCollectorWindow(QMainWindow):
             self.preview_widget.clear_stream("设备断开后停止实时波形显示。")
             self.preview_widget.set_quality_mode(self.preview_mode, impedance_channel=self.preview_impedance_channel)
         self._apply_phase_theme("idle", None)
-        if marker_failure_active:
+        if marker_failure_active and pending_save_result:
+            self.summary_label.setText("状态：marker 写入失败，正在保存紧急原始数据")
+            self.current_label.setText("当前任务：等待紧急保存结果")
+            self.trial_banner_label.setText("当前试次：marker 写入失败，正在保存原始数据")
+            self.next_task_label.setText("下一任务：等待紧急保存完成")
+            self._set_operator_notice("保存：marker 写入失败，正在等待紧急原始数据保存结果。", "saving")
+        elif marker_failure_active:
             self.summary_label.setText("状态：标记写入失败，本次会话已丢弃")
             self.current_label.setText("当前任务：检查设备后重新开始")
             self.trial_banner_label.setText("当前试次：本次会话因标记写入失败未保存")
             self.next_task_label.setText("下一任务：排查设备连接或 marker 写入")
             self._set_operator_notice("错误：marker 写入失败，本次会话已丢弃。", "error")
+        elif runtime_failure_active and pending_save_result:
+            self.summary_label.setText("状态：采集异常，正在保存紧急原始数据")
+            self.current_label.setText("当前任务：等待紧急保存结果")
+            self.trial_banner_label.setText("当前试次：采集异常，正在保存原始数据")
+            self.next_task_label.setText("下一任务：等待紧急保存完成")
+            self._set_operator_notice("保存：采集异常，正在等待紧急原始数据保存结果。", "saving")
+        elif runtime_failure_active:
+            self.summary_label.setText("状态：采集异常，但没有返回可保存数据")
+            self.current_label.setText("当前任务：检查错误后重新开始")
+            self.trial_banner_label.setText("当前试次：本次会话因采集异常未保存")
+            self.next_task_label.setText("下一任务：排查设备连接或流程错误")
+            self._set_operator_notice("错误：采集异常，未收到可保存数据。", "error")
         elif pending_save_result:
             self.current_label.setText("当前任务：等待保存数据")
             self.trial_banner_label.setText("当前试次：设备线程已结束，正在等待保存结果")
@@ -6330,8 +7014,11 @@ class MIDataCollectorWindow(QMainWindow):
             self._set_operator_notice("待机：连接设备后先完成 EEG/阻抗质量检查。", "idle")
         if not self.waiting_for_save and not saved_completed and not save_failed and not marker_failure_active:
             self.summary_label.setText("状态：设备已断开")
-        self.marker_failure_active = False
-        self.marker_failure_message = ""
+        if not pending_save_result:
+            self.marker_failure_active = False
+            self.marker_failure_message = ""
+            self.runtime_failure_active = False
+            self.runtime_failure_message = ""
         self._set_preview_mode_label()
         self._update_preview_status()
         self.update_button_states()
@@ -6386,7 +7073,7 @@ def build_initial_config_from_args(args: argparse.Namespace) -> dict:
     if args.serial_port:
         config["serial_port"] = args.serial_port
     if args.output_root:
-        config["output_root"] = args.output_root
+        config["output_root"] = str(resolve_output_root(args.output_root))
     if args.subject_id:
         config["subject_id"] = args.subject_id
     if args.session_id:
@@ -6412,6 +7099,22 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("运动想象数据采集器")
     window = MIDataCollectorWindow(initial_config=build_initial_config_from_args(args))
+
+    previous_excepthook = sys.excepthook
+
+    def emergency_excepthook(exc_type, exc_value, exc_traceback) -> None:
+        if exc_type is not KeyboardInterrupt:
+            try:
+                if window.session_running and not window._save_in_progress():
+                    window._abort_session_due_to_runtime_failure(
+                        f"未处理异常：{exc_value}",
+                        source="unhandled_exception",
+                    )
+            except Exception:
+                pass
+        previous_excepthook(exc_type, exc_value, exc_traceback)
+
+    sys.excepthook = emergency_excepthook
     window.show()
     return app.exec_()
 

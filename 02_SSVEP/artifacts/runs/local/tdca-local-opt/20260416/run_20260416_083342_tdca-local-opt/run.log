@@ -1,4 +1,4 @@
-[08:33:42] [tdca-local-opt] report directory prepared: D:\brain\brain_code\02_SSVEP\artifacts\runs\local\tdca-local-opt\20260416\run_20260416_083342_tdca-local-opt
+[08:33:42] [tdca-local-opt] report directory prepared: <repo>\02_SSVEP\artifacts\runs\local\tdca-local-opt\20260416\run_20260416_083342_tdca-local-opt
 [08:33:43] [tdca-local-opt] compute backend prepared: requested=auto effective=cuda
 [08:35:05] [tdca-local-opt] repeat=1/5 candidate=1/130 variant=tdca_like_legacy|win=2|delay=2|n_components=2|confidence=global_correctness_logistic
 [08:35:18] [tdca-local-opt] repeat=1/5 candidate=2/130 variant=tdca_like_legacy|win=2|delay=3|n_components=2|confidence=global_correctness_logistic
@@ -130,5 +130,5 @@
 [08:55:43] [tdca-local-opt] repeat=5/5 candidate=128/130 variant=tdca_paper_aligned|win=3|delay=4|n_components=2|confidence=bayesian_gap_gmm
 [08:55:52] [tdca-local-opt] repeat=5/5 candidate=129/130 variant=tdca_paper_aligned|win=3.5|delay=3|n_components=2|confidence=bayesian_gap_gmm
 [08:56:00] [tdca-local-opt] repeat=5/5 candidate=130/130 variant=tdca_paper_aligned|win=3.5|delay=4|n_components=2|confidence=bayesian_gap_gmm
-[09:00:39] [tdca-local-opt] report saved: D:\brain\brain_code\02_SSVEP\artifacts\runs\local\tdca-local-opt\20260416\run_20260416_083342_tdca-local-opt\report.json
-[09:00:39] [tdca-local-opt] profile saved: D:\brain\brain_code\02_SSVEP\artifacts\runs\local\tdca-local-opt\20260416\run_20260416_083342_tdca-local-opt\default_profile.json
+[09:00:39] [tdca-local-opt] report saved: <repo>\02_SSVEP\artifacts\runs\local\tdca-local-opt\20260416\run_20260416_083342_tdca-local-opt\report.json
+[09:00:39] [tdca-local-opt] profile saved: <repo>\02_SSVEP\artifacts\runs\local\tdca-local-opt\20260416\run_20260416_083342_tdca-local-opt\default_profile.json

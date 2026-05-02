@@ -118,6 +118,7 @@ def test_discover_collection_manifests_deduplicates_nested_duplicate_session() -
 
 def test_train_eval_organize_report_dir_with_selected_manifests(monkeypatch) -> None:
     import ssvep_core.train_eval as module
+    import ssvep_core._train_eval_staged as staged_module
 
     tmp_root = PROJECT_DIR / ".tmp_test_artifacts" / f"report_dir_{uuid.uuid4().hex}"
     tmp_root.mkdir(parents=True, exist_ok=True)
@@ -145,15 +146,20 @@ def test_train_eval_organize_report_dir_with_selected_manifests(monkeypatch) -> 
             manifest={"protocol_signature": protocol_signature},
         )
 
-        monkeypatch.setattr(module, "load_collection_dataset", lambda _path: dataset)
-        monkeypatch.setattr(
-            module,
-            "_split_session_for_train_eval",
-            lambda _dataset, seed: ([(trial, segment)], [(trial, segment)], [(trial, segment)]),
-        )
-        monkeypatch.setattr(module, "_subset_trial_segments_by_positions", lambda segments, _positions: list(segments))
-        monkeypatch.setattr(module, "summarize_benchmark_robustness", lambda _rows, **_kwargs: {})
-        monkeypatch.setattr(module, "save_profile", lambda _profile, _path: None)
+        for target_module in (module, staged_module):
+            monkeypatch.setattr(target_module, "load_collection_dataset", lambda _path: dataset)
+            monkeypatch.setattr(
+                target_module,
+                "_split_session_for_train_eval",
+                lambda _dataset, seed: ([(trial, segment)], [(trial, segment)], [(trial, segment)]),
+            )
+            monkeypatch.setattr(
+                target_module,
+                "_subset_trial_segments_by_positions",
+                lambda segments, _positions: list(segments),
+            )
+            monkeypatch.setattr(target_module, "summarize_benchmark_robustness", lambda _rows, **_kwargs: {})
+            monkeypatch.setattr(target_module, "save_profile", lambda _profile, _path: None)
 
         class _FakeBenchmarkRunner:
             def __init__(self, **kwargs):
@@ -184,7 +190,8 @@ def test_train_eval_organize_report_dir_with_selected_manifests(monkeypatch) -> 
                     "dynamic_delta": {},
                 }
 
-        monkeypatch.setattr(module, "BenchmarkRunner", _FakeBenchmarkRunner)
+        for target_module in (module, staged_module):
+            monkeypatch.setattr(target_module, "BenchmarkRunner", _FakeBenchmarkRunner)
 
         config = OfflineTrainEvalConfig(
             dataset_manifest_session1=tmp_root / "unused_s1.json",

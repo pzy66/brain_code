@@ -327,6 +327,7 @@ class FourArrowStimWidget(QOpenGLWidget):
         amp: float,
         phi: float,
         stimulus_mode: str = STIMULUS_MODE_ELAPSED_TIME_SINE,
+        selected_border_color: Optional[QColor] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
@@ -336,6 +337,7 @@ class FourArrowStimWidget(QOpenGLWidget):
         self.amp = float(amp)
         self.phi = float(phi)
         self.stimulus_mode = validate_stimulus_mode(stimulus_mode)
+        self.selected_border_color = selected_border_color or QColor(64, 220, 140)
 
         self.clock_thread: Optional[StimClockThread] = None
         self.clock_running = False
@@ -479,13 +481,13 @@ class FourArrowStimWidget(QOpenGLWidget):
         predicted = self.pred_freq is not None and abs(float(freq) - float(self.pred_freq)) < 1e-8
 
         if selected:
-            return QPen(QColor(64, 220, 140), 9)
+            return QPen(self.selected_border_color, 9)
         if self.phase_mode in (PHASE_CAL_PREPARE, PHASE_CAL_ACTIVE) and cue:
             return QPen(QColor(80, 200, 255), 8)
         if self.decoder_state == "candidate" and predicted:
             return QPen(QColor(255, 210, 60), 7)
         if self.decoder_state == "selected" and predicted:
-            return QPen(QColor(64, 220, 140), 9)
+            return QPen(self.selected_border_color, 9)
         return QPen(QColor(70, 70, 70), 2)
 
     def _build_active_phase_frame_payload(self, *, t_sec: float, frame_index: int) -> dict[str, Any]:

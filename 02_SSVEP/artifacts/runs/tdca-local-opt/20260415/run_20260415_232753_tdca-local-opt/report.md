@@ -8,7 +8,7 @@
 - Confidence variant: `global_correctness_logistic`
 - Training window policy: `last_window_only`
 - Profile saved: `True`
-- Profile path: `D:\brain\brain_code\02_SSVEP\artifacts\runs\tdca-local-opt\20260415\run_20260415_232753_tdca-local-opt\default_profile.json`
+- Profile path: `<repo>\02_SSVEP\artifacts\runs\tdca-local-opt\20260415\run_20260415_232753_tdca-local-opt\default_profile.json`
 - Report status: `ok`
 - Status reasons: `none`
 - Chosen model rationale: `tdca_superior_on_primary_ranking`

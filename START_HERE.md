@@ -1,19 +1,40 @@
 # START HERE
 
-只看这里：
+This directory is the formal code repository. Daily development, commits,
+branches, tests, and pushes should happen inside `brain_code`.
 
-- [hybrid_controller](C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller)
+The parent directory is a local workspace for environment files, local datasets,
+deliverables, and IDE settings.
 
-最常用入口：
+## Common Entrypoints
 
-- 电脑端真机 GUI：
-  - [run_real.py](C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\run_real.py)
-- 电脑端 SSVEP GUI：
-  - [run_real_ssvep.py](C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\run_real_ssvep.py)
-- JetMax 端启动脚本：
-  - [run_hybrid_controller_ros_runtime.sh](C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\robot\run_hybrid_controller_ros_runtime.sh)
+- Unified collection GUI: [run_unified_collection.py](./run_unified_collection.py)
+- Legacy unified collection wrapper: [unified_collection_ui.py](./unified_collection_ui.py)
+- Hybrid Controller PC GUI: [hybrid_controller/run_real.py](./hybrid_controller/run_real.py)
+- Hybrid Controller SSVEP GUI: [hybrid_controller/run_real_ssvep.py](./hybrid_controller/run_real_ssvep.py)
+- JetMax runtime script: [hybrid_controller/robot/run_hybrid_controller_ros_runtime.sh](./hybrid_controller/robot/run_hybrid_controller_ros_runtime.sh)
 
-说明文档：
+## Structure To Know
 
-- [hybrid_controller/README.md](C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\README.md)
-- [hybrid_controller/robot/README.md](C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\robot\README.md)
+- `brain_workspace`: shared path/bootstrap/environment helpers.
+- `unified_collection`: real unified MI/SSVEP collection implementation.
+- `01_MI`: MI collection, training, realtime inference, and shared helpers.
+- `02_SSVEP`: SSVEP collection, training, replay, validation, and artifacts.
+- `hybrid_controller`: integrated controller for MI, SSVEP, vision, and robot control.
+- `docs`: setup, artifact policy, code status, and roadmap notes.
+
+## Maintenance Commands
+
+```powershell
+cd <repo>
+tools\resolve_brain_python.cmd
+$env:BRAIN_PYTHON_EXE = (& .\tools\resolve_brain_python.cmd)
+& $env:BRAIN_PYTHON_EXE -m brain_workspace.environment
+& $env:BRAIN_PYTHON_EXE -m pytest --collect-only -q -o addopts=
+powershell -ExecutionPolicy Bypass -File .\tools\clean_workspace_temp.ps1 -DryRun
+powershell -ExecutionPolicy Bypass -File .\tools\diagnose_workspace.ps1
+git status --short --ignored
+```
+
+The cleanup script is intentionally scoped to caches and temporary products. It
+does not remove formal datasets, deployed profiles, models, or run results.

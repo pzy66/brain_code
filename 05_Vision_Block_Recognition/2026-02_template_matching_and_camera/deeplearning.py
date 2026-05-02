@@ -1,9 +1,13 @@
 import cv2
 import numpy as np
+import os
+from pathlib import Path
 from ultralytics import YOLO
 
 STREAM_URL = "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color"
-WEIGHTS = r"C:\Users\P1233\Desktop\brain\dataset\best.pt"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_WEIGHTS = REPO_ROOT / "hybrid_controller" / "models" / "vision" / "best.pt"
+WEIGHTS = Path(os.environ.get("BRAIN_VISION_WEIGHTS", DEFAULT_WEIGHTS)).expanduser()
 
 # 只保留置信度较高的结果
 CONF = 0.35
@@ -21,6 +25,11 @@ def mask_centroid(mask01: np.ndarray):
     return (cx, cy)
 
 def main():
+    if not WEIGHTS.exists():
+        raise FileNotFoundError(
+            f"YOLO weights not found: {WEIGHTS}. "
+            "Set BRAIN_VISION_WEIGHTS to a .pt file or keep the default model in hybrid_controller/models/vision/."
+        )
     model = YOLO(WEIGHTS)
 
     cap = cv2.VideoCapture(STREAM_URL)

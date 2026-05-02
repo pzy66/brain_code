@@ -1,6 +1,6 @@
 # 采集保存命名与字段规范
 
-本文件描述当前 `schema_version=2` 的落盘命名、目录结构、manifest 以及各文件字段口径。对应实现位于 [mi_collection.py](C:/Users/P1233/Desktop/brain/mi_classifier/code/shared/src/mi_collection.py)。
+本文件描述当前 `schema_version=2` 的落盘命名、目录结构、manifest 以及各文件字段口径。对应实现位于 [mi_collection.py](<workspace>/mi_classifier/code/shared/src/mi_collection.py)。
 
 ## 1. 先统一几个术语
 

@@ -40,6 +40,22 @@ class MIDataCollectorPreviewTests(unittest.TestCase):
         self.assertFalse(np.allclose(processed, source_before))
         self.assertLess(abs(float(np.mean(processed))), 1e-8)
 
+    def test_capture_chunk_concat_preserves_all_samples(self) -> None:
+        first = np.ones((3, 2), dtype=np.float32)
+        second = np.full((3, 3), 2.0, dtype=np.float32)
+
+        merged = BoardCaptureWorker._concat_capture_chunks([first, second])
+
+        self.assertEqual(merged.shape, (3, 5))
+        np.testing.assert_allclose(merged[:, :2], 1.0)
+        np.testing.assert_allclose(merged[:, 2:], 2.0)
+
+    def test_capture_chunk_concat_rejects_inconsistent_rows(self) -> None:
+        with self.assertRaisesRegex(ValueError, "inconsistent row counts"):
+            BoardCaptureWorker._concat_capture_chunks(
+                [np.zeros((3, 2), dtype=np.float32), np.zeros((4, 2), dtype=np.float32)]
+            )
+
     def test_impedance_mode_switch_enables_all_channels(self) -> None:
         cyton_board = getattr(BoardIds, "CYTON_BOARD", None)
         self.assertIsNotNone(cyton_board)

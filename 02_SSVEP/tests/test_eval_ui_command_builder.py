@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import sys
 import uuid
@@ -10,7 +11,8 @@ PROJECT_DIR = Path(__file__).resolve().parents[1]
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
-from apps.training_evaluation_ui import build_parser
+from apps import training_evaluation_ui as train_eval_ui
+from apps.training_evaluation_ui import TrainingEvaluationWindow, build_parser
 from ssvep_core.run_artifacts import resolve_ssvep_run_artifacts
 
 
@@ -89,6 +91,77 @@ def test_run_artifact_resolver_organizes_training_eval_run_dir() -> None:
         assert payload.figures_dir == expected_run_dir / "figures"
     finally:
         shutil.rmtree(tmp_root, ignore_errors=True)
+
+
+def test_publish_to_hybrid_controller_uses_publish_time_for_history(tmp_path: Path, monkeypatch) -> None:
+    source = tmp_path / "old_good_profile.json"
+    source.write_text(
+        json.dumps(
+            {
+                "model_name": "fbcca",
+                "freqs": [8.0, 10.0, 12.0, 15.0],
+                "saved_at": "2026-04-13T22:42:32",
+            }
+        ),
+        encoding="utf-8",
+    )
+    hybrid_dir = tmp_path / "hybrid_profiles"
+    current_path = hybrid_dir / "current_fbcca_profile.json"
+    monkeypatch.setattr(train_eval_ui, "HYBRID_PROFILE_DIR", hybrid_dir)
+    monkeypatch.setattr(train_eval_ui, "HYBRID_CURRENT_PROFILE_PATH", current_path)
+    monkeypatch.setattr(train_eval_ui, "_now_stamp", lambda: "20260430_120000")
+
+    class DummyWindow:
+        def __init__(self) -> None:
+            self._last_profile_path = source
+            self.logs: list[str] = []
+
+        def _log(self, text: str) -> None:
+            self.logs.append(str(text))
+
+    dummy = DummyWindow()
+    TrainingEvaluationWindow._publish_profile_to_hybrid_controller(dummy)
+
+    assert current_path.exists()
+    assert (hybrid_dir / "ssvep_fbcca_profile_20260430_120000.json").exists()
+    assert not (hybrid_dir / "ssvep_fbcca_profile_20260413_224232.json").exists()
+    assert any("已发布到集成控制器" in item for item in dummy.logs)
+
+
+def test_publish_to_ssvep_realtime_writes_dedicated_fbcca_profile(tmp_path: Path, monkeypatch) -> None:
+    source = tmp_path / "profile.json"
+    source.write_text(
+        json.dumps(
+            {
+                "model_name": "fbcca",
+                "freqs": [8.0, 10.0, 12.0, 15.0],
+                "saved_at": "2026-04-30T12:00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+    source_v2 = tmp_path / "profile_v2.json"
+    source_v2.write_text(json.dumps({"schema": "profile_v2"}), encoding="utf-8")
+    realtime_profile = tmp_path / "deployed" / "fbcca_profile.json"
+    realtime_profile_v2 = tmp_path / "deployed" / "fbcca_profile_v2.json"
+    monkeypatch.setattr(train_eval_ui, "SSVEP_REALTIME_PROFILE_PATH", realtime_profile)
+    monkeypatch.setattr(train_eval_ui, "SSVEP_REALTIME_PROFILE_V2_PATH", realtime_profile_v2)
+
+    class DummyWindow:
+        def __init__(self) -> None:
+            self._last_profile_path = source
+            self.logs: list[str] = []
+
+        def _log(self, text: str) -> None:
+            self.logs.append(str(text))
+
+    dummy = DummyWindow()
+    TrainingEvaluationWindow._publish_profile_to_ssvep_realtime(dummy)
+
+    assert realtime_profile.exists()
+    assert realtime_profile_v2.exists()
+    assert json.loads(realtime_profile.read_text(encoding="utf-8"))["model_name"] == "fbcca"
+    assert any("已发布到 SSVEP 实时识别" in item for item in dummy.logs)
 
 
 def test_run_artifact_resolver_keeps_flat_paths_when_organization_is_disabled() -> None:

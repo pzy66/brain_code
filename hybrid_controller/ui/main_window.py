@@ -14,6 +14,7 @@ try:
         QGridLayout,
         QHBoxLayout,
         QLabel,
+        QLineEdit,
         QMainWindow,
         QPushButton,
         QScrollArea,
@@ -30,6 +31,47 @@ from hybrid_controller.ui.vision_feed_widget import VisionFeedWidget
 
 AUTO_PROFILE_VALUE = "__AUTO_PROFILE__"
 _UNCHANGED = object()
+DEFAULT_SSVEP_PRETRAIN_PRESET = "fast"
+SSVEP_PRETRAIN_PRESETS: dict[str, dict[str, object]] = {
+    "fast": {
+        "label": "Fast",
+        "prepare_sec": 0.5,
+        "active_sec": 3.5,
+        "rest_sec": 0.5,
+        "target_repeats": 2,
+        "idle_repeats": 4,
+        "win_sec": 2.5,
+        "step_sec": 0.5,
+    },
+    "standard": {
+        "label": "Standard",
+        "prepare_sec": 0.8,
+        "active_sec": 4.0,
+        "rest_sec": 0.8,
+        "target_repeats": 3,
+        "idle_repeats": 6,
+        "win_sec": 3.0,
+        "step_sec": 0.5,
+    },
+    "stable": {
+        "label": "Stable",
+        "prepare_sec": 1.0,
+        "active_sec": 4.0,
+        "rest_sec": 1.0,
+        "target_repeats": 5,
+        "idle_repeats": 10,
+        "win_sec": 3.0,
+        "step_sec": 0.5,
+    },
+}
+
+
+def _ssvep_pretrain_estimate_seconds(preset: dict[str, object]) -> float:
+    target_repeats = int(preset["target_repeats"])
+    idle_repeats = int(preset["idle_repeats"])
+    trial_count = 4 * target_repeats + idle_repeats
+    trial_sec = float(preset["prepare_sec"]) + float(preset["active_sec"]) + float(preset["rest_sec"])
+    return float(trial_count) * trial_sec
 
 
 class ControlSceneWidget(QWidget):
@@ -213,6 +255,7 @@ class MainWindow(QMainWindow):
     abort_requested = pyqtSignal()
     reset_requested = pyqtSignal()
     ssvep_connect_requested = pyqtSignal()
+    ssvep_config_apply_requested = pyqtSignal(str, int)
     ssvep_pretrain_requested = pyqtSignal()
     ssvep_load_profile_requested = pyqtSignal()
     ssvep_open_profile_dir_requested = pyqtSignal()
@@ -470,6 +513,36 @@ class MainWindow(QMainWindow):
         ssvep_title.setStyleSheet("font: bold 11pt 'Arial'; color: #F0F4F8;")
         right_layout.addWidget(ssvep_title)
 
+        ssvep_config_row = QHBoxLayout()
+        self.ssvep_serial_edit = QLineEdit("auto")
+        self.ssvep_serial_edit.setPlaceholderText("auto or COM3")
+        self.ssvep_board_edit = QLineEdit("0")
+        self.ssvep_board_edit.setPlaceholderText("Board ID")
+        self.ssvep_apply_config_button = QPushButton("Apply SSVEP Config")
+        ssvep_config_row.addWidget(QLabel("Serial"))
+        ssvep_config_row.addWidget(self.ssvep_serial_edit, stretch=2)
+        ssvep_config_row.addWidget(QLabel("Board"))
+        ssvep_config_row.addWidget(self.ssvep_board_edit, stretch=1)
+        ssvep_config_row.addWidget(self.ssvep_apply_config_button, stretch=2)
+        right_layout.addLayout(ssvep_config_row)
+
+        ssvep_pretrain_config_row = QHBoxLayout()
+        self.ssvep_pretrain_preset_combo = QComboBox()
+        for preset_key, preset in SSVEP_PRETRAIN_PRESETS.items():
+            self.ssvep_pretrain_preset_combo.addItem(str(preset["label"]), preset_key)
+        self.ssvep_pretrain_preset_combo.setCurrentIndex(
+            max(0, self.ssvep_pretrain_preset_combo.findData(DEFAULT_SSVEP_PRETRAIN_PRESET))
+        )
+        ssvep_pretrain_config_row.addWidget(QLabel("Pretrain"))
+        ssvep_pretrain_config_row.addWidget(self.ssvep_pretrain_preset_combo, stretch=1)
+        right_layout.addLayout(ssvep_pretrain_config_row)
+
+        self.ssvep_pretrain_hint_label = QLabel("")
+        self.ssvep_pretrain_hint_label.setWordWrap(True)
+        self.ssvep_pretrain_hint_label.setStyleSheet("font: 9pt 'Consolas'; color: #C9D4DF; border: none;")
+        right_layout.addWidget(self.ssvep_pretrain_hint_label)
+        self._update_ssvep_pretrain_hint()
+
         ssvep_row_1 = QHBoxLayout()
         self.ssvep_connect_button = QPushButton("连接设备")
         self.ssvep_pretrain_button = QPushButton("开始预训练")
@@ -546,6 +619,7 @@ class MainWindow(QMainWindow):
             self.pick_tune_apply_button,
             self.pick_tune_reset_button,
             self.pick_tune_save_button,
+            self.ssvep_apply_config_button,
             self.ssvep_connect_button,
             self.ssvep_pretrain_button,
             self.ssvep_load_profile_button,
@@ -558,6 +632,8 @@ class MainWindow(QMainWindow):
         self.ssvep_profile_combo.setMinimumWidth(0)
         self.ssvep_profile_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
+        self.ssvep_apply_config_button.clicked.connect(self._emit_ssvep_config_apply)
+        self.ssvep_pretrain_preset_combo.currentIndexChanged.connect(self._update_ssvep_pretrain_hint)
         self.ssvep_connect_button.clicked.connect(self.ssvep_connect_requested.emit)
         self.ssvep_pretrain_button.clicked.connect(self.ssvep_pretrain_requested.emit)
         self.ssvep_load_profile_button.clicked.connect(self.ssvep_load_profile_requested.emit)
@@ -815,6 +891,15 @@ class MainWindow(QMainWindow):
             auto_selected=ssvep.profile_source in {"latest", "fallback", "default", "current", "uninitialized"},
         )
         self._set_button_text(self.ssvep_connect_button, "重新连接设备" if ssvep.connected else "连接设备")
+        ssvep_runtime_idle = not (
+            ssvep.busy
+            or ssvep.running
+            or ssvep.connect_active
+            or ssvep.pretrain_active
+            or ssvep.online_active
+        )
+        self._set_button_enabled(self.ssvep_apply_config_button, ssvep_runtime_idle)
+        self.ssvep_pretrain_preset_combo.setEnabled(ssvep_runtime_idle)
         self._set_button_enabled(self.ssvep_connect_button, not ssvep.busy)
         self._set_button_enabled(self.ssvep_pretrain_button, ssvep.connected and not ssvep.busy)
         self._set_button_enabled(self.ssvep_load_profile_button, not ssvep.busy)
@@ -931,6 +1016,53 @@ class MainWindow(QMainWindow):
     def update_pick_bias_display(self, radius_bias_mm: float, theta_bias_deg: float) -> None:
         self._set_label_text(self.pick_r_bias_label, "Pick r bias: {0:+.1f} mm".format(float(radius_bias_mm)))
         self._set_label_text(self.pick_theta_bias_label, "Pick theta bias: {0:+.1f} deg".format(float(theta_bias_deg)))
+
+    def set_ssvep_runtime_config(self, *, serial_port: str, board_id: int) -> None:
+        self.ssvep_serial_edit.setText(str(serial_port or "auto"))
+        self.ssvep_board_edit.setText(str(int(board_id)))
+
+    def ssvep_pretrain_config(self) -> dict[str, object]:
+        preset_key = str(self.ssvep_pretrain_preset_combo.currentData() or DEFAULT_SSVEP_PRETRAIN_PRESET)
+        preset = dict(SSVEP_PRETRAIN_PRESETS.get(preset_key, SSVEP_PRETRAIN_PRESETS[DEFAULT_SSVEP_PRETRAIN_PRESET]))
+        preset["preset"] = preset_key
+        preset["estimated_sec"] = _ssvep_pretrain_estimate_seconds(preset)
+        return preset
+
+    def ssvep_runtime_config(self) -> dict[str, object]:
+        serial_port = str(self.ssvep_serial_edit.text()).strip() or "auto"
+        try:
+            board_id = int(str(self.ssvep_board_edit.text()).strip() or "0")
+        except ValueError:
+            board_id = 0
+            self.ssvep_board_edit.setText("0")
+        pretrain = self.ssvep_pretrain_config()
+        return {
+            "serial_port": serial_port,
+            "board_id": board_id,
+            "prepare_sec": float(pretrain["prepare_sec"]),
+            "active_sec": float(pretrain["active_sec"]),
+            "rest_sec": float(pretrain["rest_sec"]),
+            "target_repeats": int(pretrain["target_repeats"]),
+            "idle_repeats": int(pretrain["idle_repeats"]),
+            "win_sec": float(pretrain["win_sec"]),
+            "step_sec": float(pretrain["step_sec"]),
+        }
+
+    def _update_ssvep_pretrain_hint(self) -> None:
+        preset = self.ssvep_pretrain_config()
+        trials = 4 * int(preset["target_repeats"]) + int(preset["idle_repeats"])
+        estimated_sec = float(preset["estimated_sec"])
+        self.ssvep_pretrain_hint_label.setText(
+            "Pretrain: {trials} trials, ~{seconds:.0f}s collection, win={win:g}s".format(
+                trials=trials,
+                seconds=estimated_sec,
+                win=float(preset["win_sec"]),
+            )
+        )
+
+    def _emit_ssvep_config_apply(self) -> None:
+        config = self.ssvep_runtime_config()
+        self.ssvep_config_apply_requested.emit(str(config["serial_port"]), int(config["board_id"]))
 
     def update_pick_tuning_display(self, tuning: dict[str, object] | None) -> None:
         values = dict(tuning or {})

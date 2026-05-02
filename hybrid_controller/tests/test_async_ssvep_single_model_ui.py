@@ -70,6 +70,41 @@ def test_fit_single_model_profile_keeps_selected_model_and_state() -> None:
     assert "quality_summary" in metadata
 
 
+def test_fast_pretrain_plan_can_fit_fbcca_profile() -> None:
+    freqs = (8.0, 10.0, 12.0, 15.0)
+    trials = module.build_calibration_trials(freqs, target_repeats=2, idle_repeats=4, shuffle=False)
+    segments = [
+        (
+            trial,
+            make_segment(
+                fs=250,
+                sec=3.5,
+                channels=4,
+                freq=trial.expected_freq,
+                seed=trial.trial_id + 101,
+            ),
+        )
+        for trial in trials
+    ]
+
+    profile, metadata = module.fit_single_model_profile_from_segments(
+        model_name="fbcca",
+        trial_segments=segments,
+        available_board_channels=(0, 1, 2, 3),
+        sampling_rate=250,
+        freqs=freqs,
+        active_sec=3.5,
+        win_sec=2.5,
+        step_sec=0.5,
+    )
+
+    assert len(segments) == 12
+    assert profile.model_name == "fbcca"
+    assert profile.win_sec == 2.5
+    assert profile.eeg_channels is not None
+    assert metadata["quality_summary"]
+
+
 def test_default_single_profile_path_name() -> None:
     path = module.default_single_model_profile_path()
     assert str(path).endswith("single_model_profile.json")

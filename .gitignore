@@ -18,7 +18,11 @@ pytest_tmp/
 .pytest_tmp/
 **/.pytest_tmp*/
 **/.tmp*/
+**/.tmp_test_artifacts/
 **/pytest_temp*/
+**/pytest-cache-files-*/
+**/pytest_tmp*/
+**/tmp_pytest*/
 **/*.pyc
 **/*.pyo
 **/*.pyd
@@ -31,7 +35,14 @@ pytest_tmp/
 logs/*.out
 logs/*.err
 02_SSVEP/artifacts/gpu_runtime/tmp/
+02_SSVEP/artifacts/gpu_runtime/cupy_cache/
 02_SSVEP/artifacts/dev_smoke/pytest_tmp_check/
+02_SSVEP/artifacts/stimulus_current_pc_smoke*
+02_SSVEP/artifacts/ui_smoke_*.png
+02_SSVEP/2026-04_async_fbcca_idle_decoder/
+02_SSVEP/2026-03_realtime_ui_and_online_decoder/
 
 01_MI/mi_classifier_latest/datasets/
 01_MI/mi_classifier_latest/runtime/
+
+hybrid_controller/tmp_test_dir/

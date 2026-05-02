@@ -47,7 +47,7 @@
 ### 推荐用法
 
 ```bash
-python D:\brain\brain_code\02_SSVEP\START_SSVEP.py
+python <repo>\02_SSVEP\START_SSVEP.py
 ```
 
 ---
@@ -281,19 +281,19 @@ python D:\brain\brain_code\02_SSVEP\START_SSVEP.py
 ### 最稳妥
 
 ```bash
-python D:\brain\brain_code\02_SSVEP\START_SSVEP.py
+python <repo>\02_SSVEP\START_SSVEP.py
 ```
 
 ### 直接进训练评测
 
 ```bash
-python D:\brain\brain_code\02_SSVEP\entrypoints\start_training_eval.py
+python <repo>\02_SSVEP\entrypoints\start_training_eval.py
 ```
 
 ### 直接进 external replay
 
 ```bash
-python D:\brain\brain_code\02_SSVEP\entrypoints\start_fbcca_external_replay.py
+python <repo>\02_SSVEP\entrypoints\start_fbcca_external_replay.py
 ```
 
 ---

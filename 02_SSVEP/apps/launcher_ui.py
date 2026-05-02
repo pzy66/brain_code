@@ -67,6 +67,8 @@ class LauncherWindow(QMainWindow):
             ("数据采集", "按协议采集 session，并直接落到 artifacts/datasets。", self._open_data_collection),
             ("实时在线解码", "加载 deployed profile，在线查看实时判定与 shadow 输出。", self._open_realtime),
             ("训练评测", "统一查看 run 目录、日志、进度、报告和 profile 产物。", self._open_training_eval),
+            ("FBCCA 阈值快速预训练", "保持默认 FBCCA 参数，只用采集数据校准实时识别阈值并发布 profile。", self._open_fbcca_threshold_pretrain),
+            ("FBCCA 本地异步优化", "直接进入 FBCCA 本地优化模式，适合从采集数据生成可用 profile。", self._open_fbcca_local_opt),
             ("TDCA 本地异步优化", "直接进入 TDCA 本地优化模式，保留实时进度与 run 归档。", self._open_tdca_local_opt),
         ]
 
@@ -92,14 +94,17 @@ class LauncherWindow(QMainWindow):
         footer.setStyleSheet("color: #6b7280;")
         layout.addWidget(footer)
 
-    def _track_window(self, window: QWidget) -> QWidget:
+    def _track_window(self, window: QWidget, *, fullscreen: bool = False) -> QWidget:
         self._child_windows.append(window)
 
         def _release(*_args) -> None:
             self._child_windows[:] = [item for item in self._child_windows if item is not window]
 
         window.destroyed.connect(_release)
-        window.show()
+        if bool(fullscreen):
+            window.showFullScreen()
+        else:
+            window.show()
         window.raise_()
         window.activateWindow()
         return window
@@ -111,7 +116,7 @@ class LauncherWindow(QMainWindow):
 
     def _open_realtime(self) -> None:
         window = RealtimeOnlineWindow(serial_port="auto", board_id=DEFAULT_BOARD_ID, freqs=parse_freqs("8,10,12,15"))
-        self._track_window(window)
+        self._track_window(window, fullscreen=True)
 
     def _open_training_eval(self) -> None:
         self._track_window(TrainingEvaluationWindow())
@@ -119,6 +124,16 @@ class LauncherWindow(QMainWindow):
     def _open_tdca_local_opt(self) -> None:
         window = TrainingEvaluationWindow()
         window.configure_tdca_local_opt_mode(auto_start=False)
+        self._track_window(window)
+
+    def _open_fbcca_local_opt(self) -> None:
+        window = TrainingEvaluationWindow()
+        window.configure_fbcca_local_opt_mode(auto_start=False)
+        self._track_window(window)
+
+    def _open_fbcca_threshold_pretrain(self) -> None:
+        window = TrainingEvaluationWindow()
+        window.configure_fbcca_threshold_pretrain_mode(auto_start=False)
         self._track_window(window)
 
 

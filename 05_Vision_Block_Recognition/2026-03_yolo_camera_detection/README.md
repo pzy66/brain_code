@@ -4,7 +4,7 @@
 
 当前推荐你真正运行的主程序只有一个：
 
-- `C:\Users\P1233\Desktop\brain\brain_code\05_Vision_Block_Recognition\2026-03_yolo_camera_detection\block_center_ssvep_single.py`
+- `<repo>\05_Vision_Block_Recognition\2026-03_yolo_camera_detection\block_center_ssvep_single.py`
 
 它负责：
 
@@ -21,11 +21,11 @@
 
 直接双击下面这个脚本：
 
-- `C:\Users\P1233\Desktop\brain\brain_code\05_Vision_Block_Recognition\2026-03_yolo_camera_detection\START_BLOCK_SSVEP_VIEWER.cmd`
+- `<repo>\05_Vision_Block_Recognition\2026-03_yolo_camera_detection\START_BLOCK_SSVEP_VIEWER.cmd`
 
 这个入口默认会使用：
 
-- 权重：`C:\Users\P1233\Desktop\brain\dataset\camara\best.pt`
+- 权重：`<workspace>\dataset\camara\best.pt`
 - 相机流：`http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80`
 - 设备：`auto`
 - `imgsz=512`
@@ -35,7 +35,7 @@
 如果你想临时追加参数，也可以在命令行后面继续加，例如：
 
 ```powershell
-cmd /c "C:\Users\P1233\Desktop\brain\brain_code\05_Vision_Block_Recognition\2026-03_yolo_camera_detection\START_BLOCK_SSVEP_VIEWER.cmd --fullscreen"
+cmd /c "<repo>\05_Vision_Block_Recognition\2026-03_yolo_camera_detection\START_BLOCK_SSVEP_VIEWER.cmd --fullscreen"
 ```
 
 ### 方式 2：PyCharm 运行

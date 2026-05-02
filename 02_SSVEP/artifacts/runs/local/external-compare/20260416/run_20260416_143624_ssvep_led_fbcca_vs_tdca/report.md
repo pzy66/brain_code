@@ -1,6 +1,6 @@
 # External SSVEP FBCCA vs TDCA
 
-- Dataset: `D:\brain\brain_code\02_SSVEP\artifacts\datasets\external\dataset_ssvep_led_github`
+- Dataset: `<repo>\02_SSVEP\artifacts\datasets\external\dataset_ssvep_led_github`
 - Subjects: `Subject2, Subject3, Subject4, Subject5`
 - Window seconds: `2.0`
 - Latency trim: `0.14s`

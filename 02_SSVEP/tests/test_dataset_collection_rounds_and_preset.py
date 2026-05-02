@@ -33,6 +33,8 @@ from apps.data_collection_ui import (
     DEFAULT_STABLE_SWITCH_TRIALS,
     DEFAULT_STABLE_TARGET_REPEATS,
     MIN_ACTIVE_SEC_FOR_TRAINING,
+    MIN_PREPARE_SEC_FOR_VOICE,
+    MIN_REST_SEC_BETWEEN_TRIALS,
     ENHANCED_45M_PRESET,
     STIM_REFRESH_RATE_HZ,
     STABLE_12M_PRESET,
@@ -100,7 +102,14 @@ def test_stable_12m_round_estimate_matches_plan() -> None:
         switch_trials=DEFAULT_STABLE_SWITCH_TRIALS,
         long_idle_sec=DEFAULT_STABLE_LONG_IDLE_SEC,
     )
-    assert abs(float(round_sec) - (808.08 + 74.0 * float(ACTIVE_STIMULUS_ARM_SEC))) < 1e-9
+    expected = 74.0 * (
+        float(DEFAULT_STABLE_PREPARE_SEC)
+        + float(ACTIVE_START_CUE_SEC)
+        + float(ACTIVE_STIMULUS_ARM_SEC)
+        + float(DEFAULT_STABLE_ACTIVE_SEC)
+        + float(DEFAULT_STABLE_REST_SEC)
+    )
+    assert abs(float(round_sec) - expected) < 1e-9
 
 
 def test_round_estimate_uses_selected_stim_refresh_rate() -> None:
@@ -113,7 +122,7 @@ def test_round_estimate_uses_selected_stim_refresh_rate() -> None:
         switch_trials=0,
         refresh_rate_hz=60.0,
     )
-    expected = 4.0 * (1.0 + ACTIVE_START_CUE_SEC + 0.8 + (1.0 / 60.0) + 5.0 + 4.0)
+    expected = 4.0 * (1.0 + ACTIVE_START_CUE_SEC + (1.0 / 60.0) + 5.0 + 4.0)
     assert abs(float(round_sec) - expected) < 1e-9
 
 
@@ -164,6 +173,11 @@ def test_round_session_id_replaces_existing_round_suffix() -> None:
     assert session_id == "subject_demo_r02"
 
 
+def test_round_session_id_sanitizes_path_like_base() -> None:
+    session_id = _build_round_session_id(r"..\outside/session:demo_r01", 2)
+    assert session_id == "outside_session_demo_r02"
+
+
 def test_aborted_collection_uses_unique_output_session_id() -> None:
     assert (
         build_collection_output_session_id("subject_demo_r01", collection_aborted=False, stamp="20260424_120000")
@@ -172,6 +186,10 @@ def test_aborted_collection_uses_unique_output_session_id() -> None:
     assert (
         build_collection_output_session_id("subject_demo_r01", collection_aborted=True, stamp="20260424 120000")
         == "subject_demo_r01_aborted_20260424_120000"
+    )
+    assert (
+        build_collection_output_session_id(r"..\outside/session:demo", collection_aborted=False)
+        == "outside_session_demo"
     )
 
 
@@ -308,6 +326,49 @@ def test_collection_worker_voice_prompt_timeout_forces_stop_event(
     assert bool(events[0]["stop"]) is False
     assert bool(events[1]["stop"]) is True
     assert worker._voice_prompt_finished_event.is_set() is True
+
+
+def test_collection_worker_voice_prompt_runs_inside_prepare_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prompt_order: list[str] = []
+    monkeypatch.setattr(collection_ui, "play_collection_tone_event", lambda payload: prompt_order.append("tone"))
+    config = CollectionConfig(
+        serial_port="auto",
+        board_id=0,
+        freqs=(8.0, 10.0, 12.0, 15.0),
+        subject_id="subject",
+        session_id="subject_session_r01",
+        session_index=1,
+        dataset_dir=PROJECT_DIR / "artifacts" / "datasets",
+        protocol_name=STABLE_12M_PRESET.key,
+        prepare_sec=1.0,
+        sync_voice_prompt=True,
+    )
+    worker = CollectionWorker(config)
+    wait_timeouts: list[float | None] = []
+    sleeps: list[float] = []
+
+    def fake_wait(request_id: int, **kwargs: object) -> float:
+        prompt_order.append("voice_wait")
+        wait_timeouts.append(kwargs.get("timeout_sec"))  # type: ignore[arg-type]
+        return 0.7
+
+    worker._wait_for_voice_prompt_finished = fake_wait  # type: ignore[method-assign]
+    worker._sleep_interruptible = lambda seconds: sleeps.append(float(seconds)) or False  # type: ignore[method-assign]
+
+    interrupted = worker._run_prepare_window(
+        request_id=1,
+        trial_index=1,
+        total_trials=1,
+        retry_index=0,
+    )
+
+    assert interrupted is False
+    assert wait_timeouts == [1.0]
+    assert prompt_order == ["voice_wait", "tone"]
+    assert len(sleeps) == 1
+    assert abs(float(sleeps[0]) - 0.3) < 0.05
 
 
 def test_collection_worker_can_ack_active_stimulus_phase() -> None:
@@ -456,6 +517,189 @@ def test_collection_worker_saves_partial_dataset_on_runtime_failure(
     assert str(trial_rows[0].get("segment_captured_at", "")).strip()
 
 
+def test_collection_worker_saves_raw_board_when_failure_happens_before_first_valid_trial(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeBoard:
+        def __init__(self) -> None:
+            self._chunks = [
+                np.ones((4, 4), dtype=np.float64),
+                np.full((4, 8), 2.0, dtype=np.float64),
+                np.full((4, 16), 3.0, dtype=np.float64),
+            ]
+
+        def start_stream(self, *args, **kwargs) -> None:
+            return None
+
+        def stop_stream(self) -> None:
+            return None
+
+        def release_session(self) -> None:
+            return None
+
+        def get_board_data(self) -> np.ndarray:
+            if self._chunks:
+                return self._chunks.pop(0)
+            return np.zeros((4, 0), dtype=np.float64)
+
+    class FakeBoardShim:
+        @staticmethod
+        def get_sampling_rate(board_id: int) -> int:
+            return 250
+
+        @staticmethod
+        def get_eeg_channels(board_id: int) -> list[int]:
+            return [0, 1, 2, 3]
+
+    monkeypatch.setattr(collection_ui, "BoardShim", FakeBoardShim)
+    monkeypatch.setattr(
+        collection_ui,
+        "prepare_board_session",
+        lambda board_id, serial_port: (FakeBoard(), "COM7", ["COM7"]),
+    )
+    monkeypatch.setattr(collection_ui, "ensure_stream_ready", lambda board, fs: 512)
+    monkeypatch.setattr(
+        collection_ui,
+        "read_recent_eeg_segment",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("simulated first trial read failure")),
+    )
+    monkeypatch.setattr(collection_ui, "play_collection_tone_event", lambda payload: None)
+    monkeypatch.setattr(collection_ui, "play_collection_tone_event_sync", lambda payload: None)
+    monkeypatch.setattr(collection_ui.CollectionWorker, "_sleep_interruptible", lambda self, seconds: False)
+
+    config = CollectionConfig(
+        serial_port="auto",
+        board_id=0,
+        freqs=(8.0, 10.0, 12.0, 15.0),
+        subject_id="subject",
+        session_id="subject_session_r01",
+        session_index=1,
+        dataset_dir=tmp_path,
+        protocol_name="custom",
+        prepare_sec=0.0,
+        active_sec=4.0,
+        rest_sec=0.0,
+        target_repeats=1,
+        idle_repeats=0,
+        switch_trials=0,
+        long_idle_sec=0.0,
+    )
+    worker = CollectionWorker(config)
+    done_payloads: list[dict[str, object]] = []
+    error_texts: list[str] = []
+    worker.done.connect(lambda payload: done_payloads.append(dict(payload)))  # type: ignore[arg-type]
+    worker.error.connect(lambda text: error_texts.append(str(text)))  # type: ignore[arg-type]
+
+    worker.run()
+
+    assert len(done_payloads) == 1
+    payload = done_payloads[0]
+    assert bool(payload.get("collection_aborted")) is True
+    assert int(payload.get("collected_trials", -1)) == 0
+    manifest_path = Path(str(payload.get("dataset_manifest", "")))
+    assert manifest_path.exists()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    protocol_config = dict(manifest.get("protocol_config", {}))
+    quality_summary = dict(manifest.get("quality_summary", {}))
+    continuous_meta = dict(manifest.get("continuous_board", {}))
+    files = dict(manifest.get("files", {}))
+
+    assert manifest.get("trials") == []
+    assert protocol_config.get("collection_aborted") is True
+    assert protocol_config.get("aborted_reason") == "runtime_failure"
+    assert protocol_config.get("failure_reason") == "simulated first trial read failure"
+    assert int(quality_summary.get("saved_trial_count", -1)) == 0
+    assert continuous_meta.get("saved") is True
+    assert Path(str(files.get("continuous_board_npz", ""))).exists()
+    assert any("原始板卡数据" in text for text in error_texts)
+
+
+def test_collection_worker_saves_raw_board_when_stopped_during_warmup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeBoard:
+        def __init__(self) -> None:
+            self._chunk = np.arange(4 * 12, dtype=np.float64).reshape(4, 12)
+
+        def start_stream(self, *args, **kwargs) -> None:
+            return None
+
+        def stop_stream(self) -> None:
+            return None
+
+        def release_session(self) -> None:
+            return None
+
+        def get_board_data(self) -> np.ndarray:
+            chunk = self._chunk
+            self._chunk = np.zeros((4, 0), dtype=np.float64)
+            return chunk
+
+    class FakeBoardShim:
+        @staticmethod
+        def get_sampling_rate(board_id: int) -> int:
+            return 250
+
+        @staticmethod
+        def get_eeg_channels(board_id: int) -> list[int]:
+            return [0, 1, 2, 3]
+
+    monkeypatch.setattr(collection_ui, "BoardShim", FakeBoardShim)
+    monkeypatch.setattr(
+        collection_ui,
+        "prepare_board_session",
+        lambda board_id, serial_port: (FakeBoard(), "COM7", ["COM7"]),
+    )
+    monkeypatch.setattr(collection_ui, "ensure_stream_ready", lambda board, fs: 12)
+    monkeypatch.setattr(collection_ui.CollectionWorker, "_sleep_interruptible", lambda self, seconds: True)
+
+    config = CollectionConfig(
+        serial_port="auto",
+        board_id=0,
+        freqs=(8.0, 10.0, 12.0, 15.0),
+        subject_id="subject",
+        session_id="subject_session_r01",
+        session_index=1,
+        dataset_dir=tmp_path,
+        protocol_name="custom",
+        prepare_sec=1.0,
+        active_sec=4.0,
+        rest_sec=2.0,
+        target_repeats=1,
+        idle_repeats=0,
+        switch_trials=0,
+        long_idle_sec=0.0,
+    )
+    worker = CollectionWorker(config)
+    done_payloads: list[dict[str, object]] = []
+    worker.done.connect(lambda payload: done_payloads.append(dict(payload)))  # type: ignore[arg-type]
+
+    worker.run()
+
+    assert len(done_payloads) == 1
+    payload = done_payloads[0]
+    assert bool(payload.get("collection_aborted")) is True
+    assert int(payload.get("collected_trials", -1)) == 0
+    manifest_path = Path(str(payload.get("dataset_manifest", "")))
+    assert manifest_path.exists()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    protocol_config = dict(manifest.get("protocol_config", {}))
+    quality_summary = dict(manifest.get("quality_summary", {}))
+    continuous_meta = dict(manifest.get("continuous_board", {}))
+    files = dict(manifest.get("files", {}))
+
+    assert manifest.get("trials") == []
+    assert protocol_config.get("collection_aborted") is True
+    assert protocol_config.get("aborted_reason") == "runtime_failure"
+    assert protocol_config.get("failure_reason") == "user_stop_during_warmup"
+    assert int(quality_summary.get("saved_trial_count", -1)) == 0
+    assert continuous_meta.get("saved") is True
+    assert continuous_meta.get("shape") == [4, 12]
+    assert Path(str(files.get("continuous_board_npz", ""))).exists()
+
+
 def test_collection_worker_simulation_mode_skips_board_and_save(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -538,11 +782,11 @@ def test_collection_main_headless_simulation_only_runs_without_board_or_save(
             "--preset",
             "custom",
             "--prepare-sec",
-            "0",
+            "1",
             "--active-sec",
             "1.5",
             "--rest-sec",
-            "0",
+            "2",
             "--target-repeats",
             "1",
             "--idle-repeats",
@@ -696,6 +940,17 @@ def test_dataset_collection_window_refresh_rate_override_prefers_manual_value() 
     try:
         window.stim_refresh_rate_spin.setValue(240.0)
         assert abs(window._resolve_stim_refresh_rate_hz() - 240.0) < 1e-9
+    finally:
+        window.close()
+
+
+def test_dataset_collection_window_timing_controls_enforce_audio_and_rest_minimums() -> None:
+    _ = _get_qapp()
+    window = DatasetCollectionWindow(serial_port="auto", board_id=0, freqs=(8.0, 10.0, 12.0, 15.0))
+    try:
+        assert abs(float(window.prepare_spin.minimum()) - float(MIN_PREPARE_SEC_FOR_VOICE)) < 1e-9
+        assert abs(float(window.rest_spin.minimum()) - float(MIN_REST_SEC_BETWEEN_TRIALS)) < 1e-9
+        assert float(ENHANCED_45M_PRESET.rest_sec) >= float(MIN_REST_SEC_BETWEEN_TRIALS)
     finally:
         window.close()
 
@@ -998,6 +1253,45 @@ def test_dataset_collection_window_simulation_done_does_not_advance_rounds() -> 
         window.close()
 
 
+def test_dataset_collection_window_close_during_collection_requests_stop_without_closing() -> None:
+    _ = _get_qapp()
+    window = DatasetCollectionWindow(serial_port="auto", board_id=0, freqs=(8.0, 10.0, 12.0, 15.0))
+
+    class FakeWorker:
+        def __init__(self) -> None:
+            self.request_stop_count = 0
+
+        def request_stop(self) -> None:
+            self.request_stop_count += 1
+
+    class FakeCloseEvent:
+        def __init__(self) -> None:
+            self.accepted = False
+            self.ignored = False
+
+        def accept(self) -> None:
+            self.accepted = True
+
+        def ignore(self) -> None:
+            self.ignored = True
+
+    fake_worker = FakeWorker()
+    close_event = FakeCloseEvent()
+    try:
+        window.worker = fake_worker  # type: ignore[assignment]
+        window.worker_thread = object()  # type: ignore[assignment]
+        window.closeEvent(close_event)
+        assert fake_worker.request_stop_count == 1
+        assert close_event.ignored is True
+        assert close_event.accepted is False
+        assert window.phase_label.text() == "正在停止..."
+        assert "等待完成后再关闭窗口" in window.log_text.toPlainText()
+    finally:
+        window.worker = None
+        window.worker_thread = None
+        window.close()
+
+
 def test_stimulus_sample_window_alignment_metadata_accounts_for_prearm_and_start_cue() -> None:
     refresh_rate_hz = 60.0
     freqs = (8.0, 10.0, 12.0, 15.0)
@@ -1049,16 +1343,36 @@ def test_stimulus_frequency_validation_uses_display_nyquist() -> None:
         validate_stimulus_frequency_set((8.0, 10.0, 12.0, 30.0), refresh_rate_hz=60.0)
 
 
-def test_validate_collection_protocol_enforces_active_minimum() -> None:
+def test_validate_collection_protocol_enforces_timing_minimums() -> None:
+    with pytest.raises(ValueError, match="prepare_sec must be >="):
+        _validate_collection_protocol(
+            prepare_sec=float(MIN_PREPARE_SEC_FOR_VOICE) - 0.1,
+            active_sec=float(MIN_ACTIVE_SEC_FOR_TRAINING),
+            rest_sec=float(MIN_REST_SEC_BETWEEN_TRIALS),
+        )
     with pytest.raises(ValueError, match="active_sec must be >="):
-        _validate_collection_protocol(active_sec=float(MIN_ACTIVE_SEC_FOR_TRAINING) - 0.1)
+        _validate_collection_protocol(
+            prepare_sec=float(MIN_PREPARE_SEC_FOR_VOICE),
+            active_sec=float(MIN_ACTIVE_SEC_FOR_TRAINING) - 0.1,
+            rest_sec=float(MIN_REST_SEC_BETWEEN_TRIALS),
+        )
+    with pytest.raises(ValueError, match="rest_sec must be >="):
+        _validate_collection_protocol(
+            prepare_sec=float(MIN_PREPARE_SEC_FOR_VOICE),
+            active_sec=float(MIN_ACTIVE_SEC_FOR_TRAINING),
+            rest_sec=float(MIN_REST_SEC_BETWEEN_TRIALS) - 0.1,
+        )
     with pytest.raises(ValueError, match="long_idle_sec must be 0 or >="):
         _validate_collection_protocol(
+            prepare_sec=float(MIN_PREPARE_SEC_FOR_VOICE),
             active_sec=float(MIN_ACTIVE_SEC_FOR_TRAINING),
+            rest_sec=float(MIN_REST_SEC_BETWEEN_TRIALS),
             long_idle_sec=float(MIN_ACTIVE_SEC_FOR_TRAINING) - 0.1,
         )
     _validate_collection_protocol(
+        prepare_sec=float(MIN_PREPARE_SEC_FOR_VOICE),
         active_sec=float(MIN_ACTIVE_SEC_FOR_TRAINING),
+        rest_sec=float(MIN_REST_SEC_BETWEEN_TRIALS),
         long_idle_sec=float(MIN_ACTIVE_SEC_FOR_TRAINING),
     )
 
@@ -1080,7 +1394,22 @@ def test_long_idle_round_estimate_adds_trial_and_duration() -> None:
         switch_trials=DEFAULT_STABLE_SWITCH_TRIALS,
         long_idle_sec=60.0,
     )
-    assert abs(float(round_sec) - (874.0 + 75.0 * float(ACTIVE_STIMULUS_ARM_SEC))) < 1e-9
+    expected = (
+        74.0
+        * (
+            float(DEFAULT_STABLE_PREPARE_SEC)
+            + float(ACTIVE_START_CUE_SEC)
+            + float(ACTIVE_STIMULUS_ARM_SEC)
+            + float(DEFAULT_STABLE_ACTIVE_SEC)
+            + float(DEFAULT_STABLE_REST_SEC)
+        )
+        + float(DEFAULT_STABLE_PREPARE_SEC)
+        + float(ACTIVE_START_CUE_SEC)
+        + float(ACTIVE_STIMULUS_ARM_SEC)
+        + 60.0
+        + float(DEFAULT_STABLE_REST_SEC)
+    )
+    assert abs(float(round_sec) - expected) < 1e-9
 
 
 def test_build_collection_trials_appends_long_idle_when_enabled() -> None:

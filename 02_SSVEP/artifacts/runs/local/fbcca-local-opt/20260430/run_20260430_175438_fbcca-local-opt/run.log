@@ -1,0 +1,21 @@
+[17:54:38] [fbcca-local-opt] report directory prepared: C:\Users\P1233\Desktop\brain\brain_code\02_SSVEP\artifacts\runs\local\fbcca-local-opt\20260430\run_20260430_175438_fbcca-local-opt
+[17:54:38] [fbcca-local-opt] compute backend prepared: requested=auto effective=cuda
+[17:55:56] [fbcca-local-opt] repeat=1/5 candidate=1/200 variant=fbcca_fixed_all8|win=2|confidence=global_correctness_logistic
+[17:56:01] [fbcca-local-opt] repeat=1/5 candidate=2/200 variant=fbcca_fixed_all8|win=2.5|confidence=global_correctness_logistic
+[17:56:06] [fbcca-local-opt] repeat=1/5 candidate=3/200 variant=fbcca_fixed_all8|win=3|confidence=global_correctness_logistic
+[17:56:10] [fbcca-local-opt] repeat=1/5 candidate=4/200 variant=fbcca_fixed_all8|win=3.5|confidence=global_correctness_logistic
+[17:56:14] [fbcca-local-opt] repeat=1/5 candidate=5/200 variant=fbcca_fixed_all8|win=2|confidence=bayesian_gap_gmm
+[17:56:21] [fbcca-local-opt] repeat=1/5 candidate=6/200 variant=fbcca_fixed_all8|win=2.5|confidence=bayesian_gap_gmm
+[17:56:27] [fbcca-local-opt] repeat=1/5 candidate=7/200 variant=fbcca_fixed_all8|win=3|confidence=bayesian_gap_gmm
+[17:56:32] [fbcca-local-opt] repeat=1/5 candidate=8/200 variant=fbcca_fixed_all8|win=3.5|confidence=bayesian_gap_gmm
+[17:56:37] [fbcca-local-opt] repeat=1/5 candidate=9/200 variant=fbcca_cw_all8|win=2|confidence=global_correctness_logistic
+[17:56:45] FBCCA[fbcca_cw_all8]: frontend optimization start | channel_mode=fbcca_diag subband_mode=chen_fixed spatial_mode=none iters=2 folds=3
+[17:56:45] FBCCA[fbcca_cw_all8]: iteration 1/2 channel 1/8
+[17:57:14] FBCCA[fbcca_cw_all8]: iteration 1/2 channel 2/8
+[17:57:44] FBCCA[fbcca_cw_all8]: iteration 1/2 channel 3/8
+[17:58:12] FBCCA[fbcca_cw_all8]: iteration 1/2 channel 4/8
+[17:58:44] FBCCA[fbcca_cw_all8]: iteration 1/2 channel 5/8
+[17:59:16] FBCCA[fbcca_cw_all8]: iteration 1/2 channel 6/8
+[17:59:42] FBCCA[fbcca_cw_all8]: iteration 1/2 channel 7/8
+[17:59:57] FBCCA[fbcca_cw_all8]: iteration 1/2 channel 8/8
+[18:00:19] FBCCA[fbcca_cw_all8]: iteration 1/2 done | channel_improved=0 subband_improved=0 basis_updated=0

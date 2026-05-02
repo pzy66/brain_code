@@ -66,27 +66,27 @@
 #### 运行本地 TDCA local opt
 
 ```bash
-python D:\brain\brain_code\02_SSVEP\tools\training_evaluation_cli.py ^
+python <repo>\02_SSVEP\tools\training_evaluation_cli.py ^
   --task tdca-local-opt ^
-  --dataset-manifest D:\brain\brain_code\02_SSVEP\artifacts\datasets\subject001_xxx\session_manifest.json ^
+  --dataset-manifest <repo>\02_SSVEP\artifacts\datasets\subject001_xxx\session_manifest.json ^
   --search-preset reduced13
 ```
 
 #### 运行本地 FBCCA local opt
 
 ```bash
-python D:\brain\brain_code\02_SSVEP\tools\training_evaluation_cli.py ^
+python <repo>\02_SSVEP\tools\training_evaluation_cli.py ^
   --task fbcca-local-opt ^
-  --dataset-manifest D:\brain\brain_code\02_SSVEP\artifacts\datasets\subject001_xxx\session_manifest.json ^
+  --dataset-manifest <repo>\02_SSVEP\artifacts\datasets\subject001_xxx\session_manifest.json ^
   --search-preset reduced40
 ```
 
 #### 运行 external replay
 
 ```bash
-python D:\brain\brain_code\02_SSVEP\tools\training_evaluation_cli.py ^
+python <repo>\02_SSVEP\tools\training_evaluation_cli.py ^
   --task fbcca-external-replay-opt ^
-  --external-dataset-root D:\brain\brain_code\02_SSVEP\artifacts\datasets\external\dataset_ssvep_led_github ^
+  --external-dataset-root <repo>\02_SSVEP\artifacts\datasets\external\dataset_ssvep_led_github ^
   --subject s1 ^
   --search-preset smoke8 ^
   --outer-eval loso4
@@ -95,9 +95,9 @@ python D:\brain\brain_code\02_SSVEP\tools\training_evaluation_cli.py ^
 #### 运行通用 model compare
 
 ```bash
-python D:\brain\brain_code\02_SSVEP\tools\training_evaluation_cli.py ^
+python <repo>\02_SSVEP\tools\training_evaluation_cli.py ^
   --task model-compare ^
-  --include-manifests D:\path\to\s1\session_manifest.json,D:\path\to\s2\session_manifest.json
+  --include-manifests <path>\to\s1\session_manifest.json,<path>\to\s2\session_manifest.json
 ```
 
 ### 使用注意

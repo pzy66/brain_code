@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -26,6 +27,35 @@ from .trial_roles import (
 )
 
 COLLECTION_DATA_SCHEMA_VERSION = "2.0"
+_WINDOWS_RESERVED_NAMES = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{index}" for index in range(1, 10)),
+    *(f"LPT{index}" for index in range(1, 10)),
+}
+
+
+def sanitize_collection_token(value: str | Any, *, default: str = "session") -> str:
+    """Return one portable path segment for collection subject/session names."""
+    token = str(value if value is not None else "").strip()
+    token = re.sub(r'[<>:"/\\|?*\x00-\x1F]+', "_", token)
+    token = re.sub(r"\s+", "_", token)
+    token = token.strip("._ ")
+    if not token:
+        token = str(default or "session").strip() or "session"
+    if token.split(".", 1)[0].upper() in _WINDOWS_RESERVED_NAMES:
+        token = f"{token}_"
+    return token
+
+
+def _path_is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        Path(path).resolve().relative_to(Path(root).resolve())
+        return True
+    except ValueError:
+        return False
 
 
 @dataclass(frozen=True)
@@ -89,6 +119,22 @@ def _atomic_save_npz(path: Path, arrays: dict[str, np.ndarray]) -> None:
     tmp_path = target.parent / f".atomic_{uuid.uuid4().hex[:8]}.npz"
     try:
         np.savez_compressed(tmp_path, **arrays)
+        os.replace(str(tmp_path), str(target))
+    except Exception:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
+
+
+def _atomic_save_npy(path: Path, array: np.ndarray) -> None:
+    target = Path(path).expanduser().resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = target.parent / f".atomic_{uuid.uuid4().hex[:8]}.npy"
+    try:
+        with tmp_path.open("wb") as file:
+            np.save(file, array, allow_pickle=False)
         os.replace(str(tmp_path), str(target))
     except Exception:
         try:
@@ -356,7 +402,13 @@ def save_collection_dataset_bundle(
     continuous_board_info: Optional[dict[str, Any]] = None,
 ) -> dict[str, str]:
     dataset_root = Path(dataset_root).expanduser().resolve()
-    session_dir = dataset_root / str(session_id)
+    requested_session_id = str(session_id if session_id is not None else "").strip()
+    requested_subject_id = str(subject_id if subject_id is not None else "").strip()
+    safe_session_id = sanitize_collection_token(requested_session_id, default="session")
+    safe_subject_id = sanitize_collection_token(requested_subject_id, default="subject")
+    session_dir = (dataset_root / safe_session_id).resolve()
+    if not _path_is_relative_to(session_dir, dataset_root):
+        raise ValueError(f"collection session directory must stay inside dataset_root: {session_dir}")
     session_dir.mkdir(parents=True, exist_ok=True)
 
     target_samples = int(round(float(protocol_config.get("active_sec", 0.0)) * float(sampling_rate)))
@@ -373,18 +425,45 @@ def save_collection_dataset_bundle(
     _atomic_save_npz(npz_path, npz_arrays)
     files_payload: dict[str, str] = {"raw_trials_npz": str(npz_path)}
     continuous_payload: dict[str, Any] = {}
+    continuous_save_error = ""
     if continuous_board_data is not None:
-        continuous_matrix = np.ascontiguousarray(np.asarray(continuous_board_data, dtype=np.float64))
-        if continuous_matrix.ndim != 2:
-            raise ValueError("continuous_board_data must be a 2-D BrainFlow matrix")
-        continuous_path = session_dir / "continuous_board.npz"
-        _atomic_save_npz(continuous_path, {"board_data": continuous_matrix})
-        files_payload["continuous_board_npz"] = str(continuous_path)
-        continuous_payload = {
-            "shape": [int(continuous_matrix.shape[0]), int(continuous_matrix.shape[1])],
-            "dtype": str(continuous_matrix.dtype),
-            **dict(continuous_board_info or {}),
-        }
+        try:
+            continuous_matrix = np.ascontiguousarray(np.asarray(continuous_board_data, dtype=np.float64))
+            if continuous_matrix.ndim != 2:
+                raise ValueError("continuous_board_data must be a 2-D BrainFlow matrix")
+            continuous_payload = {
+                "saved": True,
+                "shape": [int(continuous_matrix.shape[0]), int(continuous_matrix.shape[1])],
+                "dtype": str(continuous_matrix.dtype),
+                **dict(continuous_board_info or {}),
+            }
+            continuous_path = session_dir / "continuous_board.npz"
+            try:
+                _atomic_save_npz(continuous_path, {"board_data": continuous_matrix})
+                files_payload["continuous_board_npz"] = str(continuous_path)
+                continuous_payload["format"] = "npz_compressed"
+            except Exception as npz_error:
+                fallback_path = session_dir / "continuous_board.npy"
+                try:
+                    _atomic_save_npy(fallback_path, continuous_matrix)
+                except Exception as fallback_error:
+                    continuous_save_error = (
+                        f"continuous_board npz save failed: {npz_error}; "
+                        f"npy fallback failed: {fallback_error}"
+                    )
+                    continuous_payload["saved"] = False
+                    continuous_payload["save_error"] = continuous_save_error
+                else:
+                    files_payload["continuous_board_npy"] = str(fallback_path)
+                    continuous_payload["format"] = "npy"
+                    continuous_payload["compressed_npz_save_error"] = str(npz_error)
+        except Exception as error:
+            continuous_save_error = str(error)
+            continuous_payload = {
+                "saved": False,
+                "save_error": continuous_save_error,
+                **dict(continuous_board_info or {}),
+            }
 
     protocol_signature = build_protocol_signature(
         sampling_rate=int(sampling_rate),
@@ -393,6 +472,13 @@ def save_collection_dataset_bundle(
         board_eeg_channels=board_eeg_channels,
     )
     protocol_payload = dict(protocol_config)
+    protocol_payload.setdefault("requested_session_id", requested_session_id or safe_session_id)
+    protocol_payload["saved_session_id"] = safe_session_id
+    if requested_subject_id and requested_subject_id != safe_subject_id:
+        protocol_payload.setdefault("requested_subject_id", requested_subject_id)
+        protocol_payload["saved_subject_id"] = safe_subject_id
+    if continuous_save_error:
+        protocol_payload["continuous_board_save_error"] = continuous_save_error
     protocol_payload["protocol_signature"] = str(protocol_signature)
     quality_summary = _build_quality_summary(trial_records)
     quality_summary.update(
@@ -410,8 +496,8 @@ def save_collection_dataset_bundle(
     )
     manifest_payload = {
         "data_schema_version": COLLECTION_DATA_SCHEMA_VERSION,
-        "session_id": str(session_id),
-        "subject_id": str(subject_id),
+        "session_id": safe_session_id,
+        "subject_id": safe_subject_id,
         "generated_at": _now_iso_timestamp(),
         "serial_port": str(serial_port),
         "board_id": int(board_id),
@@ -437,6 +523,8 @@ def save_collection_dataset_bundle(
     }
     if "continuous_board_npz" in files_payload:
         result["dataset_continuous_board_npz"] = files_payload["continuous_board_npz"]
+    if "continuous_board_npy" in files_payload:
+        result["dataset_continuous_board_npy"] = files_payload["continuous_board_npy"]
     return result
 
 

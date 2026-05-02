@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -695,6 +696,11 @@ def _build_data_flow_summary(
         "duration_sec_from_samples": (
             float(sample_count / expected_sampling_rate) if expected_sampling_rate > 0 else 0.0
         ),
+        "sample_span_sec_from_indices": (
+            float((sample_count - 1) / expected_sampling_rate)
+            if sample_count > 0 and expected_sampling_rate > 0
+            else 0.0
+        ),
         "marker_count": marker_count,
         "event_count": int(event_count),
         "marker_event_count_match": bool(marker_count == int(event_count)),
@@ -762,6 +768,23 @@ def _write_json(path: Path, payload: dict[str, object]) -> None:
     """Write a UTF-8 JSON file with stable formatting."""
     with path.open("w", encoding="utf-8") as file:
         json.dump(payload, file, indent=2, ensure_ascii=False)
+
+
+def _atomic_save_npy(path: Path, array: np.ndarray) -> None:
+    """Write one NPY file via same-directory replace to avoid partial targets."""
+    target = Path(path).expanduser().resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = target.parent / f".atomic_{uuid.uuid4().hex[:8]}.npy"
+    try:
+        with tmp_path.open("wb") as file:
+            np.save(file, array, allow_pickle=False)
+        os.replace(str(tmp_path), str(target))
+    except Exception:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
 
 
 def _coerce_manifest_save_index(raw_row: dict[str, object]) -> int | str:
@@ -1103,11 +1126,47 @@ def _extract_event_pairs(
     return pairs
 
 
+def _sample_time_sec(sample_index: object, sampling_rate: float) -> float | None:
+    """Return sample-clock seconds relative to the cropped session start."""
+    try:
+        sample = int(sample_index)
+        rate = float(sampling_rate)
+    except (TypeError, ValueError):
+        return None
+    if sample < 0 or not np.isfinite(rate) or rate <= 0.0:
+        return None
+    return float(sample / rate)
+
+
+def _timestamp_at_sample(timestamps: np.ndarray | None, sample_index: object) -> float | None:
+    """Return the board timestamp at a cropped sample index when available."""
+    if timestamps is None:
+        return None
+    try:
+        sample = int(sample_index)
+    except (TypeError, ValueError):
+        return None
+    if sample < 0 or sample >= int(timestamps.size):
+        return None
+    value = float(timestamps[sample])
+    return value if np.isfinite(value) else None
+
+
+def _timestamp_elapsed_sec(timestamps: np.ndarray | None, sample_index: object) -> float | None:
+    """Return board-clock seconds relative to the cropped session start."""
+    event_timestamp = _timestamp_at_sample(timestamps, sample_index)
+    start_timestamp = _timestamp_at_sample(timestamps, 0)
+    if event_timestamp is None or start_timestamp is None:
+        return None
+    return float(event_timestamp - start_timestamp)
+
+
 def _build_segment_rows(
     events: list[dict[str, object]],
     trials: list[TrialRecord],
     *,
     sampling_rate: float,
+    timestamps: np.ndarray | None = None,
     continuous_prompts: list[dict[str, object]] | None = None,
 ) -> list[dict[str, object]]:
     """Build interval-style semantic segments from atomic event markers."""
@@ -1135,6 +1194,8 @@ def _build_segment_rows(
             return
         start_index = int(start_sample)
         stop_index = max(int(end_sample), start_index + 1)
+        start_board_timestamp = _timestamp_at_sample(timestamps, start_index)
+        end_board_timestamp = _timestamp_at_sample(timestamps, stop_index)
         rows.append(
             {
                 "segment_id": next_segment_id,
@@ -1142,7 +1203,16 @@ def _build_segment_rows(
                 "label": str(label),
                 "start_sample": start_index,
                 "end_sample": stop_index,
+                "start_time_sec": _sample_time_sec(start_index, float(sampling_rate)),
+                "end_time_sec": _sample_time_sec(stop_index, float(sampling_rate)),
                 "duration_sec": float((stop_index - start_index) / float(sampling_rate)),
+                "start_board_timestamp": start_board_timestamp,
+                "end_board_timestamp": end_board_timestamp,
+                "board_duration_sec": (
+                    None
+                    if start_board_timestamp is None or end_board_timestamp is None
+                    else float(end_board_timestamp - start_board_timestamp)
+                ),
                 "trial_id": "" if trial_id is None else int(trial_id),
                 "mi_run_index": "" if mi_run_index is None else int(mi_run_index),
                 "run_trial_index": "" if run_trial_index is None else int(run_trial_index),
@@ -1502,6 +1572,7 @@ def save_mi_session(
         enriched_events,
         updated_trials,
         sampling_rate=float(sampling_rate),
+        timestamps=cropped_timestamps,
         continuous_prompts=continuous_prompts,
     )
 
@@ -1526,6 +1597,7 @@ def save_mi_session(
     events_csv_path = session_dir / f"{run_stem}_events.csv"
     trials_csv_path = session_dir / f"{run_stem}_trials.csv"
     segments_csv_path = session_dir / f"{run_stem}_segments.csv"
+    raw_checkpoint_path = session_dir / f"{run_stem}_raw_capture_checkpoint.json"
     meta_json_path = session_dir / f"{run_stem}_session_meta.json"
     quality_json_path = session_dir / f"{run_stem}_quality_report.json"
     mi_epochs_path = session_dir / f"{run_stem}_mi_epochs.npz"
@@ -1536,7 +1608,7 @@ def save_mi_session(
     gate_epochs_meta_path = gate_epochs_path.with_suffix(".meta.json")
     artifact_epochs_meta_path = artifact_epochs_path.with_suffix(".meta.json")
     continuous_meta_path = continuous_npz_path.with_suffix(".meta.json")
-    np.save(board_data_path, np.asarray(cropped, dtype=np.float64), allow_pickle=False)
+    _atomic_save_npy(board_data_path, np.asarray(cropped, dtype=np.float64))
     board_map = {
         "schema_version": int(COLLECTION_SCHEMA_VERSION),
         "exporter_name": COLLECTION_EXPORTER_NAME,
@@ -1568,6 +1640,26 @@ def save_mi_session(
     }
     _write_json(board_map_path, board_map)
     board_data_sha256 = _compute_sha256(board_data_path)
+    raw_checkpoint_payload = {
+        "schema_version": int(COLLECTION_SCHEMA_VERSION),
+        "exporter_name": COLLECTION_EXPORTER_NAME,
+        "status": "raw_board_data_saved_derivatives_pending",
+        "saved_at": save_timestamp,
+        "subject_id": sanitize_session_token(settings.subject_id),
+        "session_id": sanitize_session_token(settings.session_id),
+        "save_index": int(save_index),
+        "run_stem": run_stem,
+        "sampling_rate_hz": float(sampling_rate),
+        "sample_count": int(cropped.shape[1]),
+        "duration_sec": float(cropped.shape[1] / float(sampling_rate)),
+        "row_count": int(cropped.shape[0]),
+        "board_data_sha256": board_data_sha256,
+        "files": {
+            "board_data_npy": _relative_path(board_data_path, dataset_root),
+            "board_map_json": _relative_path(board_map_path, dataset_root),
+        },
+    }
+    _write_json(raw_checkpoint_path, raw_checkpoint_payload)
 
     stim_channel = cropped_marker[np.newaxis, :]
     data_for_raw = np.vstack([eeg_volts, stim_channel])
@@ -1597,6 +1689,9 @@ def save_mi_session(
             "execution_success": event.get("execution_success"),
             "sample_index": event.get("sample_index"),
             "absolute_sample_index": event.get("absolute_sample_index"),
+            "sample_time_sec": _sample_time_sec(event.get("sample_index"), float(sampling_rate)),
+            "board_timestamp": _timestamp_at_sample(cropped_timestamps, event.get("sample_index")),
+            "board_elapsed_sec": _timestamp_elapsed_sec(cropped_timestamps, event.get("sample_index")),
             "elapsed_sec": event.get("elapsed_sec"),
             "iso_time": event.get("iso_time"),
         }
@@ -1620,6 +1715,9 @@ def save_mi_session(
             "execution_success",
             "sample_index",
             "absolute_sample_index",
+            "sample_time_sec",
+            "board_timestamp",
+            "board_elapsed_sec",
             "elapsed_sec",
             "iso_time",
         ],
@@ -1671,7 +1769,12 @@ def save_mi_session(
             "label",
             "start_sample",
             "end_sample",
+            "start_time_sec",
+            "end_time_sec",
             "duration_sec",
+            "start_board_timestamp",
+            "end_board_timestamp",
+            "board_duration_sec",
             "trial_id",
             "mi_run_index",
             "run_trial_index",
@@ -1992,6 +2095,7 @@ def save_mi_session(
         "events_csv": _relative_path(events_csv_path, dataset_root),
         "trials_csv": _relative_path(trials_csv_path, dataset_root),
         "segments_csv": _relative_path(segments_csv_path, dataset_root),
+        "raw_capture_checkpoint_json": _relative_path(raw_checkpoint_path, dataset_root),
         "session_meta_json": _relative_path(meta_json_path, dataset_root),
         "quality_report_json": _relative_path(quality_json_path, dataset_root),
         "mi_epochs_npz": _relative_path(mi_epochs_path, dataset_root),
@@ -2130,6 +2234,19 @@ def save_mi_session(
     }
     _write_json(meta_json_path, meta)
 
+    _write_json(
+        raw_checkpoint_path,
+        {
+            **raw_checkpoint_payload,
+            "status": "complete",
+            "files": {
+                **dict(raw_checkpoint_payload["files"]),
+                "session_meta_json": files_rel["session_meta_json"],
+                "quality_report_json": files_rel["quality_report_json"],
+            },
+        },
+    )
+
     # Keep one lightweight pointer for "latest run" convenience.
     latest_meta_path = session_dir / "session_meta_latest.json"
     _write_json(latest_meta_path, meta)
@@ -2180,6 +2297,7 @@ def save_mi_session(
         "trials_csv_path": str(trials_csv_path),
         "events_csv_path": str(events_csv_path),
         "segments_csv_path": str(segments_csv_path),
+        "raw_checkpoint_path": str(raw_checkpoint_path),
         "meta_json_path": str(meta_json_path),
         "quality_json_path": str(quality_json_path),
         "mi_epochs_path": str(mi_epochs_path),
@@ -2194,6 +2312,86 @@ def save_mi_session(
         "quality_report": quality_summary,
         "data_flow_report": data_flow_summary,
         "manifest_csv_path": str(manifest_path),
+    }
+
+
+def save_mi_emergency_raw_capture(
+    *,
+    brainflow_data: np.ndarray,
+    sampling_rate: float,
+    eeg_rows: list[int],
+    marker_row: int | None,
+    timestamp_row: int | None,
+    package_num_row: int | None = None,
+    board_descr: dict[str, object] | None = None,
+    settings: SessionSettings,
+    event_log: list[dict[str, object]] | None = None,
+    trial_records: list[TrialRecord] | None = None,
+    original_error: str = "",
+) -> dict[str, object]:
+    """Persist raw board data when the full MI exporter fails.
+
+    This is a recovery path for long sessions: it does not create trainable
+    epochs, but it preserves the BrainFlow matrix and enough metadata to
+    rebuild or inspect the session later.
+    """
+    data = np.asarray(brainflow_data)
+    if data.ndim != 2 or int(data.shape[1]) <= 0:
+        raise ValueError("brainflow_data must have shape (rows, samples) for emergency save.")
+    if float(sampling_rate) <= 0:
+        raise ValueError("sampling_rate must be positive for emergency save.")
+
+    session_dir = create_session_folder(settings.output_root, settings.subject_id, settings.session_id)
+    dataset_root = Path(settings.output_root).resolve()
+    save_index = _next_save_index(session_dir)
+    subject_token = sanitize_session_token(settings.subject_id)
+    session_token = sanitize_session_token(settings.session_id)
+    run_stem = f"sub-{subject_token}_ses-{session_token}_run-{int(save_index):03d}_emergency_raw"
+    save_timestamp = datetime.now().isoformat(timespec="seconds")
+    board_data_path = session_dir / f"{run_stem}_board_data.npy"
+    meta_json_path = session_dir / f"{run_stem}_emergency_capture.json"
+
+    raw_matrix = np.asarray(data, dtype=np.float64)
+    _atomic_save_npy(board_data_path, raw_matrix)
+    board_data_sha256 = _compute_sha256(board_data_path)
+    event_rows = list(event_log or [])
+    trial_rows = list(trial_records or [])
+    payload: dict[str, object] = {
+        "schema_version": int(COLLECTION_SCHEMA_VERSION),
+        "exporter_name": COLLECTION_EXPORTER_NAME,
+        "status": "emergency_raw_capture_only",
+        "saved_at": save_timestamp,
+        "original_error": str(original_error or ""),
+        "subject_id": subject_token,
+        "session_id": session_token,
+        "save_index": int(save_index),
+        "run_stem": run_stem,
+        "sampling_rate_hz": float(sampling_rate),
+        "sample_count": int(raw_matrix.shape[1]),
+        "duration_sec": float(raw_matrix.shape[1] / float(sampling_rate)),
+        "row_count": int(raw_matrix.shape[0]),
+        "selected_eeg_rows": [int(row) for row in eeg_rows],
+        "marker_row": None if marker_row is None else int(marker_row),
+        "timestamp_row": None if timestamp_row is None else int(timestamp_row),
+        "package_num_row": None if package_num_row is None else int(package_num_row),
+        "event_count": int(len(event_rows)),
+        "trial_count": int(len(trial_rows)),
+        "board_descr": json.loads(json.dumps(board_descr or {}, ensure_ascii=False, default=str)),
+        "board_data_sha256": board_data_sha256,
+        "files": {
+            "board_data_npy": _relative_path(board_data_path, dataset_root),
+            "emergency_capture_json": _relative_path(meta_json_path, dataset_root),
+        },
+    }
+    _write_json(meta_json_path, payload)
+    return {
+        "session_dir": str(session_dir),
+        "emergency_board_data_path": str(board_data_path),
+        "emergency_meta_path": str(meta_json_path),
+        "save_index": int(save_index),
+        "run_stem": run_stem,
+        "sample_count": int(raw_matrix.shape[1]),
+        "duration_sec": float(raw_matrix.shape[1] / float(sampling_rate)),
     }
 
 

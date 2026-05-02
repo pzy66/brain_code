@@ -376,7 +376,7 @@ continuous 约束：
 
 - `datasets/custom_mi/collection_manifest.csv`
 
-命名规则见 [README_SAVE_NAMING.md](C:/Users/P1233/Desktop/brain/mi_classifier/code/collection/README_SAVE_NAMING.md)。
+命名规则见 [README_SAVE_NAMING.md](<workspace>/mi_classifier/code/collection/README_SAVE_NAMING.md)。
 
 ## 10. 常见问题
 

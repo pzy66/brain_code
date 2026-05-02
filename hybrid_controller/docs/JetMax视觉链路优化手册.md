@@ -13,10 +13,10 @@
 
 - 相机来源：JetMax 相机流
 - 检测模型：仓库内权重
-  - [models/vision/best.pt](C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\models\vision\best.pt)
+  - [models/vision/best.pt](<repo>\hybrid_controller\models\vision\best.pt)
 - 运行时代码：
-  - [vision/runtime.py](C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\vision\runtime.py)
-  - [vision/processing.py](C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\vision\processing.py)
+  - [vision/runtime.py](<repo>\hybrid_controller\vision\runtime.py)
+  - [vision/processing.py](<repo>\hybrid_controller\vision\processing.py)
 
 ## 当前行为
 

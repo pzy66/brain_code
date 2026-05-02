@@ -137,22 +137,24 @@ def test_load_session1_dataset_strict_protocol_consistency(monkeypatch) -> None:
 
 def test_run_offline_train_eval_rejects_session2_subject_mismatch(monkeypatch) -> None:
     import ssvep_core.train_eval as module
+    import ssvep_core._train_eval_staged as staged_module
 
     ds_s1 = _build_dataset(session_id="s1", subject_id="subjectA", active_sec=5.0)
     ds_s2 = _build_dataset(session_id="s2", subject_id="subjectB", active_sec=5.0)
 
-    monkeypatch.setattr(
-        module,
-        "_load_session1_dataset",
-        lambda _config: (
-            ds_s1,
-            (PROJECT_DIR / "s1.json",),
-            {"collection"},
-            [{"session_id": "s1", "total_trials": 3, "kept_trials": 3, "dropped_trials": 0}],
-            {"strict_subject_consistency": True},
-        ),
-    )
-    monkeypatch.setattr(module, "load_collection_dataset", lambda _path: ds_s2)
+    for target_module in (module, staged_module):
+        monkeypatch.setattr(
+            target_module,
+            "_load_session1_dataset",
+            lambda _config: (
+                ds_s1,
+                (PROJECT_DIR / "s1.json",),
+                {"collection"},
+                [{"session_id": "s1", "total_trials": 3, "kept_trials": 3, "dropped_trials": 0}],
+                {"strict_subject_consistency": True},
+            ),
+        )
+        monkeypatch.setattr(target_module, "load_collection_dataset", lambda _path: ds_s2)
 
     config = OfflineTrainEvalConfig(
         dataset_manifest_session1=PROJECT_DIR / "s1.json",

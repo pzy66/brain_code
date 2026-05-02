@@ -116,6 +116,21 @@ def test_main_window_accepts_app_snapshot() -> None:
     app.processEvents()
 
 
+def test_main_window_defaults_to_fast_ssvep_pretrain_preset() -> None:
+    app = _ensure_app()
+    window = MainWindow()
+
+    config = window.ssvep_runtime_config()
+
+    assert config["target_repeats"] == 2
+    assert config["idle_repeats"] == 4
+    assert config["active_sec"] == 3.5
+    assert config["win_sec"] == 2.5
+    assert "12 trials" in window.ssvep_pretrain_hint_label.text()
+    window.close()
+    app.processEvents()
+
+
 def test_update_panels_does_not_drive_vision_channel() -> None:
     app = _ensure_app()
     config = AppConfig()

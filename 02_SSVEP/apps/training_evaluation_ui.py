@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
 import time
 from dataclasses import dataclass, replace
@@ -43,6 +44,7 @@ from ssvep_core.async_fbcca_idle_standalone import (
     DEFAULT_BENCHMARK_MULTI_SEED_COUNT,
     DEFAULT_CHANNEL_WEIGHT_MODE,
     DEFAULT_COMPUTE_BACKEND_NAME,
+    DEFAULT_CONTROL_STATE_MODE,
     DEFAULT_DATA_POLICY,
     DEFAULT_DYNAMIC_STOP_ALPHA,
     DEFAULT_DYNAMIC_STOP_ENABLED,
@@ -90,6 +92,11 @@ from ssvep_core.fbcca_local_opt import (
     FBCCA_LOCAL_SEARCH_PRESETS,
     FBCCALocalOptConfig,
     run_fbcca_local_opt,
+)
+from ssvep_core.fbcca_threshold_pretrain import (
+    DEFAULT_FBCCA_THRESHOLD_TASK,
+    FBCCAThresholdPretrainConfig,
+    run_fbcca_threshold_pretrain,
 )
 from ssvep_core.fbcca_external_replay_opt import (
     DEFAULT_FBCCA_EXTERNAL_DATASET_ROOT,
@@ -141,6 +148,11 @@ DEFAULT_LOCAL_RUN_ROOT = DEFAULT_ARTIFACT_ROOT / "runs" / "local"
 DEFAULT_REPORT_DIR = DEFAULT_LOCAL_RUN_ROOT
 DEFAULT_DATASET_ROOT = PROJECT_DIR / "artifacts" / "datasets"
 DEFAULT_REPORT_ROOT = DEFAULT_LOCAL_RUN_ROOT
+HYBRID_PROFILE_DIR = PROJECT_DIR.parent / "hybrid_controller" / "dataset" / "ssvep_profiles"
+HYBRID_CURRENT_PROFILE_PATH = HYBRID_PROFILE_DIR / "current_fbcca_profile.json"
+SSVEP_REALTIME_PROFILE_PATH = DEFAULT_ARTIFACT_ROOT / "deployed_profiles" / "fbcca_profile.json"
+SSVEP_REALTIME_PROFILE_V2_PATH = DEFAULT_ARTIFACT_ROOT / "deployed_profiles" / "fbcca_profile_v2.json"
+SSVEP_REALTIME_EXPECTED_FREQS = (8.0, 10.0, 12.0, 15.0)
 TRAIN_EVAL_DEFAULT_COMPUTE_BACKEND = "cuda"
 TRAIN_EVAL_DEFAULT_GPU_PRECISION = "float32"
 TDCA_LOCAL_OPT_MODELS = ("tdca",)
@@ -155,6 +167,11 @@ FBCCA_LOCAL_OPT_MULTI_SEED_COUNT = 5
 FBCCA_LOCAL_OPT_WIN_CANDIDATES = (2.0, 2.5, 3.0, 3.5)
 FBCCA_LOCAL_OPT_COMPUTE_BACKEND = "auto"
 FBCCA_LOCAL_OPT_SEARCH_PRESET = DEFAULT_FBCCA_LOCAL_SEARCH_PRESET
+FBCCA_THRESHOLD_PRETRAIN_MODELS = ("fbcca_fixed_all8",)
+FBCCA_THRESHOLD_PRETRAIN_CHANNEL_MODES = ("all8",)
+FBCCA_THRESHOLD_PRETRAIN_MULTI_SEED_COUNT = 1
+FBCCA_THRESHOLD_PRETRAIN_WIN_CANDIDATES = (3.0,)
+FBCCA_THRESHOLD_PRETRAIN_COMPUTE_BACKEND = "cpu"
 FBCCA_EXTERNAL_REPLAY_MODELS = ("fbcca",)
 FBCCA_EXTERNAL_REPLAY_CHANNEL_MODES = ("all8",)
 FBCCA_EXTERNAL_REPLAY_COMPUTE_BACKEND = "auto"
@@ -243,13 +260,25 @@ def _parse_task(raw: str) -> str:
         "fbcca_local_opt": "fbcca-local-opt",
         "fbcca-local-opt": "fbcca-local-opt",
         "local_fbcca": "fbcca-local-opt",
+        "fbcca_threshold_pretrain": DEFAULT_FBCCA_THRESHOLD_TASK,
+        "fbcca-threshold-pretrain": DEFAULT_FBCCA_THRESHOLD_TASK,
+        "fbcca_threshold": DEFAULT_FBCCA_THRESHOLD_TASK,
+        "threshold_pretrain": DEFAULT_FBCCA_THRESHOLD_TASK,
         "fbcca_external_replay_opt": "fbcca-external-replay-opt",
         "fbcca-external-replay-opt": "fbcca-external-replay-opt",
         "external_fbcca": "fbcca-external-replay-opt",
         "external-replay": "fbcca-external-replay-opt",
     }
     value = aliases.get(value, value)
-    if value not in {"fbcca-weights", "model-compare", "fbcca-weighted-compare", "tdca-local-opt", "fbcca-local-opt", "fbcca-external-replay-opt"}:
+    if value not in {
+        "fbcca-weights",
+        "model-compare",
+        "fbcca-weighted-compare",
+        "tdca-local-opt",
+        "fbcca-local-opt",
+        DEFAULT_FBCCA_THRESHOLD_TASK,
+        "fbcca-external-replay-opt",
+    }:
         raise ValueError(f"unsupported train-eval task: {raw}")
     return value
 
@@ -368,6 +397,28 @@ def _apply_fbcca_local_opt_args(args: argparse.Namespace, argv_tokens: Sequence[
         args.compute_backend = str(FBCCA_LOCAL_OPT_COMPUTE_BACKEND)
     if not _argv_has_flag(argv_tokens, "--search-preset"):
         args.search_preset = str(FBCCA_LOCAL_OPT_SEARCH_PRESET)
+
+
+def _apply_fbcca_threshold_pretrain_args(args: argparse.Namespace, argv_tokens: Sequence[str]) -> None:
+    args.task = DEFAULT_FBCCA_THRESHOLD_TASK
+    if not _argv_has_flag(argv_tokens, "--models"):
+        args.models = ",".join(FBCCA_THRESHOLD_PRETRAIN_MODELS)
+    if not _argv_has_flag(argv_tokens, "--channel-modes"):
+        args.channel_modes = ",".join(FBCCA_THRESHOLD_PRETRAIN_CHANNEL_MODES)
+    if not _argv_has_flag(argv_tokens, "--multi-seed-count"):
+        args.multi_seed_count = int(FBCCA_THRESHOLD_PRETRAIN_MULTI_SEED_COUNT)
+    if not _argv_has_flag(argv_tokens, "--win-candidates"):
+        args.win_candidates = ",".join(f"{float(value):g}" for value in FBCCA_THRESHOLD_PRETRAIN_WIN_CANDIDATES)
+    if not _argv_has_flag(argv_tokens, "--channel-weight-mode"):
+        args.channel_weight_mode = "none"
+    if not _argv_has_flag(argv_tokens, "--subband-weight-mode"):
+        args.subband_weight_mode = "chen_fixed"
+    if not _argv_has_flag(argv_tokens, "--spatial-filter-mode"):
+        args.spatial_filter_mode = "none"
+    if not _argv_has_flag(argv_tokens, "--dynamic-stop-enabled"):
+        args.dynamic_stop_enabled = 0
+    if not _argv_has_flag(argv_tokens, "--compute-backend"):
+        args.compute_backend = str(FBCCA_THRESHOLD_PRETRAIN_COMPUTE_BACKEND)
 
 
 def _apply_fbcca_external_replay_args(args: argparse.Namespace, argv_tokens: Sequence[str]) -> None:
@@ -506,6 +557,33 @@ class TrainEvalWorker(QObject):
                     progress_heartbeat_sec=self.config.progress_heartbeat_sec,
                 )
                 self.done.emit(run_fbcca_local_opt(cfg, log_fn=self.log.emit, progress_fn=self.progress.emit))
+            elif task_name == DEFAULT_FBCCA_THRESHOLD_TASK:
+                win_sec = 3.0
+                if self.config.win_candidates:
+                    win_sec = float(self.config.win_candidates[0])
+                cfg = FBCCAThresholdPretrainConfig(
+                    dataset_manifest_session1=self.config.session1_manifest,
+                    dataset_manifests=self.config.dataset_manifests,
+                    output_profile_path=self.config.output_profile_path,
+                    report_path=self.config.report_path,
+                    report_root_dir=self.config.report_root_dir,
+                    organize_report_dir=bool(self.config.organize_report_dir),
+                    win_sec=float(win_sec),
+                    gate_policy=self.config.gate_policy,
+                    dynamic_stop_enabled=False,
+                    dynamic_stop_alpha=self.config.dynamic_stop_alpha,
+                    seed=self.config.seed,
+                    compute_backend=self.config.compute_backend,
+                    gpu_device=self.config.gpu_device,
+                    gpu_precision=self.config.gpu_precision,
+                    gpu_warmup=bool(self.config.gpu_warmup),
+                    gpu_cache_policy=self.config.gpu_cache_policy,
+                    decision_time_mode=self.config.decision_time_mode,
+                    async_decision_time_mode=self.config.async_decision_time_mode,
+                    progress_heartbeat_sec=self.config.progress_heartbeat_sec,
+                    publish_realtime=True,
+                )
+                self.done.emit(run_fbcca_threshold_pretrain(cfg, log_fn=self.log.emit, progress_fn=self.progress.emit))
             elif task_name == "fbcca-external-replay-opt":
                 cfg = FBCCAExternalReplayOptConfig(
                     external_dataset_root=self.config.external_dataset_root,
@@ -632,6 +710,7 @@ class TrainingEvaluationWindow(QMainWindow):
         self.btn_quick_run.setText("FBCCA鏉冮噸璁粌锛堝揩閫燂級")
         self.btn_weighted_compare_run = QPushButton("Train weights + compare all models (Recommended)")
         self.btn_model_compare_run = QPushButton("Generate full model comparison report")
+        self.btn_fbcca_threshold_pretrain_run = QPushButton("FBCCA Threshold Pretrain (Fast)")
         self.btn_fbcca_local_opt_run = QPushButton("Run FBCCA Async Local Optimization")
         self.btn_fbcca_external_replay_run = QPushButton("Run FBCCA External Replay Optimization")
         self.btn_tdca_local_opt_run = QPushButton("Run TDCA Async Local Optimization")
@@ -647,6 +726,7 @@ class TrainingEvaluationWindow(QMainWindow):
         quick_row.addWidget(self.btn_weighted_compare_run)
         quick_row.addWidget(self.btn_quick_run)
         quick_row.addWidget(self.btn_model_compare_run)
+        quick_row.addWidget(self.btn_fbcca_threshold_pretrain_run)
         quick_row.addWidget(self.btn_fbcca_local_opt_run)
         quick_row.addWidget(self.btn_fbcca_external_replay_run)
         quick_row.addWidget(self.btn_tdca_local_opt_run)
@@ -777,10 +857,14 @@ class TrainingEvaluationWindow(QMainWindow):
         self.btn_run = QPushButton("Start Training/Evaluation")
         self.btn_open_report_dir = QPushButton("鎵撳紑鎶ュ憡鐩綍")
         self.btn_open_profile = QPushButton("Open Profile")
+        self.btn_publish_realtime_profile = QPushButton("发布到实时识别")
+        self.btn_publish_hybrid_profile = QPushButton("发布到集成控制器")
         self.btn_open_figures_dir = QPushButton("鎵撳紑鍥捐〃鐩綍")
         self.btn_open_replay_viewer = QPushButton("Open Replay Viewer")
         self.btn_open_report_dir.setEnabled(False)
         self.btn_open_profile.setEnabled(False)
+        self.btn_publish_realtime_profile.setEnabled(False)
+        self.btn_publish_hybrid_profile.setEnabled(False)
         self.btn_open_figures_dir.setEnabled(False)
         self.btn_open_replay_viewer.setEnabled(False)
         for btn in (
@@ -796,6 +880,8 @@ class TrainingEvaluationWindow(QMainWindow):
             self.btn_run,
             self.btn_open_report_dir,
             self.btn_open_profile,
+            self.btn_publish_realtime_profile,
+            self.btn_publish_hybrid_profile,
             self.btn_open_figures_dir,
             self.btn_open_replay_viewer,
         ):
@@ -851,10 +937,13 @@ class TrainingEvaluationWindow(QMainWindow):
         self.btn_run.clicked.connect(self._start_standard_run)
         self.btn_open_report_dir.clicked.connect(self._open_report_dir)
         self.btn_open_profile.clicked.connect(self._open_profile_path)
+        self.btn_publish_realtime_profile.clicked.connect(self._publish_profile_to_ssvep_realtime)
+        self.btn_publish_hybrid_profile.clicked.connect(self._publish_profile_to_hybrid_controller)
         self.btn_open_figures_dir.clicked.connect(self._open_figures_dir)
         self.btn_quick_run.clicked.connect(self._quick_auto_run)
         self.btn_weighted_compare_run.clicked.connect(self._weighted_compare_run)
         self.btn_model_compare_run.clicked.connect(self._model_compare_run)
+        self.btn_fbcca_threshold_pretrain_run.clicked.connect(self._fbcca_threshold_pretrain_run)
         self.btn_fbcca_local_opt_run.clicked.connect(self._fbcca_local_opt_run)
         self.btn_fbcca_external_replay_run.clicked.connect(self._fbcca_external_replay_run)
         self.btn_tdca_local_opt_run.clicked.connect(self._tdca_local_opt_run)
@@ -941,6 +1030,8 @@ class TrainingEvaluationWindow(QMainWindow):
         self.btn_weighted_compare_run.setText("训练权重并对比全模型（推荐）")
         self.btn_quick_run.setText("FBCCA 权重训练（快速）")
         self.btn_model_compare_run.setText("全模型对比报告")
+        self.btn_fbcca_threshold_pretrain_run.setText("FBCCA 阈值快速预训练")
+        self.btn_fbcca_local_opt_run.setText("FBCCA 本地异步优化")
         self.btn_fbcca_external_replay_run.setText("外部数据 FBCCA 回放优化")
         self.btn_toggle_advanced.setText("显示高级设置")
 
@@ -1509,6 +1600,78 @@ class TrainingEvaluationWindow(QMainWindow):
     def _open_profile_path(self) -> None:
         self._open_path(self._last_profile_path)
 
+    def _resolve_publish_profile_source(self) -> Optional[Path]:
+        source = getattr(self, "_last_profile_path", None)
+        if source is None:
+            edit = getattr(self, "output_profile_edit", None)
+            raw = str(edit.text()).strip() if edit is not None else ""
+            source = Path(raw).expanduser().resolve() if raw else None
+        return Path(source).expanduser().resolve() if source is not None else None
+
+    @staticmethod
+    def _validate_fbcca_realtime_profile(source: Path) -> None:
+        payload = json.loads(Path(source).read_text(encoding="utf-8-sig"))
+        if not isinstance(payload, dict):
+            raise ValueError("profile JSON 不是对象")
+        model_name = normalize_model_name(str(payload.get("model_name", "")))
+        freqs = tuple(float(item) for item in payload.get("freqs", ()))
+        if "fbcca" not in model_name:
+            raise ValueError(f"profile 不是 FBCCA: model_name={model_name or '<missing>'}")
+        expected = tuple(float(item) for item in SSVEP_REALTIME_EXPECTED_FREQS)
+        if len(freqs) != len(expected) or any(abs(left - right) > 1e-6 for left, right in zip(freqs, expected)):
+            raise ValueError(f"profile 频率不匹配，期望 8/10/12/15Hz，实际 {freqs}")
+
+    def _publish_profile_to_ssvep_realtime(self) -> None:
+        source = TrainingEvaluationWindow._resolve_publish_profile_source(self)
+        if source is None or not source.exists():
+            self._log("没有可发布到实时识别的 profile。请先完成 FBCCA 训练，或在输出 Profile 中选择已有文件。")
+            return
+        try:
+            TrainingEvaluationWindow._validate_fbcca_realtime_profile(source)
+            SSVEP_REALTIME_PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            if source.resolve() != SSVEP_REALTIME_PROFILE_PATH.resolve():
+                shutil.copy2(source, SSVEP_REALTIME_PROFILE_PATH)
+            source_v2 = source.with_name(f"{source.stem}_v2.json")
+            copied_v2 = False
+            if source_v2.exists():
+                if source_v2.resolve() != SSVEP_REALTIME_PROFILE_V2_PATH.resolve():
+                    shutil.copy2(source_v2, SSVEP_REALTIME_PROFILE_V2_PATH)
+                copied_v2 = True
+        except Exception as exc:
+            self._log(f"发布到实时识别失败: {exc}")
+            return
+        v2_text = f" | v2={SSVEP_REALTIME_PROFILE_V2_PATH}" if copied_v2 else ""
+        self._log(f"已发布到 SSVEP 实时识别: {SSVEP_REALTIME_PROFILE_PATH}{v2_text}")
+
+    def _publish_profile_to_hybrid_controller(self) -> None:
+        source = TrainingEvaluationWindow._resolve_publish_profile_source(self)
+        if source is None or not source.exists():
+            self._log("没有可发布的 profile。请先完成训练，或在输出 Profile 中选择已有文件。")
+            return
+        try:
+            payload = json.loads(source.read_text(encoding="utf-8-sig"))
+            model_name = str(payload.get("model_name", "")).strip().lower()
+            freqs = tuple(float(item) for item in payload.get("freqs", ()))
+            if "fbcca" not in model_name:
+                raise ValueError(f"profile 不是 FBCCA: model_name={model_name or '<missing>'}")
+            if len(freqs) != 4 or any(abs(left - right) > 1e-6 for left, right in zip(freqs, (8.0, 10.0, 12.0, 15.0))):
+                raise ValueError(f"profile 频率不匹配，期望 8/10/12/15Hz，实际 {freqs}")
+            stamp = _now_stamp()
+            HYBRID_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+            history_path = HYBRID_PROFILE_DIR / f"ssvep_fbcca_profile_{stamp}.json"
+            source_resolved = source.resolve()
+            if source_resolved != history_path.resolve():
+                shutil.copy2(source, history_path)
+            if source_resolved != HYBRID_CURRENT_PROFILE_PATH.resolve():
+                shutil.copy2(source, HYBRID_CURRENT_PROFILE_PATH)
+        except Exception as exc:
+            self._log(f"发布到集成控制器失败: {exc}")
+            return
+        self._log(
+            "已发布到集成控制器: "
+            f"current={HYBRID_CURRENT_PROFILE_PATH} | history={history_path}"
+        )
+
     def _open_figures_dir(self) -> None:
         self._open_path(self._last_figures_dir)
 
@@ -1551,6 +1714,8 @@ class TrainingEvaluationWindow(QMainWindow):
         self.current_profile_label.setText(f"Profile：{profile_path_obj if profile_path_obj is not None else '未开始'}")
         self.btn_open_report_dir.setEnabled(run_dir is not None and run_dir.exists())
         self.btn_open_profile.setEnabled(profile_path_obj is not None and profile_path_obj.exists())
+        self.btn_publish_realtime_profile.setEnabled(profile_path_obj is not None and profile_path_obj.exists())
+        self.btn_publish_hybrid_profile.setEnabled(profile_path_obj is not None and profile_path_obj.exists())
         self.btn_open_replay_viewer.setEnabled(self._last_report_path is not None and self._last_report_path.exists())
 
     def _resolve_local_artifacts(self, *, task_name: str) -> dict[str, Path]:
@@ -1689,7 +1854,12 @@ class TrainingEvaluationWindow(QMainWindow):
             "keep_baseline_group": bool(self.keep_baseline_group_check.isChecked()),
         }
         requested_models = list(parse_model_list(self.models_edit.text().strip()))
-        if self.keep_baseline_group_check.isChecked() and str(self._task) not in {"tdca-local-opt", "fbcca-local-opt", "fbcca-external-replay-opt"}:
+        if self.keep_baseline_group_check.isChecked() and str(self._task) not in {
+            "tdca-local-opt",
+            "fbcca-local-opt",
+            DEFAULT_FBCCA_THRESHOLD_TASK,
+            "fbcca-external-replay-opt",
+        }:
             for model_name in BASELINE_COMPARE_MODELS:
                 if model_name not in requested_models:
                     requested_models.append(str(model_name))
@@ -1753,6 +1923,7 @@ class TrainingEvaluationWindow(QMainWindow):
         self.btn_run.setEnabled(not running)
         if running:
             self.btn_open_report_dir.setEnabled(False)
+            self.btn_publish_realtime_profile.setEnabled(False)
             self.btn_open_figures_dir.setEnabled(False)
             self.btn_open_replay_viewer.setEnabled(False)
             self.progress_bar.setValue(0)
@@ -1763,7 +1934,7 @@ class TrainingEvaluationWindow(QMainWindow):
         if self.worker_thread is not None:
             return
         use_remote = bool(self.remote_mode_check.isChecked())
-        if str(self._task) in {"tdca-local-opt", "fbcca-local-opt", "fbcca-external-replay-opt"}:
+        if str(self._task) in {"tdca-local-opt", "fbcca-local-opt", DEFAULT_FBCCA_THRESHOLD_TASK, "fbcca-external-replay-opt"}:
             use_remote = False
         if use_remote:
             self._start_remote_run()
@@ -2022,6 +2193,12 @@ class TrainingEvaluationWindow(QMainWindow):
         self._last_figures_dir = figures_dir if figures_dir.exists() else None
         self.btn_open_report_dir.setEnabled(local_run_dir.exists())
         self.btn_open_profile.setEnabled(self._last_profile_path is not None and self._last_profile_path.exists())
+        self.btn_publish_realtime_profile.setEnabled(
+            self._last_profile_path is not None and self._last_profile_path.exists()
+        )
+        self.btn_publish_hybrid_profile.setEnabled(
+            self._last_profile_path is not None and self._last_profile_path.exists()
+        )
         self.btn_open_figures_dir.setEnabled(self._last_figures_dir is not None)
         self.btn_open_replay_viewer.setEnabled(self._last_report_path is not None and self._last_report_path.exists())
         self.progress_bar.setValue(100)
@@ -2056,6 +2233,12 @@ class TrainingEvaluationWindow(QMainWindow):
         self._last_figures_dir = Path(str(figures_dir)).expanduser().resolve() if figures_dir else None
         self.btn_open_report_dir.setEnabled(True)
         self.btn_open_profile.setEnabled(self._last_profile_path is not None and self._last_profile_path.exists())
+        self.btn_publish_realtime_profile.setEnabled(
+            self._last_profile_path is not None and self._last_profile_path.exists()
+        )
+        self.btn_publish_hybrid_profile.setEnabled(
+            self._last_profile_path is not None and self._last_profile_path.exists()
+        )
         self.btn_open_figures_dir.setEnabled(self._last_figures_dir is not None)
         self.btn_open_replay_viewer.setEnabled(self._last_report_path is not None and self._last_report_path.exists())
         self.progress_bar.setValue(100)
@@ -2168,6 +2351,31 @@ class TrainingEvaluationWindow(QMainWindow):
         if bool(auto_start):
             self._start_local_run()
 
+    def configure_fbcca_threshold_pretrain_mode(self, *, auto_start: bool = False) -> None:
+        self._task = DEFAULT_FBCCA_THRESHOLD_TASK
+        self.simple_mode_check.setChecked(False)
+        self.remote_mode_check.setChecked(False)
+        self.allow_local_mode_check.setChecked(True)
+        self.keep_baseline_group_check.setChecked(False)
+        self.models_edit.setText(",".join(FBCCA_THRESHOLD_PRETRAIN_MODELS))
+        self.channel_modes_edit.setText(",".join(FBCCA_THRESHOLD_PRETRAIN_CHANNEL_MODES))
+        self.multi_seed_spin.setValue(int(FBCCA_THRESHOLD_PRETRAIN_MULTI_SEED_COUNT))
+        self.win_candidates_edit.setText(
+            ",".join(f"{float(value):g}" for value in FBCCA_THRESHOLD_PRETRAIN_WIN_CANDIDATES)
+        )
+        self.weight_mode_edit.setText("none")
+        self.subband_weight_mode_edit.setText("chen_fixed")
+        self.spatial_mode_edit.setText("none")
+        self.joint_iters_edit.setText("1")
+        self.weight_cv_folds_edit.setText("2")
+        self.dynamic_stop_edit.setText("0")
+        self.compute_backend_combo.setCurrentText(str(FBCCA_THRESHOLD_PRETRAIN_COMPUTE_BACKEND))
+        self._log(
+            "切换到 FBCCA 阈值快速预训练：默认 FBCCA 参数 / 只拟合实时识别阈值 / 自动发布到实时识别 profile"
+        )
+        if bool(auto_start):
+            self._start_local_run()
+
     def configure_fbcca_external_replay_mode(self, *, auto_start: bool = False) -> None:
         self._task = "fbcca-external-replay-opt"
         current_preset = str(getattr(self, "_tdca_search_preset", "")).strip().lower()
@@ -2212,6 +2420,11 @@ class TrainingEvaluationWindow(QMainWindow):
         if self.worker_thread is not None:
             return
         self.configure_fbcca_local_opt_mode(auto_start=True)
+
+    def _fbcca_threshold_pretrain_run(self) -> None:
+        if self.worker_thread is not None:
+            return
+        self.configure_fbcca_threshold_pretrain_mode(auto_start=True)
 
     def _fbcca_external_replay_run(self) -> None:
         if self.worker_thread is not None:
@@ -2322,6 +2535,7 @@ class TrainingEvaluationWindow(QMainWindow):
             self.btn_weighted_compare_run.setVisible(True)
             self.btn_quick_run.setVisible(True)
             self.btn_model_compare_run.setVisible(True)
+            self.btn_fbcca_threshold_pretrain_run.setVisible(True)
             self.btn_toggle_advanced.setVisible(True)
             self._set_advanced_visible(False)
             self.status_label.setText("简易模式：建议先运行权重训练+全模型对比")
@@ -2329,6 +2543,7 @@ class TrainingEvaluationWindow(QMainWindow):
             self.btn_weighted_compare_run.setVisible(False)
             self.btn_quick_run.setVisible(False)
             self.btn_model_compare_run.setVisible(False)
+            self.btn_fbcca_threshold_pretrain_run.setVisible(True)
             self.btn_toggle_advanced.setVisible(False)
             self._set_advanced_visible(True)
             self.status_label.setText("高级模式：按当前参数运行")
@@ -2384,8 +2599,10 @@ class TrainingEvaluationWindow(QMainWindow):
         self.btn_weighted_compare_run.setEnabled(not running)
         self.btn_quick_run.setEnabled(not running)
         self.btn_model_compare_run.setEnabled(not running)
+        self.btn_fbcca_threshold_pretrain_run.setEnabled(not running)
         if running:
             self.btn_open_report_dir.setEnabled(False)
+            self.btn_publish_realtime_profile.setEnabled(False)
             self.btn_open_figures_dir.setEnabled(False)
             self.progress_bar.setValue(0)
             self.progress_detail_label.setText("当前阶段：准备中")
@@ -2464,7 +2681,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--task",
         type=str,
         default=DEFAULT_TRAIN_EVAL_TASK,
-        choices=["fbcca-weights", "model-compare", "fbcca-weighted-compare", "tdca-local-opt", "fbcca-local-opt", "fbcca-external-replay-opt"],
+        choices=[
+            "fbcca-weights",
+            "model-compare",
+            "fbcca-weighted-compare",
+            "tdca-local-opt",
+            "fbcca-local-opt",
+            DEFAULT_FBCCA_THRESHOLD_TASK,
+            "fbcca-external-replay-opt",
+        ],
     )
     parser.add_argument("--monitor-run-dir", type=Path, default=None, help="attach UI to an existing local run dir")
     parser.add_argument("--auto-start", action="store_true", help="start the configured task automatically after the UI opens")
@@ -2487,6 +2712,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         parsed_task = _parse_task(args.task)
     elif parsed_task == "fbcca-local-opt":
         _apply_fbcca_local_opt_args(args, argv_tokens)
+        parsed_task = _parse_task(args.task)
+    elif parsed_task == DEFAULT_FBCCA_THRESHOLD_TASK:
+        _apply_fbcca_threshold_pretrain_args(args, argv_tokens)
         parsed_task = _parse_task(args.task)
     elif parsed_task == "fbcca-external-replay-opt":
         _apply_fbcca_external_replay_args(args, argv_tokens)
@@ -2547,6 +2775,31 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 progress_heartbeat_sec=float(args.progress_heartbeat_sec),
             )
             run_fbcca_local_opt(config, log_fn=lambda text: print(text, flush=True))
+        elif parsed_task == DEFAULT_FBCCA_THRESHOLD_TASK:
+            win_candidates = tuple(float(item.strip()) for item in str(args.win_candidates).split(",") if item.strip())
+            config = FBCCAThresholdPretrainConfig(
+                dataset_manifest_session1=Path(s1).expanduser().resolve(),
+                dataset_manifests=include_manifests,
+                output_profile_path=Path(args.output_profile).expanduser().resolve(),
+                report_path=Path(args.report_path).expanduser().resolve(),
+                report_root_dir=Path(args.report_root_dir).expanduser().resolve(),
+                organize_report_dir=bool(int(args.organize_report_dir)),
+                win_sec=float(win_candidates[0] if win_candidates else 3.0),
+                gate_policy=parse_gate_policy(args.gate_policy),
+                dynamic_stop_enabled=False,
+                dynamic_stop_alpha=float(args.dynamic_stop_alpha),
+                seed=int(args.seed),
+                compute_backend=parse_compute_backend_name(str(args.compute_backend).strip()),
+                gpu_device=int(args.gpu_device),
+                gpu_precision=parse_gpu_precision(str(args.gpu_precision).strip()),
+                gpu_warmup=bool(int(args.gpu_warmup)),
+                gpu_cache_policy=parse_gpu_cache_policy(str(args.gpu_cache_policy).strip()),
+                decision_time_mode=parse_decision_time_mode(args.decision_time_mode),
+                async_decision_time_mode=parse_decision_time_mode(args.async_decision_time_mode),
+                progress_heartbeat_sec=float(args.progress_heartbeat_sec),
+                publish_realtime=True,
+            )
+            run_fbcca_threshold_pretrain(config, log_fn=lambda text: print(text, flush=True))
         elif parsed_task == "fbcca-external-replay-opt":
             if not str(args.subject or "").strip():
                 raise ValueError("--subject is required for fbcca-external-replay-opt")
@@ -2694,6 +2947,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         window.configure_tdca_local_opt_mode(auto_start=False)
     elif window._task == "fbcca-local-opt":
         window.configure_fbcca_local_opt_mode(auto_start=False)
+    elif window._task == DEFAULT_FBCCA_THRESHOLD_TASK:
+        window.configure_fbcca_threshold_pretrain_mode(auto_start=False)
     elif window._task == "fbcca-external-replay-opt":
         window.configure_fbcca_external_replay_mode(auto_start=False)
     else:

@@ -59,9 +59,9 @@ JetMax 官方控制主路径是笛卡尔坐标：
 ## 当前代码位置
 
 - 圆柱换算：
-  - [cylindrical.py](C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\cylindrical.py)
+  - [cylindrical.py](<repo>\hybrid_controller\cylindrical.py)
 - 机器人运行时：
-  - [robot/runtime/robot_runtime.py](C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\robot\runtime\robot_runtime.py)
-  - [robot/runtime/robot_runtime_py36.py](C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\robot\runtime\robot_runtime_py36.py)
+  - [robot/runtime/robot_runtime.py](<repo>\hybrid_controller\robot\runtime\robot_runtime.py)
+  - [robot/runtime/robot_runtime_py36.py](<repo>\hybrid_controller\robot\runtime\robot_runtime_py36.py)
 - ROS teleop kernel：
-  - [robot/runtime/teleop_kernel.py](C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\robot\runtime\teleop_kernel.py)
+  - [robot/runtime/teleop_kernel.py](<repo>\hybrid_controller\robot\runtime\teleop_kernel.py)

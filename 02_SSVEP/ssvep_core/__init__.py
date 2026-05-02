@@ -69,6 +69,8 @@ __all__ = [
     "export_evaluation_figures",
     "OfflineTrainEvalConfig",
     "run_offline_train_eval",
+    "FBCCAThresholdPretrainConfig",
+    "run_fbcca_threshold_pretrain",
     "TDCALocalOptConfig",
     "run_tdca_local_opt",
 ]
@@ -127,6 +129,8 @@ _EXPORT_MAP = {
     "export_evaluation_figures": (".reporting", "export_evaluation_figures"),
     "OfflineTrainEvalConfig": (".train_eval", "OfflineTrainEvalConfig"),
     "run_offline_train_eval": (".train_eval", "run_offline_train_eval"),
+    "FBCCAThresholdPretrainConfig": (".fbcca_threshold_pretrain", "FBCCAThresholdPretrainConfig"),
+    "run_fbcca_threshold_pretrain": (".fbcca_threshold_pretrain", "run_fbcca_threshold_pretrain"),
     "TDCALocalOptConfig": (".tdca_local_opt", "TDCALocalOptConfig"),
     "run_tdca_local_opt": (".tdca_local_opt", "run_tdca_local_opt"),
 }

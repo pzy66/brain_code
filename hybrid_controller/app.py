@@ -257,6 +257,7 @@ class HybridControllerApplication:
         self.main_window.abort_requested.connect(self._on_abort_requested)
         self.main_window.reset_requested.connect(self._on_reset_requested)
         self.main_window.ssvep_connect_requested.connect(self._on_ssvep_connect_requested)
+        self.main_window.ssvep_config_apply_requested.connect(self._on_ssvep_config_apply_requested)
         self.main_window.ssvep_pretrain_requested.connect(self._on_ssvep_pretrain_requested)
         self.main_window.ssvep_load_profile_requested.connect(self._on_ssvep_load_profile_requested)
         self.main_window.ssvep_open_profile_dir_requested.connect(self._on_ssvep_open_profile_dir_requested)
@@ -945,6 +946,10 @@ class HybridControllerApplication:
             command_callback=self.dispatch_ssvep_command,
             status_callback=lambda message: self._queue_runtime_status("ssvep", message),
             state_callback=self._queue_ssvep_state,
+        )
+        self.main_window.set_ssvep_runtime_config(
+            serial_port=str(self.config.ssvep_serial_port),
+            board_id=int(self.config.ssvep_board_id),
         )
         self.ssvep_coordinator.bind_runtime(self.ssvep_runtime)
         self._rt_update(
@@ -2473,10 +2478,53 @@ class HybridControllerApplication:
     def _on_ssvep_connect_requested(self) -> None:
         if self.ssvep_runtime is None:
             return
+        if not self._apply_ssvep_runtime_config_from_ui(announce=True):
+            return
         self.ssvep_coordinator.connect_device()
+
+    def _apply_ssvep_runtime_config_from_ui(self, *, announce: bool) -> bool:
+        if self.ssvep_runtime is None:
+            return False
+        try:
+            runtime_config = self.main_window.ssvep_runtime_config()
+            resolved_serial = str(runtime_config["serial_port"] or "auto").strip() or "auto"
+            resolved_board = int(runtime_config["board_id"])
+            runtime_config["serial_port"] = resolved_serial
+            runtime_config["board_id"] = resolved_board
+            self.ssvep_runtime.set_runtime_config(**runtime_config)
+            pretrain_config = self.main_window.ssvep_pretrain_config()
+            trials = 4 * int(pretrain_config["target_repeats"]) + int(pretrain_config["idle_repeats"])
+            estimated_sec = float(pretrain_config["estimated_sec"])
+            self._rt_update(
+                {
+                    "ssvep_connected": bool(self.ssvep_runtime.connected),
+                    "ssvep_runtime_status": (
+                        f"config applied serial={resolved_serial} board={resolved_board} "
+                        f"pretrain={pretrain_config['preset']} trials={trials} est={estimated_sec:.0f}s"
+                    ),
+                }
+            )
+            if announce:
+                self._handle_runtime_status(
+                    "ssvep",
+                    (
+                        f"SSVEP config applied: serial={resolved_serial}, board={resolved_board}, "
+                        f"pretrain={pretrain_config['preset']} ({trials} trials, ~{estimated_sec:.0f}s)"
+                    ),
+                )
+            return True
+        except Exception as error:
+            self._handle_runtime_status("ssvep", f"Apply SSVEP config failed: {error}")
+            return False
+
+    def _on_ssvep_config_apply_requested(self, serial_port: str, board_id: int) -> None:
+        del serial_port, board_id
+        self._apply_ssvep_runtime_config_from_ui(announce=True)
 
     def _on_ssvep_pretrain_requested(self) -> None:
         if self.ssvep_runtime is None:
+            return
+        if not self._apply_ssvep_runtime_config_from_ui(announce=True):
             return
         self.ssvep_coordinator.start_pretrain()
 
@@ -2512,6 +2560,8 @@ class HybridControllerApplication:
 
     def _on_ssvep_start_requested(self) -> None:
         if self.ssvep_runtime is None:
+            return
+        if not self._apply_ssvep_runtime_config_from_ui(announce=True):
             return
         self.ssvep_coordinator.start_online()
 

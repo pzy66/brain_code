@@ -1,4 +1,4 @@
-[12:09:39] [fbcca-local-opt] report directory prepared: D:\brain\brain_code\02_SSVEP\artifacts\runs\local\fbcca-local-opt\20260416\run_20260416_120939_fbcca-local-opt
+[12:09:39] [fbcca-local-opt] report directory prepared: <repo>\02_SSVEP\artifacts\runs\local\fbcca-local-opt\20260416\run_20260416_120939_fbcca-local-opt
 [12:09:39] [fbcca-local-opt] compute backend prepared: requested=auto effective=cuda
 [12:10:07] [fbcca-local-opt] repeat=1/1 candidate=1/20 variant=fbcca_fixed_all8|win=2.5|confidence=global_correctness_logistic
 [12:10:15] [fbcca-local-opt] repeat=1/1 candidate=2/20 variant=fbcca_fixed_all8|win=3|confidence=global_correctness_logistic

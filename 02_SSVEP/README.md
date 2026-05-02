@@ -508,7 +508,7 @@ artifacts/
 最基本的回归入口：
 
 ```bash
-pytest D:\brain\brain_code\02_SSVEP\tests -q
+pytest <repo>\02_SSVEP\tests -q
 ```
 
 如果你刚改的是某条主线，至少再补一轮对应任务的 smoke：

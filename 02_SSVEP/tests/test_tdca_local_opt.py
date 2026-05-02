@@ -808,6 +808,8 @@ def test_run_tdca_local_opt_smoke(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(module, "load_collection_dataset", lambda _path: dataset)
     monkeypatch.setattr(module, "create_decoder", lambda _model_name, **kwargs: _FakeDecoder(**kwargs))
     monkeypatch.setattr(module, "DEFAULT_LOGREG_FIT_CONFIG", LogRegFitConfig(epochs=4, min_samples=1))
+    publish_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(module, "publish_deployed_profile", lambda **kwargs: publish_calls.append(kwargs))
     _relax_correctness_minima(monkeypatch, module)
     monkeypatch.setattr(
         module,
@@ -892,6 +894,7 @@ def test_run_tdca_local_opt_smoke(monkeypatch, tmp_path: Path) -> None:
     assert report_path.exists()
     assert profile_path.exists()
     assert Path(payload["profile_v2_path"]).exists()
+    assert len(publish_calls) == 1
 
 
 def test_gate_calibration_invalid_run_blocks_profile_and_marks_rationale(monkeypatch, tmp_path: Path) -> None:
@@ -1135,6 +1138,8 @@ def test_decision_search_board_is_not_truncated(monkeypatch, tmp_path: Path) -> 
     monkeypatch.setattr(module, "load_collection_dataset", lambda _path: dataset)
     monkeypatch.setattr(module, "create_decoder", lambda _model_name, **kwargs: _BoardDecoder(**kwargs))
     monkeypatch.setattr(module, "DEFAULT_LOGREG_FIT_CONFIG", LogRegFitConfig(epochs=4, min_samples=1))
+    publish_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(module, "publish_deployed_profile", lambda **kwargs: publish_calls.append(kwargs))
     _relax_correctness_minima(monkeypatch, module)
     decision_grid = [
         {
@@ -1179,6 +1184,7 @@ def test_decision_search_board_is_not_truncated(monkeypatch, tmp_path: Path) -> 
     assert payload["decision_search_target"] == "tune_split"
     assert payload["final_selection_target"] == "holdout_split"
     assert payload["holdout_selection_board"]
+    assert len(publish_calls) == 1
 
 
 def test_tdca_board_tie_break_prefers_paper_aligned_variant() -> None:

@@ -1,6 +1,6 @@
 # 训练数据读取规则
 
-本文件说明 [train_custom_dataset.py](C:/Users/P1233/Desktop/brain/mi_classifier/code/training/train_custom_dataset.py) 当前如何发现、分组、加载多被试、多会话、多次保存数据。
+本文件说明 [train_custom_dataset.py](<workspace>/mi_classifier/code/training/train_custom_dataset.py) 当前如何发现、分组、加载多被试、多会话、多次保存数据。
 
 ## 1. 文件发现规则
 

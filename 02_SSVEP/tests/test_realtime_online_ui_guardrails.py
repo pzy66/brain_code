@@ -48,6 +48,92 @@ def test_realtime_window_constructor_smoke() -> None:
         window.close()
 
 
+def test_realtime_stimulus_area_stays_large_after_runtime_updates() -> None:
+    app = _get_qapp()
+    window = RealtimeOnlineWindow(serial_port="auto", board_id=0, freqs=(8.0, 10.0, 12.0, 15.0))
+    window.resize(1600, 900)
+    window.show()
+    app.processEvents()
+    try:
+        window._on_profile_info(
+            {
+                "loaded_profile_path": str(Path("C:/") / ("very_long_profile_path_segment_" * 8) / "fbcca_profile.json"),
+                "loaded_profile_model": "fbcca",
+                "channel_weight_count": 8,
+                "subband_weight_count": 5,
+                "backend_requested": "auto",
+                "backend_used": "cuda",
+                "selection_summary": {
+                    "selection_mode": "auto-benchmark",
+                    "reason": "cuda-faster " * 16,
+                },
+                "shadow_summary": {
+                    "shadow_mode": "enabled",
+                    "gate_mode": "profile_v2",
+                    "profile_v2_loaded": True,
+                },
+            }
+        )
+        window._on_phase_changed(
+            {
+                "mode": realtime_ui.PHASE_VALIDATION,
+                "title": "实时识别中（fbcca）",
+                "detail": "注视目标方块会输出结果；看中心点时不输出。",
+                "flicker": True,
+                "cue_freq": None,
+            }
+        )
+        app.processEvents()
+
+        assert window.stim.width() >= realtime_ui.REALTIME_STIM_MIN_WIDTH
+        assert window.stim.height() >= realtime_ui.REALTIME_STIM_MIN_HEIGHT
+    finally:
+        window.close()
+
+
+def test_realtime_focus_mode_hides_controls_and_keeps_stimulus_fullscreen() -> None:
+    app = _get_qapp()
+    window = RealtimeOnlineWindow(serial_port="auto", board_id=0, freqs=(8.0, 10.0, 12.0, 15.0))
+    window.resize(1600, 900)
+    window.show()
+    app.processEvents()
+    try:
+        window._set_stimulus_focus_mode(True)
+        app.processEvents()
+
+        assert window.isFullScreen()
+        assert not window._control_panel.isVisible()
+        assert window.stim.width() >= realtime_ui.REALTIME_STIM_MIN_WIDTH
+
+        window._set_stimulus_focus_mode(False)
+        app.processEvents()
+        assert window._control_panel.isVisible()
+    finally:
+        window.close()
+
+
+def test_realtime_result_updates_stimulus_blue_selection() -> None:
+    _ = _get_qapp()
+    window = RealtimeOnlineWindow(serial_port="auto", board_id=0, freqs=(8.0, 10.0, 12.0, 15.0))
+    try:
+        window._on_result(
+            {
+                "state": "selected",
+                "pred_freq": 10.0,
+                "selected_freq": 10.0,
+                "top1_score": 0.42,
+                "ratio": 1.6,
+                "decision_latency_ms": 3.0,
+            }
+        )
+
+        assert window.stim.selected_freq == 10.0
+        assert window.stim.decoder_state == "selected"
+        assert window.stim._border_pen(10.0).color().getRgb() == realtime_ui.REALTIME_SELECTED_BORDER_COLOR.getRgb()
+    finally:
+        window.close()
+
+
 def test_realtime_window_forwards_first_frame_ack_to_worker() -> None:
     _ = _get_qapp()
     window = RealtimeOnlineWindow(serial_port="auto", board_id=0, freqs=(8.0, 10.0, 12.0, 15.0))

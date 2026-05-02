@@ -10,8 +10,8 @@ from pathlib import Path
 from typing import Any, Optional, Sequence
 
 import numpy as np
-from PyQt5.QtCore import QObject, QThread, pyqtSignal, pyqtSlot
-from PyQt5.QtGui import QCloseEvent, QFont
+from PyQt5.QtCore import QObject, QThread, Qt, pyqtSignal, pyqtSlot
+from PyQt5.QtGui import QCloseEvent, QColor, QFont, QKeyEvent
 from PyQt5.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -24,6 +24,7 @@ from PyQt5.QtWidgets import (
     QMainWindow,
     QPlainTextEdit,
     QPushButton,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -123,6 +124,10 @@ DEFAULT_STIM_MEAN = 0.5
 DEFAULT_STIM_AMP = 0.5
 DEFAULT_STIM_PHI = 0.0
 REALTIME_STIMULUS_PHASE_APPLY_TIMEOUT_SEC = 1.0
+REALTIME_CONTROL_PANEL_WIDTH = 440
+REALTIME_STIM_MIN_WIDTH = 760
+REALTIME_STIM_MIN_HEIGHT = 560
+REALTIME_SELECTED_BORDER_COLOR = QColor(80, 170, 255)
 
 
 @dataclass(frozen=True)
@@ -634,6 +639,7 @@ class RealtimeOnlineWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("SSVEP 实时识别")
         self.resize(1260, 860)
+        self.setMinimumSize(1180, 720)
 
         self.serial_port_default = normalize_serial_port(serial_port)
         self.board_id_default = int(board_id)
@@ -646,12 +652,19 @@ class RealtimeOnlineWindow(QMainWindow):
         self.connect_worker: Optional[DeviceCheckWorker] = None
         self._last_signature: Optional[tuple[str, Optional[float]]] = None
         self._connecting = False
+        self._stimulus_focus_mode = False
 
         root = QWidget(self)
         self.setCentralWidget(root)
         layout = QHBoxLayout(root)
+        self._root_layout = layout
+        self._root_layout_margins = layout.contentsMargins()
 
         left = QWidget(root)
+        self._control_panel = left
+        left.setMinimumWidth(360)
+        left.setMaximumWidth(REALTIME_CONTROL_PANEL_WIDTH)
+        left.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
         left_layout = QVBoxLayout(left)
         form = QFormLayout()
 
@@ -709,10 +722,12 @@ class RealtimeOnlineWindow(QMainWindow):
 
         self.phase_label = QLabel("空闲")
         self.phase_label.setStyleSheet("font-size:16px; font-weight:600;")
+        self.phase_label.setWordWrap(True)
         left_layout.addWidget(self.phase_label)
 
         self.result_label = QLabel("输出频率：None")
         self.result_label.setStyleSheet("font-size:18px; font-weight:600;")
+        self.result_label.setWordWrap(True)
         left_layout.addWidget(self.result_label)
 
         self.profile_meta_label = QLabel("Profile：未加载")
@@ -728,6 +743,7 @@ class RealtimeOnlineWindow(QMainWindow):
         left_layout.addWidget(self.log_text, 1)
 
         right = QWidget(root)
+        right.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         right_layout = QVBoxLayout(right)
         self.stim = FourArrowStimWidget(
             freqs=self.freqs,
@@ -736,10 +752,17 @@ class RealtimeOnlineWindow(QMainWindow):
             amp=DEFAULT_STIM_AMP,
             phi=DEFAULT_STIM_PHI,
         )
+        self.stim.selected_border_color = REALTIME_SELECTED_BORDER_COLOR
+        self.stim.setMinimumSize(REALTIME_STIM_MIN_WIDTH, REALTIME_STIM_MIN_HEIGHT)
+        self.stim.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         right_layout.addWidget(self.stim, 1)
+        self._right_layout = right_layout
+        self._right_layout_margins = right_layout.contentsMargins()
 
         layout.addWidget(left, 0)
         layout.addWidget(right, 1)
+        layout.setStretch(0, 0)
+        layout.setStretch(1, 1)
 
         self.btn_load_profile.clicked.connect(self._pick_profile)
         self.btn_connect.clicked.connect(self._connect_device)
@@ -756,6 +779,37 @@ class RealtimeOnlineWindow(QMainWindow):
         self.btn_start.setEnabled((not running) and (not self._connecting))
         self.btn_stop.setEnabled(running)
         self.shadow_mode_check.setEnabled(not running)
+
+    def _set_stimulus_focus_mode(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        if self._stimulus_focus_mode == enabled:
+            if enabled and not self.isFullScreen():
+                self.showFullScreen()
+            return
+        self._stimulus_focus_mode = enabled
+        self._control_panel.setVisible(not enabled)
+        if enabled:
+            self._root_layout.setContentsMargins(0, 0, 0, 0)
+            self._right_layout.setContentsMargins(0, 0, 0, 0)
+            self.showFullScreen()
+            self.setFocus(Qt.OtherFocusReason)
+            self.stim.update()
+            return
+        root_margins = self._root_layout_margins
+        right_margins = self._right_layout_margins
+        self._root_layout.setContentsMargins(
+            root_margins.left(),
+            root_margins.top(),
+            root_margins.right(),
+            root_margins.bottom(),
+        )
+        self._right_layout.setContentsMargins(
+            right_margins.left(),
+            right_margins.top(),
+            right_margins.right(),
+            right_margins.bottom(),
+        )
+        self.stim.update()
 
     def _set_connecting(self, connecting: bool) -> None:
         self._connecting = bool(connecting)
@@ -864,6 +918,7 @@ class RealtimeOnlineWindow(QMainWindow):
         self.worker = worker
         self.worker_thread = thread
         self._set_running(True)
+        self._set_stimulus_focus_mode(True)
         self._last_signature = None
         self.phase_label.setText("正在启动实时识别...")
         thread.start()
@@ -871,9 +926,11 @@ class RealtimeOnlineWindow(QMainWindow):
     def _stop_realtime(self) -> None:
         if self.worker is not None:
             self.worker.request_stop()
+        self._set_stimulus_focus_mode(False)
         self._set_running(False)
 
     def _on_result(self, payload: dict[str, Any]) -> None:
+        self.stim.apply_result(payload)
         signature = (str(payload.get("state", "")), payload.get("selected_freq"))
         if signature == self._last_signature:
             return
@@ -942,6 +999,7 @@ class RealtimeOnlineWindow(QMainWindow):
     def _on_finished(self) -> None:
         self.worker = None
         self.worker_thread = None
+        self._set_stimulus_focus_mode(False)
         self._set_running(False)
 
     def closeEvent(self, event: QCloseEvent) -> None:
@@ -958,6 +1016,24 @@ class RealtimeOnlineWindow(QMainWindow):
         except Exception:
             pass
         event.accept()
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        if event.key() == Qt.Key_Escape and self._stimulus_focus_mode:
+            self._stop_realtime()
+            event.accept()
+            return
+        if event.key() == Qt.Key_Escape and self.isFullScreen():
+            self.showNormal()
+            event.accept()
+            return
+        if event.key() == Qt.Key_F11:
+            if self.isFullScreen():
+                self.showNormal()
+            else:
+                self.showFullScreen()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1014,7 +1090,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     window.gpu_warmup_edit.setText("1" if bool(int(args.gpu_warmup)) else "0")
     window.gpu_cache_combo.setCurrentText(parse_gpu_cache_policy(str(args.gpu_cache_policy).strip()))
     window.shadow_mode_check.setChecked(bool(int(args.shadow_mode)))
-    window.show()
+    window.showFullScreen()
     return int(app.exec_())
 
 

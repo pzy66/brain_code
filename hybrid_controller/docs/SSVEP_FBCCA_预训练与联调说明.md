@@ -32,7 +32,7 @@
 
 统一目录：
 
-- [dataset/ssvep_profiles](C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\dataset\ssvep_profiles)
+- [dataset/ssvep_profiles](<repo>\hybrid_controller\dataset\ssvep_profiles)
 
 文件约定：
 
@@ -89,7 +89,7 @@
 
 ## 关键配置项
 
-见 [config.py](C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\config.py)：
+见 [config.py](<repo>\hybrid_controller\config.py)：
 
 - `ssvep_profile_dir`
 - `ssvep_current_profile_path`

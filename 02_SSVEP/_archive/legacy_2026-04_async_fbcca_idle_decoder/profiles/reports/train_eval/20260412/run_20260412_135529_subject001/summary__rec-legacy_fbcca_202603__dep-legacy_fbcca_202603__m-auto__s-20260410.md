@@ -1,7 +1,7 @@
 # SSVEP Offline Training-Evaluation Report
 
 - Generated at: `2026-04-12T13:55:50`
-- Session1 manifest: `C:\Users\P1233\Desktop\brain\brain_code\02_SSVEP\2026-04_async_fbcca_idle_decoder\profiles\datasets\subject001_collection_20260411_220406_r01\session_manifest.json`
+- Session1 manifest: `<repo>\02_SSVEP\2026-04_async_fbcca_idle_decoder\profiles\datasets\subject001_collection_20260411_220406_r01\session_manifest.json`
 - Session2 manifest: `None`
 - Chosen model: `legacy_fbcca_202603`
 - Chosen rank: `1`
@@ -44,7 +44,7 @@
 
 ## 图表文件
 
-- confusion_4class: `C:\Users\P1233\Desktop\brain\brain_code\02_SSVEP\2026-04_async_fbcca_idle_decoder\profiles\reports\train_eval\20260412\run_20260412_135529_subject001\figures\confusion_4class.png`
-- confusion_2class: `C:\Users\P1233\Desktop\brain\brain_code\02_SSVEP\2026-04_async_fbcca_idle_decoder\profiles\reports\train_eval\20260412\run_20260412_135529_subject001\figures\confusion_2class.png`
-- decision_time_hist: `C:\Users\P1233\Desktop\brain\brain_code\02_SSVEP\2026-04_async_fbcca_idle_decoder\profiles\reports\train_eval\20260412\run_20260412_135529_subject001\figures\decision_time_hist.png`
-- model_radar_async_vs_cls: `C:\Users\P1233\Desktop\brain\brain_code\02_SSVEP\2026-04_async_fbcca_idle_decoder\profiles\reports\train_eval\20260412\run_20260412_135529_subject001\figures\model_radar_async_vs_cls.png`
+- confusion_4class: `<repo>\02_SSVEP\2026-04_async_fbcca_idle_decoder\profiles\reports\train_eval\20260412\run_20260412_135529_subject001\figures\confusion_4class.png`
+- confusion_2class: `<repo>\02_SSVEP\2026-04_async_fbcca_idle_decoder\profiles\reports\train_eval\20260412\run_20260412_135529_subject001\figures\confusion_2class.png`
+- decision_time_hist: `<repo>\02_SSVEP\2026-04_async_fbcca_idle_decoder\profiles\reports\train_eval\20260412\run_20260412_135529_subject001\figures\decision_time_hist.png`
+- model_radar_async_vs_cls: `<repo>\02_SSVEP\2026-04_async_fbcca_idle_decoder\profiles\reports\train_eval\20260412\run_20260412_135529_subject001\figures\model_radar_async_vs_cls.png`

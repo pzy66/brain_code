@@ -8,8 +8,8 @@
 - 部署候选模型：`msetcca`
 - 是否达到验收阈值：`否`
 - 默认实时profile是否覆盖：`否`
-- 最佳候选profile：`C:\Users\P1233\Desktop\brain\brain_code\02_SSVEP\2026-04_async_fbcca_idle_decoder\profiles\reports\smoke12\20260413\run_20260413_021035_subject001\summary__rec-msetcca__dep-msetcca__m-all8__s-20260410__profile.json`
-- 最佳加权FBCCA profile：`C:\Users\P1233\Desktop\brain\brain_code\02_SSVEP\2026-04_async_fbcca_idle_decoder\profiles\reports\smoke12\20260413\run_20260413_021035_subject001\summary__rec-msetcca__dep-msetcca__m-all8__s-20260410__profile.json`
+- 最佳候选profile：`<repo>\02_SSVEP\2026-04_async_fbcca_idle_decoder\profiles\reports\smoke12\20260413\run_20260413_021035_subject001\summary__rec-msetcca__dep-msetcca__m-all8__s-20260410__profile.json`
+- 最佳加权FBCCA profile：`<repo>\02_SSVEP\2026-04_async_fbcca_idle_decoder\profiles\reports\smoke12\20260413\run_20260413_021035_subject001\summary__rec-msetcca__dep-msetcca__m-all8__s-20260410__profile.json`
 
 ## 权重定义
 
@@ -20,7 +20,7 @@
 
 ## 数据质量与协议一致性
 
-- Session1：`C:\Users\P1233\Desktop\brain\brain_code\02_SSVEP\2026-04_async_fbcca_idle_decoder\profiles\datasets\subject001_collection_20260411_220406_r01\session_manifest.json`
+- Session1：`<repo>\02_SSVEP\2026-04_async_fbcca_idle_decoder\profiles\datasets\subject001_collection_20260411_220406_r01\session_manifest.json`
 - Session2：`None`
 - 保留trial：`0` / `0`
 - 最小样本比例：`0.900`

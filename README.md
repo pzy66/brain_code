@@ -1,28 +1,73 @@
 # brain_code
 
-`brain_code` 当前主线开发目录为 `hybrid_controller`。后续开发、部署、联调、文档维护都建议从这里进入。
+`brain_code` is the formal Git repository for this workspace. The parent
+directory is a local workspace for environment files, local datasets, PyCharm
+settings, deliverables, and backups.
 
-## 快速导航
+## Main Entrypoints
 
-- 主程序说明：[hybrid_controller/README.md](./hybrid_controller/README.md)
-- 真机部署与机械臂侧说明：[hybrid_controller/robot/README.md](./hybrid_controller/robot/README.md)
-- 文档总览：[hybrid_controller/docs/README.md](./hybrid_controller/docs/README.md)
-- SSVEP 子模块说明：[hybrid_controller/ssvep/README.md](./hybrid_controller/ssvep/README.md)
-- 仿真实验目录：[07_Simulation_Lab/hybrid_controller_sim](./07_Simulation_Lab/hybrid_controller_sim)
+- Start here: [START_HERE.md](./START_HERE.md)
+- Unified MI/SSVEP collection GUI: [run_unified_collection.py](./run_unified_collection.py)
+- Unified collection package: [unified_collection](./unified_collection)
+- Workspace path helpers: [brain_workspace](./brain_workspace)
+- Hybrid Controller: [hybrid_controller/README.md](./hybrid_controller/README.md)
+- SSVEP toolchain: [02_SSVEP/README.md](./02_SSVEP/README.md)
+- MI collection and training: [01_MI/README.md](./01_MI/README.md)
+- Setup: [docs/SETUP.md](./docs/SETUP.md)
+- Code status: [docs/CODE_STATUS.md](./docs/CODE_STATUS.md)
+- Artifacts policy: [docs/ARTIFACTS.md](./docs/ARTIFACTS.md)
 
-## 仓库结构
+## Repository Boundaries
 
-- `hybrid_controller`：当前主线程序、GUI、联调入口与混合控制逻辑。
-- `01_MI`：MI 采集、训练、实时推理相关历史模块。
-- `02_SSVEP`：SSVEP 采集、训练、验证与工具链模块。
-- `03_RobotArm_Control`：机械臂控制相关历史目录。
-- `04_Communication_And_Integration`：通信与联调实验目录。
-- `05_Vision_Block_Recognition`：视觉识别实验目录。
-- `06_Data_Collection`：历史采集目录。
-- `07_Simulation_Lab`：仿真与沙盒实验目录。
+- Run Git commands from this directory, not from the parent workspace.
+- Keep real datasets, deployed profiles, formal runs, models, and archived
+  experiment outputs in place.
+- New MI and SSVEP collection data defaults stay inside `brain_code`:
+  `01_MI/mi_classifier_latest/datasets/custom_mi` and
+  `02_SSVEP/artifacts/datasets`.
+- Keep generated caches, temporary pytest folders, smoke screenshots, and GPU
+  compiler caches out of Git.
 
-## 使用建议
+## Python Project Baseline
 
-- 首先阅读 [hybrid_controller/README.md](./hybrid_controller/README.md)，再根据需要进入机械臂或 SSVEP 子文档。
-- 新机器优先使用仓库内 `.venv`，或按各模块 README 中约定的 `brain_code` 环境运行。
-- 历史目录会继续保留用于复现与参考，但主程序运行时不再直接依赖这些目录。
+The repository now has a root `pyproject.toml` for pytest discovery and the
+lightweight internal packages:
+
+- `brain_workspace`: canonical paths, runtime import bootstrap, environment diagnostics.
+- `unified_collection`: real implementation of the unified collection GUI.
+
+Legacy scripts remain supported:
+
+```powershell
+tools\resolve_brain_python.cmd
+$env:BRAIN_PYTHON_EXE = (& .\tools\resolve_brain_python.cmd)
+& $env:BRAIN_PYTHON_EXE run_unified_collection.py
+```
+
+## Cleanup And Diagnostics
+
+Use the cleanup script for regenerable files only:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\clean_workspace_temp.ps1 -DryRun
+powershell -ExecutionPolicy Bypass -File tools\clean_workspace_temp.ps1
+```
+
+Use the diagnostic script before larger repository maintenance:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\diagnose_workspace.ps1
+```
+
+## Common Checks
+
+Run these from the repo root:
+
+```powershell
+$env:BRAIN_PYTHON_EXE = (& .\tools\resolve_brain_python.cmd)
+& $env:BRAIN_PYTHON_EXE -m brain_workspace.environment
+& $env:BRAIN_PYTHON_EXE -m pytest --collect-only -q -o addopts=
+& $env:BRAIN_PYTHON_EXE -m py_compile unified_collection_ui.py run_unified_collection.py
+& $env:BRAIN_PYTHON_EXE -m pytest tests -q -o addopts=
+& $env:BRAIN_PYTHON_EXE -m pytest 02_SSVEP\tests\test_server_train_client_gpu_and_paths.py 02_SSVEP\tests\test_server_train_client_cuda_policy.py -q -o addopts=
+```

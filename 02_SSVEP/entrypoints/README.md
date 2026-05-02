@@ -78,15 +78,15 @@
 ### 直接启动某条主线
 
 ```bash
-python D:\brain\brain_code\02_SSVEP\entrypoints\start_tdca_local_opt.py
-python D:\brain\brain_code\02_SSVEP\entrypoints\start_fbcca_local_opt.py
-python D:\brain\brain_code\02_SSVEP\entrypoints\start_fbcca_external_replay.py
+python <repo>\02_SSVEP\entrypoints\start_tdca_local_opt.py
+python <repo>\02_SSVEP\entrypoints\start_fbcca_local_opt.py
+python <repo>\02_SSVEP\entrypoints\start_fbcca_external_replay.py
 ```
 
 ### 如果你还不确定用哪条
 
 ```bash
-python D:\brain\brain_code\02_SSVEP\START_SSVEP.py
+python <repo>\02_SSVEP\START_SSVEP.py
 ```
 
 ---
