@@ -1,39 +1,31 @@
-# Roadmap
+# 路线图
 
-This roadmap separates completed work from usable-but-messy areas and open
-cleanup. It is not a promise of public API stability.
+这个路线图把已经完成的部分、可用但仍需整理的部分，以及后续清理候选项分开。它不是公开 API 稳定性的承诺。
 
-## Completed Or Stable
+## 已完成或较稳定
 
-- Formal Git boundary is `brain_code`.
-- `brain_workspace` centralizes repository paths and environment diagnostics.
-- `unified_collection` contains the real unified MI/SSVEP collection GUI, with
-  legacy wrappers retained.
-- CuPy compiler cache files are removed from Git tracking and ignored.
-- Cleanup and diagnostic scripts exist for workspace maintenance.
+- 正式 Git 边界是 `brain_code`。
+- `brain_workspace` 统一仓库路径和环境诊断。
+- `unified_collection` 承载统一 MI/SSVEP 采集界面的实际实现，同时保留历史兼容入口。
+- CuPy 编译缓存文件已从 Git 跟踪中移除，并加入忽略规则。
+- 已提供工作区清理和诊断脚本。
 
-## Usable But Still Needs Cleanup
+## 可用但仍需整理
 
-- SSVEP training/replay code is functional but still has large modules and
-  large tracked run reports.
-- Hybrid Controller is usable but `hybrid_controller/app.py` remains a large
-  integration surface.
-- MI collection and training retain legacy manifest compatibility paths.
-- Vision and data collection history is visible but not polished as a public
-  package.
+- SSVEP 训练/回放代码可用，但仍存在较大的模块和较大的已跟踪运行报告。
+- Hybrid Controller 可用，但 `hybrid_controller/app.py` 仍是较大的集成入口。
+- MI 采集和训练仍保留历史 manifest 兼容路径。
+- 视觉和数据采集历史目录保留可见，但还没有整理成公开发布包。
 
-## Experimental Or Local-Only
+## 实验性或本地专用
 
-- Robot/JetMax deployment paths are deployment defaults for a specific hardware
-  environment.
-- Remote SSVEP server paths under `/data1/zkx` are deployment defaults, not
-  generic local defaults.
-- Historical experiment directories are preserved for backup and reference.
+- Robot/JetMax 部署路径是针对当前硬件环境的默认值。
+- `/data1/zkx` 下的远程 SSVEP 服务器路径是部署默认值，不是通用本地默认值。
+- 历史实验目录会继续保留，用于备份和参考。
 
-## Next Cleanup Candidates
+## 下一步清理候选
 
-- Split SSVEP CLI/report/profile utilities out of the largest modules.
-- Split Hybrid Controller UI shell from runtime wiring and hardware adapters.
-- Add smaller public sample datasets for quick demos while keeping full tracked
-  artifacts for backup.
-- Reduce duplicated legacy reports after a separate backup/export decision.
+- 从最大的 SSVEP 模块中拆出 CLI、报告和 profile 工具。
+- 把 Hybrid Controller 的 UI 外壳、运行时接线和硬件适配器进一步拆开。
+- 增加更小的公开示例数据集，用于快速演示；完整产物继续保留用于备份。
+- 在单独备份/导出决策后，减少重复的历史运行报告。

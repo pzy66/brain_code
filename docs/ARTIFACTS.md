@@ -1,37 +1,32 @@
-# Artifacts
+# 产物说明
 
-This repository intentionally keeps large artifacts in Git for complete backup
-and reproducibility. It is not optimized for a small clone.
+这个仓库会有意识地把较大的实验产物保留在 Git 中，优先保证完整备份和可复现性，而不是追求最小克隆体积。
 
-## Tracked Artifact Categories
+## 已跟踪的产物类型
 
-- `02_SSVEP/artifacts/runs`: formal local and imported SSVEP run results,
-  reports, profile snapshots, and selection snapshots.
-- `02_SSVEP/artifacts/datasets`: SSVEP collection bundles and external replay
-  datasets used by the current experiments.
-- `02_SSVEP/artifacts/deployed_profiles`: deployed or candidate SSVEP profiles.
-- `02_SSVEP/_archive`: preserved legacy code and associated historical outputs.
-- `hybrid_controller/models`: trained models needed by integrated vision/robot
-  workflows.
-- `artifacts`: repository-level generated indices and cross-workflow outputs.
+- `02_SSVEP/artifacts/runs`：正式本地运行和导入的 SSVEP 运行结果、报告、profile 快照和选择快照。
+- `02_SSVEP/artifacts/datasets`：当前实验使用的 SSVEP 采集包和外部回放数据集。
+- `02_SSVEP/artifacts/deployed_profiles`：已部署或候选的 SSVEP profile。
+- `02_SSVEP/_archive`：保留的历史代码和对应历史输出。
+- `hybrid_controller/models`：集成视觉/机械臂流程需要的训练模型。
+- `artifacts`：仓库级生成索引和跨流程输出。
 
-## What Is Not Meant To Be Tracked
+## 不应该跟踪的内容
 
-The following are cache or local temporary products and should remain ignored:
+下面这些属于缓存或本地临时产物，应该保持忽略：
 
-- `__pycache__`, `.pytest_cache`, `.pytest_tmp*`, `.tmp*`
-- `pytest-cache-files-*`, `pytest_tmp*`, `pytest_temp*`, `tmp_pytest*`
+- `__pycache__`、`.pytest_cache`、`.pytest_tmp*`、`.tmp*`
+- `pytest-cache-files-*`、`pytest_tmp*`、`pytest_temp*`、`tmp_pytest*`
 - `02_SSVEP/artifacts/gpu_runtime/cupy_cache`
 - `02_SSVEP/artifacts/gpu_runtime/tmp`
-- smoke-test screenshots and local UI probe outputs
+- 冒烟测试截图和本地 UI 探测输出
 
-## Diagnostics
+## 诊断
 
-Use:
+运行：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools\diagnose_workspace.ps1
 ```
 
-The diagnostic script reports tracked size, largest files, artifact category
-counts, ignored entries, and permission-denied temporary directories.
+诊断脚本会汇报已跟踪体积、最大文件、产物类别统计、忽略条目和权限受限的临时目录。

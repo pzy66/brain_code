@@ -1,23 +1,20 @@
-# Code Status
+# 代码状态
 
-The repository intentionally keeps complete project history visible. Use this
-status map to choose the right entrypoint.
+这个仓库会保留完整项目历史。下面的状态表用于帮助选择正确入口。
 
-| Area | Status | Recommended Entry | Notes |
+| 区域 | 状态 | 推荐入口 | 说明 |
 | --- | --- | --- | --- |
-| `brain_workspace` | stable | `python -m brain_workspace.environment` | Shared path and environment diagnostics. |
-| `unified_collection` | usable | `run_unified_collection.py` | Current unified MI/SSVEP collection GUI package. |
-| `01_MI` | usable | `01_MI/mi_classifier_latest/code/README.md` | MI collection, training, and realtime code; some legacy compatibility remains. |
-| `02_SSVEP` | usable | `02_SSVEP/START_SSVEP.py` | Active SSVEP collection, training, replay, and validation toolchain. |
-| `hybrid_controller` | usable | `hybrid_controller/run_real.py` | Main integrated PC controller; hardware features require local devices. |
-| `03_RobotArm_Control` | experimental | directory README/source files | Historical robot-arm experiments kept visible. |
-| `04_Communication_And_Integration` | experimental | directory README/source files | Communication experiments and integration notes. |
-| `05_Vision_Block_Recognition` | experimental | historical scripts | Older vision experiments; current model fallback uses `hybrid_controller/models/vision/best.pt`. |
-| `06_Data_Collection` | experimental | historical scripts | Dataset collection tools and notes. |
-| `07_Simulation_Lab` | experimental | directory README/source files | Simulation and sandbox work. |
-| `02_SSVEP/_archive` | archive | none by default | Preserved historical code and outputs; not a default import target. |
-| `artifacts`, `02_SSVEP/artifacts` | local-only data | `docs/ARTIFACTS.md` | Tracked outputs retained for backup/reproducibility, not a minimal package. |
+| `brain_workspace` | 稳定 | `python -m brain_workspace.environment` | 共享路径和环境诊断。 |
+| `unified_collection` | 可用 | `run_unified_collection.py` | 当前统一 MI/SSVEP 采集界面包。 |
+| `01_MI` | 可用 | `01_MI/mi_classifier_latest/code/README.md` | MI 采集、训练和实时代码，仍保留部分历史兼容路径。 |
+| `02_SSVEP` | 可用 | `02_SSVEP/START_SSVEP.py` | 活跃的 SSVEP 采集、训练、回放和验证工具链。 |
+| `hybrid_controller` | 可用 | `hybrid_controller/run_real.py` | 当前主线集成控制器；硬件功能需要本地设备。 |
+| `03_RobotArm_Control` | 实验性 | 目录 README/源码 | 历史机械臂实验，保留用于参考。 |
+| `04_Communication_And_Integration` | 实验性 | 目录 README/源码 | 通信实验和集成说明。 |
+| `05_Vision_Block_Recognition` | 实验性 | 历史脚本 | 早期视觉实验；当前模型兜底使用 `hybrid_controller/models/vision/best.pt`。 |
+| `06_Data_Collection` | 实验性 | 历史脚本 | 数据采集工具和说明。 |
+| `07_Simulation_Lab` | 实验性 | 目录 README/源码 | 仿真和沙盒实验。 |
+| `02_SSVEP/_archive` | 归档 | 默认不直接运行 | 保留历史代码和输出，不作为默认 import 目标。 |
+| `artifacts`、`02_SSVEP/artifacts` | 本地数据 | `docs/ARTIFACTS.md` | 为备份和复现保留的输出，不是最小化发布包。 |
 
-Default user-facing entrypoints are documented in `START_HERE.md`. Directly
-running experimental or archive scripts may require local paths, devices, or
-older assumptions.
+默认用户入口见 `START_HERE.md`。直接运行实验性或归档脚本时，可能需要本地路径、真实设备或旧版假设。
