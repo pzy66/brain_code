@@ -254,6 +254,7 @@ class MainWindow(QMainWindow):
     robot_connect_requested = pyqtSignal()
     abort_requested = pyqtSignal()
     reset_requested = pyqtSignal()
+    sucker_off_requested = pyqtSignal()
     ssvep_connect_requested = pyqtSignal()
     ssvep_config_apply_requested = pyqtSignal(str, int)
     ssvep_pretrain_requested = pyqtSignal()
@@ -266,6 +267,8 @@ class MainWindow(QMainWindow):
     manual_place_requested = pyqtSignal()
     pick_radius_bias_delta_requested = pyqtSignal(float)
     pick_bias_reset_requested = pyqtSignal()
+    pick_tangent_bias_delta_requested = pyqtSignal(float)
+    pick_tangent_bias_reset_requested = pyqtSignal()
     pick_theta_bias_delta_requested = pyqtSignal(float)
     pick_theta_bias_reset_requested = pyqtSignal()
     pick_tuning_delta_requested = pyqtSignal(str, float)
@@ -349,10 +352,12 @@ class MainWindow(QMainWindow):
         self.robot_connect_button = QPushButton("连接机器人")
         self.abort_button = QPushButton("Abort")
         self.reset_button = QPushButton("Reset")
+        self.sucker_off_button = QPushButton("Sucker Off")
         controls_row.addWidget(self.robot_start_button, 0, 0)
         controls_row.addWidget(self.robot_connect_button, 0, 1)
         controls_row.addWidget(self.abort_button, 1, 0)
         controls_row.addWidget(self.reset_button, 1, 1)
+        controls_row.addWidget(self.sucker_off_button, 2, 0, 1, 2)
         controls_row.setColumnStretch(0, 1)
         controls_row.setColumnStretch(1, 1)
         right_layout.addLayout(controls_row)
@@ -361,6 +366,7 @@ class MainWindow(QMainWindow):
         self.robot_connect_button.clicked.connect(self.robot_connect_requested.emit)
         self.abort_button.clicked.connect(self.abort_requested.emit)
         self.reset_button.clicked.connect(self.reset_requested.emit)
+        self.sucker_off_button.clicked.connect(self.sucker_off_requested.emit)
 
         pick_title = QLabel("Pick/Place Debug")
         pick_title.setStyleSheet("font: bold 11pt 'Arial'; color: #F0F4F8;")
@@ -395,6 +401,15 @@ class MainWindow(QMainWindow):
         pick_bias_row.addWidget(self.pick_r_reset_button)
         right_layout.addLayout(pick_bias_row)
 
+        pick_tangent_bias_row = QHBoxLayout()
+        self.pick_tangent_minus_1_button = QPushButton("tan-1")
+        self.pick_tangent_plus_1_button = QPushButton("tan+1")
+        self.pick_tangent_reset_button = QPushButton("tan reset")
+        pick_tangent_bias_row.addWidget(self.pick_tangent_minus_1_button)
+        pick_tangent_bias_row.addWidget(self.pick_tangent_plus_1_button)
+        pick_tangent_bias_row.addWidget(self.pick_tangent_reset_button)
+        right_layout.addLayout(pick_tangent_bias_row)
+
         pick_theta_bias_row = QHBoxLayout()
         self.pick_theta_minus_1_button = QPushButton("th-1")
         self.pick_theta_plus_1_button = QPushButton("th+1")
@@ -407,6 +422,9 @@ class MainWindow(QMainWindow):
         self.pick_r_bias_label = QLabel("Pick r bias: +0.0 mm")
         self.pick_r_bias_label.setStyleSheet("font: 10pt 'Consolas'; color: #D8DEE9; border: none;")
         right_layout.addWidget(self.pick_r_bias_label)
+        self.pick_tangent_bias_label = QLabel("Pick tangent bias: +0.0 mm")
+        self.pick_tangent_bias_label.setStyleSheet("font: 10pt 'Consolas'; color: #D8DEE9; border: none;")
+        right_layout.addWidget(self.pick_tangent_bias_label)
         self.pick_theta_bias_label = QLabel("Pick theta bias: +0.0 deg")
         self.pick_theta_bias_label.setStyleSheet("font: 10pt 'Consolas'; color: #D8DEE9; border: none;")
         right_layout.addWidget(self.pick_theta_bias_label)
@@ -483,6 +501,9 @@ class MainWindow(QMainWindow):
         self.pick_r_minus_1_button.clicked.connect(lambda: self.pick_radius_bias_delta_requested.emit(-1.0))
         self.pick_r_plus_1_button.clicked.connect(lambda: self.pick_radius_bias_delta_requested.emit(1.0))
         self.pick_r_reset_button.clicked.connect(self.pick_bias_reset_requested.emit)
+        self.pick_tangent_minus_1_button.clicked.connect(lambda: self.pick_tangent_bias_delta_requested.emit(-1.0))
+        self.pick_tangent_plus_1_button.clicked.connect(lambda: self.pick_tangent_bias_delta_requested.emit(1.0))
+        self.pick_tangent_reset_button.clicked.connect(self.pick_tangent_bias_reset_requested.emit)
         self.pick_theta_minus_1_button.clicked.connect(lambda: self.pick_theta_bias_delta_requested.emit(-1.0))
         self.pick_theta_plus_1_button.clicked.connect(lambda: self.pick_theta_bias_delta_requested.emit(1.0))
         self.pick_theta_reset_button.clicked.connect(self.pick_theta_bias_reset_requested.emit)
@@ -586,6 +607,7 @@ class MainWindow(QMainWindow):
             self.robot_connect_button,
             self.abort_button,
             self.reset_button,
+            self.sucker_off_button,
             self.pick_slot1_button,
             self.pick_slot2_button,
             self.pick_slot3_button,
@@ -594,6 +616,9 @@ class MainWindow(QMainWindow):
             self.pick_r_minus_1_button,
             self.pick_r_plus_1_button,
             self.pick_r_reset_button,
+            self.pick_tangent_minus_1_button,
+            self.pick_tangent_plus_1_button,
+            self.pick_tangent_reset_button,
             self.pick_theta_minus_1_button,
             self.pick_theta_plus_1_button,
             self.pick_theta_reset_button,
@@ -927,6 +952,7 @@ class MainWindow(QMainWindow):
         self._set_button_text(self.robot_connect_button, "重连机器人" if robot.connected else "连接机器人")
         self._set_button_enabled(self.robot_connect_button, not robot.start_active)
         manual_enabled = bool(robot.connected)
+        self._set_button_enabled(self.sucker_off_button, manual_enabled)
         self._set_button_enabled(self.pick_slot1_button, manual_enabled)
         self._set_button_enabled(self.pick_slot2_button, manual_enabled)
         self._set_button_enabled(self.pick_slot3_button, manual_enabled)
@@ -935,6 +961,9 @@ class MainWindow(QMainWindow):
         self._set_button_enabled(self.pick_r_minus_1_button, manual_enabled)
         self._set_button_enabled(self.pick_r_plus_1_button, manual_enabled)
         self._set_button_enabled(self.pick_r_reset_button, manual_enabled)
+        self._set_button_enabled(self.pick_tangent_minus_1_button, manual_enabled)
+        self._set_button_enabled(self.pick_tangent_plus_1_button, manual_enabled)
+        self._set_button_enabled(self.pick_tangent_reset_button, manual_enabled)
         self._set_button_enabled(self.pick_theta_minus_1_button, manual_enabled)
         self._set_button_enabled(self.pick_theta_plus_1_button, manual_enabled)
         self._set_button_enabled(self.pick_theta_reset_button, manual_enabled)
@@ -1013,8 +1042,17 @@ class MainWindow(QMainWindow):
     def append_log(self, message: str) -> None:
         self.log_view.append(message)
 
-    def update_pick_bias_display(self, radius_bias_mm: float, theta_bias_deg: float) -> None:
+    def update_pick_bias_display(
+        self,
+        radius_bias_mm: float,
+        theta_bias_deg: float,
+        tangent_bias_mm: float = 0.0,
+    ) -> None:
         self._set_label_text(self.pick_r_bias_label, "Pick r bias: {0:+.1f} mm".format(float(radius_bias_mm)))
+        self._set_label_text(
+            self.pick_tangent_bias_label,
+            "Pick tangent bias: {0:+.1f} mm".format(float(tangent_bias_mm)),
+        )
         self._set_label_text(self.pick_theta_bias_label, "Pick theta bias: {0:+.1f} deg".format(float(theta_bias_deg)))
 
     def set_ssvep_runtime_config(self, *, serial_port: str, board_id: int) -> None:
@@ -1204,6 +1242,14 @@ class MainWindow(QMainWindow):
         actionable = bool(slot.get("actionable", False))
         invalid_reason = str(slot.get("invalid_reason", "")).strip()
         status_suffix = " OK" if actionable else (" X:" + invalid_reason if invalid_reason else " X")
+        if bool(slot.get("servo_required", False)) and not actionable:
+            status_suffix = " SERVO"
+        err = slot.get("estimated_xy_error_mm")
+        if err is not None:
+            try:
+                status_suffix += " e={:.1f}mm".format(float(err))
+            except (TypeError, ValueError):
+                pass
 
         cyl = slot.get("cylindrical_center")
         if isinstance(cyl, (tuple, list)) and len(cyl) >= 2:

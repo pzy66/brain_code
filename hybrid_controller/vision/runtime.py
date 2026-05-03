@@ -12,6 +12,7 @@ from PyQt5.QtCore import QMetaObject, QObject, QThread, QTimer, Qt, pyqtSignal, 
 
 from hybrid_controller.adapters.vision_adapter import VisionTarget
 from hybrid_controller.config import AppConfig
+from hybrid_controller.vision.calibration_profile import VisionCalibrationProfile
 from hybrid_controller.vision.processing import (
     SlotState,
     VisionCalibration,
@@ -83,10 +84,31 @@ class _VisionWorker(QObject):
         self._cv2 = cv2_module
         self._yolo_class = yolo_class
         self._calibration: VisionCalibration | None = None
+        self._calibration_profile: VisionCalibrationProfile | None = None
+        self._calibration_profile_path = Path(self.config.vision_calibration_profile_path)
+        self._calibration_profile_mtime: float | None = None
         self._pending_status: str | None = None
+        profile_path = self._calibration_profile_path
+        if profile_path.exists():
+            try:
+                self._calibration_profile = VisionCalibrationProfile.load(profile_path)
+                self._calibration_profile_mtime = float(profile_path.stat().st_mtime)
+            except Exception as error:
+                self._calibration_profile = None
+                self._pending_status = f"Vision calibration profile unavailable: {error}"
+        elif bool(self.config.vision_calibration_profile_required):
+            self._pending_status = f"Vision calibration profile missing: {profile_path}"
         if calibration_params:
             try:
-                self._calibration = VisionCalibration.from_param_dict(calibration_params)
+                merged_params = dict(calibration_params)
+                if self._calibration_profile is not None:
+                    if self._calibration_profile.dist_coeffs is not None and "D" not in merged_params:
+                        merged_params["D"] = self._calibration_profile.dist_coeffs.reshape(-1).tolist()
+                    if self._calibration_profile.image_size is not None and "image_size" not in merged_params:
+                        merged_params["image_size"] = list(self._calibration_profile.image_size)
+                    if not str(merged_params.get("profile_id", "")).strip():
+                        merged_params["profile_id"] = self._calibration_profile.profile_id
+                self._calibration = VisionCalibration.from_param_dict(merged_params)
             except Exception as error:
                 self._calibration = None
                 self._pending_status = f"Vision calibration unavailable: {error}"
@@ -446,8 +468,10 @@ class _VisionWorker(QObject):
 
             self._frame_id += 1
             frame_h, frame_w = frame.shape[:2]
+            self._reload_calibration_profile_if_needed()
             roi_center = self._resolve_roi_center(frame_w, frame_h)
             roi_radius = self._resolve_roi_radius(frame_w, frame_h)
+            alignment_target_pixel = self._resolve_alignment_target_pixel(frame_w, frame_h, roi_center)
 
             infer_start = time.perf_counter()
             try:
@@ -467,22 +491,43 @@ class _VisionWorker(QObject):
                 roi_radius=roi_radius,
                 max_det=self.config.vision_max_targets,
                 confidence_threshold=self.config.vision_confidence_threshold,
+                frame_bgr=frame,
+                fallback_to_frame=bool(self.config.vision_frame_fallback_enabled),
             )
             update_slots(
                 self._slots,
                 candidates,
                 match_distance=120.0,
                 lost_ttl=6,
+                grasp_history_len=int(self.config.vision_grasp_history_frames),
+                grasp_stability_tolerance_px=float(self.config.vision_grasp_stability_tolerance_px),
+                grasp_history_reset_px=float(self.config.vision_grasp_history_reset_px),
             )
             annotate_slots_with_cylindrical(
                 self._slots,
                 calibration=self._calibration,
+                calibration_profile=self._calibration_profile,
+                frame_size=(frame_w, frame_h),
+                roi_center=roi_center,
                 world_scale_xy=float(self.config.vision_world_scale_xy),
                 world_offset_xy_mm=(
                     float(self.config.vision_world_offset_xy_mm[0]),
                     float(self.config.vision_world_offset_xy_mm[1]),
                 ),
                 mapping_mode=str(self.config.vision_mapping_mode),
+                calibration_profile_required=bool(self.config.vision_calibration_profile_required),
+                action_error_threshold_mm=float(self.config.vision_action_max_error_mm),
+                center_tolerance_px=float(self.config.vision_servo_center_tolerance_px),
+                action_center_tolerance_px=float(self.config.vision_servo_action_tolerance_px),
+                alignment_target_pixel=alignment_target_pixel,
+                grasp_quality_threshold=float(self.config.vision_grasp_quality_threshold),
+                required_stable_frames=int(self.config.vision_grasp_stable_frames),
+            )
+            calibration_ready = self._calibration is not None or (
+                self._calibration_profile is not None and self._calibration_profile.has_pixel_to_delta_model
+            )
+            calibration_ready = calibration_ready and (
+                not bool(self.config.vision_calibration_profile_required) or self._calibration_profile is not None
             )
             packet = build_vision_packet(
                 frame_id=self._frame_id,
@@ -494,8 +539,11 @@ class _VisionWorker(QObject):
                 infer_ms=infer_ms,
                 queue_age_ms=max(0.0, (time.perf_counter() - capture_ts) * 1000.0),
                 detected_count=detected_count,
-                calibration_ready=self._calibration is not None,
+                calibration_ready=calibration_ready,
                 mapping_mode=str(self.config.vision_mapping_mode),
+                calibration_profile_id="" if self._calibration_profile is None else self._calibration_profile.profile_id,
+                calibration_profile_required=bool(self.config.vision_calibration_profile_required),
+                alignment_target_pixel=alignment_target_pixel,
             )
             packet["infer_interval_ms"] = float(self._infer_interval_dynamic_ms)
             total_infer_frames = max(1, int(self._infer_total_frames))
@@ -524,6 +572,59 @@ class _VisionWorker(QObject):
         if radius > 0:
             return radius
         return max(40, int(round(min(frame_w, frame_h) * 0.28)))
+
+    @staticmethod
+    def _coerce_frame_pixel(value: object, frame_w: int, frame_h: int) -> tuple[float, float] | None:
+        if not isinstance(value, (tuple, list)) or len(value) < 2:
+            return None
+        try:
+            x = float(value[0])
+            y = float(value[1])
+        except (TypeError, ValueError):
+            return None
+        if 0.0 <= x < float(frame_w) and 0.0 <= y < float(frame_h):
+            return (x, y)
+        return None
+
+    def _resolve_alignment_target_pixel(
+        self,
+        frame_w: int,
+        frame_h: int,
+        roi_center: tuple[int, int],
+    ) -> tuple[float, float]:
+        configured = self._coerce_frame_pixel(self.config.vision_pick_target_pixel, frame_w, frame_h)
+        if configured is not None:
+            return configured
+        if self._calibration_profile is not None:
+            profile_target = self._coerce_frame_pixel(self._calibration_profile.target_pixel, frame_w, frame_h)
+            if profile_target is not None:
+                return profile_target
+        return (float(roi_center[0]), float(roi_center[1]))
+
+    def _reload_calibration_profile_if_needed(self) -> None:
+        profile_path = self._calibration_profile_path
+        if not profile_path.exists():
+            return
+        try:
+            mtime = float(profile_path.stat().st_mtime)
+        except OSError:
+            return
+        if self._calibration_profile_mtime is not None and mtime <= float(self._calibration_profile_mtime):
+            return
+        try:
+            self._calibration_profile = VisionCalibrationProfile.load(profile_path)
+            self._calibration_profile_mtime = mtime
+            target = self._calibration_profile.target_pixel
+            suffix = "" if target is None else f" target=({target[0]:.1f},{target[1]:.1f})"
+            self.status_changed.emit(f"Vision calibration profile reloaded: {self._calibration_profile.profile_id}{suffix}")
+        except Exception as error:
+            self.status_changed.emit(f"Vision calibration profile reload failed: {error}")
+
+    @pyqtSlot()
+    def reset_tracking(self) -> None:
+        for slot in self._slots:
+            slot.clear()
+        self.status_changed.emit("Vision tracking reset after robot motion.")
 
 
 class VisionRuntime:
@@ -592,6 +693,19 @@ class VisionRuntime:
             thread.wait(2000)
             thread.deleteLater()
 
+    def reset_tracking(self) -> None:
+        worker = self.worker
+        thread = self.thread
+        if worker is None:
+            return
+        try:
+            if thread is not None and thread.isRunning():
+                QMetaObject.invokeMethod(worker, "reset_tracking", Qt.QueuedConnection)
+            else:
+                worker.reset_tracking()
+        except RuntimeError:
+            pass
+
     def healthcheck(self) -> dict[str, object]:
         return {
             "running": self.worker is not None,
@@ -600,6 +714,7 @@ class VisionRuntime:
             "source_candidates": self.config.resolve_vision_stream_candidates(),
             "last_packet": self._last_packet,
             "calibration_ready": self.calibration_params is not None,
+            "calibration_profile": str(self.config.vision_calibration_profile_path),
         }
 
     def _handle_packet_ready(self, packet: dict[str, object]) -> None:

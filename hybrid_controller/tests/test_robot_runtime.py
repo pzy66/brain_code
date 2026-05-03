@@ -378,3 +378,70 @@ def test_abort_and_reset_commands_round_trip(monkeypatch) -> None:
 
     assert stream.lines() == ["ACK ABORT", "ACK RESET"]
     assert runtime.healthcheck()["state"] == RobotExecutorState.IDLE.value
+
+
+def test_abort_turns_sucker_off_and_clears_carrying(monkeypatch) -> None:
+    _patch_executor_sleep(monkeypatch)
+    runtime = _runtime()
+    stream = FakeStream()
+    runtime._initialize_executor()
+    runtime._executor._carrying = True  # type: ignore[attr-defined]
+    runtime._executor._state = RobotExecutorState.CARRY_READY  # type: ignore[attr-defined]
+
+    runtime.dispatch_command("ABORT", stream)
+
+    assert stream.lines() == ["ACK ABORT"]
+    assert runtime._hardware.sucker_states[-1] is False
+    status = runtime.healthcheck()
+    assert status["carrying"] is False
+    assert status["state"] == RobotExecutorState.ERROR.value
+
+
+def test_sucker_off_command_turns_sucker_off_when_not_carrying(monkeypatch) -> None:
+    _patch_executor_sleep(monkeypatch)
+    runtime = _runtime()
+    stream = FakeStream()
+    runtime._initialize_executor()
+
+    runtime.dispatch_command("SUCKER_OFF", stream)
+
+    assert stream.lines() == ["ACK SUCKER_OFF"]
+    assert runtime._hardware.sucker_states[-1] is False
+    status = runtime.healthcheck()
+    assert status["carrying"] is False
+    assert status["state"] == RobotExecutorState.IDLE.value
+
+
+def test_sucker_off_command_rejects_carried_target_to_avoid_air_drop(monkeypatch) -> None:
+    _patch_executor_sleep(monkeypatch)
+    runtime = _runtime()
+    stream = FakeStream()
+    runtime._initialize_executor()
+    runtime._executor._carrying = True  # type: ignore[attr-defined]
+    runtime._executor._state = RobotExecutorState.CARRY_READY  # type: ignore[attr-defined]
+
+    runtime.dispatch_command("SUCKER_OFF", stream)
+
+    assert stream.lines()
+    assert stream.lines()[0].startswith("ERR invalid_state:")
+    assert runtime._hardware.sucker_states == []
+    status = runtime.healthcheck()
+    assert status["carrying"] is True
+    assert status["state"] == RobotExecutorState.CARRY_READY.value
+
+
+def test_sucker_off_command_rejects_busy_place_to_avoid_air_drop(monkeypatch) -> None:
+    _patch_executor_sleep(monkeypatch)
+    runtime = _runtime()
+    stream = FakeStream()
+    runtime._initialize_executor()
+    runtime._executor._carrying = True  # type: ignore[attr-defined]
+    runtime._executor._state = RobotExecutorState.PLACE_DESCEND  # type: ignore[attr-defined]
+
+    runtime.dispatch_command("SUCKER_OFF", stream)
+
+    assert stream.lines() == ["BUSY"]
+    assert runtime._hardware.sucker_states == []
+    status = runtime.healthcheck()
+    assert status["carrying"] is True
+    assert status["state"] == RobotExecutorState.PLACE_DESCEND.value

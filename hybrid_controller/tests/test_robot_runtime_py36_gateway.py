@@ -37,6 +37,13 @@ class _DummyExecutor:
         self._state = "ERROR"
         return "ACK ABORT"
 
+    def force_sucker_off(self) -> str:
+        self._state = "IDLE"
+        return "ACK SUCKER_OFF"
+
+    def request_sucker_off(self) -> str:
+        return self.force_sucker_off()
+
     def start_place(self, sender) -> str:  # noqa: ANN001
         return "ACK PLACE_STARTED"
 
@@ -62,3 +69,13 @@ def test_gateway_allows_status_and_reset_in_error_state() -> None:
     assert isinstance(status_response, str) and status_response.startswith("ACK STATUS ")
     assert reset_response == "ACK RESET"
     assert isinstance(post_reset_status, str) and '"state":"IDLE"' in post_reset_status
+
+
+def test_gateway_allows_sucker_off_in_error_state() -> None:
+    executor = _DummyExecutor(state="ERROR")
+    gateway = RobotGateway(executor)
+
+    response = gateway.handle("SUCKER_OFF", sender=None)
+
+    assert response == "ACK SUCKER_OFF"
+    assert executor._state == "IDLE"

@@ -1744,8 +1744,12 @@ class FBCCADecoder(BaseSSVEPDecoder):
         self._spatial_filter_rank: Optional[int] = None
         self._spatial_source_model: str = DEFAULT_SPATIAL_SOURCE_MODEL
         self._spatial_projection: Optional[np.ndarray] = None
+        self._fast_template_weight: float = 0.0
+        self._fast_templates: dict[float, np.ndarray] = {}
+        self._fast_personalization_warnings: list[str] = []
         self._sync_subband_model_params()
         self._load_spatial_frontend_from_params()
+        self._load_fast_personalization_from_params()
 
     def _sync_subband_model_params(self) -> None:
         self.model_params["subband_weight_mode"] = str(self.engine.subband_weight_mode)
@@ -1828,21 +1832,113 @@ class FBCCADecoder(BaseSSVEPDecoder):
         transformed = weighted @ np.asarray(self._spatial_projection, dtype=float)
         return np.asarray(transformed, dtype=float)
 
+    def _load_fast_personalization_from_params(self) -> None:
+        self._fast_template_weight = 0.0
+        self._fast_templates = {}
+        self._fast_personalization_warnings = []
+        payload = self.model_params.get("fast_personalization")
+        if not isinstance(payload, dict):
+            return
+        try:
+            weight = float(payload.get("template_weight", 0.0))
+        except Exception:
+            weight = 0.0
+        weight = min(max(weight, 0.0), 0.4)
+        raw_templates = payload.get("templates", {})
+        if weight <= 0.0 or not isinstance(raw_templates, dict):
+            self._fast_personalization_warnings.append("fast_personalization has no usable templates")
+            return
+        templates: dict[float, np.ndarray] = {}
+        for freq in self.freqs:
+            key = f"{float(freq):g}"
+            raw = raw_templates.get(key, raw_templates.get(str(float(freq))))
+            if raw is None:
+                self._fast_personalization_warnings.append(f"missing template for {key}Hz")
+                continue
+            try:
+                matrix = np.asarray(raw, dtype=np.float64)
+            except Exception:
+                self._fast_personalization_warnings.append(f"invalid template for {key}Hz")
+                continue
+            if matrix.ndim != 2 or int(matrix.shape[0]) != int(self.win_samples):
+                self._fast_personalization_warnings.append(
+                    f"template shape mismatch for {key}Hz: {tuple(matrix.shape)}"
+                )
+                continue
+            templates[float(freq)] = np.ascontiguousarray(matrix, dtype=np.float64)
+        if len(templates) != len(self.freqs):
+            self._fast_templates = {}
+            self._fast_template_weight = 0.0
+            if not self._fast_personalization_warnings:
+                self._fast_personalization_warnings.append("incomplete fast_personalization templates")
+            return
+        self._fast_templates = templates
+        self._fast_template_weight = float(weight)
+
+    def _fast_template_scores(self, front_window: np.ndarray) -> Optional[np.ndarray]:
+        if not self._fast_templates or self._fast_template_weight <= 0.0:
+            return None
+        try:
+            prepared = self.engine.preprocess_window(np.asarray(front_window, dtype=np.float64))
+        except Exception as exc:
+            self._fast_personalization_warnings.append(f"template preprocess failed: {exc}")
+            return None
+        scores: list[float] = []
+        for freq in self.freqs:
+            template = self._fast_templates.get(float(freq))
+            if template is None:
+                return None
+            if tuple(template.shape) != tuple(prepared.shape):
+                self._fast_personalization_warnings.append(
+                    f"template/runtime shape mismatch for {float(freq):g}Hz: "
+                    f"template={tuple(template.shape)} runtime={tuple(prepared.shape)}"
+                )
+                return None
+            try:
+                score = self.engine.cca_multi_channel_svd(prepared, template)
+            except Exception as exc:
+                self._fast_personalization_warnings.append(f"template score failed for {float(freq):g}Hz: {exc}")
+                return None
+            scores.append(float(score))
+        return np.asarray(scores, dtype=np.float64)
+
+    def _combine_fast_personalized_scores(
+        self,
+        fbcca_scores: np.ndarray,
+        front_window: np.ndarray,
+    ) -> tuple[np.ndarray, Optional[np.ndarray]]:
+        template_scores = self._fast_template_scores(front_window)
+        if template_scores is None:
+            return np.asarray(fbcca_scores, dtype=np.float64), None
+        weight = min(max(float(self._fast_template_weight), 0.0), 0.4)
+        combined = (1.0 - weight) * np.asarray(fbcca_scores, dtype=np.float64) + weight * template_scores
+        return np.asarray(combined, dtype=np.float64), np.asarray(template_scores, dtype=np.float64)
+
     def configure_runtime(self, sampling_rate: int) -> None:
         super().configure_runtime(sampling_rate)
         self.engine.configure_runtime(self.fs)
         self._sync_subband_model_params()
         self.compute_backend_used = str(self.engine.backend_name)
+        self._load_fast_personalization_from_params()
 
     def score_window(self, X_window: np.ndarray) -> np.ndarray:
         front = self._apply_frontend(np.asarray(X_window, dtype=float))
-        scores = self.engine.score_window(front)
+        fbcca_scores = self.engine.score_window(front)
+        scores, _template_scores = self._combine_fast_personalized_scores(fbcca_scores, front)
         self._runtime_timing_breakdown = dict(self.engine.last_timing_breakdown)
         return scores
 
     def analyze_window(self, X_window: np.ndarray) -> dict[str, Any]:
         front = self._apply_frontend(np.asarray(X_window, dtype=float))
-        result = self.engine.analyze_window(front)
+        fbcca_scores = self.engine.score_window(front)
+        scores, template_scores = self._combine_fast_personalized_scores(fbcca_scores, front)
+        result = scores_to_feature_dict(scores, self.freqs)
+        result["fbcca_scores"] = np.asarray(fbcca_scores, dtype=np.float64)
+        result["fast_template_scores"] = None if template_scores is None else np.asarray(template_scores, dtype=np.float64)
+        result["fast_personalization_template_enabled"] = bool(template_scores is not None)
+        result["fast_personalization_template_weight"] = float(self._fast_template_weight if template_scores is not None else 0.0)
+        if self._fast_personalization_warnings:
+            result["fast_personalization_warnings"] = list(dict.fromkeys(self._fast_personalization_warnings[-8:]))
         self._runtime_timing_breakdown = dict(self.engine.last_timing_breakdown)
         return result
 
@@ -1855,6 +1951,40 @@ class FBCCADecoder(BaseSSVEPDecoder):
         trial_id: int = -1,
         block_index: int = -1,
     ) -> list[dict[str, Any]]:
+        if self._fast_templates:
+            segment_matrix = np.asarray(segment, dtype=np.float64)
+            if segment_matrix.ndim != 2:
+                raise ValueError("segment must have shape (samples, channels)")
+            if segment_matrix.shape[0] < self.win_samples:
+                raise ValueError("segment is shorter than the analysis window")
+            rows: list[dict[str, Any]] = []
+            for window_index, start in enumerate(
+                range(0, segment_matrix.shape[0] - self.win_samples + 1, self.step_samples)
+            ):
+                window = np.ascontiguousarray(segment_matrix[start : start + self.win_samples], dtype=np.float64)
+                result = self.analyze_window(window)
+                correct = expected_freq is not None and abs(float(result["pred_freq"]) - float(expected_freq)) < 1e-8
+                rows.append(
+                    {
+                        "label": label,
+                        "expected_freq": expected_freq,
+                        "pred_freq": result["pred_freq"],
+                        "top1_score": result["top1_score"],
+                        "top2_score": result["top2_score"],
+                        "margin": result["margin"],
+                        "ratio": result["ratio"],
+                        "normalized_top1": result["normalized_top1"],
+                        "score_entropy": result["score_entropy"],
+                        "correct": bool(correct),
+                        "trial_id": int(trial_id),
+                        "block_index": int(block_index),
+                        "window_index": int(window_index),
+                        "fast_personalization_template_enabled": bool(
+                            result.get("fast_personalization_template_enabled", False)
+                        ),
+                    }
+                )
+            return rows
         front = self._apply_frontend(np.asarray(segment, dtype=np.float64))
         rows = self.engine.iter_window_features(
             front,

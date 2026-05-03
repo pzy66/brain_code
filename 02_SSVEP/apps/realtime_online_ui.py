@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
+import shutil
 import sys
 import threading
 import time
@@ -37,21 +39,28 @@ from ssvep_core.async_fbcca_idle_standalone import (
     AsyncDecisionGate,
     DEFAULT_BENCHMARK_MODELS,
     DEFAULT_BOARD_ID,
+    DEFAULT_CALIBRATION_SEED,
     DEFAULT_COMPUTE_BACKEND_NAME,
     DEFAULT_GPU_CACHE_MODE,
     DEFAULT_GPU_DEVICE_ID,
     DEFAULT_GPU_PRECISION_NAME,
     DEFAULT_MODEL_NAME,
+    DEFAULT_NH,
     DEFAULT_PROFILE_PATH,
     DEFAULT_STREAM_WARMUP_SEC,
     DEFAULT_MAX_TRANSIENT_READ_ERRORS,
     OnlineRunner,
     BoardShim,
+    TrialSpec,
+    build_calibration_trials,
     describe_runtime_error,
+    default_profile,
     ensure_stream_ready,
+    format_profile_quality_summary,
     load_decoder_from_profile,
     load_profile,
     normalize_model_name,
+    optimize_profile_from_segments,
     normalize_serial_port,
     parse_compute_backend_name,
     parse_freqs,
@@ -59,15 +68,38 @@ from ssvep_core.async_fbcca_idle_standalone import (
     parse_gpu_precision,
     prepare_board_session,
     profile_is_default_fallback,
+    read_recent_eeg_segment,
     resolve_selected_eeg_channels,
+    save_profile,
+    validate_calibration_plan,
+)
+from ssvep_core.fast_fbcca_pretrain import (
+    DEFAULT_FAST_FBCCA_ACTIVE_SEC,
+    DEFAULT_FAST_FBCCA_IDLE_REPEATS,
+    DEFAULT_FAST_FBCCA_PREPARE_SEC,
+    DEFAULT_FAST_FBCCA_REST_SEC,
+    DEFAULT_FAST_FBCCA_STEP_SEC,
+    DEFAULT_FAST_FBCCA_TARGET_REPEATS,
+    DEFAULT_FAST_FBCCA_TEMPLATE_WEIGHT,
+    DEFAULT_FAST_FBCCA_TEMPLATE_WIN_SEC,
+    DEFAULT_FAST_FBCCA_WIN_SEC,
+    DEFAULT_FBCCA_BASE_PROFILE_PATH,
+    FastFBCCAPretrainConfig,
+    build_fast_fbcca_history_profile_path,
+    run_fast_fbcca_personalization,
+    save_fast_fbcca_profile_bundle,
 )
 from ssvep_core.runtime_shadow import build_shadow_runtime_chain
 from apps.async_fbcca_validation_ui import (
     FourArrowStimWidget,
+    PHASE_CAL_ACTIVE,
+    PHASE_CAL_PREPARE,
+    PHASE_CAL_REST,
     PHASE_ERROR,
     PHASE_IDLE,
     PHASE_STOPPED,
     PHASE_VALIDATION,
+    direction_label,
 )
 
 
@@ -77,6 +109,10 @@ REALTIME_FBCCA_PROFILE_CANDIDATES = (
     / "artifacts"
     / "deployed_profiles"
     / "fbcca_profile.json",
+    PROJECT_DIR
+    / "artifacts"
+    / "deployed_profiles"
+    / "fbcca_base_profile.json",
     PROJECT_DIR
     / "artifacts"
     / "runs"
@@ -96,6 +132,14 @@ REALTIME_FBCCA_PROFILE_CANDIDATES = (
     / "profiles"
     / "default_profile.json",
 )
+DEMO_EXPECTED_FREQS = (8.0, 10.0, 12.0, 15.0)
+SSVEP_FBCCA_BASE_PROFILE_PATH = PROJECT_DIR / "artifacts" / "deployed_profiles" / "fbcca_base_profile.json"
+SSVEP_REALTIME_PROFILE_PATH = PROJECT_DIR / "artifacts" / "deployed_profiles" / "fbcca_profile.json"
+SSVEP_REALTIME_PROFILE_V2_PATH = PROJECT_DIR / "artifacts" / "deployed_profiles" / "fbcca_profile_v2.json"
+SSVEP_NO_TRAIN_FBCCA_PROFILE_PATH = PROJECT_DIR / "artifacts" / "deployed_profiles" / "fbcca_no_train_profile.json"
+HYBRID_PROFILE_DIR = PROJECT_DIR.parent / "hybrid_controller" / "dataset" / "ssvep_profiles"
+HYBRID_CURRENT_PROFILE_PATH = HYBRID_PROFILE_DIR / "current_fbcca_profile.json"
+ENABLE_HYBRID_PROFILE_PUBLISH = False
 
 
 def _profile_model_name(path: Path) -> str:
@@ -109,12 +153,49 @@ def _profile_model_name(path: Path) -> str:
 
 
 def resolve_default_realtime_profile_path() -> Path:
-    if "fbcca" in _profile_model_name(DEFAULT_PROFILE_PATH):
-        return DEFAULT_PROFILE_PATH
     for candidate in REALTIME_FBCCA_PROFILE_CANDIDATES:
         if candidate.exists() and "fbcca" in _profile_model_name(candidate):
             return candidate
+    if "fbcca" in _profile_model_name(DEFAULT_PROFILE_PATH):
+        return DEFAULT_PROFILE_PATH
     return DEFAULT_PROFILE_PATH
+
+
+def build_no_train_fbcca_profile(freqs: Sequence[float] = DEMO_EXPECTED_FREQS) -> Any:
+    freq_tuple = tuple(float(item) for item in freqs)
+    if len(freq_tuple) != 4:
+        raise ValueError("no-train FBCCA profile requires exactly 4 frequencies")
+    profile = default_profile(freq_tuple)
+    model_params = {
+        "Nh": int(DEFAULT_NH),
+        "fbcca_variant": "fbcca_fixed_all8",
+        "_decoder_model_name": "fbcca_fixed_all8",
+        "subband_weight_mode": "chen_fixed",
+    }
+    return replace(
+        profile,
+        model_name=DEFAULT_MODEL_NAME,
+        model_params=model_params,
+        metadata={
+            "source": "no_train_fbcca_direct",
+            "training_required": False,
+            "fast_pretrain": {
+                "status": "not_used",
+                "template_enabled": False,
+                "gate_calibration_enabled": False,
+            },
+        },
+        recommended_for_realtime=True,
+    )
+
+
+def save_no_train_fbcca_profile(
+    path: Path | None = None,
+    *,
+    freqs: Sequence[float] = DEMO_EXPECTED_FREQS,
+) -> tuple[Path, Path]:
+    resolved_path = SSVEP_NO_TRAIN_FBCCA_PROFILE_PATH if path is None else Path(path)
+    return save_fast_fbcca_profile_bundle(build_no_train_fbcca_profile(freqs), resolved_path, {})
 
 
 DEFAULT_REALTIME_PROFILE_PATH = resolve_default_realtime_profile_path()
@@ -123,11 +204,26 @@ DEFAULT_STIM_REFRESH_RATE_HZ = 60.0
 DEFAULT_STIM_MEAN = 0.5
 DEFAULT_STIM_AMP = 0.5
 DEFAULT_STIM_PHI = 0.0
+DEFAULT_PRETRAIN_PREPARE_SEC = DEFAULT_FAST_FBCCA_PREPARE_SEC
+DEFAULT_PRETRAIN_ACTIVE_SEC = DEFAULT_FAST_FBCCA_ACTIVE_SEC
+DEFAULT_PRETRAIN_REST_SEC = DEFAULT_FAST_FBCCA_REST_SEC
+DEFAULT_PRETRAIN_TARGET_REPEATS = DEFAULT_FAST_FBCCA_TARGET_REPEATS
+DEFAULT_PRETRAIN_IDLE_REPEATS = DEFAULT_FAST_FBCCA_IDLE_REPEATS
+DEFAULT_PRETRAIN_WIN_SEC = DEFAULT_FAST_FBCCA_WIN_SEC
+DEFAULT_PRETRAIN_STEP_SEC = DEFAULT_FAST_FBCCA_STEP_SEC
+DEFAULT_FULL_PRETRAIN_PREPARE_SEC = 1.0
+DEFAULT_FULL_PRETRAIN_ACTIVE_SEC = 4.0
+DEFAULT_FULL_PRETRAIN_REST_SEC = 1.0
+DEFAULT_FULL_PRETRAIN_TARGET_REPEATS = 8
+DEFAULT_FULL_PRETRAIN_IDLE_REPEATS = 16
+DEFAULT_FULL_PRETRAIN_WIN_SEC = 3.0
+DEFAULT_FULL_PRETRAIN_STEP_SEC = 0.5
 REALTIME_STIMULUS_PHASE_APPLY_TIMEOUT_SEC = 1.0
 REALTIME_CONTROL_PANEL_WIDTH = 440
 REALTIME_STIM_MIN_WIDTH = 760
 REALTIME_STIM_MIN_HEIGHT = 560
 REALTIME_SELECTED_BORDER_COLOR = QColor(80, 170, 255)
+REALTIME_PRETRAIN_HISTORY_DIR = PROJECT_DIR / "artifacts" / "deployed_profiles" / "pretrain_history"
 
 
 @dataclass(frozen=True)
@@ -145,10 +241,110 @@ class RealtimeConfig:
     shadow_mode: bool = True
 
 
+@dataclass(frozen=True)
+class RealtimePretrainConfig:
+    serial_port: str
+    board_id: int
+    freqs: tuple[float, float, float, float]
+    base_profile_path: Path
+    fallback_profile_path: Path
+    output_profile_path: Path
+    history_profile_path: Path
+    compute_backend: str
+    gpu_device: int
+    gpu_precision: str
+    gpu_warmup: bool
+    gpu_cache_policy: str
+    prepare_sec: float = DEFAULT_PRETRAIN_PREPARE_SEC
+    active_sec: float = DEFAULT_PRETRAIN_ACTIVE_SEC
+    rest_sec: float = DEFAULT_PRETRAIN_REST_SEC
+    target_repeats: int = DEFAULT_PRETRAIN_TARGET_REPEATS
+    idle_repeats: int = DEFAULT_PRETRAIN_IDLE_REPEATS
+    win_sec: float = DEFAULT_PRETRAIN_WIN_SEC
+    step_sec: float = DEFAULT_PRETRAIN_STEP_SEC
+    mode: str = "fast"
+    template_weight: float = DEFAULT_FAST_FBCCA_TEMPLATE_WEIGHT
+    template_win_sec: float = DEFAULT_FAST_FBCCA_TEMPLATE_WIN_SEC
+
+
+def pretrain_trial_count(config: RealtimePretrainConfig) -> int:
+    return 4 * int(config.target_repeats) + int(config.idle_repeats)
+
+
+def pretrain_estimated_seconds(config: RealtimePretrainConfig) -> float:
+    trial_sec = float(config.prepare_sec) + float(config.active_sec) + float(config.rest_sec)
+    return float(pretrain_trial_count(config)) * trial_sec
+
+
+def build_pretrain_profile_path(*, timestamp: float | None = None) -> Path:
+    return build_fast_fbcca_history_profile_path(timestamp=timestamp)
+
+
+def _now_stamp(*, timestamp: float | None = None) -> str:
+    return time.strftime("%Y%m%d_%H%M%S", time.localtime(time.time() if timestamp is None else float(timestamp)))
+
+
 def resolve_realtime_model_choice(selected_model: str, profile_model: str) -> tuple[str, bool]:
     selected = normalize_model_name(selected_model)
     profile = normalize_model_name(profile_model)
     return profile, selected != profile
+
+
+def validate_fbcca_demo_profile_path(source: Path | str, *, expected_freqs: Sequence[float] = DEMO_EXPECTED_FREQS) -> dict[str, Any]:
+    path = Path(source).expanduser().resolve()
+    payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    if not isinstance(payload, dict):
+        raise ValueError("profile JSON is not an object")
+    model_name = normalize_model_name(str(payload.get("model_name", "")))
+    if model_name != DEFAULT_MODEL_NAME:
+        raise ValueError(f"demo profile must use model_name='fbcca'; got {model_name or '<missing>'}")
+    freqs = tuple(float(item) for item in payload.get("freqs", ()))
+    expected = tuple(float(item) for item in expected_freqs)
+    if len(freqs) != len(expected) or any(abs(left - right) > 1e-6 for left, right in zip(freqs, expected)):
+        raise ValueError(f"demo profile freqs must be {expected}; got {freqs}")
+    return dict(payload)
+
+
+def _profile_v2_sibling(source: Path) -> Path:
+    return source.with_name(f"{source.stem}_v2.json")
+
+
+def publish_profile_to_ssvep_realtime(source: Path | str) -> dict[str, Any]:
+    source_path = Path(source).expanduser().resolve()
+    validate_fbcca_demo_profile_path(source_path)
+    SSVEP_REALTIME_PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if source_path.resolve() != SSVEP_REALTIME_PROFILE_PATH.resolve():
+        shutil.copy2(source_path, SSVEP_REALTIME_PROFILE_PATH)
+    source_v2 = _profile_v2_sibling(source_path)
+    copied_v2 = False
+    if source_v2.exists():
+        if source_v2.resolve() != SSVEP_REALTIME_PROFILE_V2_PATH.resolve():
+            shutil.copy2(source_v2, SSVEP_REALTIME_PROFILE_V2_PATH)
+        copied_v2 = True
+    return {
+        "source": str(source_path),
+        "profile_path": str(SSVEP_REALTIME_PROFILE_PATH),
+        "profile_v2_path": str(SSVEP_REALTIME_PROFILE_V2_PATH) if copied_v2 else "",
+        "copied_v2": bool(copied_v2),
+    }
+
+
+def publish_profile_to_hybrid_controller(source: Path | str, *, timestamp: float | None = None) -> dict[str, Any]:
+    if not ENABLE_HYBRID_PROFILE_PUBLISH:
+        raise RuntimeError("publishing FBCCA demo profiles to hybrid_controller is disabled in this stage")
+    source_path = Path(source).expanduser().resolve()
+    validate_fbcca_demo_profile_path(source_path)
+    HYBRID_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+    history_path = HYBRID_PROFILE_DIR / f"ssvep_fbcca_profile_{_now_stamp(timestamp=timestamp)}.json"
+    if source_path.resolve() != history_path.resolve():
+        shutil.copy2(source_path, history_path)
+    if source_path.resolve() != HYBRID_CURRENT_PROFILE_PATH.resolve():
+        shutil.copy2(source_path, HYBRID_CURRENT_PROFILE_PATH)
+    return {
+        "source": str(source_path),
+        "current_profile_path": str(HYBRID_CURRENT_PROFILE_PATH),
+        "history_profile_path": str(history_path),
+    }
 
 
 def _weight_vector_summary(values: Optional[Sequence[float]]) -> str:
@@ -368,6 +564,337 @@ class DeviceCheckWorker(QObject):
             self.finished.emit()
 
 
+class RealtimePretrainWorker(QObject):
+    phase_changed = pyqtSignal(object)
+    log = pyqtSignal(str)
+    profile_ready = pyqtSignal(object)
+    error = pyqtSignal(str)
+    finished = pyqtSignal()
+
+    def __init__(self, config: RealtimePretrainConfig) -> None:
+        super().__init__()
+        self.config = config
+        self._stop_event = threading.Event()
+        self._stimulus_phase_applied_event = threading.Event()
+        self._last_stimulus_phase_payload: dict[str, Any] = {}
+
+    def request_stop(self) -> None:
+        self._stop_event.set()
+        self._stimulus_phase_applied_event.set()
+
+    def notify_stimulus_phase_presented(self, payload: Optional[dict[str, Any]] = None) -> None:
+        if payload is None or str(payload.get("mode", "")) == PHASE_CAL_ACTIVE:
+            self._last_stimulus_phase_payload = dict(payload or {})
+            self._stimulus_phase_applied_event.set()
+
+    def _emit_stopped_phase(self) -> None:
+        self.phase_changed.emit(
+            {
+                "mode": PHASE_STOPPED,
+                "title": "预训练已停止",
+                "detail": "用户停止了预训练流程。",
+                "flicker": False,
+                "cue_freq": None,
+            }
+        )
+
+    def _wait_phase(self, payload: dict[str, Any], duration_sec: float) -> bool:
+        if duration_sec <= 0:
+            self.phase_changed.emit({**payload, "remaining_sec": 0})
+            return not self._stop_event.is_set()
+        deadline = time.perf_counter() + float(duration_sec)
+        last_sec: Optional[int] = None
+        while not self._stop_event.is_set():
+            remaining = max(0.0, deadline - time.perf_counter())
+            rem_sec = int(math.ceil(remaining))
+            if rem_sec != last_sec:
+                self.phase_changed.emit({**payload, "remaining_sec": rem_sec})
+                last_sec = rem_sec
+            if remaining <= 0:
+                break
+            self._stop_event.wait(min(0.05, remaining))
+        return not self._stop_event.is_set()
+
+    def _wait_for_stimulus_phase_presented(self) -> bool:
+        if self._stop_event.is_set():
+            return False
+        ready = self._stimulus_phase_applied_event.wait(REALTIME_STIMULUS_PHASE_APPLY_TIMEOUT_SEC)
+        if not ready:
+            self.log.emit("pretrain stimulus first-frame acknowledgement timed out")
+        return bool(ready)
+
+    @pyqtSlot()
+    def run(self) -> None:
+        board = None
+        active_serial = self.config.serial_port
+        try:
+            validate_calibration_plan(
+                target_repeats=int(self.config.target_repeats),
+                idle_repeats=int(self.config.idle_repeats),
+                active_sec=float(self.config.active_sec),
+                preferred_win_sec=float(self.config.win_sec),
+                step_sec=float(self.config.step_sec),
+            )
+            board, resolved_port, attempted = prepare_board_session(self.config.board_id, self.config.serial_port)
+            active_serial = resolved_port
+            self.log.emit(
+                f"预训练设备已连接：requested={self.config.serial_port} -> {resolved_port}; attempts={attempted}"
+            )
+            fs = int(BoardShim.get_sampling_rate(self.config.board_id))
+            eeg_channels = tuple(int(ch) for ch in BoardShim.get_eeg_channels(self.config.board_id))
+            active_samples = int(round(float(self.config.active_sec) * fs))
+            min_samples = int(round(float(self.config.win_sec) * fs))
+            if active_samples < min_samples:
+                raise ValueError("active_sec must be at least win_sec")
+
+            board.start_stream(450000)
+            ready = ensure_stream_ready(board, fs)
+            self.log.emit(f"stream ready | fs={fs}Hz | channels={list(eeg_channels)} | buffer={ready}")
+            if self._stop_event.wait(max(2.0, DEFAULT_STREAM_WARMUP_SEC)):
+                self._emit_stopped_phase()
+                return
+            board.get_board_data()
+
+            trials = build_calibration_trials(
+                self.config.freqs,
+                target_repeats=int(self.config.target_repeats),
+                idle_repeats=int(self.config.idle_repeats),
+                shuffle=True,
+                seed=DEFAULT_CALIBRATION_SEED,
+            )
+            segments: list[tuple[TrialSpec, np.ndarray]] = []
+            total = len(trials)
+            for index, trial in enumerate(trials, start=1):
+                prompt = (
+                    f"注视 {direction_label(self.config.freqs, trial.expected_freq)}"
+                    if trial.expected_freq is not None
+                    else "看中心点，避免注视任一闪烁目标"
+                )
+                if not self._wait_phase(
+                    {
+                        "mode": PHASE_CAL_PREPARE,
+                        "title": f"预训练 {index}/{total}",
+                        "detail": f"{prompt} | 准备",
+                        "flicker": False,
+                        "cue_freq": trial.expected_freq,
+                    },
+                    float(self.config.prepare_sec),
+                ):
+                    self._emit_stopped_phase()
+                    return
+
+                board.get_board_data()
+                active_payload = {
+                    "mode": PHASE_CAL_ACTIVE,
+                    "title": f"预训练 {index}/{total}",
+                    "detail": f"{prompt} | 采集",
+                    "flicker": True,
+                    "cue_freq": trial.expected_freq,
+                }
+                self._stimulus_phase_applied_event.clear()
+                self._last_stimulus_phase_payload = {}
+                self.phase_changed.emit(
+                    {**active_payload, "remaining_sec": int(math.ceil(float(self.config.active_sec)))}
+                )
+                stimulus_ready = self._wait_for_stimulus_phase_presented()
+                if self._stop_event.is_set():
+                    self._emit_stopped_phase()
+                    return
+                if not stimulus_ready:
+                    raise RuntimeError("未收到预训练刺激首帧确认，已停止预训练以避免采集起点不可信")
+                board.get_board_data()
+                if self._last_stimulus_phase_payload:
+                    payload = dict(self._last_stimulus_phase_payload)
+                    self.log.emit(
+                        "pretrain stimulus first-frame acknowledged | "
+                        f"trial={index}/{total} | "
+                        f"frame={payload.get('frame_index', 'unknown')} | "
+                        f"t={payload.get('presented_t_sec', 'unknown')}"
+                    )
+                if not self._wait_phase(active_payload, float(self.config.active_sec)):
+                    self._emit_stopped_phase()
+                    return
+
+                segment, _, _ = read_recent_eeg_segment(
+                    board,
+                    eeg_channels,
+                    target_samples=active_samples,
+                    minimum_samples=min_samples,
+                )
+                segments.append((trial, segment))
+                self.log.emit(f"trial {index}/{total} done: {trial.label}")
+
+                if not self._wait_phase(
+                    {
+                        "mode": PHASE_CAL_REST,
+                        "title": f"预训练 {index}/{total}",
+                        "detail": "休息",
+                        "flicker": False,
+                        "cue_freq": None,
+                    },
+                    float(self.config.rest_sec),
+                ):
+                    self._emit_stopped_phase()
+                    return
+                board.get_board_data()
+
+            try:
+                if str(self.config.mode or "fast").strip().lower() == "full":
+                    profile, metadata = optimize_profile_from_segments(
+                        segments,
+                        available_board_channels=eeg_channels,
+                        sampling_rate=fs,
+                        freqs=self.config.freqs,
+                        active_sec=float(self.config.active_sec),
+                        preferred_win_sec=float(self.config.win_sec),
+                        step_sec=float(self.config.step_sec),
+                        seed=DEFAULT_CALIBRATION_SEED,
+                        compute_backend=self.config.compute_backend,
+                        gpu_device=int(self.config.gpu_device),
+                        gpu_precision=self.config.gpu_precision,
+                        gpu_warmup=bool(self.config.gpu_warmup),
+                        gpu_cache_policy=self.config.gpu_cache_policy,
+                    )
+                else:
+                    profile, fast_result = run_fast_fbcca_personalization(
+                        FastFBCCAPretrainConfig(
+                            base_profile_path=self.config.base_profile_path,
+                            fallback_profile_path=self.config.fallback_profile_path,
+                            output_profile_path=self.config.output_profile_path,
+                            history_profile_path=self.config.history_profile_path,
+                            freqs=self.config.freqs,
+                            win_sec=float(self.config.win_sec),
+                            step_sec=float(self.config.step_sec),
+                            template_weight=float(self.config.template_weight),
+                            template_win_sec=float(self.config.template_win_sec),
+                            seed=DEFAULT_CALIBRATION_SEED,
+                            compute_backend=self.config.compute_backend,
+                            gpu_device=int(self.config.gpu_device),
+                            gpu_precision=self.config.gpu_precision,
+                            gpu_warmup=bool(self.config.gpu_warmup),
+                            gpu_cache_policy=self.config.gpu_cache_policy,
+                        ),
+                        trial_segments=segments,
+                        sampling_rate=fs,
+                        available_board_channels=eeg_channels,
+                        collection_duration_sec=pretrain_estimated_seconds(self.config),
+                        log_fn=self.log.emit,
+                    )
+                    metadata = {
+                        "validation_summary": dict(fast_result.get("quality_summary") or fast_result.get("quality_metrics") or {}),
+                        "selected_eeg_channels": list(fast_result.get("selected_eeg_channels", [])),
+                        "fast_pretrain_result": dict(fast_result),
+                    }
+            except Exception as exc:
+                raise RuntimeError(
+                    "预训练 profile 拟合失败："
+                    f"usable_trials={len(segments)}/{total}. "
+                    f"{describe_runtime_error(exc, serial_port=active_serial)}"
+                ) from exc
+            if self._stop_event.is_set():
+                self._emit_stopped_phase()
+                return
+            quality_summary = dict(metadata.get("validation_summary") or {})
+            profile_metadata = dict(profile.metadata or {})
+            optimizer_source = profile_metadata.get("source")
+            profile_metadata.update(metadata)
+            profile_metadata.update(
+                {
+                    "source": (
+                        "realtime_online_ui_full_pretrain"
+                        if str(self.config.mode or "fast").strip().lower() == "full"
+                        else "realtime_online_ui_fast_pretrain"
+                    ),
+                    "profile_optimizer_source": optimizer_source,
+                    "trial_count": int(total),
+                    "pretrain_estimated_sec": pretrain_estimated_seconds(self.config),
+                    "compute_backend_requested": str(self.config.compute_backend),
+                }
+            )
+            final_profile = replace(profile, metadata=profile_metadata)
+            fast_result = dict(metadata.get("fast_pretrain_result", {}))
+            if fast_result:
+                save_fast_fbcca_profile_bundle(
+                    final_profile,
+                    self.config.history_profile_path,
+                    dict(fast_result.get("quality_metrics") or {}),
+                )
+                save_fast_fbcca_profile_bundle(
+                    final_profile,
+                    self.config.output_profile_path,
+                    dict(fast_result.get("quality_metrics") or {}),
+                )
+            else:
+                save_profile(final_profile, self.config.history_profile_path)
+                save_profile(final_profile, self.config.output_profile_path)
+            summary_text = (
+                format_profile_quality_summary(quality_summary)
+                if quality_summary
+                else "Profile optimized; validation summary unavailable."
+            )
+            selected_channels_raw = (
+                final_profile.eeg_channels
+                if final_profile.eeg_channels is not None
+                else metadata.get("selected_eeg_channels") or eeg_channels
+            )
+            selected_channels = [int(channel) for channel in selected_channels_raw]
+            if fast_result:
+                summary_text = (
+                    "fast_pretrain_status={status} | template={template} | gate={gate} | source={source}".format(
+                        status=str(fast_result.get("status", "")),
+                        template=int(bool(fast_result.get("template_enabled", False))),
+                        gate=int(bool(fast_result.get("gate_calibration_enabled", False))),
+                        source=str(fast_result.get("source_profile", "")),
+                    )
+                )
+            self.profile_ready.emit(
+                {
+                    "profile_path": str(self.config.output_profile_path),
+                    "history_profile_path": str(self.config.history_profile_path),
+                    "summary": quality_summary,
+                    "summary_text": summary_text,
+                    "model_name": final_profile.model_name,
+                    "selected_eeg_channels": selected_channels,
+                    "trial_count": int(total),
+                    "fast_pretrain_status": str(fast_result.get("status", "")),
+                    "template_enabled": bool(fast_result.get("template_enabled", False)),
+                    "gate_calibration_enabled": bool(fast_result.get("gate_calibration_enabled", False)),
+                    "source_profile": str(fast_result.get("source_profile", "")),
+                }
+            )
+            self.phase_changed.emit(
+                {
+                    "mode": PHASE_IDLE,
+                    "title": "预训练完成",
+                    "detail": f"Profile saved to {self.config.output_profile_path}",
+                    "flicker": False,
+                    "cue_freq": None,
+                }
+            )
+        except Exception as exc:
+            self.error.emit(f"预训练失败：{describe_runtime_error(exc, serial_port=active_serial)}")
+            self.phase_changed.emit(
+                {
+                    "mode": PHASE_ERROR,
+                    "title": "预训练错误",
+                    "detail": str(exc),
+                    "flicker": False,
+                    "cue_freq": None,
+                }
+            )
+        finally:
+            if board is not None:
+                try:
+                    board.stop_stream()
+                except Exception:
+                    pass
+                try:
+                    board.release_session()
+                except Exception:
+                    pass
+            self.finished.emit()
+
+
 class RealtimeWorker(QObject):
     phase_changed = pyqtSignal(object)
     log = pyqtSignal(str)
@@ -489,6 +1016,9 @@ class RealtimeWorker(QObject):
             )
             decoder.configure_runtime(fs)
             validation_summary = _validate_loaded_profile(profile, decoder, eeg_channels=eeg_channels)
+            profile_metadata = dict(profile.metadata or {})
+            fast_pretrain_meta = dict(profile_metadata.get("fast_pretrain") or {})
+            fast_personalization = dict((profile.model_params or {}).get("fast_personalization") or {})
             backend_summary = (
                 decoder.get_compute_backend_summary()
                 if hasattr(decoder, "get_compute_backend_summary")
@@ -503,6 +1033,8 @@ class RealtimeWorker(QObject):
                     "backend_used": str(backend_summary.get("used_backend", "cpu")),
                     "selection_summary": dict(selection_summary),
                     "shadow_summary": dict(shadow_summary),
+                    "fast_pretrain": fast_pretrain_meta,
+                    "fast_personalization": fast_personalization,
                 }
             )
             self.log.emit(
@@ -635,24 +1167,30 @@ class RealtimeWorker(QObject):
 
 
 class RealtimeOnlineWindow(QMainWindow):
-    def __init__(self, *, serial_port: str, board_id: int, freqs: Sequence[float]) -> None:
+    def __init__(self, *, serial_port: str, board_id: int, freqs: Sequence[float], demo_mode: bool = False) -> None:
         super().__init__()
-        self.setWindowTitle("SSVEP 实时识别")
+        self.demo_mode = bool(demo_mode)
+        self.setWindowTitle("SSVEP FBCCA Demo" if self.demo_mode else "SSVEP 实时识别")
         self.resize(1260, 860)
         self.setMinimumSize(1180, 720)
 
         self.serial_port_default = normalize_serial_port(serial_port)
         self.board_id_default = int(board_id)
-        self.freqs = tuple(float(freq) for freq in freqs)
+        self.freqs = DEMO_EXPECTED_FREQS if self.demo_mode else tuple(float(freq) for freq in freqs)
         self._stim_refresh_rate_hz = _suggest_refresh_rate_hz()
 
         self.worker_thread: Optional[QThread] = None
         self.worker: Optional[RealtimeWorker] = None
+        self.pretrain_thread: Optional[QThread] = None
+        self.pretrain_worker: Optional[RealtimePretrainWorker] = None
         self.connect_thread: Optional[QThread] = None
         self.connect_worker: Optional[DeviceCheckWorker] = None
         self._last_signature: Optional[tuple[str, Optional[float]]] = None
         self._connecting = False
         self._stimulus_focus_mode = False
+        self._start_realtime_after_pretrain = False
+        self._pretrain_profile_ready_for_auto_start = False
+        self._pending_pretrain_mode = "fast"
 
         root = QWidget(self)
         self.setCentralWidget(root)
@@ -672,10 +1210,19 @@ class RealtimeOnlineWindow(QMainWindow):
         self.board_edit = QLineEdit(str(self.board_id_default))
         self.freqs_edit = QLineEdit(",".join(f"{freq:g}" for freq in self.freqs))
         self.model_combo = QComboBox()
-        for item in MODEL_OPTIONS:
+        model_options = (DEFAULT_MODEL_NAME,) if self.demo_mode else MODEL_OPTIONS
+        for item in model_options:
             self.model_combo.addItem(item)
         self.model_combo.setCurrentText(DEFAULT_MODEL_NAME)
-        self.model_combo.setToolTip("在线识别以 profile 内的 model_name/model_params 为准；下拉框仅用于启动前一致性提示。")
+        self.model_combo.setToolTip(
+            "FBCCA demo 固定使用 fbcca。"
+            if self.demo_mode
+            else "在线识别以 profile 内的 model_name/model_params 为准；下拉框仅用于启动前一致性提示。"
+        )
+        self.model_combo.setEnabled(not self.demo_mode)
+        self.freqs_edit.setReadOnly(self.demo_mode)
+        if self.demo_mode:
+            self.freqs_edit.setToolTip("FBCCA demo 固定频率：8 / 10 / 12 / 15 Hz")
         self.profile_edit = QLineEdit(str(DEFAULT_REALTIME_PROFILE_PATH))
         self.compute_backend_combo = QComboBox()
         self.compute_backend_combo.addItems(["auto", "cpu", "cuda"])
@@ -708,17 +1255,33 @@ class RealtimeOnlineWindow(QMainWindow):
         self.btn_load_profile = QPushButton("加载Profile")
         self.btn_connect = QPushButton("连接设备")
         self.btn_start = QPushButton("开始实时识别")
+        self.btn_no_train_start = QPushButton("无训练直接 FBCCA 识别（测试）")
+        self.btn_pretrain_then_start = QPushButton("预训练后开始识别（约5分钟）")
         self.btn_stop = QPushButton("停止")
         self.btn_stop.setEnabled(False)
+        self.btn_full_pretrain_then_start = QPushButton("高级：完整训练并开始识别（约5分钟）")
+        self.btn_pretrain_then_start.setText("快速预训练并开始正式识别（约60秒）")
         self.btn_load_profile.setText("加载 Profile")
         self.btn_connect.setText("连接设备")
         self.btn_start.setText("开始实时识别")
+        self.btn_no_train_start.setText("无训练直接 FBCCA 识别（测试）")
         self.btn_stop.setText("停止")
         row.addWidget(self.btn_load_profile)
         row.addWidget(self.btn_connect)
         row.addWidget(self.btn_start)
         row.addWidget(self.btn_stop)
         left_layout.addLayout(row)
+        left_layout.addWidget(self.btn_no_train_start)
+        left_layout.addWidget(self.btn_pretrain_then_start)
+        left_layout.addWidget(self.btn_full_pretrain_then_start)
+
+        publish_row = QHBoxLayout()
+        self.btn_publish_realtime_profile = QPushButton("发布到02实时Profile")
+        self.btn_publish_hybrid_profile = QPushButton("发布到主程序Profile")
+        publish_row.addWidget(self.btn_publish_realtime_profile)
+        publish_row.addWidget(self.btn_publish_hybrid_profile)
+        self.btn_publish_hybrid_profile.setVisible(False)
+        left_layout.addLayout(publish_row)
 
         self.phase_label = QLabel("空闲")
         self.phase_label.setStyleSheet("font-size:16px; font-weight:600;")
@@ -767,18 +1330,42 @@ class RealtimeOnlineWindow(QMainWindow):
         self.btn_load_profile.clicked.connect(self._pick_profile)
         self.btn_connect.clicked.connect(self._connect_device)
         self.btn_start.clicked.connect(self._start_realtime)
+        self.btn_no_train_start.clicked.connect(self._start_no_train_fbcca_realtime)
+        self.btn_pretrain_then_start.clicked.connect(self._start_pretrain_then_realtime)
+        self.btn_full_pretrain_then_start.clicked.connect(self._start_full_pretrain_then_realtime)
         self.btn_stop.clicked.connect(self._stop_realtime)
+        self.btn_publish_realtime_profile.clicked.connect(self._publish_current_profile_to_realtime)
+        self.btn_publish_hybrid_profile.clicked.connect(self._publish_current_profile_to_hybrid)
         self.stim.active_phase_frame_presented.connect(self._on_active_phase_frame_presented)
+        if self.demo_mode:
+            self._log("FBCCA demo mode: model=fbcca, freqs=8/10/12/15Hz. Non-FBCCA profiles will be rejected.")
+        self._refresh_task_buttons()
 
     def _log(self, text: str) -> None:
         stamp = time.strftime("%H:%M:%S")
         self.log_text.appendPlainText(f"[{stamp}] {text}")
 
     def _set_running(self, running: bool) -> None:
-        self.btn_connect.setEnabled((not running) and (not self._connecting))
-        self.btn_start.setEnabled((not running) and (not self._connecting))
-        self.btn_stop.setEnabled(running)
-        self.shadow_mode_check.setEnabled(not running)
+        del running
+        self._refresh_task_buttons()
+
+    def _task_active(self) -> bool:
+        return self.worker_thread is not None or self.pretrain_thread is not None
+
+    def _refresh_task_buttons(self) -> None:
+        active = self._task_active()
+        idle = (not active) and (not self._connecting)
+        profile_path = self._current_profile_path()
+        self.btn_connect.setEnabled(idle)
+        self.btn_start.setEnabled(idle)
+        self.btn_no_train_start.setEnabled(idle)
+        self.btn_pretrain_then_start.setEnabled(idle)
+        self.btn_full_pretrain_then_start.setEnabled(idle)
+        self.btn_load_profile.setEnabled(idle)
+        self.btn_publish_realtime_profile.setEnabled(idle and profile_path.exists())
+        self.btn_publish_hybrid_profile.setEnabled(False)
+        self.btn_stop.setEnabled(active)
+        self.shadow_mode_check.setEnabled(not active)
 
     def _set_stimulus_focus_mode(self, enabled: bool) -> None:
         enabled = bool(enabled)
@@ -814,24 +1401,66 @@ class RealtimeOnlineWindow(QMainWindow):
     def _set_connecting(self, connecting: bool) -> None:
         self._connecting = bool(connecting)
         if connecting:
-            self.btn_connect.setEnabled(False)
-            self.btn_start.setEnabled(False)
             self.phase_label.setText("连接中...")
         else:
-            self.btn_connect.setEnabled(self.worker_thread is None)
-            self.btn_start.setEnabled(self.worker_thread is None)
+            self._refresh_task_buttons()
+            return
+        self._refresh_task_buttons()
 
     def _pick_profile(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "选择 Profile", str(Path(self.profile_edit.text()).parent), "JSON (*.json)")
         if path:
+            if self.demo_mode:
+                try:
+                    validate_fbcca_demo_profile_path(path)
+                except Exception as exc:
+                    self._log(f"Demo profile rejected: {exc}")
+                    return
             self.profile_edit.setText(path)
+            self._refresh_task_buttons()
+
+    def _current_profile_path(self) -> Path:
+        raw_path = self.profile_edit.text().strip()
+        if not raw_path:
+            return Path.cwd() / "__missing_fbcca_profile__.json"
+        return Path(raw_path).expanduser().resolve()
+
+    def _validate_current_demo_profile(self) -> dict[str, Any]:
+        return validate_fbcca_demo_profile_path(self._current_profile_path())
+
+    def _publish_current_profile_to_realtime(self) -> None:
+        try:
+            result = publish_profile_to_ssvep_realtime(self._current_profile_path())
+        except Exception as exc:
+            self._log(f"Publish to 02_SSVEP realtime rejected: {exc}")
+            return
+        self.profile_edit.setText(str(result["profile_path"]))
+        self._log(f"Published realtime FBCCA profile: {result['profile_path']}")
+        if result.get("copied_v2"):
+            self._log(f"Published realtime profile_v2: {result['profile_v2_path']}")
+        self._refresh_task_buttons()
+
+    def _publish_current_profile_to_hybrid(self) -> None:
+        try:
+            result = publish_profile_to_hybrid_controller(self._current_profile_path())
+        except Exception as exc:
+            self._log(f"Publish to hybrid_controller rejected: {exc}")
+            return
+        self._log(f"Published hybrid current FBCCA profile: {result['current_profile_path']}")
+        self._log(f"Published hybrid history FBCCA profile: {result['history_profile_path']}")
+        self._refresh_task_buttons()
 
     def _read_config(self) -> RealtimeConfig:
         serial_port = normalize_serial_port(self.serial_edit.text().strip())
         board_id = int(self.board_edit.text().strip())
         freqs = parse_freqs(self.freqs_edit.text().strip())
         model_name = normalize_model_name(self.model_combo.currentText())
-        profile_path = Path(self.profile_edit.text().strip()).expanduser().resolve()
+        if self.demo_mode:
+            freqs = DEMO_EXPECTED_FREQS
+            model_name = DEFAULT_MODEL_NAME
+            self.freqs_edit.setText(",".join(f"{freq:g}" for freq in DEMO_EXPECTED_FREQS))
+            self.model_combo.setCurrentText(DEFAULT_MODEL_NAME)
+        profile_path = self._current_profile_path()
         return RealtimeConfig(
             serial_port=serial_port,
             board_id=board_id,
@@ -846,11 +1475,39 @@ class RealtimeOnlineWindow(QMainWindow):
             shadow_mode=bool(self.shadow_mode_check.isChecked()),
         )
 
+    def _read_pretrain_config(self, *, mode: str = "fast") -> RealtimePretrainConfig:
+        realtime_cfg = self._read_config()
+        history_profile_path = build_pretrain_profile_path()
+        normalized_mode = str(mode or "fast").strip().lower()
+        is_full = normalized_mode == "full"
+        return RealtimePretrainConfig(
+            serial_port=realtime_cfg.serial_port,
+            board_id=realtime_cfg.board_id,
+            freqs=realtime_cfg.freqs,
+            base_profile_path=SSVEP_FBCCA_BASE_PROFILE_PATH,
+            fallback_profile_path=realtime_cfg.profile_path,
+            output_profile_path=realtime_cfg.profile_path if is_full else SSVEP_REALTIME_PROFILE_PATH,
+            history_profile_path=history_profile_path,
+            compute_backend=realtime_cfg.compute_backend,
+            gpu_device=realtime_cfg.gpu_device,
+            gpu_precision=realtime_cfg.gpu_precision,
+            gpu_warmup=realtime_cfg.gpu_warmup,
+            gpu_cache_policy=realtime_cfg.gpu_cache_policy,
+            prepare_sec=DEFAULT_FULL_PRETRAIN_PREPARE_SEC if is_full else DEFAULT_PRETRAIN_PREPARE_SEC,
+            active_sec=DEFAULT_FULL_PRETRAIN_ACTIVE_SEC if is_full else DEFAULT_PRETRAIN_ACTIVE_SEC,
+            rest_sec=DEFAULT_FULL_PRETRAIN_REST_SEC if is_full else DEFAULT_PRETRAIN_REST_SEC,
+            target_repeats=DEFAULT_FULL_PRETRAIN_TARGET_REPEATS if is_full else DEFAULT_PRETRAIN_TARGET_REPEATS,
+            idle_repeats=DEFAULT_FULL_PRETRAIN_IDLE_REPEATS if is_full else DEFAULT_PRETRAIN_IDLE_REPEATS,
+            win_sec=DEFAULT_FULL_PRETRAIN_WIN_SEC if is_full else DEFAULT_PRETRAIN_WIN_SEC,
+            step_sec=DEFAULT_FULL_PRETRAIN_STEP_SEC if is_full else DEFAULT_PRETRAIN_STEP_SEC,
+            mode="full" if is_full else "fast",
+        )
+
     def _connect_device(self) -> None:
         if self.connect_thread is not None or self._connecting:
             return
-        if self.worker_thread is not None:
-            self._log("实时识别运行中，请先停止后再重连设备。")
+        if self._task_active():
+            self._log("预训练或实时识别运行中，请先停止后再重连设备。")
             return
         try:
             cfg = self._read_config()
@@ -888,8 +1545,75 @@ class RealtimeOnlineWindow(QMainWindow):
         self.connect_thread = None
         self._set_connecting(False)
 
+    def _start_pretrain_then_realtime(self) -> None:
+        if self._task_active():
+            return
+        if self._connecting:
+            self._log("设备连接中，请稍候。")
+            return
+        mode = str(getattr(self, "_pending_pretrain_mode", "fast") or "fast").strip().lower()
+        self._pending_pretrain_mode = "fast"
+        try:
+            cfg = self._read_pretrain_config(mode=mode)
+        except Exception as exc:
+            self._log(f"配置错误：{exc}")
+            return
+
+        worker = RealtimePretrainWorker(cfg)
+        thread = QThread(self)
+        worker.moveToThread(thread)
+        worker.log.connect(self._log)
+        worker.profile_ready.connect(self._on_pretrain_profile_ready)
+        worker.error.connect(self._on_pretrain_error)
+        worker.phase_changed.connect(self._on_phase_changed)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._on_pretrain_finished)
+        thread.started.connect(worker.run)
+
+        self.pretrain_worker = worker
+        self.pretrain_thread = thread
+        self._start_realtime_after_pretrain = True
+        self._pretrain_profile_ready_for_auto_start = False
+        self._set_stimulus_focus_mode(True)
+        self._refresh_task_buttons()
+        self._last_signature = None
+        self.phase_label.setText("正在启动预训练...")
+        self._log(
+            "预训练计划：{trials} trials，预计 {seconds:.0f} 秒，profile 将写入 {profile}".format(
+                trials=pretrain_trial_count(cfg),
+                seconds=pretrain_estimated_seconds(cfg),
+                profile=cfg.output_profile_path,
+            )
+        )
+        thread.start()
+
+    def _start_full_pretrain_then_realtime(self) -> None:
+        self._pending_pretrain_mode = "full"
+        self._start_pretrain_then_realtime()
+
+    def _start_no_train_fbcca_realtime(self) -> None:
+        if self._task_active():
+            return
+        if self._connecting:
+            self._log("设备连接中，请稍候。")
+            return
+        try:
+            cfg = self._read_config()
+            freqs = DEMO_EXPECTED_FREQS if self.demo_mode else cfg.freqs
+            profile_path, profile_v2_path = save_no_train_fbcca_profile(freqs=freqs)
+            self.profile_edit.setText(str(profile_path))
+            self.model_combo.setCurrentText(DEFAULT_MODEL_NAME)
+            self._log(f"已生成无训练 FBCCA profile：{profile_path}")
+            self._log(f"已生成无训练 FBCCA profile_v2：{profile_v2_path}")
+        except Exception as exc:
+            self._log(f"无训练 FBCCA profile 生成失败：{exc}")
+            return
+        self._start_realtime()
+
     def _start_realtime(self) -> None:
-        if self.worker_thread is not None:
+        if self._task_active():
             return
         if self._connecting:
             self._log("设备连接中，请稍候。")
@@ -902,6 +1626,12 @@ class RealtimeOnlineWindow(QMainWindow):
         if not cfg.profile_path.exists():
             self._log(f"未找到 Profile：{cfg.profile_path}")
             return
+        if self.demo_mode:
+            try:
+                self._validate_current_demo_profile()
+            except Exception as exc:
+                self._log(f"Demo profile rejected: {exc}")
+                return
         worker = RealtimeWorker(cfg)
         thread = QThread(self)
         worker.moveToThread(thread)
@@ -924,25 +1654,93 @@ class RealtimeOnlineWindow(QMainWindow):
         thread.start()
 
     def _stop_realtime(self) -> None:
+        self._start_realtime_after_pretrain = False
+        self._pretrain_profile_ready_for_auto_start = False
+        if self.pretrain_worker is not None:
+            self.pretrain_worker.request_stop()
         if self.worker is not None:
             self.worker.request_stop()
         self._set_stimulus_focus_mode(False)
-        self._set_running(False)
+        self._refresh_task_buttons()
+
+    def _on_pretrain_profile_ready(self, payload: dict[str, Any]) -> None:
+        profile_path_text = str(payload.get("profile_path", "")).strip()
+        if profile_path_text:
+            self.profile_edit.setText(str(Path(profile_path_text).expanduser()))
+        if self.demo_mode:
+            try:
+                self._validate_current_demo_profile()
+            except Exception as exc:
+                self._pretrain_profile_ready_for_auto_start = False
+                self._log(f"Pretrained demo profile rejected: {exc}")
+                return
+        model_name = normalize_model_name(str(payload.get("model_name", DEFAULT_MODEL_NAME)))
+        self.model_combo.setCurrentText(model_name)
+        summary_text = str(payload.get("summary_text", "")).strip()
+        channels = payload.get("selected_eeg_channels", [])
+        fast_status = str(payload.get("fast_pretrain_status", "")).strip() or "n/a"
+        template_enabled = int(bool(payload.get("template_enabled", False)))
+        gate_enabled = int(bool(payload.get("gate_calibration_enabled", False)))
+        self.profile_meta_label.setText(
+            "Profile：{path}\n模型：{model} | 预训练通道：{channels}".format(
+                path=payload.get("profile_path", ""),
+                model=model_name,
+                channels=list(channels) if isinstance(channels, (list, tuple)) else channels,
+            )
+        )
+        self._log(f"预训练 profile 已生成：{payload.get('profile_path', '')}")
+        self.profile_meta_label.setText(
+            self.profile_meta_label.text()
+            + f"\nfast_pretrain={fast_status} | template={template_enabled} | gate={gate_enabled}"
+        )
+        history_path = str(payload.get("history_profile_path", "")).strip()
+        if history_path:
+            self._log(f"预训练历史 profile：{history_path}")
+        if summary_text:
+            self._log(summary_text)
+        self._pretrain_profile_ready_for_auto_start = True
+
+    def _on_pretrain_error(self, text: str) -> None:
+        self._start_realtime_after_pretrain = False
+        self._pretrain_profile_ready_for_auto_start = False
+        self._log(text)
+
+    def _on_pretrain_finished(self) -> None:
+        should_start = self._start_realtime_after_pretrain and self._pretrain_profile_ready_for_auto_start
+        self.pretrain_worker = None
+        self.pretrain_thread = None
+        self._start_realtime_after_pretrain = False
+        self._pretrain_profile_ready_for_auto_start = False
+        self._set_stimulus_focus_mode(False)
+        self._refresh_task_buttons()
+        if should_start:
+            self._log("预训练完成，开始实时识别。")
+            self._start_realtime()
 
     def _on_result(self, payload: dict[str, Any]) -> None:
         self.stim.apply_result(payload)
+        control_lr = payload.get("control_log_lr")
+        acc_lr = payload.get("acc_log_lr")
+        control_lr_text = "n/a" if control_lr is None else f"{float(control_lr):.3f}"
+        acc_lr_text = "n/a" if acc_lr is None else f"{float(acc_lr):.3f}"
+        self.result_label.setText(
+            "pred_freq={pred_freq} | selected_freq={selected_freq} | state={state}\n"
+            "margin={margin:.3f} ratio={ratio:.3f} stable_windows={stable_windows} | "
+            "control_lr={control_lr} acc_lr={acc_lr}".format(
+                pred_freq=payload.get("pred_freq"),
+                selected_freq=payload.get("selected_freq"),
+                state=payload.get("state"),
+                margin=float(payload.get("margin", 0.0) or 0.0),
+                ratio=float(payload.get("ratio", 0.0) or 0.0),
+                stable_windows=int(payload.get("stable_windows", 0) or 0),
+                control_lr=control_lr_text,
+                acc_lr=acc_lr_text,
+            )
+        )
         signature = (str(payload.get("state", "")), payload.get("selected_freq"))
         if signature == self._last_signature:
             return
         self._last_signature = signature
-        self.result_label.setText(
-            "输出频率={selected_freq} | 状态={state} | top1={top1:.3f} ratio={ratio:.3f}".format(
-                selected_freq=payload.get("selected_freq"),
-                state=payload.get("state"),
-                top1=float(payload.get("top1_score", 0.0)),
-                ratio=float(payload.get("ratio", 0.0)),
-            )
-        )
         self._log(
             "状态={state} 预测={pred_freq} 选中={selected_freq} 延迟={decision_latency_ms:.3f}ms".format(
                 state=payload.get("state"),
@@ -970,6 +1768,16 @@ class RealtimeOnlineWindow(QMainWindow):
                 sw=payload.get("subband_weight_count", 0),
             )
         )
+        fast_pretrain = dict(payload.get("fast_pretrain", {}))
+        fast_personalization = dict(payload.get("fast_personalization", {}))
+        self.profile_meta_label.setText(
+            self.profile_meta_label.text()
+            + "\nfast_pretrain={status} | template={template} | gate={gate}".format(
+                status=str(fast_pretrain.get("status", "n/a")),
+                template=int(bool(fast_personalization.get("templates"))),
+                gate=int(bool(fast_pretrain.get("gate_calibration_enabled", False))),
+            )
+        )
         selection_summary = dict(payload.get("selection_summary", {}))
         shadow_summary = dict(payload.get("shadow_summary", {}))
         self.backend_meta_label.setText(
@@ -993,6 +1801,8 @@ class RealtimeOnlineWindow(QMainWindow):
         self.stim.apply_phase(phase)
 
     def _on_active_phase_frame_presented(self, payload: dict[str, Any]) -> None:
+        if self.pretrain_worker is not None:
+            self.pretrain_worker.notify_stimulus_phase_presented(dict(payload))
         if self.worker is not None:
             self.worker.notify_stimulus_phase_presented(dict(payload))
 
@@ -1003,6 +1813,11 @@ class RealtimeOnlineWindow(QMainWindow):
         self._set_running(False)
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        if self.pretrain_worker is not None:
+            self.pretrain_worker.request_stop()
+        if self.pretrain_thread is not None:
+            self.pretrain_thread.quit()
+            self.pretrain_thread.wait(3000)
         if self.worker is not None:
             self.worker.request_stop()
         if self.worker_thread is not None:
@@ -1049,6 +1864,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gpu-warmup", type=int, default=1)
     parser.add_argument("--gpu-cache-policy", type=str, default=DEFAULT_GPU_CACHE_MODE)
     parser.add_argument("--shadow-mode", type=int, default=1)
+    parser.add_argument("--demo-mode", type=int, default=0)
     parser.add_argument("--emit-all", action="store_true")
     parser.add_argument("--max-updates", type=int, default=None)
     parser.add_argument("--headless", action="store_true", help="仅命令行运行，不启动 UI")
@@ -1057,14 +1873,18 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = build_parser().parse_args(argv)
+    demo_mode = bool(int(args.demo_mode))
     if bool(args.headless):
+        profile_path = Path(args.profile).expanduser().resolve()
+        if demo_mode:
+            validate_fbcca_demo_profile_path(profile_path)
         runner = OnlineRunner(
             serial_port=args.serial_port,
             board_id=args.board_id,
-            freqs=parse_freqs(args.freqs),
-            profile_path=Path(args.profile).expanduser().resolve(),
+            freqs=DEMO_EXPECTED_FREQS if demo_mode else parse_freqs(args.freqs),
+            profile_path=profile_path,
             emit_all=bool(args.emit_all),
-            model_name=str(args.model),
+            model_name=DEFAULT_MODEL_NAME if demo_mode else str(args.model),
             compute_backend=parse_compute_backend_name(str(args.compute_backend).strip()),
             gpu_device=int(args.gpu_device),
             gpu_precision=parse_gpu_precision(str(args.gpu_precision).strip()),
@@ -1081,9 +1901,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         serial_port=args.serial_port,
         board_id=args.board_id,
         freqs=parse_freqs(args.freqs),
+        demo_mode=demo_mode,
     )
     window.profile_edit.setText(str(Path(args.profile).expanduser().resolve()))
-    window.model_combo.setCurrentText(normalize_model_name(args.model))
+    window.model_combo.setCurrentText(DEFAULT_MODEL_NAME if demo_mode else normalize_model_name(args.model))
     window.compute_backend_combo.setCurrentText(parse_compute_backend_name(str(args.compute_backend).strip()))
     window.gpu_device_edit.setText(str(int(args.gpu_device)))
     window.gpu_precision_combo.setCurrentText(parse_gpu_precision(str(args.gpu_precision).strip()))

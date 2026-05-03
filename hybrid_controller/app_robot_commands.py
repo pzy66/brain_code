@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 from hybrid_controller.cylindrical import cartesian_to_cylindrical, cylindrical_to_cartesian
 
 
@@ -19,6 +21,7 @@ def ros_command_requires_ros_route(opcode: str) -> bool:
         "PLACE",
         "ABORT",
         "RESET",
+        "SUCKER_OFF",
     }
 
 
@@ -27,6 +30,7 @@ def rewrite_pick_command_with_bias(
     *,
     theta_bias_deg: float,
     radius_bias_mm: float,
+    tangent_bias_mm: float = 0.0,
     pick_z_mm: float,
 ) -> str:
     text = str(command or "").strip()
@@ -43,23 +47,67 @@ def rewrite_pick_command_with_bias(
     except (TypeError, ValueError):
         return text
 
-    if abs(float(theta_bias_deg)) < 1e-6 and abs(float(radius_bias_mm)) < 1e-6:
+    if (
+        abs(float(theta_bias_deg)) < 1e-6
+        and abs(float(radius_bias_mm)) < 1e-6
+        and abs(float(tangent_bias_mm)) < 1e-6
+    ):
         return text
 
     if opcode == "PICK_CYL":
-        adjusted_theta_deg = float(raw_a) + float(theta_bias_deg)
-        adjusted_radius_mm = float(raw_b) + float(radius_bias_mm)
+        adjusted_theta_deg, adjusted_radius_mm, _, _ = apply_pick_tool_bias(
+            theta_deg=float(raw_a),
+            radius_mm=float(raw_b),
+            theta_bias_deg=float(theta_bias_deg),
+            radius_bias_mm=float(radius_bias_mm),
+            tangent_bias_mm=float(tangent_bias_mm),
+            pick_z_mm=float(pick_z_mm),
+        )
         return "PICK_CYL {0:.2f} {1:.2f}".format(float(adjusted_theta_deg), float(adjusted_radius_mm))
 
     theta_deg, radius_mm, _ = cartesian_to_cylindrical(float(raw_a), float(raw_b), float(pick_z_mm))
+    _, _, adjusted_x_mm, adjusted_y_mm = apply_pick_tool_bias(
+        theta_deg=float(theta_deg),
+        radius_mm=float(radius_mm),
+        theta_bias_deg=float(theta_bias_deg),
+        radius_bias_mm=float(radius_bias_mm),
+        tangent_bias_mm=float(tangent_bias_mm),
+        pick_z_mm=float(pick_z_mm),
+    )
+    return "PICK_WORLD {0:.2f} {1:.2f}".format(float(adjusted_x_mm), float(adjusted_y_mm))
+
+
+def apply_pick_tool_bias(
+    *,
+    theta_deg: float,
+    radius_mm: float,
+    theta_bias_deg: float,
+    radius_bias_mm: float,
+    tangent_bias_mm: float,
+    pick_z_mm: float,
+) -> tuple[float, float, float, float]:
     adjusted_theta_deg = float(theta_deg) + float(theta_bias_deg)
     adjusted_radius_mm = float(radius_mm) + float(radius_bias_mm)
     adjusted_x_mm, adjusted_y_mm, _ = cylindrical_to_cartesian(
-        float(adjusted_theta_deg),
-        float(adjusted_radius_mm),
+        adjusted_theta_deg,
+        adjusted_radius_mm,
         float(pick_z_mm),
     )
-    return "PICK_WORLD {0:.2f} {1:.2f}".format(float(adjusted_x_mm), float(adjusted_y_mm))
+    if abs(float(tangent_bias_mm)) >= 1e-6:
+        theta_rad = math.radians(adjusted_theta_deg)
+        adjusted_x_mm += -math.cos(theta_rad) * float(tangent_bias_mm)
+        adjusted_y_mm += math.sin(theta_rad) * float(tangent_bias_mm)
+        adjusted_theta_deg, adjusted_radius_mm, _ = cartesian_to_cylindrical(
+            adjusted_x_mm,
+            adjusted_y_mm,
+            float(pick_z_mm),
+        )
+    return (
+        float(adjusted_theta_deg),
+        float(adjusted_radius_mm),
+        float(adjusted_x_mm),
+        float(adjusted_y_mm),
+    )
 
 
 def build_pick_command_from_mode_and_point(mode: str, point: object) -> str | None:

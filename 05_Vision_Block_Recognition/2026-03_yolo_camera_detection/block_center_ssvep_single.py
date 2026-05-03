@@ -5,6 +5,8 @@ import argparse
 import ctypes
 import json
 import math
+import os
+import subprocess
 import sys
 import threading
 import time
@@ -13,6 +15,51 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+
+
+def bootstrap_brain_vision_python() -> None:
+    required_modules = ("cv2", "numpy", "ultralytics", "PyQt5")
+    try:
+        import importlib.util
+
+        missing = [name for name in required_modules if importlib.util.find_spec(name) is None]
+    except Exception:
+        missing = list(required_modules)
+
+    if not missing or os.environ.get("BRAIN_VISION_NO_RELAUNCH") == "1":
+        return
+
+    user_profile = Path(os.environ.get("USERPROFILE", "")).expanduser()
+    script_path = Path(__file__).resolve()
+    code_root = script_path.parents[2]
+    candidates = [
+        Path(os.environ["BRAIN_PYTHON_EXE"]) if os.environ.get("BRAIN_PYTHON_EXE") else None,
+        code_root / ".venv" / "Scripts" / "python.exe",
+        code_root / ".venv" / "python.exe",
+        user_profile / "miniconda3" / "envs" / "brain-vision" / "python.exe",
+        user_profile / "anaconda3" / "envs" / "brain-vision" / "python.exe",
+        user_profile / "mambaforge" / "envs" / "brain-vision" / "python.exe",
+    ]
+    current_python = Path(sys.executable).resolve()
+    for candidate in candidates:
+        if candidate is None or not candidate.exists():
+            continue
+        target_python = candidate.resolve()
+        if target_python == current_python:
+            return
+        env = os.environ.copy()
+        env["BRAIN_VISION_NO_RELAUNCH"] = "1"
+        print(
+            f"[05 realtime] Current Python is missing {', '.join(missing)}; "
+            f"relaunching with {target_python}",
+            file=sys.stderr,
+            flush=True,
+        )
+        completed = subprocess.run([str(target_python), str(script_path), *sys.argv[1:]], env=env)
+        raise SystemExit(completed.returncode)
+
+
+bootstrap_brain_vision_python()
 
 import cv2
 import numpy as np
@@ -29,6 +76,7 @@ from PyQt5.QtWidgets import QApplication, QLabel, QWidget
 
 
 MAX_SLOTS = 4
+DEFAULT_SOURCE = "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80"
 DEFAULT_FREQS = (8.0, 10.0, 12.0, 15.0)
 DEFAULT_REFRESH_RATE_HZ = 240.0
 DEFAULT_STIM_MEAN = 0.5
@@ -71,6 +119,31 @@ def parse_source(raw: str) -> Union[int, str]:
     if text.lstrip("-").isdigit():
         return int(text)
     return text
+
+
+def resolve_default_weights() -> Path:
+    script_path = Path(__file__).resolve()
+    code_root = script_path.parents[2]
+    brain_root = code_root.parent
+    candidates = [
+        code_root / "hybrid_controller" / "models" / "vision" / "best.pt",
+        brain_root / "dataset" / "camara" / "best.pt",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate.resolve()
+    tried = "\n  ".join(str(path) for path in candidates)
+    raise FileNotFoundError(f"Weight file not found. Tried:\n  {tried}")
+
+
+def resolve_weights_path(raw: str) -> Path:
+    text = str(raw).strip()
+    if not text:
+        return resolve_default_weights()
+    weights = Path(text).expanduser().resolve()
+    if not weights.exists():
+        raise FileNotFoundError(f"Weight file not found: {weights}")
+    return weights
 
 
 def parse_freqs(raw: str) -> List[float]:
@@ -283,14 +356,14 @@ class SlotState:
 
 def load_app_config(argv: Optional[Sequence[str]] = None) -> AppConfig:
     parser = argparse.ArgumentParser(description="Single-file block detection and SSVEP mask flicker viewer")
-    parser.add_argument("--source", type=str, default="0", help="Camera index, video file, or RTSP/HTTP stream URL")
-    parser.add_argument("--weights", type=str, required=True, help="Path to a YOLO segmentation weight file")
+    parser.add_argument("--source", type=str, default=DEFAULT_SOURCE, help="Camera index, video file, or RTSP/HTTP stream URL")
+    parser.add_argument("--weights", type=str, default="", help="Path to a YOLO segmentation weight file")
     parser.add_argument("--device", type=str, default="auto", help="'auto', 'cpu', '0', or other Ultralytics device string")
     parser.add_argument("--imgsz", type=int, default=DEFAULT_IMGSZ)
     parser.add_argument("--conf", type=float, default=DEFAULT_CONF)
     parser.add_argument("--iou", type=float, default=DEFAULT_IOU)
     parser.add_argument("--max-det", type=int, default=DEFAULT_MAX_DET)
-    parser.add_argument("--roi-radius", type=int, default=0, help="ROI radius in source pixels; 0 means auto")
+    parser.add_argument("--roi-radius", type=int, default=0, help="ROI radius in source pixels; 0 means full frame")
     parser.add_argument("--refresh-rate", type=float, default=DEFAULT_REFRESH_RATE_HZ)
     parser.add_argument("--freqs", type=str, default="8,10,12,15")
     parser.add_argument("--stim-mean", type=float, default=DEFAULT_STIM_MEAN)
@@ -303,9 +376,7 @@ def load_app_config(argv: Optional[Sequence[str]] = None) -> AppConfig:
     parser.add_argument("--fullscreen", action="store_true")
     args = parser.parse_args(argv)
 
-    weights = Path(args.weights).expanduser().resolve()
-    if not weights.exists():
-        raise FileNotFoundError(f"Weight file not found: {weights}")
+    weights = resolve_weights_path(args.weights)
 
     stim_freqs = parse_freqs(args.freqs)
     device, half = resolve_device(args.device)
@@ -615,7 +686,7 @@ class InferenceWorker(QThread):
         if self.config.roi_radius > 0:
             return self.config.roi_radius
         if self._roi_radius_cache <= 0:
-            self._roi_radius_cache = max(10, int(round(min(frame_w, frame_h) * 0.35)))
+            self._roi_radius_cache = max(10, int(math.ceil(math.hypot(frame_w / 2.0, frame_h / 2.0))))
         return self._roi_radius_cache
 
     def _predict(self, frame: np.ndarray):

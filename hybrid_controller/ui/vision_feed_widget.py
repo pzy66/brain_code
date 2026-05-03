@@ -198,6 +198,7 @@ class VisionFeedWidget(QWidget):
         if self._packet is not None and not self._image_rect.isNull():
             self._draw_slots(painter)
             self._draw_roi(painter)
+            self._draw_alignment_target(painter)
             self._draw_hud(painter)
         else:
             self._draw_status_only(painter)
@@ -252,10 +253,43 @@ class VisionFeedWidget(QWidget):
             mapped_center = self._map_point((int(center[0]), int(center[1])))
             center_x = int(round(mapped_center.x()))
             center_y = int(round(mapped_center.y()))
+            painter.setPen(QPen(border_color, 2))
             painter.drawLine(center_x - 8, center_y, center_x + 8, center_y)
             painter.drawLine(center_x, center_y - 8, center_x, center_y + 8)
+
+            grasp = slot.get("grasp_pixel")
+            if isinstance(grasp, (list, tuple)) and len(grasp) >= 2:
+                mapped_grasp = self._map_point((int(grasp[0]), int(grasp[1])))
+                grasp_x = int(round(mapped_grasp.x()))
+                grasp_y = int(round(mapped_grasp.y()))
+                painter.setPen(QPen(QColor(255, 220, 40), 2))
+                painter.drawEllipse(mapped_grasp, 5, 5)
+                painter.drawLine(grasp_x - 7, grasp_y, grasp_x + 7, grasp_y)
+                painter.drawLine(grasp_x, grasp_y - 7, grasp_x, grasp_y + 7)
+
+            undistorted = slot.get("undistorted_pixel")
+            if isinstance(undistorted, (list, tuple)) and len(undistorted) >= 2:
+                mapped_undistorted = self._map_point((int(undistorted[0]), int(undistorted[1])))
+                ux = int(round(mapped_undistorted.x()))
+                uy = int(round(mapped_undistorted.y()))
+                painter.setPen(QPen(QColor(80, 180, 255), 1))
+                painter.drawLine(ux - 5, uy - 5, ux + 5, uy + 5)
+                painter.drawLine(ux - 5, uy + 5, ux + 5, uy - 5)
+
+            if bool(slot.get("servo_required", False)):
+                target = slot.get("alignment_target_pixel") or self._packet.get("alignment_target_pixel")
+                if isinstance(target, (list, tuple)) and len(target) >= 2 and isinstance(grasp, (list, tuple)):
+                    mapped_roi = self._map_point((int(target[0]), int(target[1])))
+                    mapped_grasp = self._map_point((int(grasp[0]), int(grasp[1])))
+                    painter.setPen(QPen(QColor(255, 128, 0), 2, Qt.DashLine))
+                    painter.drawLine(mapped_roi, mapped_grasp)
+
             painter.setFont(self._label_font)
-            label = f"[{slot['slot_id']}] {float(slot['freq_hz']):g}Hz"
+            status = "OK" if slot.get("actionable") else str(slot.get("invalid_reason") or "X")
+            err = slot.get("estimated_xy_error_mm")
+            err_text = "" if err is None else f" e={float(err):.1f}mm"
+            label = f"[{slot['slot_id']}] {float(slot['freq_hz']):g}Hz {status}{err_text}"
+            painter.setPen(QPen(QColor(245, 245, 245), 1))
             painter.drawText(center_x + 10, center_y - 10, label)
 
     def _draw_roi(self, painter: QPainter) -> None:
@@ -271,8 +305,29 @@ class VisionFeedWidget(QWidget):
         painter.setBrush(Qt.NoBrush)
         painter.drawEllipse(mapped_center, mapped_radius, mapped_radius)
 
+    def _draw_alignment_target(self, painter: QPainter) -> None:
+        assert self._packet is not None
+        target = self._packet.get("alignment_target_pixel")
+        if not isinstance(target, (list, tuple)) or len(target) < 2:
+            return
+        mapped_target = self._map_point((int(target[0]), int(target[1])))
+        target_x = int(round(mapped_target.x()))
+        target_y = int(round(mapped_target.y()))
+        painter.setPen(QPen(QColor(255, 80, 220), 2))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawEllipse(mapped_target, 8, 8)
+        painter.drawLine(target_x - 12, target_y, target_x + 12, target_y)
+        painter.drawLine(target_x, target_y - 12, target_x, target_y + 12)
+
     def _draw_hud(self, painter: QPainter) -> None:
         assert self._packet is not None
+        target = self._packet.get("alignment_target_pixel")
+        target_text = "--"
+        if isinstance(target, (list, tuple)) and len(target) >= 2:
+            try:
+                target_text = f"{float(target[0]):.0f},{float(target[1]):.0f}"
+            except (TypeError, ValueError):
+                target_text = "--"
         metrics = [
             self._status_text,
             f"capture_fps={float(self._packet.get('capture_fps', 0.0)):.1f}",
@@ -285,6 +340,8 @@ class VisionFeedWidget(QWidget):
             f"ssvep_flash={'on' if self._flash_enabled else 'off'}",
             f"tick_jitter_ms={self._tick_jitter_ms:.3f}",
             f"calibration_ready={bool(self._packet.get('calibration_ready', False))}",
+            f"profile={self._packet.get('calibration_profile_id', '') or '--'} required={bool(self._packet.get('calibration_profile_required', False))}",
+            f"target_px={target_text}",
         ]
         painter.setFont(self._hud_font)
         line_height = 18

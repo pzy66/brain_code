@@ -61,6 +61,15 @@
 .\.venv\Scripts\python.exe .\hybrid_controller\run_real_ssvep.py
 ```
 
+当前电脑端会做自动 bootstrap：如果启动 GUI 时 `192.168.149.1:9091`
+不可达，会自动通过 SSH 尝试启动机械臂端 ROS runtime；如果你是先打开
+GUI、后连接机械臂 WiFi，GUI 也会在后台低频重试。ROS bridge 已连接但状态
+流长时间不可用时，默认会重新拉起机械臂端 runtime。
+
+这依赖三个前提：电脑已经连到机械臂同一网络、`192.168.149.1` 可达、SSH
+账号密码仍是默认的 `hiwonder/hiwonder`。如果 Windows 防火墙拦截 Python
+发起 SSH，界面会显示 `start_failed`，需要放行 Python 后重试。
+
 如果只做键盘/视觉调试，不用 SSVEP 识别，可运行：
 
 ```powershell

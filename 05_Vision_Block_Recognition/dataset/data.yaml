@@ -1,0 +1,13 @@
+train: ../train/images
+val: ../valid/images
+test: ../test/images
+
+nc: 3
+names: ['upside of big cube', 'upside of cylinder', 'upside of small cube']
+
+roboflow:
+  workspace: pzys-place
+  project: pzys-place
+  version: dataset
+  license: Private
+  url: https://app.roboflow.com/pzys-place/pzys-place/dataset

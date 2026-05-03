@@ -84,6 +84,8 @@ def resolve_vision_packet(
         slot_resolved["mapping_mode"] = mapping_mode
         slot_resolved["command_mode"] = "world"
         slot_resolved["command_point"] = None
+        slot_resolved["servo_command_mode"] = str(slot.get("servo_command_mode", "cyl"))
+        slot_resolved["servo_command_point"] = None
         slot_resolved["actionable"] = False
         slot_resolved["invalid_reason"] = ""
         slot_resolved["resolved_base_xy"] = None
@@ -95,16 +97,57 @@ def resolve_vision_packet(
             slots_resolved.append(slot_resolved)
             continue
 
+        prior_invalid_reason = str(slot.get("invalid_reason") or "").strip()
         if requires_calibration and not calibration_ready:
-            slot_resolved["invalid_reason"] = "calibration_unavailable"
+            slot_resolved["invalid_reason"] = prior_invalid_reason or "calibration_unavailable"
             slots_resolved.append(slot_resolved)
             if first_invalid_reason == "--":
                 first_invalid_reason = str(slot_resolved["invalid_reason"])
             continue
 
+        if prior_invalid_reason and prior_invalid_reason != "awaiting_robot_snapshot_delta_resolve":
+            slot_resolved["invalid_reason"] = prior_invalid_reason
+            slots_resolved.append(slot_resolved)
+            if first_invalid_reason == "--":
+                first_invalid_reason = prior_invalid_reason
+            continue
+
+        if bool(packet.get("calibration_profile_required", False)) and not str(
+            slot.get("calibration_profile_id") or packet.get("calibration_profile_id") or ""
+        ).strip():
+            slot_resolved["invalid_reason"] = "calibration_profile_unavailable"
+            slots_resolved.append(slot_resolved)
+            if first_invalid_reason == "--":
+                first_invalid_reason = str(slot_resolved["invalid_reason"])
+            continue
+
+        try:
+            grasp_quality = float(slot.get("grasp_quality", 1.0))
+        except (TypeError, ValueError):
+            grasp_quality = 0.0
+        if grasp_quality < float(config.vision_grasp_quality_threshold):
+            slot_resolved["invalid_reason"] = "grasp_quality_low"
+            slots_resolved.append(slot_resolved)
+            if first_invalid_reason == "--":
+                first_invalid_reason = str(slot_resolved["invalid_reason"])
+            continue
+
+        estimated_error = slot.get("estimated_xy_error_mm")
+        if estimated_error is not None:
+            try:
+                estimated_error_mm = float(estimated_error)
+            except (TypeError, ValueError):
+                estimated_error_mm = float("inf")
+            if not math.isfinite(estimated_error_mm) or estimated_error_mm > float(config.vision_action_max_error_mm):
+                slot_resolved["invalid_reason"] = "vision_mapping_error_high"
+                slots_resolved.append(slot_resolved)
+                if first_invalid_reason == "--":
+                    first_invalid_reason = str(slot_resolved["invalid_reason"])
+                continue
+
         raw_delta = slot.get("camera_to_world_raw")
         if not isinstance(raw_delta, (tuple, list)) or len(raw_delta) < 2:
-            slot_resolved["invalid_reason"] = "camera_to_world_unavailable"
+            slot_resolved["invalid_reason"] = prior_invalid_reason or "camera_to_world_unavailable"
             slots_resolved.append(slot_resolved)
             if first_invalid_reason == "--":
                 first_invalid_reason = str(slot_resolved["invalid_reason"])
@@ -168,6 +211,37 @@ def resolve_vision_packet(
         slot_resolved["resolved_base_xy"] = [float(base_x), float(base_y)]
         slot_resolved["resolved_cyl"] = [float(theta_deg), float(radius_mm), float(pick_z)]
         slot_resolved["command_mode"] = "world"
+        if bool(slot.get("servo_required", False)) and mapping_mode == "delta_servo":
+            gain = max(0.05, min(1.0, float(config.vision_servo_move_gain)))
+            center_distance = slot.get("center_distance_px")
+            try:
+                center_distance_px = float(center_distance)
+            except (TypeError, ValueError):
+                center_distance_px = float("inf")
+            fine_threshold_px = max(0.0, float(getattr(config, "vision_servo_fine_threshold_px", 0.0)))
+            if math.isfinite(center_distance_px) and center_distance_px <= fine_threshold_px:
+                gain = min(gain, max(0.05, min(1.0, float(config.vision_servo_fine_move_gain))))
+            servo_x = float(robot_xy[0]) + float(delta_x) * gain if robot_xy is not None else float(base_x)
+            servo_y = float(robot_xy[1]) + float(delta_y) * gain if robot_xy is not None else float(base_y)
+            servo_theta_deg, servo_radius_mm, _ = cartesian_to_cylindrical(servo_x, servo_y, pick_z)
+            if (
+                servo_theta_deg < theta_limits[0]
+                or servo_theta_deg > theta_limits[1]
+                or servo_radius_mm < radius_limits[0]
+                or servo_radius_mm > radius_limits[1]
+            ):
+                slot_resolved["invalid_reason"] = "servo_target_out_of_workspace_cyl"
+                slots_resolved.append(slot_resolved)
+                if first_invalid_reason == "--":
+                    first_invalid_reason = str(slot_resolved["invalid_reason"])
+                continue
+            slot_resolved["servo_command_mode"] = "cyl"
+            slot_resolved["servo_command_point"] = [float(servo_theta_deg), float(servo_radius_mm)]
+            slot_resolved["invalid_reason"] = "vision_servo_required"
+            slots_resolved.append(slot_resolved)
+            if first_invalid_reason == "--":
+                first_invalid_reason = str(slot_resolved["invalid_reason"])
+            continue
         slot_resolved["command_point"] = [float(base_x), float(base_y)]
         slot_resolved["actionable"] = True
 

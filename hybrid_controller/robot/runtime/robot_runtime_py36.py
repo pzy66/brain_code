@@ -569,6 +569,13 @@ class JetMaxExecutor(object):
 
     def abort(self):
         self._abort_event.set()
+        try:
+            self.actuator.set_sucker(False)
+            with self._lock:
+                self._carrying = False
+                self._last_release_mode_effective = "off"
+        except Exception:
+            pass
         action_thread = None
         with self._lock:
             action_thread = self._action_thread
@@ -600,6 +607,37 @@ class JetMaxExecutor(object):
             self._last_error = ""
             self._last_ack = "RESET"
         return "ACK RESET"
+
+    def force_sucker_off(self):
+        try:
+            self.actuator.set_sucker(False)
+        except Exception as error:
+            self._set_error(ERR_HARDWARE_FAILURE, "SUCKER_OFF failed: {0}".format(error))
+            return format_error_line(ERR_HARDWARE_FAILURE, "SUCKER_OFF failed: {0}".format(error))
+        with self._lock:
+            self._carrying = False
+            self._last_release_mode_effective = "off"
+            if not self._busy and self._state == STATE_CARRY_READY:
+                self._state = STATE_IDLE
+            self._last_ack = "SUCKER_OFF"
+        return "ACK SUCKER_OFF"
+
+    def request_sucker_off(self):
+        with self._lock:
+            state = self._state
+            busy = bool(self._busy)
+            carrying = bool(self._carrying)
+        if busy:
+            return format_error_line(
+                ERR_BUSY,
+                "Cannot turn sucker off while robot is {0}; wait for PLACE_DONE or use ABORT.".format(state),
+            )
+        if carrying and state != STATE_ERROR:
+            return format_error_line(
+                ERR_INVALID_STATE,
+                "Cannot turn sucker off while carrying a target; use PLACE to release at the table or ABORT for emergency stop.",
+            )
+        return self.force_sucker_off()
 
     def handle_pick_pixel(self):
         return format_error_line(
@@ -758,6 +796,9 @@ class JetMaxExecutor(object):
         try:
             self._set_state(STATE_RECOVERING, True, "abort")
             self.actuator.set_sucker(False)
+            with self._lock:
+                self._carrying = False
+                self._last_release_mode_effective = "off"
             self._go_home(2.0, False)
             self._set_error(ERR_ABORTED, "Abort requested by operator.")
         except Exception as error:
@@ -767,6 +808,9 @@ class JetMaxExecutor(object):
         try:
             self._set_state(STATE_RECOVERING, True, "recover")
             self.actuator.set_sucker(False)
+            with self._lock:
+                self._carrying = False
+                self._last_release_mode_effective = "off"
             self._go_home(2.0, False)
         except Exception as recover_error:
             self._set_error(ERR_RECOVER_FAILED, "Recovery failed: {0}".format(recover_error))
@@ -1067,10 +1111,10 @@ class RobotGateway(object):
             command, args = parse_command_text(text)
             snapshot = self.executor.snapshot()
             state = str(snapshot.get("state", ""))
-            if state == STATE_ERROR and command not in {"PING", "STATUS", "ABORT", "RESET"}:
+            if state == STATE_ERROR and command not in {"PING", "STATUS", "ABORT", "RESET", "SUCKER_OFF"}:
                 return format_error_line(
                     ERR_INVALID_STATE,
-                    "Robot is in ERROR state; only ABORT/RESET/STATUS/PING are allowed.",
+                    "Robot is in ERROR state; only ABORT/RESET/SUCKER_OFF/STATUS/PING are allowed.",
                 )
             if command == "PING":
                 return "ACK PONG"
@@ -1080,6 +1124,8 @@ class RobotGateway(object):
                 return self.executor.reset()
             if command == "ABORT":
                 return self.executor.abort()
+            if command == "SUCKER_OFF":
+                return self.executor.request_sucker_off()
             if command == "MOVE":
                 return self.executor.legacy_kernel.start_move(sender, float(args[0]), float(args[1]))
             if command == "MOVE_CYL":

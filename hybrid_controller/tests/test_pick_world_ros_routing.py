@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import types
 
+import pytest
+
 from hybrid_controller.adapters.rosbridge_client import RosServiceResult
 from hybrid_controller.app import HybridControllerApplication
+from hybrid_controller.app_robot_commands import apply_pick_tool_bias
 from hybrid_controller.config import AppConfig
+from hybrid_controller.cylindrical import cartesian_to_cylindrical
 
 
 class _DummyMainWindow:
@@ -56,6 +60,7 @@ def _make_ros_app_stub() -> HybridControllerApplication:
     app.ros_client = _DummyRosClient()
     app.controller = _DummyController()
     app._pick_cyl_radius_bias_mm = 0.0
+    app._pick_cyl_tangent_bias_mm = 0.0
     app._pick_cyl_theta_bias_deg = 0.0
     app._pick_tuning_state = {
         "pick_approach_z_mm": 130.0,
@@ -145,9 +150,70 @@ def test_manual_pick_in_robot_camera_detection_mode_does_not_fallback_to_slot_ca
 def test_pick_world_bias_rewrite_applies_theta_and_radius_bias() -> None:
     app = _make_ros_app_stub()
     app._pick_cyl_radius_bias_mm = -5.0
+    app._pick_cyl_tangent_bias_mm = 0.0
     app._pick_cyl_theta_bias_deg = 3.0
 
     rewritten = app._rewrite_outgoing_robot_command("PICK_WORLD 0 -120")
 
     assert rewritten.startswith("PICK_WORLD ")
     assert rewritten != "PICK_WORLD 0 -120"
+
+
+def test_pick_world_bias_rewrite_applies_tangent_bias_in_tool_frame() -> None:
+    app = _make_ros_app_stub()
+    app._pick_cyl_radius_bias_mm = 0.0
+    app._pick_cyl_tangent_bias_mm = 10.0
+    app._pick_cyl_theta_bias_deg = 0.0
+
+    rewritten = app._rewrite_outgoing_robot_command("PICK_WORLD 0 -100")
+
+    assert rewritten == "PICK_WORLD -10.00 -100.00"
+
+
+def test_pick_tool_bias_reconstructs_live_suction_center_sample() -> None:
+    theta_deg, radius_mm, x_mm, y_mm = apply_pick_tool_bias(
+        theta_deg=-28.031999588012695,
+        radius_mm=188.218994140625,
+        theta_bias_deg=0.0,
+        radius_bias_mm=38.447,
+        tangent_bias_mm=-15.850,
+        pick_z_mm=130.0,
+    )
+
+    assert theta_deg == pytest.approx(-32.032, abs=0.01)
+    assert radius_mm == pytest.approx(227.219, abs=0.01)
+    assert x_mm == pytest.approx(120.515, abs=0.02)
+    assert y_mm == pytest.approx(-192.625, abs=0.02)
+
+
+def test_default_pick_bias_keeps_theta_and_adds_measured_radius_offset() -> None:
+    app = _make_ros_app_stub()
+    app._pick_cyl_radius_bias_mm = AppConfig.pick_cyl_radius_bias_mm
+    app._pick_cyl_tangent_bias_mm = AppConfig.pick_cyl_tangent_bias_mm
+    app._pick_cyl_theta_bias_deg = AppConfig.pick_cyl_theta_bias_deg
+
+    rewritten = app._rewrite_outgoing_robot_command("PICK_WORLD -1.19 -192.56")
+
+    assert rewritten.startswith("PICK_WORLD ")
+    x_text, y_text = rewritten.split()[1:3]
+    theta_deg, radius_mm, _ = cartesian_to_cylindrical(float(x_text), float(y_text), AppConfig.robot_pick_z)
+    assert theta_deg == pytest.approx(0.355, abs=0.02)
+    assert radius_mm == pytest.approx(238.564, abs=0.02)
+
+
+def test_pick_trace_records_bias_and_command_delta() -> None:
+    app = _make_ros_app_stub()
+    app._pick_cyl_radius_bias_mm = -5.0
+    app._pick_cyl_tangent_bias_mm = 0.0
+    app._pick_cyl_theta_bias_deg = 3.0
+
+    app._send_robot_text_command("PICK_WORLD 10 -120")
+
+    trace = app._active_pick_trace
+    assert isinstance(trace, dict)
+    assert trace["original_command"] == "PICK_WORLD 10 -120"
+    assert trace["command"] != "PICK_WORLD 10 -120"
+    assert trace["pick_bias_applied"] is True
+    assert trace["pick_cyl_radius_bias_mm"] == -5.0
+    assert trace["pick_cyl_theta_bias_deg"] == 3.0
+    assert trace["command_vs_resolved_delta_mm"] is not None

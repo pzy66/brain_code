@@ -857,11 +857,46 @@ class RobotExecutor:
         message: str = "Abort requested by operator.",
     ) -> None:
         self._abort_requested.set()
+        try:
+            self.force_sucker_off()
+        except RobotCommandError as error:
+            self._log(f"Failed to disable sucker during abort: {error.message}")
         with self._lock:
             busy = is_busy_state(self._state)
         if busy:
             return
         self._set_abort_error(code, message)
+
+    def force_sucker_off(self) -> None:
+        try:
+            self.actuator.set_sucker(False)
+        except Exception as error:
+            message = f"Failed to disable sucker: {error}"
+            with self._lock:
+                self._last_error_code = RobotErrorCode.HARDWARE_FAILURE.value
+                self._last_error_message = message
+            raise RobotCommandError(RobotErrorCode.HARDWARE_FAILURE, message) from error
+        with self._lock:
+            self._carrying = False
+            self._last_release_mode_effective = "off"
+            if self._state == RobotExecutorState.CARRY_READY:
+                self._set_state(RobotExecutorState.IDLE)
+
+    def request_sucker_off(self) -> None:
+        with self._lock:
+            state = self._state
+            carrying = bool(self._carrying)
+            if is_busy_state(state):
+                raise RobotCommandError(
+                    RobotErrorCode.BUSY,
+                    f"Cannot turn sucker off while robot is {state.value}; wait for PLACE_DONE or use ABORT.",
+                )
+            if carrying and state != RobotExecutorState.ERROR:
+                raise RobotCommandError(
+                    RobotErrorCode.INVALID_STATE,
+                    "Cannot turn sucker off while carrying a target; use PLACE to release at the table or ABORT for emergency stop.",
+                )
+        self.force_sucker_off()
 
     def reset_error(self) -> None:
         with self._lock:
@@ -921,6 +956,9 @@ class RobotExecutor:
         if disable_sucker:
             try:
                 self.actuator.set_sucker(False)
+                with self._lock:
+                    self._carrying = False
+                    self._last_release_mode_effective = "off"
             except Exception as error:
                 self._log(f"Failed to disable sucker during recovery: {error}")
         try:
@@ -1308,6 +1346,11 @@ class RobotTcpGateway:
             if command == "ABORT":
                 self.executor.abort()
                 self._send_line(stream, "ACK ABORT")
+                return
+
+            if command == "SUCKER_OFF":
+                self.executor.request_sucker_off()
+                self._send_line(stream, "ACK SUCKER_OFF")
                 return
 
             if command == "RESET":

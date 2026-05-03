@@ -174,6 +174,9 @@ class RosbridgeClient:
     def send_reset(self, *, callback: Optional[Callable[[RosServiceResult], None]] = None) -> None:
         self._call_trigger("reset", callback=callback)
 
+    def send_sucker_off(self, *, callback: Optional[Callable[[RosServiceResult], None]] = None) -> None:
+        self._call_trigger("sucker_off", callback=callback)
+
     def get_param(self, name: str, *, default: object = None, timeout_sec: float = 2.0) -> object:
         service = self._services.get("rosapi_get_param")
         if service is None:
@@ -259,6 +262,7 @@ class RosbridgeClient:
         self._services = {
             "reset": roslibpy.Service(self._ros, "/hybrid_controller/reset", "std_srvs/Trigger"),
             "abort": roslibpy.Service(self._ros, "/hybrid_controller/abort", "std_srvs/Trigger"),
+            "sucker_off": roslibpy.Service(self._ros, "/hybrid_controller/sucker_off", "std_srvs/Trigger"),
             "place": roslibpy.Service(self._ros, "/hybrid_controller/place", "std_srvs/Trigger"),
             "move_cyl": roslibpy.Service(self._ros, "/hybrid_controller/move_cyl", "hybrid_controller_ros/MoveCyl"),
             "move_cyl_auto": roslibpy.Service(self._ros, "/hybrid_controller/move_cyl_auto", "hybrid_controller_ros/MoveCylAuto"),

@@ -256,6 +256,7 @@ class HybridControllerRuntimeNode(object):
         rospy.Subscriber("/hybrid_controller/teleop_cyl_cmd", CylindricalTeleop, self._on_teleop_cmd, queue_size=1)
         rospy.Service("/hybrid_controller/reset", Trigger, self._handle_reset)
         rospy.Service("/hybrid_controller/abort", Trigger, self._handle_abort)
+        rospy.Service("/hybrid_controller/sucker_off", Trigger, self._handle_sucker_off)
         rospy.Service("/hybrid_controller/place", Trigger, self._handle_place)
         rospy.Service("/hybrid_controller/move_cyl", MoveCyl, self._handle_move_cyl)
         rospy.Service("/hybrid_controller/move_cyl_auto", MoveCylAuto, self._handle_move_cyl_auto)
@@ -438,6 +439,11 @@ class HybridControllerRuntimeNode(object):
         self._stop_teleop()
         self._clear_action_queue()
         response = self.executor.abort()
+        ok = str(response).strip().upper().startswith("ACK")
+        return TriggerResponse(success=ok, message=str(response))
+
+    def _handle_sucker_off(self, _request):
+        response = self.executor.force_sucker_off()
         ok = str(response).strip().upper().startswith("ACK")
         return TriggerResponse(success=ok, message=str(response))
 

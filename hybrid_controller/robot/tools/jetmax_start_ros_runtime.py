@@ -224,6 +224,7 @@ def verify_runtime_services(*, host: str, user: str, password: str, timeout_sec:
             "/hybrid_controller/place",
             "/hybrid_controller/reset",
             "/hybrid_controller/abort",
+            "/hybrid_controller/sucker_off",
         }
         listed = run_remote_command(
             ssh,

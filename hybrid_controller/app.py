@@ -123,11 +123,14 @@ class HybridControllerApplication:
         self._last_mi_health_signature: tuple[object, ...] | None = None
         self._last_mi_status_emit_ts = 0.0
         self._pick_cyl_radius_bias_mm = float(self.config.pick_cyl_radius_bias_mm)
+        self._pick_cyl_tangent_bias_mm = float(self.config.pick_cyl_tangent_bias_mm)
         self._pick_cyl_theta_bias_deg = float(self.config.pick_cyl_theta_bias_deg)
         self._pick_tuning_defaults = self._build_pick_tuning_defaults()
         self._pick_tuning_state = self._load_pick_tuning_profile()
         self._pick_tuning_local_dirty = False
         self._active_pick_trace: dict[str, object] | None = None
+        self._vision_servo_pick: dict[str, object] | None = None
+        self._last_vision_debug_bundle_error_ts = 0.0
         self._teleop_ros_planner = RosTeleopPublishPlanner(
             keepalive_interval_sec=max(float(self.config.teleop_ros_keepalive_interval_ms) / 1000.0, 0.02)
         )
@@ -141,6 +144,7 @@ class HybridControllerApplication:
         self._ros_reconnect_attempt = 0
         self._ros_reconnect_next_ts = 0.0
         self._ros_connected_since_ts = 0.0
+        self._next_robot_bootstrap_probe_ts = 0.0
         self._last_auto_robot_start_ts = 0.0
         self._last_ros_runtime_unavailable_log_ts = 0.0
         self._ros_stale_detection_count = 0
@@ -195,6 +199,8 @@ class HybridControllerApplication:
             "state_age_ms": float("inf"),
             "vision_last_resolved_base_xy": None,
             "vision_last_resolved_cyl": None,
+            "vision_calibration_profile_id": "--",
+            "vision_servo_status": "idle",
             "last_robot_ack": "--",
             "last_robot_error": "--",
             "last_ssvep_raw": "--",
@@ -256,6 +262,7 @@ class HybridControllerApplication:
         self.main_window.robot_connect_requested.connect(self._on_robot_connect_requested)
         self.main_window.abort_requested.connect(self._on_abort_requested)
         self.main_window.reset_requested.connect(self._on_reset_requested)
+        self.main_window.sucker_off_requested.connect(self._on_sucker_off_requested)
         self.main_window.ssvep_connect_requested.connect(self._on_ssvep_connect_requested)
         self.main_window.ssvep_config_apply_requested.connect(self._on_ssvep_config_apply_requested)
         self.main_window.ssvep_pretrain_requested.connect(self._on_ssvep_pretrain_requested)
@@ -268,6 +275,8 @@ class HybridControllerApplication:
         self.main_window.manual_place_requested.connect(self._on_manual_place_requested)
         self.main_window.pick_radius_bias_delta_requested.connect(self._on_pick_radius_bias_delta_requested)
         self.main_window.pick_bias_reset_requested.connect(self._on_pick_bias_reset_requested)
+        self.main_window.pick_tangent_bias_delta_requested.connect(self._on_pick_tangent_bias_delta_requested)
+        self.main_window.pick_tangent_bias_reset_requested.connect(self._on_pick_tangent_bias_reset_requested)
         self.main_window.pick_theta_bias_delta_requested.connect(self._on_pick_theta_bias_delta_requested)
         self.main_window.pick_theta_bias_reset_requested.connect(self._on_pick_theta_bias_reset_requested)
         self.main_window.pick_tuning_delta_requested.connect(self._on_pick_tuning_delta_requested)
@@ -275,7 +284,11 @@ class HybridControllerApplication:
         self.main_window.pick_tuning_apply_requested.connect(self._on_pick_tuning_apply_requested)
         self.main_window.pick_tuning_reset_requested.connect(self._on_pick_tuning_reset_requested)
         self.main_window.pick_tuning_save_requested.connect(self._on_pick_tuning_save_requested)
-        self.main_window.update_pick_bias_display(self._pick_cyl_radius_bias_mm, self._pick_cyl_theta_bias_deg)
+        self.main_window.update_pick_bias_display(
+            self._pick_cyl_radius_bias_mm,
+            self._pick_cyl_theta_bias_deg,
+            self._pick_cyl_tangent_bias_mm,
+        )
         self.main_window.update_pick_tuning_display(self._pick_tuning_state)
         self._report_runtime_environment()
         self._start_ui_refresh_timer()
@@ -346,10 +359,16 @@ class HybridControllerApplication:
             ack = str(event.value or "").strip().upper()
             if ack == "PICK_DONE":
                 self._finish_pick_trace(response=f"ACK {ack}")
+                self._vision_servo_pick = None
+                self._rt_set("vision_servo_status", "idle")
                 if self._set_ssvep_stim_enabled(False, refresh=False):
                     self._log_runtime("ssvep", "Stimulus auto-disabled after PICK_DONE.")
+            if ack == "MOVE":
+                self._mark_vision_servo_move_acknowledged()
             if ack == "ABORT":
                 self._stop_teleop_motion(send_command=False, reason="robot_abort_ack")
+                self._vision_servo_pick = None
+                self._rt_set("vision_servo_status", "idle")
                 controller_event = None
                 effects = self._force_controller_error("Abort requested by operator.")
                 self._update_control_scene_from_event(
@@ -365,9 +384,13 @@ class HybridControllerApplication:
                 return
             if ack == "RESET":
                 self._stop_teleop_motion(send_command=False, reason="robot_reset_ack")
+                self._vision_servo_pick = None
+                self._rt_set("vision_servo_status", "idle")
                 controller_event = Event(source="system", type="reset_task", timestamp=event.timestamp)
         if event.source == "robot" and event.type == "robot_error":
             self._stop_teleop_motion(send_command=False, reason="robot_error")
+            self._vision_servo_pick = None
+            self._rt_set("vision_servo_status", "idle")
             self._rt_set("last_robot_error", str(event.value))
             self._finish_pick_trace(response=f"ERR {event.value}")
         if event.source == "robot" and event.type == "robot_disconnected":
@@ -675,6 +698,53 @@ class HybridControllerApplication:
         self._queue_runtime_status("robot", f"Auto-start robot runtime due to: {str(reason)}")
         self._on_robot_start_requested()
         return True
+
+    def _pump_robot_bootstrap(self) -> None:
+        if not self._uses_ros_transport():
+            self._next_robot_bootstrap_probe_ts = 0.0
+            return
+        if not bool(getattr(self.config, "robot_bootstrap_retry_enabled", True)):
+            return
+        if bool(getattr(self, "_shutdown_started", False)):
+            return
+        if bool(self._rt_get("robot_start_active", False)):
+            return
+        ros_client = self.ros_client
+        if ros_client is not None and ros_client.is_connected():
+            self._next_robot_bootstrap_probe_ts = 0.0
+            return
+
+        now = time.monotonic()
+        if now < float(self._next_robot_bootstrap_probe_ts):
+            return
+        interval_sec = max(1.0, float(getattr(self.config, "robot_bootstrap_probe_interval_sec", 3.0)))
+        self._next_robot_bootstrap_probe_ts = now + interval_sec
+        probe_timeout = max(0.05, float(getattr(self.config, "robot_bootstrap_probe_timeout_sec", 0.35)))
+        port_open = self._probe_tcp_port(
+            host=self.config.robot_host,
+            port=int(self.config.rosbridge_port),
+            timeout_sec=probe_timeout,
+        )
+        if port_open:
+            if ros_client is None:
+                self._queue_runtime_status(
+                    "robot",
+                    "ROS bridge port is reachable again; reconnecting robot client.",
+                )
+                self._on_robot_connect_requested()
+            return
+
+        current_health = str(self._rt_get("robot_health", "unknown"))
+        if current_health not in {"starting_remote_runtime", "start_failed"}:
+            self._rt_update(
+                {
+                    "robot_connected": False,
+                    "robot_health": "waiting_for_robot_runtime",
+                    "preflight_ok": False,
+                    "preflight_message": "waiting_for_robot_runtime",
+                }
+            )
+        self._maybe_auto_start_robot_runtime("bootstrap_retry_rosbridge_port_closed")
 
     def _maybe_recover_ros_runtime_from_stale_state(self, *, state_age_ms: float) -> None:
         if not self._uses_ros_transport():
@@ -1075,10 +1145,18 @@ class HybridControllerApplication:
         self._send_robot_text_command(command)
 
     def _send_robot_text_command(self, command: str) -> None:
-        outgoing_command = self._rewrite_outgoing_robot_command(str(command))
+        original_command = str(command)
+        outgoing_command = self._rewrite_outgoing_robot_command(original_command)
         opcode = self._extract_command_opcode(outgoing_command)
         if opcode in {"PICK", "PICK_WORLD", "PICK_CYL"}:
-            self._begin_pick_trace(command=outgoing_command)
+            self._begin_pick_trace(command=outgoing_command, original_command=original_command)
+        elif opcode in {"MOVE_CYL", "MOVE_CYL_AUTO"} and isinstance(getattr(self, "_vision_servo_pick", None), dict):
+            self._write_vision_debug_bundle(
+                event="vision_servo_move",
+                command=outgoing_command,
+                original_command=original_command,
+                trace={"vision_servo_pick": dict(getattr(self, "_vision_servo_pick", {}))},
+            )
         if self._uses_ros_transport():
             if self._send_robot_command_via_ros(outgoing_command):
                 self.main_window.append_log(f"Robot <= {outgoing_command}")
@@ -1111,14 +1189,31 @@ class HybridControllerApplication:
         if opcode in {"PICK", "PICK_WORLD", "PICK_CYL"}:
             self._finish_pick_trace(response=f"ERR {message}")
 
-    def _begin_pick_trace(self, *, command: str) -> None:
+    def _begin_pick_trace(self, *, command: str, original_command: str | None = None) -> None:
         snapshot = self._fetch_remote_robot_snapshot()
-        self._active_pick_trace = {
+        selected_slot = self._vision_slot_payload(self.controller.context.selected_target_id or -1)
+        resolved_base_xy = self._rt_get("vision_last_resolved_base_xy")
+        resolved_cyl = self._rt_get("vision_last_resolved_cyl")
+        original_text = str(command if original_command is None else original_command)
+        trace = {
             "slot_id": self.controller.context.selected_target_id,
             "mapping_mode": self._rt_get("vision_mapping_mode"),
+            "original_command": original_text,
             "command": str(command),
-            "resolved_base_xy": self._rt_get("vision_last_resolved_base_xy"),
-            "resolved_cyl": self._rt_get("vision_last_resolved_cyl"),
+            "pick_bias_applied": original_text.strip() != str(command).strip(),
+            "pick_cyl_radius_bias_mm": float(getattr(self, "_pick_cyl_radius_bias_mm", 0.0)),
+            "pick_cyl_tangent_bias_mm": float(getattr(self, "_pick_cyl_tangent_bias_mm", 0.0)),
+            "pick_cyl_theta_bias_deg": float(getattr(self, "_pick_cyl_theta_bias_deg", 0.0)),
+            "command_vs_resolved_delta_mm": self._command_vs_resolved_delta_mm(str(command), resolved_base_xy),
+            "resolved_base_xy": resolved_base_xy,
+            "resolved_cyl": resolved_cyl,
+            "pixel_center": None if selected_slot is None else selected_slot.get("pixel_center"),
+            "grasp_pixel": None if selected_slot is None else selected_slot.get("grasp_pixel"),
+            "camera_to_world_raw": None if selected_slot is None else selected_slot.get("camera_to_world_raw"),
+            "undistorted_pixel": None if selected_slot is None else selected_slot.get("undistorted_pixel"),
+            "estimated_xy_error_mm": None if selected_slot is None else selected_slot.get("estimated_xy_error_mm"),
+            "calibration_profile_id": None if selected_slot is None else selected_slot.get("calibration_profile_id"),
+            "grasp_quality": None if selected_slot is None else selected_slot.get("grasp_quality"),
             "snapshot_age_ms": self._rt_get("vision_snapshot_age_ms"),
             "robot_pose": None if not isinstance(snapshot, dict) else snapshot.get("robot_cyl") or snapshot.get("robot_xy"),
             "robot_xy": None if not isinstance(snapshot, dict) else snapshot.get("robot_xy"),
@@ -1127,6 +1222,317 @@ class HybridControllerApplication:
             "release_mode_effective": self._rt_get("release_mode_effective"),
             "transport": "ros" if self._uses_ros_transport() else "tcp",
         }
+        bundle_dir = self._write_vision_debug_bundle(
+            event="pick_start",
+            command=str(command),
+            original_command=original_text,
+            trace=trace,
+        )
+        if bundle_dir is not None:
+            trace["vision_debug_bundle"] = bundle_dir
+        self._active_pick_trace = trace
+
+    @staticmethod
+    def _command_vs_resolved_delta_mm(command: str, resolved_base_xy: object) -> float | None:
+        parts = str(command or "").strip().split()
+        if len(parts) != 3 or str(parts[0]).upper() != "PICK_WORLD":
+            return None
+        if not isinstance(resolved_base_xy, (tuple, list)) or len(resolved_base_xy) < 2:
+            return None
+        try:
+            command_x = float(parts[1])
+            command_y = float(parts[2])
+            resolved_x = float(resolved_base_xy[0])
+            resolved_y = float(resolved_base_xy[1])
+        except (TypeError, ValueError):
+            return None
+        return float(math.hypot(command_x - resolved_x, command_y - resolved_y))
+
+    def _copy_latest_vision_frame(self) -> object | None:
+        lock = getattr(self, "_vision_frame_lock", None)
+        if lock is None:
+            frame = getattr(self, "_latest_vision_frame", None)
+        else:
+            with lock:
+                frame = getattr(self, "_latest_vision_frame", None)
+        if frame is None:
+            return None
+        copier = getattr(frame, "copy", None)
+        if callable(copier):
+            try:
+                return copier()
+            except Exception:
+                return frame
+        return frame
+
+    def _vision_debug_runtime_snapshot(self) -> dict[str, object]:
+        keys = (
+            "vision_health",
+            "vision_mapping_mode",
+            "vision_invalid_reason",
+            "vision_last_resolved_base_xy",
+            "vision_last_resolved_cyl",
+            "vision_snapshot_age_ms",
+            "vision_calibration_profile_id",
+            "vision_servo_status",
+            "remote_snapshot_age_ms",
+            "state_age_ms",
+            "robot_health",
+            "last_robot_ack",
+            "last_robot_error",
+        )
+        snapshot = {key: self._rt_get(key) for key in keys}
+        snapshot["pick_cyl_radius_bias_mm"] = float(getattr(self, "_pick_cyl_radius_bias_mm", 0.0))
+        snapshot["pick_cyl_tangent_bias_mm"] = float(getattr(self, "_pick_cyl_tangent_bias_mm", 0.0))
+        snapshot["pick_cyl_theta_bias_deg"] = float(getattr(self, "_pick_cyl_theta_bias_deg", 0.0))
+        return snapshot
+
+    def _write_vision_debug_bundle(
+        self,
+        *,
+        event: str,
+        command: str | None = None,
+        original_command: str | None = None,
+        trace: dict[str, object] | None = None,
+    ) -> str | None:
+        if not bool(getattr(getattr(self, "config", None), "vision_debug_bundle_enabled", False)):
+            return None
+        packet = getattr(self, "_latest_vision_packet", None)
+        packet_payload = packet if isinstance(packet, dict) else None
+        frame = self._copy_latest_vision_frame()
+        if packet_payload is None and frame is None:
+            return None
+
+        safe_event = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in str(event or "vision"))[:40]
+        safe_event = safe_event or "vision"
+        try:
+            root = Path(getattr(self.config, "vision_debug_bundle_dir"))
+            now_wall = time.time()
+            stamp = time.strftime("%Y%m%d_%H%M%S", time.localtime(now_wall))
+            base_name = f"{stamp}_{int((now_wall % 1.0) * 1000):03d}_{safe_event}"
+            bundle_dir = root / base_name
+            for suffix in range(100):
+                candidate = bundle_dir if suffix == 0 else root / f"{base_name}_{suffix:02d}"
+                try:
+                    candidate.mkdir(parents=True, exist_ok=False)
+                    bundle_dir = candidate
+                    break
+                except FileExistsError:
+                    continue
+
+            files: dict[str, str] = {}
+            image_errors: list[str] = []
+            if frame is not None:
+                try:
+                    import cv2
+
+                    frame_path = bundle_dir / "frame.jpg"
+                    if cv2.imwrite(str(frame_path), frame):
+                        files["frame"] = str(frame_path)
+                    else:
+                        image_errors.append("cv2.imwrite(frame.jpg) returned False")
+                    overlay = self._build_vision_debug_overlay(frame, packet=packet_payload, trace=trace)
+                    if overlay is not None:
+                        overlay_path = bundle_dir / "overlay.jpg"
+                        if cv2.imwrite(str(overlay_path), overlay):
+                            files["overlay"] = str(overlay_path)
+                        else:
+                            image_errors.append("cv2.imwrite(overlay.jpg) returned False")
+                except Exception as error:
+                    image_errors.append(str(error))
+
+            debug_json_path = bundle_dir / "debug.json"
+            files["debug_json"] = str(debug_json_path)
+            payload = {
+                "event": str(event),
+                "created_ts": now_wall,
+                "original_command": original_command,
+                "command": command,
+                "trace": trace,
+                "runtime": self._vision_debug_runtime_snapshot(),
+                "packet": packet_payload,
+                "files": files,
+                "image_errors": image_errors,
+            }
+            debug_json_path.write_text(
+                json.dumps(payload, ensure_ascii=False, default=str, indent=2),
+                encoding="utf-8",
+            )
+            self.logger.write(
+                "vision_debug_bundle",
+                event=str(event),
+                command=command,
+                original_command=original_command,
+                path=str(bundle_dir),
+                files=files,
+                image_errors=image_errors,
+            )
+            append_log = getattr(getattr(self, "main_window", None), "append_log", None)
+            if callable(append_log):
+                append_log(f"[vision] Debug bundle saved: {bundle_dir}")
+            return str(bundle_dir)
+        except Exception as error:
+            now_mono = time.monotonic()
+            last_error_ts = float(getattr(self, "_last_vision_debug_bundle_error_ts", 0.0))
+            if now_mono - last_error_ts > 5.0:
+                self._last_vision_debug_bundle_error_ts = now_mono
+                try:
+                    self._handle_runtime_status("vision", f"Vision debug bundle write failed: {error}")
+                except Exception:
+                    pass
+            return None
+
+    def _build_vision_debug_overlay(
+        self,
+        frame: object,
+        *,
+        packet: dict[str, object] | None,
+        trace: dict[str, object] | None,
+    ) -> object | None:
+        try:
+            import cv2
+            import numpy as np
+        except Exception:
+            return None
+        if frame is None or not hasattr(frame, "shape"):
+            return None
+        try:
+            overlay = frame.copy()
+        except Exception:
+            return None
+        try:
+            if len(overlay.shape) == 2:
+                overlay = cv2.cvtColor(overlay, cv2.COLOR_GRAY2BGR)
+            elif len(overlay.shape) >= 3 and int(overlay.shape[2]) == 4:
+                overlay = cv2.cvtColor(overlay, cv2.COLOR_BGRA2BGR)
+        except Exception:
+            return None
+
+        trace_payload = trace if isinstance(trace, dict) else {}
+        selected_id = trace_payload.get("slot_id")
+        packet_payload = packet if isinstance(packet, dict) else {}
+        roi_center = self._coerce_debug_point(packet_payload.get("roi_center"))
+        if roi_center is None:
+            roi_center = self._coerce_debug_point(getattr(self.config, "roi_center", None))
+        if roi_center is not None:
+            cv2.drawMarker(overlay, roi_center, (0, 165, 255), cv2.MARKER_CROSS, 24, 2)
+            cv2.putText(overlay, "roi", (roi_center[0] + 8, roi_center[1] - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 1)
+        alignment_target = self._coerce_debug_point(packet_payload.get("alignment_target_pixel"))
+        if alignment_target is not None:
+            cv2.drawMarker(overlay, alignment_target, (255, 80, 220), cv2.MARKER_TILTED_CROSS, 28, 2)
+            cv2.circle(overlay, alignment_target, 9, (255, 80, 220), 2)
+            cv2.putText(
+                overlay,
+                "target",
+                (alignment_target[0] + 8, alignment_target[1] + 18),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (255, 80, 220),
+                1,
+            )
+
+        slots = packet_payload.get("slots", [])
+        if isinstance(slots, list):
+            for slot in slots:
+                if not isinstance(slot, dict):
+                    continue
+                slot_id = slot.get("slot_id", slot.get("slot", "?"))
+                selected = str(slot_id) == str(selected_id)
+                actionable = bool(slot.get("actionable", False))
+                color = (0, 220, 0) if actionable else (0, 0, 255)
+                thickness = 3 if selected else 1
+                bbox = self._coerce_debug_bbox(slot.get("bbox"))
+                if bbox is not None:
+                    cv2.rectangle(overlay, (bbox[0], bbox[1]), (bbox[2], bbox[3]), color, thickness)
+                polygon = self._coerce_debug_polygon(slot.get("polygon"))
+                if len(polygon) >= 3:
+                    cv2.polylines(overlay, [np.array(polygon, dtype=np.int32).reshape((-1, 1, 2))], True, color, thickness)
+                oriented = self._coerce_debug_polygon(slot.get("oriented_bbox"))
+                if len(oriented) >= 3:
+                    cv2.polylines(overlay, [np.array(oriented, dtype=np.int32).reshape((-1, 1, 2))], True, (0, 255, 255), 1)
+
+                pixel_center = self._coerce_debug_point(slot.get("pixel_center"))
+                grasp_pixel = self._coerce_debug_point(slot.get("grasp_pixel"))
+                undistorted_pixel = self._coerce_debug_point(slot.get("undistorted_pixel"))
+                if pixel_center is not None:
+                    cv2.circle(overlay, pixel_center, 5, (0, 0, 255), -1)
+                if grasp_pixel is not None:
+                    cv2.circle(overlay, grasp_pixel, 7, (0, 255, 255), 2)
+                if undistorted_pixel is not None:
+                    cv2.circle(overlay, undistorted_pixel, 5, (255, 80, 0), 2)
+                slot_target = self._coerce_debug_point(slot.get("alignment_target_pixel")) or alignment_target
+                if bool(slot.get("servo_required", False)) and slot_target is not None and grasp_pixel is not None:
+                    cv2.line(overlay, grasp_pixel, slot_target, (0, 165, 255), 2)
+
+                label_anchor = grasp_pixel or pixel_center
+                if label_anchor is None and bbox is not None:
+                    label_anchor = (bbox[0], bbox[1])
+                if label_anchor is not None:
+                    quality = slot.get("grasp_quality")
+                    error_mm = slot.get("estimated_xy_error_mm")
+                    state_text = "OK" if actionable else str(slot.get("invalid_reason") or "reject")
+                    label = f"slot {slot_id} {state_text}"
+                    if quality is not None:
+                        try:
+                            label += f" q={float(quality):.2f}"
+                        except (TypeError, ValueError):
+                            pass
+                    if error_mm is not None:
+                        try:
+                            label += f" err={float(error_mm):.1f}mm"
+                        except (TypeError, ValueError):
+                            pass
+                    cv2.putText(
+                        overlay,
+                        label[:96],
+                        (int(label_anchor[0]) + 8, max(18, int(label_anchor[1]) - 8)),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.48,
+                        color,
+                        1,
+                    )
+
+        header = str(trace_payload.get("command") or trace_payload.get("original_command") or "")
+        delta = trace_payload.get("command_vs_resolved_delta_mm")
+        if delta is not None:
+            try:
+                header = f"{header} delta={float(delta):.1f}mm"
+            except (TypeError, ValueError):
+                pass
+        if header:
+            cv2.putText(overlay, header[:120], (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.62, (255, 255, 255), 2)
+            cv2.putText(overlay, header[:120], (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.62, (0, 0, 0), 1)
+        return overlay
+
+    @staticmethod
+    def _coerce_debug_point(value: object) -> tuple[int, int] | None:
+        if not isinstance(value, (tuple, list)) or len(value) < 2:
+            return None
+        try:
+            return (int(round(float(value[0]))), int(round(float(value[1]))))
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _coerce_debug_bbox(value: object) -> tuple[int, int, int, int] | None:
+        if not isinstance(value, (tuple, list)) or len(value) < 4:
+            return None
+        try:
+            x1, y1, x2, y2 = [int(round(float(value[index]))) for index in range(4)]
+        except (TypeError, ValueError):
+            return None
+        return (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
+
+    @classmethod
+    def _coerce_debug_polygon(cls, value: object) -> list[tuple[int, int]]:
+        if not isinstance(value, list):
+            return []
+        points: list[tuple[int, int]] = []
+        for item in value:
+            point = cls._coerce_debug_point(item)
+            if point is not None:
+                points.append(point)
+        return points
 
     def _finish_pick_trace(self, *, response: str) -> None:
         trace = self._active_pick_trace
@@ -1227,6 +1633,7 @@ class HybridControllerApplication:
             str(command or ""),
             theta_bias_deg=float(self._pick_cyl_theta_bias_deg),
             radius_bias_mm=float(self._pick_cyl_radius_bias_mm),
+            tangent_bias_mm=float(self._pick_cyl_tangent_bias_mm),
             pick_z_mm=float(self.config.robot_pick_z),
         )
 
@@ -1271,6 +1678,9 @@ class HybridControllerApplication:
                 return True
             if op == "ABORT":
                 self.ros_client.send_abort(callback=callback)
+                return True
+            if op == "SUCKER_OFF":
+                self.ros_client.send_sucker_off(callback=callback)
                 return True
             if op == "RESET":
                 self.ros_client.send_reset(callback=callback)
@@ -1545,9 +1955,16 @@ class HybridControllerApplication:
         self._stop_teleop_motion(send_command=False, reason="reset_button")
         self._send_robot_text_command("RESET")
 
+    def _on_sucker_off_requested(self) -> None:
+        self._stop_teleop_motion(send_command=False, reason="sucker_off_button")
+        self._send_robot_text_command("SUCKER_OFF")
+
     def _on_manual_pick_slot_requested(self, slot_id: int) -> None:
         command = self._build_manual_pick_command(int(slot_id))
         if command is None:
+            slot_payload = self._vision_slot_payload(int(slot_id))
+            if slot_payload is not None and self._send_vision_servo_pick_move(int(slot_id), slot_payload):
+                return
             details = ""
             packet = self._latest_vision_packet if isinstance(self._latest_vision_packet, dict) else None
             if isinstance(packet, dict):
@@ -1562,51 +1979,352 @@ class HybridControllerApplication:
                     break
             self._handle_runtime_status("robot", f"Manual pick slot {int(slot_id)} unavailable.{details}")
             return
+        if self._maybe_send_low_confirm_before_pick(int(slot_id)):
+            return
+        self._vision_servo_pick = None
+        self._rt_set("vision_servo_status", "idle")
         self._send_robot_text_command(command)
+
+    def _vision_slot_payload(self, slot_id: int, packet: dict[str, object] | None = None) -> dict[str, object] | None:
+        source_packet = packet if isinstance(packet, dict) else self._latest_vision_packet
+        if not isinstance(source_packet, dict):
+            return None
+        for slot in source_packet.get("slots", []):
+            if not isinstance(slot, dict):
+                continue
+            try:
+                current_id = int(slot.get("slot_id", slot.get("slot", -1)))
+            except (TypeError, ValueError):
+                continue
+            if current_id == int(slot_id):
+                return slot
+        return None
+
+    def _vision_eye_in_hand_pick_flow_enabled(self) -> bool:
+        return bool(getattr(self.config, "vision_eye_in_hand_pick_flow_enabled", False)) and str(
+            getattr(self.config, "vision_mapping_mode", "")
+        ).strip().lower() == "delta_servo"
+
+    def _current_robot_cyl_pose(self) -> tuple[float, float, float] | None:
+        snapshot = self._fetch_remote_robot_snapshot()
+        if not isinstance(snapshot, dict):
+            return None
+        cyl = snapshot.get("robot_cyl")
+        if isinstance(cyl, dict):
+            try:
+                return (
+                    float(cyl.get("theta_deg")),
+                    float(cyl.get("radius_mm")),
+                    float(cyl.get("z_mm", snapshot.get("robot_z", 0.0))),
+                )
+            except (TypeError, ValueError):
+                return None
+        robot_xy = snapshot.get("robot_xy")
+        try:
+            if isinstance(robot_xy, (tuple, list)) and len(robot_xy) >= 2:
+                z_mm = float(snapshot.get("robot_z", 0.0))
+                theta_deg, radius_mm, _ = cartesian_to_cylindrical(float(robot_xy[0]), float(robot_xy[1]), z_mm)
+                return (float(theta_deg), float(radius_mm), float(z_mm))
+        except (TypeError, ValueError):
+            return None
+        return None
+
+    def _is_at_vision_pick_confirm_z(self) -> bool:
+        pose = self._current_robot_cyl_pose()
+        if pose is None:
+            return False
+        confirm_z = float(getattr(self.config, "vision_pick_confirm_z_mm", self.config.robot_approach_z))
+        tolerance = max(0.5, float(getattr(self.config, "vision_pick_z_tolerance_mm", 4.0)))
+        return abs(float(pose[2]) - confirm_z) <= tolerance
+
+    def _send_vision_low_confirm_move(self, slot_id: int, *, attempts: int = 0) -> bool:
+        pose = self._current_robot_cyl_pose()
+        if pose is None:
+            self._rt_set("vision_servo_status", f"cancelled slot={int(slot_id)} reason=robot_pose_unavailable")
+            self._handle_runtime_status("vision", "Vision pick low confirm cancelled: robot pose unavailable.")
+            return False
+        theta_deg, radius_mm, _ = pose
+        confirm_z = float(getattr(self.config, "vision_pick_confirm_z_mm", self.config.robot_approach_z))
+        command = f"MOVE_CYL {theta_deg:.2f} {radius_mm:.2f} {confirm_z:.2f}"
+        packet = self._latest_vision_packet if isinstance(self._latest_vision_packet, dict) else {}
+        try:
+            frame_id = int(packet.get("frame_id", 0))
+        except (TypeError, ValueError):
+            frame_id = 0
+        self._vision_servo_pick = {
+            "slot_id": int(slot_id),
+            "attempts": int(max(0, attempts)),
+            "waiting_for_ack": True,
+            "min_frame_id": int(frame_id) + 1,
+            "stability_wait_frames": 0,
+            "command": command,
+            "stage": "low_confirm",
+        }
+        self._rt_set("vision_servo_status", f"low_confirm slot={int(slot_id)} z={confirm_z:.1f}")
+        self._handle_runtime_status("vision", f"Vision pick lowering for final confirmation: {command}")
+        self._send_robot_text_command(command)
+        return True
+
+    def _maybe_send_low_confirm_before_pick(self, slot_id: int, *, attempts: int = 0) -> bool:
+        if not self._vision_eye_in_hand_pick_flow_enabled():
+            return False
+        if self._is_at_vision_pick_confirm_z():
+            return False
+        return self._send_vision_low_confirm_move(int(slot_id), attempts=int(attempts))
+
+    def _mark_vision_servo_move_acknowledged(self) -> None:
+        pending = self._vision_servo_pick
+        if not isinstance(pending, dict):
+            return
+        if not bool(pending.get("waiting_for_ack", False)):
+            return
+        pending["waiting_for_ack"] = False
+        vision_runtime = getattr(self, "vision_runtime", None)
+        reset_tracking = getattr(vision_runtime, "reset_tracking", None)
+        if callable(reset_tracking):
+            reset_tracking()
+        packet = self._latest_vision_packet if isinstance(self._latest_vision_packet, dict) else {}
+        try:
+            current_frame_id = int(packet.get("frame_id", 0))
+        except (TypeError, ValueError):
+            current_frame_id = 0
+        pending["min_frame_id"] = current_frame_id + 1
+        self._vision_servo_pick = pending
+        self._rt_set("vision_servo_status", f"waiting_fresh_frame slot={pending.get('slot_id')}")
+
+    def _pump_pending_vision_servo_pick(self, packet: dict[str, object]) -> None:
+        pending = self._vision_servo_pick
+        if not isinstance(pending, dict) or bool(pending.get("waiting_for_ack", False)):
+            return
+        try:
+            frame_id = int(packet.get("frame_id", 0))
+            min_frame_id = int(pending.get("min_frame_id", 0))
+            slot_id = int(pending.get("slot_id"))
+        except (TypeError, ValueError):
+            return
+        if frame_id < min_frame_id:
+            return
+        slot = self._vision_slot_payload(slot_id, packet=packet)
+        if slot is None or not bool(slot.get("valid", False)):
+            self._vision_servo_pick = None
+            self._rt_set("vision_servo_status", f"lost_target slot={slot_id}")
+            self._handle_runtime_status("vision", f"Vision servo lost slot {slot_id}; pick cancelled.")
+            return
+        command = build_pick_command_from_slot_payload(slot)
+        if command is not None:
+            try:
+                attempts = int(pending.get("attempts", 0))
+            except (TypeError, ValueError):
+                attempts = 0
+            if self._maybe_send_low_confirm_before_pick(slot_id, attempts=attempts):
+                return
+            self._vision_servo_pick = None
+            self._rt_set("vision_servo_status", f"centered slot={slot_id}; picking")
+            self._handle_runtime_status("vision", f"Vision servo centered slot {slot_id}; sending PICK.")
+            self._send_robot_text_command(command)
+            return
+        reason = str(slot.get("invalid_reason") or "not_actionable")
+        if reason == "grasp_unstable":
+            wait_frames = int(pending.get("stability_wait_frames", 0)) + 1
+            max_wait = max(1, int(self.config.vision_grasp_stability_wait_frames))
+            pending["stability_wait_frames"] = wait_frames
+            self._vision_servo_pick = pending
+            self._rt_set("vision_servo_status", f"stabilizing {wait_frames}/{max_wait} slot={slot_id}")
+            if wait_frames <= max_wait:
+                return
+            self._vision_servo_pick = None
+            self._rt_set("vision_servo_status", f"cancelled slot={slot_id} reason=grasp_unstable")
+            self._handle_runtime_status(
+                "vision",
+                f"Vision servo cancelled slot {slot_id}: grasp point did not stabilize in {max_wait} fresh frames.",
+            )
+            return
+        if self._send_vision_servo_pick_move(slot_id, slot):
+            return
+        self._vision_servo_pick = None
+        self._rt_set("vision_servo_status", f"cancelled slot={slot_id} reason={reason}")
+        self._handle_runtime_status("vision", f"Vision servo cancelled slot {slot_id}: {reason}.")
+
+    def _send_vision_servo_pick_move(self, slot_id: int, slot_payload: dict[str, object]) -> bool:
+        reason = str(slot_payload.get("invalid_reason") or "").strip()
+        if reason == "grasp_unstable":
+            packet = self._latest_vision_packet if isinstance(self._latest_vision_packet, dict) else {}
+            try:
+                frame_id = int(packet.get("frame_id", 0))
+            except (TypeError, ValueError):
+                frame_id = 0
+            pending = self._vision_servo_pick if isinstance(self._vision_servo_pick, dict) else {}
+            try:
+                attempts = int(pending.get("attempts", 0))
+            except (TypeError, ValueError):
+                attempts = 0
+            stage = str(pending.get("stage", "search")) if isinstance(pending, dict) else "search"
+            self._vision_servo_pick = {
+                "slot_id": int(slot_id),
+                "attempts": int(max(0, attempts)),
+                "waiting_for_ack": False,
+                "min_frame_id": int(frame_id) + 1,
+                "stability_wait_frames": 0,
+                "command": "WAIT_STABLE",
+                "stage": stage,
+            }
+            self._rt_set("vision_servo_status", f"stabilizing 0/{self.config.vision_grasp_stability_wait_frames} slot={slot_id}")
+            self._handle_runtime_status("vision", f"Vision grasp for slot {slot_id} is near center; waiting for stable frames.")
+            return True
+        if reason != "vision_servo_required":
+            return False
+        point = slot_payload.get("servo_command_point")
+        mode = str(slot_payload.get("servo_command_mode", "cyl")).strip().lower()
+        if mode != "cyl" or not isinstance(point, (tuple, list)) or len(point) < 2:
+            return False
+        pending = self._vision_servo_pick if isinstance(self._vision_servo_pick, dict) else None
+        attempts = 0
+        stage = "search"
+        if pending is not None:
+            try:
+                if int(pending.get("slot_id", -1)) == int(slot_id):
+                    attempts = int(pending.get("attempts", 0))
+                    stage = str(pending.get("stage", "search") or "search")
+            except (TypeError, ValueError):
+                attempts = 0
+        max_attempts = max(1, int(self.config.vision_servo_max_attempts))
+        if attempts >= max_attempts:
+            self._rt_set("vision_servo_status", f"max_attempts slot={slot_id}")
+            self._handle_runtime_status("vision", f"Vision servo reached {max_attempts} attempts for slot {slot_id}.")
+            return False
+        try:
+            theta_deg = float(point[0])
+            radius_mm = float(point[1])
+        except (TypeError, ValueError):
+            return False
+        if self._vision_eye_in_hand_pick_flow_enabled():
+            if stage == "low_confirm":
+                target_z = float(getattr(self.config, "vision_pick_confirm_z_mm", self.config.robot_approach_z))
+            else:
+                target_z = float(getattr(self.config, "vision_pick_search_z_mm", self.config.robot_carry_z))
+                stage = "search"
+            command = f"MOVE_CYL {theta_deg:.2f} {radius_mm:.2f} {target_z:.2f}"
+        else:
+            command = f"MOVE_CYL_AUTO {theta_deg:.2f} {radius_mm:.2f}"
+        packet = self._latest_vision_packet if isinstance(self._latest_vision_packet, dict) else {}
+        try:
+            frame_id = int(packet.get("frame_id", 0))
+        except (TypeError, ValueError):
+            frame_id = 0
+        next_attempts = attempts + 1
+        self._vision_servo_pick = {
+            "slot_id": int(slot_id),
+            "attempts": int(next_attempts),
+            "waiting_for_ack": True,
+            "min_frame_id": int(frame_id) + 1,
+            "stability_wait_frames": 0,
+            "command": command,
+            "stage": stage,
+        }
+        self._rt_set("vision_servo_status", f"move {next_attempts}/{max_attempts} slot={slot_id}")
+        self._handle_runtime_status(
+            "vision",
+            f"Vision servo move {next_attempts}/{max_attempts} for slot {slot_id}: {command}",
+        )
+        self._send_robot_text_command(command)
+        return True
 
     def _on_manual_place_requested(self) -> None:
         self._send_robot_text_command("PLACE")
 
     def _on_pick_radius_bias_delta_requested(self, delta_mm: float) -> None:
         self._pick_cyl_radius_bias_mm = float(self._pick_cyl_radius_bias_mm) + float(delta_mm)
-        self.main_window.update_pick_bias_display(self._pick_cyl_radius_bias_mm, self._pick_cyl_theta_bias_deg)
+        self.main_window.update_pick_bias_display(
+            self._pick_cyl_radius_bias_mm,
+            self._pick_cyl_theta_bias_deg,
+            self._pick_cyl_tangent_bias_mm,
+        )
         self._handle_runtime_status(
             "robot",
-            "Pick bias -> r={0:+.1f}mm theta={1:+.1f}deg".format(
+            "Pick bias -> r={0:+.1f}mm tangent={1:+.1f}mm theta={2:+.1f}deg".format(
                 self._pick_cyl_radius_bias_mm,
+                self._pick_cyl_tangent_bias_mm,
                 self._pick_cyl_theta_bias_deg,
             ),
         )
 
     def _on_pick_bias_reset_requested(self) -> None:
         self._pick_cyl_radius_bias_mm = float(self.config.pick_cyl_radius_bias_mm)
-        self.main_window.update_pick_bias_display(self._pick_cyl_radius_bias_mm, self._pick_cyl_theta_bias_deg)
+        self._pick_cyl_tangent_bias_mm = float(self.config.pick_cyl_tangent_bias_mm)
+        self.main_window.update_pick_bias_display(
+            self._pick_cyl_radius_bias_mm,
+            self._pick_cyl_theta_bias_deg,
+            self._pick_cyl_tangent_bias_mm,
+        )
         self._handle_runtime_status(
             "robot",
-            "Pick bias reset -> r={0:+.1f}mm theta={1:+.1f}deg".format(
+            "Pick bias reset -> r={0:+.1f}mm tangent={1:+.1f}mm theta={2:+.1f}deg".format(
                 self._pick_cyl_radius_bias_mm,
+                self._pick_cyl_tangent_bias_mm,
+                self._pick_cyl_theta_bias_deg,
+            ),
+        )
+
+    def _on_pick_tangent_bias_delta_requested(self, delta_mm: float) -> None:
+        self._pick_cyl_tangent_bias_mm = float(self._pick_cyl_tangent_bias_mm) + float(delta_mm)
+        self.main_window.update_pick_bias_display(
+            self._pick_cyl_radius_bias_mm,
+            self._pick_cyl_theta_bias_deg,
+            self._pick_cyl_tangent_bias_mm,
+        )
+        self._handle_runtime_status(
+            "robot",
+            "Pick bias -> r={0:+.1f}mm tangent={1:+.1f}mm theta={2:+.1f}deg".format(
+                self._pick_cyl_radius_bias_mm,
+                self._pick_cyl_tangent_bias_mm,
+                self._pick_cyl_theta_bias_deg,
+            ),
+        )
+
+    def _on_pick_tangent_bias_reset_requested(self) -> None:
+        self._pick_cyl_tangent_bias_mm = float(self.config.pick_cyl_tangent_bias_mm)
+        self.main_window.update_pick_bias_display(
+            self._pick_cyl_radius_bias_mm,
+            self._pick_cyl_theta_bias_deg,
+            self._pick_cyl_tangent_bias_mm,
+        )
+        self._handle_runtime_status(
+            "robot",
+            "Pick tangent bias reset -> r={0:+.1f}mm tangent={1:+.1f}mm theta={2:+.1f}deg".format(
+                self._pick_cyl_radius_bias_mm,
+                self._pick_cyl_tangent_bias_mm,
                 self._pick_cyl_theta_bias_deg,
             ),
         )
 
     def _on_pick_theta_bias_delta_requested(self, delta_deg: float) -> None:
         self._pick_cyl_theta_bias_deg = float(self._pick_cyl_theta_bias_deg) + float(delta_deg)
-        self.main_window.update_pick_bias_display(self._pick_cyl_radius_bias_mm, self._pick_cyl_theta_bias_deg)
+        self.main_window.update_pick_bias_display(
+            self._pick_cyl_radius_bias_mm,
+            self._pick_cyl_theta_bias_deg,
+            self._pick_cyl_tangent_bias_mm,
+        )
         self._handle_runtime_status(
             "robot",
-            "Pick bias -> r={0:+.1f}mm theta={1:+.1f}deg".format(
+            "Pick bias -> r={0:+.1f}mm tangent={1:+.1f}mm theta={2:+.1f}deg".format(
                 self._pick_cyl_radius_bias_mm,
+                self._pick_cyl_tangent_bias_mm,
                 self._pick_cyl_theta_bias_deg,
             ),
         )
 
     def _on_pick_theta_bias_reset_requested(self) -> None:
         self._pick_cyl_theta_bias_deg = float(self.config.pick_cyl_theta_bias_deg)
-        self.main_window.update_pick_bias_display(self._pick_cyl_radius_bias_mm, self._pick_cyl_theta_bias_deg)
+        self.main_window.update_pick_bias_display(
+            self._pick_cyl_radius_bias_mm,
+            self._pick_cyl_theta_bias_deg,
+            self._pick_cyl_tangent_bias_mm,
+        )
         self._handle_runtime_status(
             "robot",
-            "Pick bias reset -> r={0:+.1f}mm theta={1:+.1f}deg".format(
+            "Pick bias reset -> r={0:+.1f}mm tangent={1:+.1f}mm theta={2:+.1f}deg".format(
                 self._pick_cyl_radius_bias_mm,
+                self._pick_cyl_tangent_bias_mm,
                 self._pick_cyl_theta_bias_deg,
             ),
         )
@@ -1771,6 +2489,7 @@ class HybridControllerApplication:
         self.timers["teleop-step"] = timer
 
     def _on_realtime_tick(self) -> None:
+        self._pump_robot_bootstrap()
         self._pump_ros_reconnect()
         self._pump_input_sources()
         self._pump_teleop_command()
@@ -2329,6 +3048,8 @@ class HybridControllerApplication:
         invalid_reason = str(self._rt_get("vision_invalid_reason", "--"))
         resolved_base_xy = self._rt_get("vision_last_resolved_base_xy")
         resolved_cyl = self._rt_get("vision_last_resolved_cyl")
+        profile_id = str(resolved_packet.get("calibration_profile_id", "") or "--")
+        self._rt_set("vision_calibration_profile_id", profile_id)
         vision_health = (
             f"camera_fps={float(packet.get('capture_fps', 0.0)):.1f} "
             f"infer_ms={float(packet.get('infer_ms', 0.0)):.1f} "
@@ -2338,7 +3059,8 @@ class HybridControllerApplication:
             f"ui_refresh_ms={ui_refresh_ms:.1f} "
             f"snapshot_age_ms={remote_age_ms:.1f} "
             f"slots={valid_slots} actionable={actionable_slots} "
-            f"mapping={mapping_mode} invalid={invalid_reason} "
+            f"mapping={mapping_mode} profile={profile_id} invalid={invalid_reason} "
+            f"servo={self._rt_get('vision_servo_status', 'idle')} "
             f"resolved_xy={resolved_base_xy} resolved_cyl={resolved_cyl}"
         )
         self._rt_set("vision_health", vision_health)
@@ -2347,6 +3069,7 @@ class HybridControllerApplication:
             flash_enabled=bool(self._rt_get("ssvep_stim_enabled", False)),
             status_text=str(self._rt_get("vision_health", "unknown")),
         )
+        self._pump_pending_vision_servo_pick(resolved_packet)
 
     def _on_vision_frame_received(self, frame: object) -> None:
         del frame
@@ -2896,6 +3619,15 @@ def build_config_from_args(args: argparse.Namespace) -> AppConfig:
         robot_auto_start_cooldown_sec=float(
             getattr(args, "robot_auto_start_cooldown_sec", AppConfig.robot_auto_start_cooldown_sec)
         ),
+        robot_bootstrap_retry_enabled=bool(
+            getattr(args, "robot_bootstrap_retry_enabled", AppConfig.robot_bootstrap_retry_enabled)
+        ),
+        robot_bootstrap_probe_interval_sec=float(
+            getattr(args, "robot_bootstrap_probe_interval_sec", AppConfig.robot_bootstrap_probe_interval_sec)
+        ),
+        robot_bootstrap_probe_timeout_sec=float(
+            getattr(args, "robot_bootstrap_probe_timeout_sec", AppConfig.robot_bootstrap_probe_timeout_sec)
+        ),
         robot_command_timeout_sec=float(
             getattr(args, "robot_command_timeout_sec", AppConfig.robot_command_timeout_sec)
         ),
@@ -2916,8 +3648,71 @@ def build_config_from_args(args: argparse.Namespace) -> AppConfig:
         vision_action_requires_calibration=bool(
             getattr(args, "vision_action_requires_calibration", AppConfig.vision_action_requires_calibration)
         ),
+        vision_calibration_profile_path=Path(
+            getattr(args, "vision_calibration_profile_path", AppConfig.vision_calibration_profile_path)
+        ),
+        vision_calibration_profile_required=bool(
+            getattr(args, "vision_calibration_profile_required", AppConfig.vision_calibration_profile_required)
+        ),
+        vision_action_max_error_mm=float(
+            getattr(args, "vision_action_max_error_mm", AppConfig.vision_action_max_error_mm)
+        ),
+        vision_grasp_quality_threshold=float(
+            getattr(args, "vision_grasp_quality_threshold", AppConfig.vision_grasp_quality_threshold)
+        ),
+        vision_grasp_history_frames=int(
+            getattr(args, "vision_grasp_history_frames", AppConfig.vision_grasp_history_frames)
+        ),
+        vision_grasp_stable_frames=int(
+            getattr(args, "vision_grasp_stable_frames", AppConfig.vision_grasp_stable_frames)
+        ),
+        vision_grasp_stability_tolerance_px=float(
+            getattr(args, "vision_grasp_stability_tolerance_px", AppConfig.vision_grasp_stability_tolerance_px)
+        ),
+        vision_grasp_history_reset_px=float(
+            getattr(args, "vision_grasp_history_reset_px", AppConfig.vision_grasp_history_reset_px)
+        ),
+        vision_grasp_stability_wait_frames=int(
+            getattr(args, "vision_grasp_stability_wait_frames", AppConfig.vision_grasp_stability_wait_frames)
+        ),
+        vision_frame_fallback_enabled=bool(
+            getattr(args, "vision_frame_fallback_enabled", AppConfig.vision_frame_fallback_enabled)
+        ),
+        vision_servo_center_tolerance_px=float(
+            getattr(args, "vision_servo_center_tolerance_px", AppConfig.vision_servo_center_tolerance_px)
+        ),
+        vision_servo_action_tolerance_px=float(
+            getattr(args, "vision_servo_action_tolerance_px", AppConfig.vision_servo_action_tolerance_px)
+        ),
+        vision_servo_move_gain=float(getattr(args, "vision_servo_move_gain", AppConfig.vision_servo_move_gain)),
+        vision_servo_fine_move_gain=float(
+            getattr(args, "vision_servo_fine_move_gain", AppConfig.vision_servo_fine_move_gain)
+        ),
+        vision_servo_fine_threshold_px=float(
+            getattr(args, "vision_servo_fine_threshold_px", AppConfig.vision_servo_fine_threshold_px)
+        ),
+        vision_servo_max_attempts=int(getattr(args, "vision_servo_max_attempts", AppConfig.vision_servo_max_attempts)),
+        vision_eye_in_hand_pick_flow_enabled=bool(
+            getattr(
+                args,
+                "vision_eye_in_hand_pick_flow_enabled",
+                AppConfig.vision_eye_in_hand_pick_flow_enabled,
+            )
+        ),
+        vision_pick_search_z_mm=float(getattr(args, "vision_pick_search_z_mm", AppConfig.vision_pick_search_z_mm)),
+        vision_pick_confirm_z_mm=float(getattr(args, "vision_pick_confirm_z_mm", AppConfig.vision_pick_confirm_z_mm)),
+        vision_pick_z_tolerance_mm=float(
+            getattr(args, "vision_pick_z_tolerance_mm", AppConfig.vision_pick_z_tolerance_mm)
+        ),
+        vision_debug_bundle_enabled=bool(
+            getattr(args, "vision_debug_bundle_enabled", AppConfig.vision_debug_bundle_enabled)
+        ),
+        vision_debug_bundle_dir=Path(getattr(args, "vision_debug_bundle_dir", AppConfig.vision_debug_bundle_dir)),
         pick_cyl_radius_bias_mm=float(
             getattr(args, "pick_cyl_radius_bias_mm", AppConfig.pick_cyl_radius_bias_mm)
+        ),
+        pick_cyl_tangent_bias_mm=float(
+            getattr(args, "pick_cyl_tangent_bias_mm", AppConfig.pick_cyl_tangent_bias_mm)
         ),
         pick_cyl_theta_bias_deg=float(
             getattr(args, "pick_cyl_theta_bias_deg", AppConfig.pick_cyl_theta_bias_deg)
@@ -3005,6 +3800,26 @@ def main(argv: list[str] | None = None) -> int:
         default=AppConfig.robot_auto_start_cooldown_sec,
     )
     parser.add_argument(
+        "--robot-bootstrap-retry-enabled",
+        action="store_true",
+        default=AppConfig.robot_bootstrap_retry_enabled,
+    )
+    parser.add_argument(
+        "--robot-bootstrap-retry-disabled",
+        action="store_false",
+        dest="robot_bootstrap_retry_enabled",
+    )
+    parser.add_argument(
+        "--robot-bootstrap-probe-interval-sec",
+        type=float,
+        default=AppConfig.robot_bootstrap_probe_interval_sec,
+    )
+    parser.add_argument(
+        "--robot-bootstrap-probe-timeout-sec",
+        type=float,
+        default=AppConfig.robot_bootstrap_probe_timeout_sec,
+    )
+    parser.add_argument(
         "--robot-command-timeout-sec",
         type=float,
         default=AppConfig.robot_command_timeout_sec,
@@ -3039,7 +3854,97 @@ def main(argv: list[str] | None = None) -> int:
         action="store_false",
         dest="vision_action_requires_calibration",
     )
+    parser.add_argument(
+        "--vision-calibration-profile-path",
+        default=str(AppConfig.vision_calibration_profile_path),
+    )
+    parser.add_argument(
+        "--vision-calibration-profile-required",
+        action="store_true",
+        default=AppConfig.vision_calibration_profile_required,
+    )
+    parser.add_argument(
+        "--vision-calibration-profile-optional",
+        action="store_false",
+        dest="vision_calibration_profile_required",
+    )
+    parser.add_argument("--vision-action-max-error-mm", type=float, default=AppConfig.vision_action_max_error_mm)
+    parser.add_argument(
+        "--vision-grasp-quality-threshold",
+        type=float,
+        default=AppConfig.vision_grasp_quality_threshold,
+    )
+    parser.add_argument("--vision-grasp-history-frames", type=int, default=AppConfig.vision_grasp_history_frames)
+    parser.add_argument("--vision-grasp-stable-frames", type=int, default=AppConfig.vision_grasp_stable_frames)
+    parser.add_argument(
+        "--vision-grasp-stability-tolerance-px",
+        type=float,
+        default=AppConfig.vision_grasp_stability_tolerance_px,
+    )
+    parser.add_argument(
+        "--vision-grasp-history-reset-px",
+        type=float,
+        default=AppConfig.vision_grasp_history_reset_px,
+    )
+    parser.add_argument(
+        "--vision-grasp-stability-wait-frames",
+        type=int,
+        default=AppConfig.vision_grasp_stability_wait_frames,
+    )
+    parser.add_argument(
+        "--vision-frame-fallback-enabled",
+        action="store_true",
+        default=AppConfig.vision_frame_fallback_enabled,
+    )
+    parser.add_argument(
+        "--no-vision-frame-fallback",
+        action="store_false",
+        dest="vision_frame_fallback_enabled",
+    )
+    parser.add_argument(
+        "--vision-servo-center-tolerance-px",
+        type=float,
+        default=AppConfig.vision_servo_center_tolerance_px,
+    )
+    parser.add_argument(
+        "--vision-servo-action-tolerance-px",
+        type=float,
+        default=AppConfig.vision_servo_action_tolerance_px,
+    )
+    parser.add_argument("--vision-servo-move-gain", type=float, default=AppConfig.vision_servo_move_gain)
+    parser.add_argument("--vision-servo-fine-move-gain", type=float, default=AppConfig.vision_servo_fine_move_gain)
+    parser.add_argument(
+        "--vision-servo-fine-threshold-px",
+        type=float,
+        default=AppConfig.vision_servo_fine_threshold_px,
+    )
+    parser.add_argument("--vision-servo-max-attempts", type=int, default=AppConfig.vision_servo_max_attempts)
+    parser.add_argument(
+        "--vision-eye-in-hand-pick-flow-enabled",
+        action="store_true",
+        default=AppConfig.vision_eye_in_hand_pick_flow_enabled,
+    )
+    parser.add_argument(
+        "--no-vision-eye-in-hand-pick-flow",
+        action="store_false",
+        dest="vision_eye_in_hand_pick_flow_enabled",
+    )
+    parser.add_argument("--vision-pick-search-z-mm", type=float, default=AppConfig.vision_pick_search_z_mm)
+    parser.add_argument("--vision-pick-confirm-z-mm", type=float, default=AppConfig.vision_pick_confirm_z_mm)
+    parser.add_argument("--vision-pick-z-tolerance-mm", type=float, default=AppConfig.vision_pick_z_tolerance_mm)
+    parser.add_argument(
+        "--vision-debug-bundle-enabled",
+        action="store_true",
+        default=AppConfig.vision_debug_bundle_enabled,
+    )
+    parser.add_argument(
+        "--no-vision-debug-bundle",
+        action="store_false",
+        dest="vision_debug_bundle_enabled",
+    )
+    parser.add_argument("--vision-debug-bundle-dir", type=Path, default=AppConfig.vision_debug_bundle_dir)
     parser.add_argument("--pick-cyl-radius-bias-mm", type=float, default=AppConfig.pick_cyl_radius_bias_mm)
+    parser.add_argument("--pick-cyl-tangent-bias-mm", type=float, default=AppConfig.pick_cyl_tangent_bias_mm)
     parser.add_argument("--pick-cyl-theta-bias-deg", type=float, default=AppConfig.pick_cyl_theta_bias_deg)
     parser.add_argument("--stage-motion-sec", type=float, default=None)
     parser.add_argument("--continue-motion-sec", type=float, default=None)

@@ -12,7 +12,8 @@ set "SOURCE=http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&typ
 if not exist "%RESOLVER%" (
   echo Interpreter resolver not found:
   echo %RESOLVER%
-  exit /b 1
+  set "EXIT_CODE=1"
+  goto :fail
 )
 
 for /f "usebackq delims=" %%I in (`call "%RESOLVER%"`) do set "PYTHON=%%I"
@@ -20,13 +21,15 @@ for /f "usebackq delims=" %%I in (`call "%RESOLVER%"`) do set "PYTHON=%%I"
 if not exist "%PYTHON%" (
   echo Python interpreter not found:
   echo %PYTHON%
-  exit /b 1
+  set "EXIT_CODE=1"
+  goto :fail
 )
 
 if not exist "%SCRIPT%" (
   echo Vision script not found:
   echo %SCRIPT%
-  exit /b 1
+  set "EXIT_CODE=1"
+  goto :fail
 )
 
 if /I "%~1"=="--help" goto :show_help
@@ -37,8 +40,15 @@ if not exist "%WEIGHTS%" (
   echo Tried:
   echo   %CODE_ROOT%\hybrid_controller\models\vision\best.pt
   echo   %BRAIN_ROOT%\dataset\camara\best.pt
-  exit /b 1
+  set "EXIT_CODE=1"
+  goto :fail
 )
+
+echo [05 realtime] Starting small block recognition
+echo [05 realtime] Python: %PYTHON%
+echo [05 realtime] Weights: %WEIGHTS%
+echo [05 realtime] Source: "%SOURCE%"
+echo.
 
 pushd "%CODE_ROOT%"
 "%PYTHON%" "%SCRIPT%" ^
@@ -52,6 +62,7 @@ pushd "%CODE_ROOT%"
 set "EXIT_CODE=%ERRORLEVEL%"
 popd
 
+if not "%EXIT_CODE%"=="0" goto :fail
 exit /b %EXIT_CODE%
 
 :show_help
@@ -59,4 +70,16 @@ pushd "%CODE_ROOT%"
 "%PYTHON%" "%SCRIPT%" --help
 set "EXIT_CODE=%ERRORLEVEL%"
 popd
+if not "%EXIT_CODE%"=="0" goto :fail
+exit /b %EXIT_CODE%
+
+:fail
+echo.
+echo [05 realtime] Failed with exit code %EXIT_CODE%.
+echo [05 realtime] Script: %SCRIPT%
+echo [05 realtime] Python: %PYTHON%
+echo [05 realtime] Weights: %WEIGHTS%
+echo [05 realtime] Source: "%SOURCE%"
+echo.
+if /I not "%BRAIN_NO_PAUSE%"=="1" pause
 exit /b %EXIT_CODE%
