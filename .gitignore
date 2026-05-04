@@ -32,8 +32,8 @@ pytest_tmp/
 **/Thumbs.db
 **/.DS_Store
 
-# Local datasets, models, run outputs, and hardware logs are intentionally
-# excluded from Git. Copy real assets into datasets/ or set BRAIN_DATA_ROOT.
+# Local datasets, run outputs, and hardware logs are intentionally excluded
+# from Git. The default vision model is the only tracked model weight.
 datasets/**
 !datasets/
 !datasets/README.md
@@ -57,6 +57,7 @@ runtime/**
 !datasets/**/.gitkeep
 !datasets/README.md
 !datasets/profiles/SSVEP/default_profile.json
+!datasets/vision/models/best.pt
 
 02_SSVEP/_archive/
 05_Vision_Block_Recognition/dataset/

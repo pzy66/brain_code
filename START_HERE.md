@@ -42,4 +42,4 @@ $py = & .\tools\resolve_brain_python.cmd
 $env:BRAIN_DATA_ROOT = "D:\brain_data"
 ```
 
-真实数据、模型权重、运行报告和日志不会进入 Git。
+真实数据、额外模型权重、运行报告和日志不会进入 Git；默认视觉模型权重位于 `datasets/vision/models/best.pt` 并随仓库提供。

@@ -3,7 +3,7 @@ from __future__ import annotations
 import subprocess
 import sys
 
-from brain_workspace.paths import BRAIN_CODE_ROOT
+from brain_workspace.paths import BRAIN_CODE_ROOT, VISION_DATASET_DIR
 
 
 def _run_brain(*args: str) -> subprocess.CompletedProcess[str]:
@@ -23,12 +23,13 @@ def test_brain_module_help_runs_without_hardware() -> None:
     assert "Unified brain-code command line" in result.stdout
 
 
-def test_brain_diagnose_runs_without_hardware_or_assets() -> None:
+def test_brain_diagnose_runs_without_hardware() -> None:
     result = _run_brain("diagnose")
 
     assert result.returncode == 0
     assert "datasets_root=" in result.stdout
-    assert "missing_optional_asset[vision_model]=" in result.stdout
+    assert (VISION_DATASET_DIR / "models" / "best.pt").exists()
+    assert "missing_optional_asset[vision_model]=" not in result.stdout
 
 
 def test_brain_launch_simulate_runs_without_hardware_or_gui() -> None:

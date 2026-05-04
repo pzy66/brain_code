@@ -1,10 +1,10 @@
 # Artifacts
 
-仓库策略已经改为轻量协作模式：Git 保存源码、配置、文档和少量占位文件；真实数据、模型权重、运行报告和硬件日志留在本地。
+仓库策略已经改为轻量协作模式：Git 保存源码、配置、文档、少量占位文件和默认视觉模型权重；真实数据、额外模型权重、运行报告和硬件日志留在本地。
 
 ## Ignored By Default
 
-- `datasets/**` 中除 README 和 `.gitkeep` 外的真实数据。
+- `datasets/**` 中除 README、`.gitkeep`、`datasets/vision/models/best.pt` 外的真实数据。
 - `artifacts/**` 运行报告、训练输出和临时产物。
 - `logs/**` 硬件和 GUI 日志。
 - `runtime/**` 本地运行状态。
@@ -17,7 +17,7 @@
 
 - MI 数据：`datasets/MI/`
 - SSVEP 数据：`datasets/SSVEP/`
-- 视觉模型：`datasets/vision/models/best.pt`
+- 默认视觉模型：`datasets/vision/models/best.pt`，随仓库提供。
 - 视觉标定：`datasets/vision/calibration/current_profile.json`
 - SSVEP profile：`datasets/profiles/SSVEP/`
 - Hybrid Controller SSVEP profile：`datasets/profiles/hybrid_controller/ssvep_profiles/`

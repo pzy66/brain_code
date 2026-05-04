@@ -2,8 +2,8 @@
 
 This directory is the default local data root for a cloned checkout.
 
-Real datasets, trained models, profiles, and run outputs are not tracked in Git.
-Copy them here when needed, or set `BRAIN_DATA_ROOT` to another directory.
+Real datasets, extra trained models, profiles, and run outputs are not tracked in Git.
+The default vision model at `vision/models/best.pt` is tracked so a fresh clone can start the vision path with the same baseline weight. Copy additional assets here when needed, or set `BRAIN_DATA_ROOT` to another directory.
 
 Expected layout:
 
@@ -12,7 +12,7 @@ Expected layout:
 - `vision/`: camera calibration files, YOLO datasets, and local vision models.
 - `profiles/`: deployed MI, SSVEP, and hybrid-controller runtime profiles.
 
-For example, a vision model can live at:
+The default vision model lives at:
 
 ```text
 datasets/vision/models/best.pt

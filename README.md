@@ -33,7 +33,7 @@ $env:BRAIN_PYTHON_EXE = "C:\path\to\python.exe"
 
 ## 本地数据和模型
 
-GitHub 仓库只保存源码、配置、小型占位文件和文档。真实数据集、模型权重、运行报告和硬件日志由团队成员本地拷贝，不进入 Git。
+GitHub 仓库保存源码、配置、小型占位文件、文档和默认视觉模型权重。真实数据集、额外模型权重、运行报告和硬件日志由团队成员本地拷贝，不进入 Git。
 
 默认本地数据根目录：
 
@@ -56,7 +56,7 @@ python -m brain diagnose
 
 - MI 数据：`datasets/MI/`
 - SSVEP 数据：`datasets/SSVEP/`
-- 视觉模型：`datasets/vision/models/best.pt`
+- 默认视觉模型：`datasets/vision/models/best.pt`，随仓库提供，可用 `BRAIN_VISION_WEIGHTS` 指向其它本地权重。
 - SSVEP profile：`datasets/profiles/SSVEP/current_fbcca_profile.json`
 - Hybrid Controller 使用的 SSVEP profile：`datasets/profiles/hybrid_controller/ssvep_profiles/current_fbcca_profile.json`
 
@@ -75,5 +75,5 @@ powershell -ExecutionPolicy Bypass -File .\tools\diagnose_workspace.ps1
 
 - 不从上一级 `brain\dataset` 或个人绝对路径读取默认数据。
 - 不从 `_archive`、历史运行目录或另一个仓库直接 import 活跃代码。
-- `artifacts/`、`logs/`、`runtime/`、`datasets/` 中的真实内容默认被 `.gitignore` 忽略。
-- 需要共享的大文件请通过本地拷贝或团队约定的外部存储分发，不提交到 Git。
+- `artifacts/`、`logs/`、`runtime/`、`datasets/` 中除默认视觉模型和占位文件外的真实内容默认被 `.gitignore` 忽略。
+- 需要共享的其它大文件请通过本地拷贝或团队约定的外部存储分发，不提交到 Git。

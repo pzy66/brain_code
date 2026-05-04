@@ -25,11 +25,11 @@ $py = & .\tools\resolve_brain_python.cmd
 & $py -m pytest --collect-only -q -o addopts=
 ```
 
-`diagnose` 会列出 Python 版本、缺失依赖、本地数据根目录和可选模型位置。缺少硬件、摄像头、ROS、BrainFlow 板卡或模型权重时，不应影响无硬件启动检查。
+`diagnose` 会列出 Python 版本、缺失依赖、本地数据根目录和可选模型位置。缺少硬件、摄像头、ROS 或 BrainFlow 板卡时，不应影响无硬件启动检查；默认视觉模型权重随仓库提供。
 
 ## Local Assets
 
-本仓库不跟踪真实数据和模型。默认结构：
+本仓库不跟踪真实数据和额外模型。默认视觉模型权重会跟踪在 `datasets/vision/models/best.pt`。默认结构：
 
 ```text
 datasets/
