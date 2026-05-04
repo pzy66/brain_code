@@ -3,18 +3,37 @@
 from __future__ import annotations
 
 import sys
+import os
 from pathlib import Path
 from typing import Iterable
 
 BRAIN_CODE_ROOT = Path(__file__).resolve().parents[1]
 WORKSPACE_ROOT = BRAIN_CODE_ROOT.parent
 
+
+def _resolve_data_root() -> Path:
+    raw = os.environ.get("BRAIN_DATA_ROOT", "").strip()
+    if not raw:
+        return BRAIN_CODE_ROOT / "datasets"
+    candidate = Path(raw).expanduser()
+    if not candidate.is_absolute():
+        candidate = BRAIN_CODE_ROOT / candidate
+    return candidate.resolve()
+
+
+DATASETS_ROOT = _resolve_data_root()
+
 MI_PROJECT_DIR = BRAIN_CODE_ROOT / "01_MI" / "mi_classifier_latest"
 MI_COLLECTION_DIR = MI_PROJECT_DIR / "code" / "collection"
 MI_SHARED_DIR = MI_PROJECT_DIR / "code" / "shared"
-MI_DATASET_DIR = MI_PROJECT_DIR / "datasets" / "custom_mi"
+MI_DATASET_DIR = DATASETS_ROOT / "MI"
 SSVEP_PROJECT_DIR = BRAIN_CODE_ROOT / "02_SSVEP"
-SSVEP_DATASET_DIR = SSVEP_PROJECT_DIR / "artifacts" / "datasets"
+SSVEP_DATASET_DIR = DATASETS_ROOT / "SSVEP"
+VISION_DATASET_DIR = DATASETS_ROOT / "vision"
+PROFILE_DATASET_DIR = DATASETS_ROOT / "profiles"
+SSVEP_PROFILE_DIR = PROFILE_DATASET_DIR / "SSVEP"
+HYBRID_PROFILE_DIR = PROFILE_DATASET_DIR / "hybrid_controller"
+HYBRID_SSVEP_PROFILE_DIR = HYBRID_PROFILE_DIR / "ssvep_profiles"
 HYBRID_CONTROLLER_DIR = BRAIN_CODE_ROOT / "hybrid_controller"
 UNIFIED_COLLECTION_INDEX_PATH = BRAIN_CODE_ROOT / "artifacts" / "unified_collection_index.csv"
 
@@ -71,6 +90,23 @@ def resolve_brain_code_path(value: str | Path | None, *, base: Path, default: Pa
     return resolved
 
 
+def resolve_data_path(value: str | Path | None, *, base: Path, default: Path, purpose: str) -> Path:
+    """Resolve a dataset/profile path.
+
+    Relative paths are scoped under DATASETS_ROOT. Absolute paths are accepted
+    for explicit local copies on external disks or pytest temporary roots.
+    """
+
+    raw = "" if value is None else str(value).strip()
+    candidate = Path(raw).expanduser() if raw else Path(default)
+    if candidate.is_absolute():
+        return candidate.resolve()
+    resolved = (Path(base) / candidate).resolve()
+    if not path_is_relative_to(resolved, DATASETS_ROOT):
+        raise ValueError(f"{purpose} must be inside BRAIN_DATA_ROOT/datasets root: {resolved}")
+    return resolved
+
+
 def required_workspace_paths() -> tuple[Path, ...]:
     """Paths expected by the current runtime entrypoints."""
 
@@ -81,6 +117,7 @@ def required_workspace_paths() -> tuple[Path, ...]:
         MI_SHARED_DIR,
         SSVEP_PROJECT_DIR,
         HYBRID_CONTROLLER_DIR,
+        DATASETS_ROOT,
     )
 
 

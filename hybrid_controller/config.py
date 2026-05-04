@@ -3,12 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
+from brain_workspace.paths import HYBRID_SSVEP_PROFILE_DIR, PROFILE_DATASET_DIR, VISION_DATASET_DIR
 from hybrid_controller.cylindrical import cartesian_to_cylindrical, cylindrical_to_cartesian
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parent
-DATASET_ROOT = PACKAGE_ROOT / "dataset"
-MODELS_ROOT = PACKAGE_ROOT / "models"
+DATASET_ROOT = PROFILE_DATASET_DIR / "hybrid_controller"
+MODELS_ROOT = VISION_DATASET_DIR / "models"
 LOGS_ROOT = PACKAGE_ROOT / "logs"
 
 
@@ -144,7 +145,7 @@ class AppConfig:
     sim_place_slots: tuple[ControlSimSlotSpec, ...] = field(default_factory=_default_place_slots)
     hardware_pick_slots: tuple[ControlSimSlotSpec, ...] = field(default_factory=_default_hardware_pick_slots)
     vision_stream_url: str = ""
-    vision_weights_path: Path = MODELS_ROOT / "vision" / "best.pt"
+    vision_weights_path: Path = MODELS_ROOT / "best.pt"
     vision_infer_interval_ms: int = 80
     vision_model_imgsz: int = 512
     vision_confidence_threshold: float = 0.25
@@ -175,7 +176,7 @@ class AppConfig:
     vision_target_frame: str = "robot_base"
     vision_snapshot_max_age_ms: float = 200.0
     vision_action_requires_calibration: bool = True
-    vision_calibration_profile_path: Path = DATASET_ROOT / "vision_calibration" / "current_profile.json"
+    vision_calibration_profile_path: Path = VISION_DATASET_DIR / "calibration" / "current_profile.json"
     vision_calibration_profile_required: bool = True
     vision_action_max_error_mm: float = 6.0
     vision_grasp_quality_threshold: float = 0.25
@@ -200,6 +201,13 @@ class AppConfig:
     pick_cyl_radius_bias_mm: float = 46.0
     pick_cyl_tangent_bias_mm: float = 0.0
     pick_cyl_theta_bias_deg: float = 0.0
+    sucker_rotation_enabled: bool = True
+    sucker_rotation_offset_deg: float = 0.0
+    sucker_rotation_invert: bool = False
+    sucker_rotation_min_deg: float = 45.0
+    sucker_rotation_max_deg: float = 135.0
+    sucker_rotation_duration_sec: float = 0.10
+    sucker_rotation_angle_quality_threshold: float = 0.20
     pick_tuning_profile_path: Path = DATASET_ROOT / "robot_pick_tuning" / "current_pick_tuning.json"
     ssvep_backend: str = "async_fbcca_idle"
     ssvep_serial_port: str = "auto"
@@ -212,9 +220,9 @@ class AppConfig:
     ssvep_score_threshold: float = 0.02
     ssvep_ratio_threshold: float = 1.10
     ssvep_history_len: int = 5
-    ssvep_profile_dir: Path = DATASET_ROOT / "ssvep_profiles"
-    ssvep_current_profile_path: Path = DATASET_ROOT / "ssvep_profiles" / "current_fbcca_profile.json"
-    ssvep_default_profile_path: Path = DATASET_ROOT / "ssvep_profiles" / "default_fbcca_profile.json"
+    ssvep_profile_dir: Path = HYBRID_SSVEP_PROFILE_DIR
+    ssvep_current_profile_path: Path = HYBRID_SSVEP_PROFILE_DIR / "current_fbcca_profile.json"
+    ssvep_default_profile_path: Path = HYBRID_SSVEP_PROFILE_DIR / "default_fbcca_profile.json"
     ssvep_allow_fallback_profile: bool = True
     ssvep_auto_use_latest_profile: bool = True
     ssvep_prefer_default_profile: bool = True

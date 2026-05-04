@@ -4,6 +4,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
+from brain_workspace.paths import SSVEP_DATASET_DIR, SSVEP_PROFILE_DIR
+
 from .dataset import load_collection_dataset
 from .fbcca_local_opt import (
     DEFAULT_FBCCA_LOCAL_SEARCH_PRESET,
@@ -13,8 +15,8 @@ from .fbcca_local_opt import (
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
-DEFAULT_BASE_DATASET_ROOT = PROJECT_DIR / "artifacts" / "datasets"
-DEFAULT_FBCCA_BASE_PROFILE_PATH = PROJECT_DIR / "artifacts" / "deployed_profiles" / "fbcca_base_profile.json"
+DEFAULT_BASE_DATASET_ROOT = SSVEP_DATASET_DIR
+DEFAULT_FBCCA_BASE_PROFILE_PATH = SSVEP_PROFILE_DIR / "fbcca_base_profile.json"
 DEFAULT_FBCCA_BASE_REPORT_PATH = PROJECT_DIR / "artifacts" / "runs" / "local" / "fbcca_base_profile_report.json"
 EXPECTED_FBCCA_BASE_FREQS = (8.0, 10.0, 12.0, 15.0)
 DEFAULT_FBCCA_BASE_PROFILE_TASK = "fbcca-base-profile-opt"

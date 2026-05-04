@@ -11,13 +11,14 @@ class _DummyExecutor:
         self.legacy_kernel = types.SimpleNamespace(
             start_move=lambda sender, x, y: "ACK MOVE",
             start_pick_pixel=lambda sender, u, v: "ACK PICK_STARTED",
-            start_pick_world=lambda sender, x, y: "ACK PICK_STARTED",
+            start_pick_world=lambda sender, x, y, angle=None: "ACK PICK_STARTED",
         )
         self.cylindrical_kernel = types.SimpleNamespace(
             start_move=lambda sender, theta, radius, z: "ACK MOVE",
             start_move_auto=lambda sender, theta, radius: "ACK MOVE",
-            start_pick=lambda sender, theta, radius: "ACK PICK_STARTED",
+            start_pick=lambda sender, theta, radius, angle=None: "ACK PICK_STARTED",
         )
+        self.sucker_rotation_calls = []
 
     def snapshot(self) -> dict[str, object]:
         return {
@@ -43,6 +44,10 @@ class _DummyExecutor:
 
     def request_sucker_off(self) -> str:
         return self.force_sucker_off()
+
+    def set_sucker_rotation(self, angle_deg, duration_sec=None) -> str:  # noqa: ANN001
+        self.sucker_rotation_calls.append((float(angle_deg), duration_sec))
+        return "ACK SET_SUCKER_ROTATION 30.00 120.00"
 
     def start_place(self, sender) -> str:  # noqa: ANN001
         return "ACK PLACE_STARTED"
@@ -79,3 +84,13 @@ def test_gateway_allows_sucker_off_in_error_state() -> None:
 
     assert response == "ACK SUCKER_OFF"
     assert executor._state == "IDLE"
+
+
+def test_gateway_routes_set_sucker_rotation() -> None:
+    executor = _DummyExecutor(state="IDLE")
+    gateway = RobotGateway(executor)
+
+    response = gateway.handle("SET_SUCKER_ROTATION 30 0.2", sender=None)
+
+    assert response == "ACK SET_SUCKER_ROTATION 30.00 120.00"
+    assert executor.sucker_rotation_calls == [(30.0, 0.2)]

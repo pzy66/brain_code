@@ -135,8 +135,13 @@ class RobotClient:
     def send_pick(self, x: float, y: float) -> None:
         self.send_command(f"PICK {float(x):.2f} {float(y):.2f}")
 
-    def send_pick_cyl(self, theta_deg: float, radius_mm: float) -> None:
-        self.send_command(f"PICK_CYL {float(theta_deg):.2f} {float(radius_mm):.2f}")
+    def send_pick_cyl(self, theta_deg: float, radius_mm: float, sucker_rotation_deg: float | None = None) -> None:
+        suffix = "" if sucker_rotation_deg is None else f" {float(sucker_rotation_deg):.2f}"
+        self.send_command(f"PICK_CYL {float(theta_deg):.2f} {float(radius_mm):.2f}{suffix}")
+
+    def send_sucker_rotation(self, angle_deg: float, duration_sec: float | None = None) -> None:
+        suffix = "" if duration_sec is None else f" {float(duration_sec):.2f}"
+        self.send_command(f"SET_SUCKER_ROTATION {float(angle_deg):.2f}{suffix}")
 
     def send_place(self) -> None:
         self.send_command("PLACE")

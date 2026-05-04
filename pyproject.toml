@@ -62,12 +62,15 @@ gpu = [
     "cupy-cuda12x",
 ]
 
+[project.scripts]
+brain = "brain.cli:main"
+
 [tool.setuptools]
 include-package-data = false
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["brain_workspace*", "unified_collection*"]
+include = ["brain*", "brain_workspace*", "unified_collection*", "hybrid_controller*"]
 
 [tool.pytest.ini_options]
 minversion = "7.0"

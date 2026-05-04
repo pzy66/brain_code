@@ -51,6 +51,18 @@ def median_point(points: list[tuple[int, int]]) -> tuple[int, int] | None:
     return (int(round(float(np.median(xs)))), int(round(float(np.median(ys)))))
 
 
+def normalize_rect_grasp_angle_deg(angle_deg: float, width_px: float, height_px: float) -> float:
+    """Return the grasp angle of a minAreaRect long edge in [-45, 45] deg."""
+    value = float(angle_deg)
+    if float(width_px) < float(height_px):
+        value += 90.0
+    while value <= -45.0:
+        value += 90.0
+    while value > 45.0:
+        value -= 90.0
+    return float(value)
+
+
 @dataclass(frozen=True, slots=True)
 class GeometryResult:
     polygon: list[tuple[int, int]]
@@ -60,6 +72,8 @@ class GeometryResult:
     grasp_pixel: tuple[int, int]
     grasp_quality: float
     oriented_bbox: list[tuple[int, int]]
+    grasp_angle_deg: float | None = None
+    grasp_angle_quality: float = 0.0
 
     def as_legacy_tuple(self) -> tuple[list[tuple[int, int]], tuple[int, int], tuple[int, int, int, int], int]:
         return self.polygon, self.center, self.bbox, int(self.area_px)
@@ -161,12 +175,14 @@ def contour_to_grasp_geometry(
     rect = cv2.minAreaRect(contour)
     rect_center = rect[0]
     rect_size = rect[1]
+    rect_angle = float(rect[2])
     rect_w = max(1.0, float(rect_size[0]))
     rect_h = max(1.0, float(rect_size[1]))
     rect_area = rect_w * rect_h
     fill_ratio = clamp01(float(area_px) / rect_area)
     aspect_ratio = max(rect_w, rect_h) / max(1.0, min(rect_w, rect_h))
     aspect_score = clamp01(1.0 - max(0.0, aspect_ratio - 3.0) / 3.0)
+    angle_quality = clamp01((aspect_ratio - 1.05) / 0.75) * fill_ratio
     area_score = clamp01(float(area_px) / 600.0)
     grasp_quality = clamp01(0.45 * fill_ratio + 0.35 * aspect_score + 0.20 * area_score)
     box_points = cv2.boxPoints(rect)
@@ -183,6 +199,8 @@ def contour_to_grasp_geometry(
         grasp_pixel=grasp_pixel,
         grasp_quality=float(grasp_quality),
         oriented_bbox=oriented_bbox,
+        grasp_angle_deg=normalize_rect_grasp_angle_deg(rect_angle, rect_w, rect_h),
+        grasp_angle_quality=float(angle_quality),
     )
 
 
@@ -254,6 +272,8 @@ def bbox_to_grasp_geometry(
         grasp_pixel=center,
         grasp_quality=clamp01(0.65 * fill_score + 0.35 * area_score),
         oriented_bbox=polygon,
+        grasp_angle_deg=0.0,
+        grasp_angle_quality=0.0,
     )
 
 
@@ -333,6 +353,8 @@ def frame_to_block_candidates(
                 polygon=geometry.polygon,
                 grasp_quality=float(quality),
                 oriented_bbox=list(geometry.oriented_bbox),
+                grasp_angle_deg=geometry.grasp_angle_deg,
+                grasp_angle_quality=float(geometry.grasp_angle_quality),
                 distance_to_roi=float(distance_to_roi),
             )
         )
@@ -351,6 +373,8 @@ class DetectionCandidate:
     grasp_quality: float
     oriented_bbox: list[tuple[int, int]]
     distance_to_roi: float
+    grasp_angle_deg: float | None = None
+    grasp_angle_quality: float = 0.0
 
 
 @dataclass
@@ -368,6 +392,8 @@ class SlotState:
     polygon: list[tuple[int, int]] = field(default_factory=list)
     oriented_bbox: list[tuple[int, int]] = field(default_factory=list)
     grasp_quality: float = 0.0
+    grasp_angle_deg: float | None = None
+    grasp_angle_quality: float = 0.0
     age: int = 0
     lost_frames: int = 0
     command_mode: str = "cyl"
@@ -432,6 +458,8 @@ class SlotState:
         self.polygon = list(candidate.polygon)
         self.oriented_bbox = list(candidate.oriented_bbox)
         self.grasp_quality = float(candidate.grasp_quality)
+        self.grasp_angle_deg = None if candidate.grasp_angle_deg is None else float(candidate.grasp_angle_deg)
+        self.grasp_angle_quality = float(candidate.grasp_angle_quality)
         self.lost_frames = 0
         self.age = self.age + 1 if increment_age else 1
 
@@ -454,6 +482,8 @@ class SlotState:
         self.polygon = []
         self.oriented_bbox = []
         self.grasp_quality = 0.0
+        self.grasp_angle_deg = None
+        self.grasp_angle_quality = 0.0
         self.age = 0
         self.lost_frames = 0
         self.command_point = None
@@ -493,6 +523,8 @@ class SlotState:
             "polygon": [[int(x), int(y)] for x, y in self.polygon],
             "oriented_bbox": [[int(x), int(y)] for x, y in self.oriented_bbox],
             "grasp_quality": float(self.grasp_quality),
+            "grasp_angle_deg": None if self.grasp_angle_deg is None else float(self.grasp_angle_deg),
+            "grasp_angle_quality": float(self.grasp_angle_quality),
             "age": int(self.age),
             "lost_frames": int(self.lost_frames),
             "command_mode": self.command_mode,
@@ -659,6 +691,8 @@ def extract_candidates(
                 polygon=polygon,
                 grasp_quality=float(geometry.grasp_quality),
                 oriented_bbox=list(geometry.oriented_bbox),
+                grasp_angle_deg=geometry.grasp_angle_deg,
+                grasp_angle_quality=float(geometry.grasp_angle_quality),
                 distance_to_roi=float(distance_to_roi),
             )
         )
@@ -917,6 +951,7 @@ def packet_to_targets(packet: dict[str, Any]) -> list[VisionTarget]:
         )
         servo_command_raw = slot.get("servo_command_point")
         servo_command_point = None if servo_command_raw is None else tuple(float(v) for v in servo_command_raw)
+        grasp_angle_raw = slot.get("grasp_angle_deg")
         targets.append(
             VisionTarget(
                 id=int(slot.get("slot_id", slot.get("slot", 0))),
@@ -945,6 +980,8 @@ def packet_to_targets(packet: dict[str, Any]) -> list[VisionTarget]:
                 servo_command_point=servo_command_point,
                 calibration_profile_id=str(slot.get("calibration_profile_id", "")),
                 grasp_quality=float(slot.get("grasp_quality", 0.0)),
+                grasp_angle_deg=None if grasp_angle_raw is None else float(grasp_angle_raw),
+                grasp_angle_quality=float(slot.get("grasp_angle_quality", 0.0)),
             )
         )
     return targets

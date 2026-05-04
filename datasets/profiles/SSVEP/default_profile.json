@@ -1,0 +1,29 @@
+{
+  "freqs": [8.0, 10.0, 12.0, 15.0],
+  "win_sec": 3.0,
+  "step_sec": 0.25,
+  "enter_score_th": 0.16,
+  "enter_ratio_th": 1.6,
+  "enter_margin_th": 0.22,
+  "exit_score_th": 0.13,
+  "exit_ratio_th": 1.5,
+  "min_enter_windows": 1,
+  "min_exit_windows": 2,
+  "model_name": "fbcca",
+  "model_params": {
+    "Nh": 3,
+    "subband_weight_mode": "chen_fixed",
+    "_decoder_model_name": "fbcca_fixed_all8"
+  },
+  "eeg_channels": [1, 2, 3, 4, 5, 6, 7, 8],
+  "gate_policy": "balanced",
+  "control_state_mode": "unified",
+  "recommended_for_realtime": true,
+  "runtime_backend_preference": "cpu",
+  "runtime_precision_preference": "float32",
+  "metadata": {
+    "source": "repo_default_profile",
+    "profile_kind": "portable_baseline",
+    "dataset_manifests": []
+  }
+}

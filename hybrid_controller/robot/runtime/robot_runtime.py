@@ -28,6 +28,7 @@ from .robot_protocol import (
     is_busy_state,
 )
 from .runtime_core import CommandParseError, parse_command_text
+from .sucker_rotation import map_logical_to_servo_angle_deg, normalize_logical_sucker_angle_deg
 
 JETMAX_L4_MM = 16.8
 SERVO1_MIN_PULSE = 0
@@ -98,6 +99,13 @@ class RobotLimits:
     motion_settle_sec: float = 0.08
     teleop_min_duration_sec: float = 0.12
     teleop_settle_sec: float = 0.02
+    sucker_rotation_offset_deg: float = 0.0
+    sucker_rotation_invert: bool = False
+    sucker_rotation_center_deg: float = 90.0
+    sucker_rotation_min_deg: float = 45.0
+    sucker_rotation_max_deg: float = 135.0
+    sucker_rotation_duration_sec: float = 0.10
+    sucker_rotation_settle_sec: float = 0.05
 
 
 @dataclass(frozen=True)
@@ -138,12 +146,14 @@ class PickPlan:
     raw_target_y: float
     target_x: float
     target_y: float
+    sucker_rotation_deg: float | None = None
 
 
 @dataclass(frozen=True)
 class WorldPickPlan:
     target_x: float
     target_y: float
+    sucker_rotation_deg: float | None = None
 
 
 @dataclass(frozen=True)
@@ -161,6 +171,7 @@ class CylindricalPickPlan:
     radius_mm: float
     target_x: float
     target_y: float
+    sucker_rotation_deg: float | None = None
 
 
 @dataclass(frozen=True)
@@ -207,6 +218,19 @@ class ActuatorAdapter:
         release(float(duration_sec))
         return True
 
+    def sucker_rotation_supported(self) -> bool:
+        return bool(getattr(self._hardware, "sucker_rotation_supported", False)) and callable(
+            getattr(self._hardware, "set_sucker_rotation", None)
+        )
+
+    def set_sucker_rotation(self, servo_angle_deg: float, duration_sec: float) -> bool:
+        rotate = getattr(self._hardware, "set_sucker_rotation", None)
+        if not self.sucker_rotation_supported() or not callable(rotate):
+            self._log("Sucker rotation unsupported by hardware bridge.")
+            return False
+        rotate(float(servo_angle_deg), float(duration_sec))
+        return True
+
 
 class LegacyCartesianKernel:
     name = "legacy_cartesian"
@@ -222,9 +246,9 @@ class LegacyCartesianKernel:
         self._executor._mark_control_kernel(self.name)
         return self._executor._begin_pick_pixel_legacy_impl(pixel_x, pixel_y)
 
-    def begin_pick_world(self, x: float, y: float) -> WorldPickPlan:
+    def begin_pick_world(self, x: float, y: float, sucker_rotation_deg: float | None = None) -> WorldPickPlan:
         self._executor._mark_control_kernel(self.name)
-        return self._executor._begin_pick_world_legacy_impl(x, y)
+        return self._executor._begin_pick_world_legacy_impl(x, y, sucker_rotation_deg=sucker_rotation_deg)
 
 
 class CylindricalKernel:
@@ -246,9 +270,18 @@ class CylindricalKernel:
         self._executor._mark_control_kernel(self.name)
         return self._executor._move_cyl_auto_impl(float(theta_deg), float(radius_mm))
 
-    def begin_pick_cyl(self, theta_deg: float, radius_mm: float) -> CylindricalPickPlan:
+    def begin_pick_cyl(
+        self,
+        theta_deg: float,
+        radius_mm: float,
+        sucker_rotation_deg: float | None = None,
+    ) -> CylindricalPickPlan:
         self._executor._mark_control_kernel(self.name)
-        return self._executor._begin_pick_cyl_impl(float(theta_deg), float(radius_mm))
+        return self._executor._begin_pick_cyl_impl(
+            float(theta_deg),
+            float(radius_mm),
+            sucker_rotation_deg=sucker_rotation_deg,
+        )
 
 
 class CalibrationProvider:
@@ -383,8 +416,11 @@ class _HardwareBridge:
             ) from error
 
         self._rospy = rospy
+        self._hiwonder = hiwonder
         self.jetmax = hiwonder.JetMax()
         self.sucker = hiwonder.Sucker()
+        self.sucker_rotation_servo = getattr(hiwonder, "pwm_servo1", None)
+        self.sucker_rotation_supported = callable(getattr(self.sucker_rotation_servo, "set_position", None))
         rospy.init_node("hybrid_controller_robot_runtime", anonymous=True, disable_signals=True)
 
     def go_home(self) -> None:  # pragma: no cover - hardware-only branch
@@ -418,6 +454,11 @@ class _HardwareBridge:
             return
         self.sucker.set_state(False)
 
+    def set_sucker_rotation(self, servo_angle_deg: float, duration_sec: float) -> None:  # pragma: no cover
+        if not self.sucker_rotation_supported:
+            raise RuntimeError("HiWonder sucker rotation servo is unavailable.")
+        self.sucker_rotation_servo.set_position(float(servo_angle_deg), float(duration_sec))
+
 
 class RobotExecutor:
     def __init__(
@@ -449,6 +490,8 @@ class RobotExecutor:
         self._pick_tuning = self._default_pick_tuning()
         self._last_post_pick_settle_z = float(self._pick_tuning.z_carry_floor_mm)
         self._last_release_mode_effective = "off"
+        self._last_sucker_rotation_logical_deg: float | None = None
+        self._last_sucker_rotation_servo_deg: float | None = None
         self.legacy_kernel = LegacyCartesianKernel(self)
         self.cylindrical_kernel = CylindricalKernel(self)
 
@@ -528,6 +571,15 @@ class RobotExecutor:
                 "pick_tuning": pick_tuning.to_dict(),
                 "post_pick_settle_z": float(self._last_post_pick_settle_z),
                 "release_mode_effective": str(self._last_release_mode_effective),
+                "sucker_rotation_supported": self.actuator.sucker_rotation_supported(),
+                "sucker_rotation_logical_deg": self._last_sucker_rotation_logical_deg,
+                "sucker_rotation_servo_deg": self._last_sucker_rotation_servo_deg,
+                "sucker_rotation_offset_deg": float(self.limits.sucker_rotation_offset_deg),
+                "sucker_rotation_invert": bool(self.limits.sucker_rotation_invert),
+                "sucker_rotation_limits_deg": (
+                    float(self.limits.sucker_rotation_min_deg),
+                    float(self.limits.sucker_rotation_max_deg),
+                ),
             }
 
     def get_pick_tuning(self) -> dict[str, object]:
@@ -552,11 +604,27 @@ class RobotExecutor:
     def begin_pick(self, pixel_x: float, pixel_y: float) -> PickPlan:
         return self.legacy_kernel.begin_pick(pixel_x, pixel_y)
 
-    def begin_pick_world(self, x: float, y: float) -> WorldPickPlan:
-        return self.legacy_kernel.begin_pick_world(x, y)
+    def begin_pick_world(self, x: float, y: float, sucker_rotation_deg: float | None = None) -> WorldPickPlan:
+        return self.legacy_kernel.begin_pick_world(x, y, sucker_rotation_deg=sucker_rotation_deg)
 
-    def begin_pick_cyl(self, theta_deg: float, radius_mm: float) -> CylindricalPickPlan:
-        return self.cylindrical_kernel.begin_pick_cyl(theta_deg, radius_mm)
+    def begin_pick_cyl(
+        self,
+        theta_deg: float,
+        radius_mm: float,
+        sucker_rotation_deg: float | None = None,
+    ) -> CylindricalPickPlan:
+        return self.cylindrical_kernel.begin_pick_cyl(theta_deg, radius_mm, sucker_rotation_deg=sucker_rotation_deg)
+
+    def set_sucker_rotation(self, angle_deg: float, *, duration_sec: float | None = None) -> dict[str, object]:
+        with self._lock:
+            self._ensure_operable_for_motion()
+        duration_value = float(self.limits.sucker_rotation_duration_sec) if duration_sec is None else float(duration_sec)
+        duration_value = self._clamp(duration_value, 0.0, 3.0)
+        return self._apply_sucker_rotation(
+            angle_deg,
+            duration_sec=duration_value,
+            allow_unsupported=True,
+        )
 
     def _move_xy_legacy_impl(self, x: float, y: float) -> tuple[float, float, float]:
         with self._lock:
@@ -709,7 +777,13 @@ class RobotExecutor:
             self._set_state(RobotExecutorState.PICK_APPROACH)
         return plan
 
-    def _begin_pick_world_legacy_impl(self, x: float, y: float) -> WorldPickPlan:
+    def _begin_pick_world_legacy_impl(
+        self,
+        x: float,
+        y: float,
+        *,
+        sucker_rotation_deg: float | None = None,
+    ) -> WorldPickPlan:
         with self._lock:
             self._ensure_operable_for_action(action="pick")
             if self._carrying:
@@ -726,9 +800,19 @@ class RobotExecutor:
                     str(cyl_validation.get("message") or "World target violates cylindrical limits."),
                 )
             self._set_state(RobotExecutorState.PICK_APPROACH)
-            return WorldPickPlan(target_x=target_x, target_y=target_y)
+            return WorldPickPlan(
+                target_x=target_x,
+                target_y=target_y,
+                sucker_rotation_deg=self._normalize_optional_sucker_rotation(sucker_rotation_deg),
+            )
 
-    def _begin_pick_cyl_impl(self, theta_deg: float, radius_mm: float) -> CylindricalPickPlan:
+    def _begin_pick_cyl_impl(
+        self,
+        theta_deg: float,
+        radius_mm: float,
+        *,
+        sucker_rotation_deg: float | None = None,
+    ) -> CylindricalPickPlan:
         with self._lock:
             self._ensure_operable_for_action(action="pick")
             if self._carrying:
@@ -749,6 +833,7 @@ class RobotExecutor:
                 radius_mm=float(pose.radius_mm),
                 target_x=float(x_mm),
                 target_y=float(y_mm),
+                sucker_rotation_deg=self._normalize_optional_sucker_rotation(sucker_rotation_deg),
             )
 
     def complete_pick(self, plan: PickPlan | WorldPickPlan | CylindricalPickPlan) -> None:
@@ -761,11 +846,16 @@ class RobotExecutor:
             self._log(
                 f"PICK_CYL target=(theta={plan.theta_deg:.2f}, r={plan.radius_mm:.2f}) "
                 f"-> ({plan.target_x:.2f}, {plan.target_y:.2f})"
+                + ("" if plan.sucker_rotation_deg is None else f" sucker_angle={plan.sucker_rotation_deg:.2f}")
             )
         else:
-            self._log(f"PICK_WORLD target=({plan.target_x:.2f}, {plan.target_y:.2f})")
+            self._log(
+                f"PICK_WORLD target=({plan.target_x:.2f}, {plan.target_y:.2f})"
+                + ("" if plan.sucker_rotation_deg is None else f" sucker_angle={plan.sucker_rotation_deg:.2f}")
+            )
         target_x = float(plan.target_x)
         target_y = float(plan.target_y)
+        sucker_rotation_deg = getattr(plan, "sucker_rotation_deg", None)
         tuning = self._pick_tuning_snapshot()
         settle_z = self._compute_settle_z_for_xy(
             target_x,
@@ -775,6 +865,15 @@ class RobotExecutor:
         self._raise_if_abort_requested()
         self.actuator.move_xyz(target_x, target_y, tuning.pick_approach_z_mm, 1.0)
         self._sleep_with_abort(1.0)
+
+        if sucker_rotation_deg is not None:
+            self._raise_if_abort_requested()
+            self._apply_sucker_rotation(
+                sucker_rotation_deg,
+                duration_sec=float(self.limits.sucker_rotation_duration_sec),
+                allow_unsupported=True,
+            )
+            self._sleep_with_abort(float(self.limits.sucker_rotation_settle_sec))
 
         with self._lock:
             self._set_state(RobotExecutorState.PICK_SUCTION_ON)
@@ -1026,6 +1125,60 @@ class RobotExecutor:
         if normalized_mode == "release":
             return "off_fallback"
         return "off"
+
+    def _normalize_optional_sucker_rotation(self, angle_deg: float | None) -> float | None:
+        if angle_deg is None:
+            return None
+        return normalize_logical_sucker_angle_deg(float(angle_deg))
+
+    def _sucker_servo_angle_for_logical(self, angle_deg: float) -> float:
+        return map_logical_to_servo_angle_deg(
+            float(angle_deg),
+            offset_deg=float(self.limits.sucker_rotation_offset_deg),
+            invert=bool(self.limits.sucker_rotation_invert),
+            center_deg=float(self.limits.sucker_rotation_center_deg),
+            min_deg=float(self.limits.sucker_rotation_min_deg),
+            max_deg=float(self.limits.sucker_rotation_max_deg),
+        )
+
+    def _apply_sucker_rotation(
+        self,
+        angle_deg: float,
+        *,
+        duration_sec: float,
+        allow_unsupported: bool,
+    ) -> dict[str, object]:
+        logical_angle = self._normalize_optional_sucker_rotation(float(angle_deg))
+        assert logical_angle is not None
+        servo_angle = self._sucker_servo_angle_for_logical(logical_angle)
+        with self._lock:
+            self._last_sucker_rotation_logical_deg = float(logical_angle)
+            self._last_sucker_rotation_servo_deg = float(servo_angle)
+            self._revision += 1
+        if not self.actuator.sucker_rotation_supported():
+            message = "Sucker rotation unsupported by hardware."
+            self._log(message)
+            if allow_unsupported:
+                return {
+                    "ok": True,
+                    "supported": False,
+                    "message": message,
+                    "logical_angle_deg": float(logical_angle),
+                    "servo_angle_deg": float(servo_angle),
+                }
+            raise RobotCommandError(RobotErrorCode.HARDWARE_FAILURE, message)
+        self.actuator.set_sucker_rotation(float(servo_angle), float(duration_sec))
+        self._log(
+            f"SET_SUCKER_ROTATION logical={logical_angle:.2f}deg servo={servo_angle:.2f}deg "
+            f"duration={float(duration_sec):.2f}s"
+        )
+        return {
+            "ok": True,
+            "supported": True,
+            "message": "ok",
+            "logical_angle_deg": float(logical_angle),
+            "servo_angle_deg": float(servo_angle),
+        }
 
     def _build_cylindrical_move_plan(self, pose: CylindricalPose) -> CylindricalMovePlan:
         pose = pose.normalized()
@@ -1353,6 +1506,21 @@ class RobotTcpGateway:
                 self._send_line(stream, "ACK SUCKER_OFF")
                 return
 
+            if command == "SET_SUCKER_ROTATION":
+                duration = None if len(args) < 2 else float(args[1])
+                result = self.executor.set_sucker_rotation(float(args[0]), duration_sec=duration)
+                if bool(result.get("supported", False)):
+                    self._send_line(
+                        stream,
+                        "ACK SET_SUCKER_ROTATION {0:.2f} {1:.2f}".format(
+                            float(result.get("logical_angle_deg", 0.0)),
+                            float(result.get("servo_angle_deg", 0.0)),
+                        ),
+                    )
+                else:
+                    self._send_line(stream, "ACK SET_SUCKER_ROTATION_UNSUPPORTED")
+                return
+
             if command == "RESET":
                 self.executor.reset_error()
                 self._send_line(stream, "ACK RESET")
@@ -1385,7 +1553,12 @@ class RobotTcpGateway:
                 return
 
             if command == "PICK_WORLD":
-                plan = self.executor.legacy_kernel.begin_pick_world(float(args[0]), float(args[1]))
+                sucker_rotation = None if len(args) < 3 else float(args[2])
+                plan = self.executor.legacy_kernel.begin_pick_world(
+                    float(args[0]),
+                    float(args[1]),
+                    sucker_rotation_deg=sucker_rotation,
+                )
                 self._send_line(stream, "ACK PICK_STARTED")
                 threading.Thread(
                     target=self._pick_worker,
@@ -1396,7 +1569,12 @@ class RobotTcpGateway:
                 return
 
             if command == "PICK_CYL":
-                plan = self.executor.cylindrical_kernel.begin_pick_cyl(float(args[0]), float(args[1]))
+                sucker_rotation = None if len(args) < 3 else float(args[2])
+                plan = self.executor.cylindrical_kernel.begin_pick_cyl(
+                    float(args[0]),
+                    float(args[1]),
+                    sucker_rotation_deg=sucker_rotation,
+                )
                 self._send_line(stream, "ACK PICK_STARTED")
                 threading.Thread(
                     target=self._pick_worker,

@@ -209,6 +209,22 @@ def test_mask_grasp_geometry_prefers_bright_top_face_over_full_silhouette_center
     assert 43 <= geometry.grasp_pixel[0] <= 48
 
 
+def test_mask_grasp_geometry_reports_color_independent_rect_angle():
+    mask = np.zeros((160, 160), dtype=np.float32)
+    rect = ((80.0, 80.0), (80.0, 30.0), 30.0)
+    points = cv2.boxPoints(rect).astype(np.int32)
+    cv2.fillPoly(mask, [points], 1.0)
+    frame = np.full((160, 160, 3), 230, dtype=np.uint8)
+    cv2.fillPoly(frame, [points], (180, 40, 210))
+
+    geometry = mask_to_grasp_geometry(mask, (160, 160), frame_bgr=frame)
+
+    assert geometry is not None
+    assert geometry.grasp_angle_deg is not None
+    assert 25.0 <= geometry.grasp_angle_deg <= 35.0
+    assert geometry.grasp_angle_quality > 0.5
+
+
 def test_frame_block_fallback_detects_colored_block_without_color_name():
     frame = np.full((240, 320, 3), 235, dtype=np.uint8)
     cv2.line(frame, (20, 20), (300, 40), (20, 20, 20), 4)

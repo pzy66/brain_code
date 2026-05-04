@@ -7,9 +7,10 @@ from pathlib import Path
 import shutil
 from typing import Any, Optional
 
+from brain_workspace.paths import SSVEP_PROFILE_DIR
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
-DEFAULT_DEPLOYED_PROFILE_DIR = PROJECT_DIR / "artifacts" / "deployed_profiles"
+DEFAULT_DEPLOYED_PROFILE_DIR = SSVEP_PROFILE_DIR
 
 
 def sanitize_artifact_token(value: str, *, fallback: str) -> str:

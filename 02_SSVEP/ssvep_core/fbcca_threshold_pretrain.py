@@ -9,6 +9,8 @@ from typing import Any, Callable, Optional, Sequence
 
 import numpy as np
 
+from brain_workspace.paths import SSVEP_PROFILE_DIR
+
 from .async_fbcca_idle_standalone import (
     DEFAULT_ASYNC_DECISION_TIME_MODE,
     DEFAULT_CALIBRATION_SEED,
@@ -48,8 +50,8 @@ from .run_artifacts import make_run_tag, publish_deployed_profile, resolve_ssvep
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_REPORT_ROOT = PROJECT_DIR / "artifacts" / "runs" / "local"
-DEFAULT_REALTIME_PROFILE_PATH = PROJECT_DIR / "artifacts" / "deployed_profiles" / "fbcca_profile.json"
-DEFAULT_REALTIME_PROFILE_V2_PATH = PROJECT_DIR / "artifacts" / "deployed_profiles" / "fbcca_profile_v2.json"
+DEFAULT_REALTIME_PROFILE_PATH = SSVEP_PROFILE_DIR / "fbcca_profile.json"
+DEFAULT_REALTIME_PROFILE_V2_PATH = SSVEP_PROFILE_DIR / "fbcca_profile_v2.json"
 DEFAULT_FBCCA_THRESHOLD_TASK = "fbcca-threshold-pretrain"
 
 

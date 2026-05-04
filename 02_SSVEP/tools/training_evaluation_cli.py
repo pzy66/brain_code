@@ -7,9 +7,12 @@ from pathlib import Path
 from typing import Any, Optional, Sequence
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
+if str(PROJECT_DIR.parent) not in sys.path:
+    sys.path.insert(0, str(PROJECT_DIR.parent))
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
+from brain_workspace.paths import SSVEP_DATASET_DIR
 from ssvep_core.async_fbcca_idle_standalone import (
     DEFAULT_ASYNC_DECISION_TIME_MODE,
     DEFAULT_BENCHMARK_CHANNEL_MODES,
@@ -78,7 +81,7 @@ from ssvep_core.fbcca_local_opt import (
 from ssvep_core.registry import ModelRegistry
 
 THIS_DIR = Path(__file__).resolve().parent
-DEFAULT_DATASET_ROOT = PROJECT_DIR / "artifacts" / "datasets"
+DEFAULT_DATASET_ROOT = SSVEP_DATASET_DIR
 DEFAULT_REPORT_ROOT = PROJECT_DIR / "artifacts" / "runs" / "local"
 DEFAULT_FBCCA_EXTERNAL_DATASET_ROOT = DEFAULT_DATASET_ROOT / "external" / "dataset_ssvep_led_github"
 DEFAULT_FBCCA_EXTERNAL_SEARCH_PRESET = "reduced24"

@@ -5,23 +5,18 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 from PyQt5.QtGui import QFont
-from PyQt5.QtWidgets import (
-    QApplication,
-    QGridLayout,
-    QLabel,
-    QMainWindow,
-    QPushButton,
-    QVBoxLayout,
-    QWidget,
-)
+from PyQt5.QtWidgets import QApplication, QGridLayout, QLabel, QMainWindow, QPushButton, QVBoxLayout, QWidget
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
+if str(PROJECT_DIR.parent) not in sys.path:
+    sys.path.insert(0, str(PROJECT_DIR.parent))
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
 from apps.data_collection_ui import DatasetCollectionWindow
 from apps.realtime_online_ui import RealtimeOnlineWindow
 from apps.training_evaluation_ui import TrainingEvaluationWindow
+from brain_workspace.paths import SSVEP_DATASET_DIR, SSVEP_PROFILE_DIR
 from ssvep_core.async_fbcca_idle_standalone import DEFAULT_BOARD_ID, parse_freqs
 
 
@@ -38,17 +33,17 @@ class LauncherWindow(QMainWindow):
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(18)
 
-        title = QLabel("02_SSVEP 主线入口")
+        title = QLabel("02_SSVEP Main Launcher")
         title.setStyleSheet("font-size: 22px; font-weight: 700;")
-        subtitle = QLabel("从这里直接进入采集、实时解码、训练评测和 TDCA 本地异步优化。")
+        subtitle = QLabel("Open collection, realtime decoding, training/evaluation, and local optimization tools.")
         subtitle.setWordWrap(True)
         info = QLabel(
             "\n".join(
                 [
-                    f"项目根目录：{PROJECT_DIR}",
-                    f"数据集目录：{PROJECT_DIR / 'artifacts' / 'datasets'}",
-                    f"运行产物目录：{PROJECT_DIR / 'artifacts' / 'runs'}",
-                    f"部署 profile：{PROJECT_DIR / 'artifacts' / 'deployed_profiles'}",
+                    f"project_root={PROJECT_DIR}",
+                    f"dataset_dir={SSVEP_DATASET_DIR}",
+                    f"run_artifacts={PROJECT_DIR / 'artifacts' / 'runs'}",
+                    f"profile_dir={SSVEP_PROFILE_DIR}",
                 ]
             )
         )
@@ -64,12 +59,12 @@ class LauncherWindow(QMainWindow):
         layout.addLayout(grid)
 
         buttons = [
-            ("数据采集", "按协议采集 session，并直接落到 artifacts/datasets。", self._open_data_collection),
-            ("实时在线解码", "加载 deployed profile，在线查看实时判定与 shadow 输出。", self._open_realtime),
-            ("训练评测", "统一查看 run 目录、日志、进度、报告和 profile 产物。", self._open_training_eval),
-            ("FBCCA 阈值快速预训练", "保持默认 FBCCA 参数，只用采集数据校准实时识别阈值并发布 profile。", self._open_fbcca_threshold_pretrain),
-            ("FBCCA 本地异步优化", "直接进入 FBCCA 本地优化模式，适合从采集数据生成可用 profile。", self._open_fbcca_local_opt),
-            ("TDCA 本地异步优化", "直接进入 TDCA 本地优化模式，保留实时进度与 run 归档。", self._open_tdca_local_opt),
+            ("Data Collection", "Collect SSVEP sessions into the configured local datasets root.", self._open_data_collection),
+            ("Realtime Decode", "Load a profile and inspect realtime decisions and shadow output.", self._open_realtime),
+            ("Training Eval", "Run and inspect training, reports, logs, and generated profiles.", self._open_training_eval),
+            ("FBCCA Pretrain", "Calibrate FBCCA realtime thresholds from local collection data.", self._open_fbcca_threshold_pretrain),
+            ("FBCCA Local Opt", "Optimize FBCCA profiles from copied local datasets.", self._open_fbcca_local_opt),
+            ("TDCA Local Opt", "Run local TDCA optimization with organized run artifacts.", self._open_tdca_local_opt),
         ]
 
         for index, (label, desc, handler) in enumerate(buttons):
@@ -89,7 +84,7 @@ class LauncherWindow(QMainWindow):
             card_layout.addWidget(desc_label)
             grid.addWidget(card, index // 2, index % 2)
 
-        footer = QLabel("所有新运行都按 run 目录归档；旧代码与旧产物统一进 _archive 和 legacy_imported。")
+        footer = QLabel("Run outputs are local artifacts and are ignored by Git.")
         footer.setWordWrap(True)
         footer.setStyleSheet("color: #6b7280;")
         layout.addWidget(footer)
@@ -111,7 +106,7 @@ class LauncherWindow(QMainWindow):
 
     def _open_data_collection(self) -> None:
         window = DatasetCollectionWindow(serial_port="auto", board_id=DEFAULT_BOARD_ID, freqs=parse_freqs("8,10,12,15"))
-        window.dataset_dir_edit.setText(str(PROJECT_DIR / "artifacts" / "datasets"))
+        window.dataset_dir_edit.setText(str(SSVEP_DATASET_DIR))
         self._track_window(window)
 
     def _open_realtime(self) -> None:

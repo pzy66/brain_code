@@ -16,16 +16,19 @@ import time
 from typing import Any, Callable, Optional, Sequence
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
+if str(PROJECT_DIR.parent) not in sys.path:
+    sys.path.insert(0, str(PROJECT_DIR.parent))
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
+from brain_workspace.paths import SSVEP_DATASET_DIR, SSVEP_PROFILE_DIR
 from ssvep_core.run_artifacts import publish_deployed_profile
 
 THIS_DIR = Path(__file__).resolve().parent
 LOCAL_ARTIFACT_ROOT = PROJECT_DIR / "artifacts"
-LOCAL_DATASET_ROOT = LOCAL_ARTIFACT_ROOT / "datasets"
+LOCAL_DATASET_ROOT = SSVEP_DATASET_DIR
 LOCAL_SERVER_RUNS_DIR = LOCAL_ARTIFACT_ROOT / "runs" / "remote"
-LOCAL_SERVER_PROFILES_DIR = LOCAL_ARTIFACT_ROOT / "deployed_profiles"
+LOCAL_SERVER_PROFILES_DIR = SSVEP_PROFILE_DIR
 LOCAL_TASK_RECORD_PATH = LOCAL_SERVER_RUNS_DIR / "server_tasks.json"
 LOCAL_CODE_ROOT = PROJECT_DIR
 

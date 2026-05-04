@@ -17,7 +17,11 @@ from pathlib import Path
 import numpy as np
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 BRAIN_CODE_ROOT = PROJECT_ROOT.parents[1]
-DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "datasets" / "custom_mi"
+if str(BRAIN_CODE_ROOT) not in sys.path:
+    sys.path.insert(0, str(BRAIN_CODE_ROOT))
+from brain_workspace.paths import DATASETS_ROOT, MI_DATASET_DIR, resolve_data_path
+
+DEFAULT_OUTPUT_ROOT = MI_DATASET_DIR
 SHARED_ROOT = PROJECT_ROOT / "code" / "shared"
 if str(SHARED_ROOT) not in sys.path:
     sys.path.insert(0, str(SHARED_ROOT))
@@ -92,14 +96,12 @@ def _path_is_relative_to(path: Path, root: Path) -> bool:
 
 
 def resolve_output_root(value: str | Path | None = None) -> Path:
-    raw = "" if value is None else str(value).strip()
-    candidate = Path(raw).expanduser() if raw else DEFAULT_OUTPUT_ROOT
-    if not candidate.is_absolute():
-        candidate = PROJECT_ROOT / candidate
-    resolved = candidate.resolve()
-    if not _path_is_relative_to(resolved, BRAIN_CODE_ROOT):
-        raise ValueError(f"MI output_root must be inside brain_code: {resolved}")
-    return resolved
+    return resolve_data_path(
+        value,
+        base=DATASETS_ROOT,
+        default=DEFAULT_OUTPUT_ROOT,
+        purpose="MI output_root",
+    )
 
 
 DEFAULT_CHANNEL_NAMES = ["C3", "Cz", "C4", "PO3", "PO4", "O1", "Oz", "O2"]

@@ -103,6 +103,7 @@ def build_parser() -> argparse.ArgumentParser:
             "move_cyl_auto",
             "pick_world",
             "pick_cyl",
+            "set_sucker_rotation",
             "place",
             "abort",
             "reset",
@@ -114,6 +115,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--z", type=float, default=160.0)
     parser.add_argument("--x", type=float, default=0.0)
     parser.add_argument("--y", type=float, default=-120.0)
+    parser.add_argument("--sucker-rotation-deg", type=float, default=None)
+    parser.add_argument("--duration-sec", type=float, default=0.0)
     return parser
 
 
@@ -147,7 +150,12 @@ def main(argv: list[str] | None = None) -> int:
                 ros,
                 "/hybrid_controller/pick_world",
                 "hybrid_controller_ros/PickWorld",
-                {"x_mm": float(args.x), "y_mm": float(args.y)},
+                {
+                    "x_mm": float(args.x),
+                    "y_mm": float(args.y),
+                    "use_sucker_rotation": args.sucker_rotation_deg is not None,
+                    "sucker_rotation_deg": 0.0 if args.sucker_rotation_deg is None else float(args.sucker_rotation_deg),
+                },
                 timeout_sec=max(float(args.timeout_sec), 25.0),
             )
         elif action == "pick_cyl":
@@ -155,8 +163,24 @@ def main(argv: list[str] | None = None) -> int:
                 ros,
                 "/hybrid_controller/pick_cyl",
                 "hybrid_controller_ros/PickCyl",
-                {"theta_deg": float(args.theta), "radius_mm": float(args.radius)},
+                {
+                    "theta_deg": float(args.theta),
+                    "radius_mm": float(args.radius),
+                    "use_sucker_rotation": args.sucker_rotation_deg is not None,
+                    "sucker_rotation_deg": 0.0 if args.sucker_rotation_deg is None else float(args.sucker_rotation_deg),
+                },
                 timeout_sec=max(float(args.timeout_sec), 25.0),
+            )
+        elif action == "set_sucker_rotation":
+            response = _call_service(
+                ros,
+                "/hybrid_controller/set_sucker_rotation",
+                "hybrid_controller_ros/SetSuckerRotation",
+                {
+                    "angle_deg": 0.0 if args.sucker_rotation_deg is None else float(args.sucker_rotation_deg),
+                    "duration_sec": float(args.duration_sec),
+                },
+                timeout_sec=args.timeout_sec,
             )
         elif action == "place":
             response = _call_service(

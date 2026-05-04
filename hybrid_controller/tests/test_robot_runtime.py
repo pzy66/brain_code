@@ -12,6 +12,7 @@ class FakeHardware:
         self.fail_on_set_position = fail_on_set_position
         self.moves: list[tuple[tuple[float, float, float], float]] = []
         self.sucker_states: list[bool] = []
+        self.events: list[tuple[str, object]] = []
         self.go_home_calls = 0
 
     def go_home(self) -> None:
@@ -26,9 +27,11 @@ class FakeHardware:
             raise RuntimeError("motor jam")
         self.position = tuple(float(value) for value in position)
         self.moves.append((self.position, float(duration)))
+        self.events.append(("move", self.position))
 
     def set_sucker(self, state: bool) -> None:
         self.sucker_states.append(bool(state))
+        self.events.append(("sucker", bool(state)))
 
 
 class FakeHardwareWithRelease(FakeHardware):
@@ -38,6 +41,18 @@ class FakeHardwareWithRelease(FakeHardware):
 
     def release_sucker(self, duration_sec: float) -> None:
         self.release_calls.append(float(duration_sec))
+
+
+class FakeHardwareWithRotation(FakeHardware):
+    sucker_rotation_supported = True
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.sucker_rotations: list[tuple[float, float]] = []
+
+    def set_sucker_rotation(self, servo_angle_deg: float, duration_sec: float) -> None:
+        self.sucker_rotations.append((float(servo_angle_deg), float(duration_sec)))
+        self.events.append(("rotate", float(servo_angle_deg)))
 
 
 class ReadyCalibration:
@@ -366,6 +381,37 @@ def test_pick_cyl_sends_started_and_done(monkeypatch) -> None:
     assert stream.lines()[0] == "ACK PICK_STARTED"
     assert runtime.healthcheck()["control_kernel"] == "cylindrical_kernel"
     assert runtime.healthcheck()["carrying"] is True
+
+
+def test_set_sucker_rotation_command_maps_logical_angle() -> None:
+    hardware = FakeHardwareWithRotation()
+    runtime = _runtime(hardware=hardware)
+    stream = FakeStream()
+
+    runtime.dispatch_command("SET_SUCKER_ROTATION 30 0.1", stream)
+
+    assert stream.lines() == ["ACK SET_SUCKER_ROTATION 30.00 120.00"]
+    assert hardware.sucker_rotations == [(120.0, 0.1)]
+    status = runtime.healthcheck()
+    assert status["sucker_rotation_supported"] is True
+    assert status["sucker_rotation_logical_deg"] == 30.0
+    assert status["sucker_rotation_servo_deg"] == 120.0
+
+
+def test_pick_world_rotates_before_suction_when_angle_is_provided(monkeypatch) -> None:
+    _patch_executor_sleep(monkeypatch)
+    hardware = FakeHardwareWithRotation()
+    runtime = _runtime(hardware=hardware)
+    stream = FakeStream()
+
+    runtime.dispatch_command("PICK_WORLD 0 -170 -30", stream)
+
+    assert wait_for(lambda: "ACK PICK_DONE" in stream.lines())
+    event_names = [name for name, _ in hardware.events]
+    assert "rotate" in event_names
+    assert ("sucker", True) in hardware.events
+    assert event_names.index("move") < event_names.index("rotate") < hardware.events.index(("sucker", True))
+    assert hardware.sucker_rotations[0][0] == 60.0
 
 
 def test_abort_and_reset_commands_round_trip(monkeypatch) -> None:

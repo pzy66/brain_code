@@ -8,7 +8,15 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from .paths import missing_required_paths, required_workspace_paths
+from .paths import (
+    DATASETS_ROOT,
+    MI_DATASET_DIR,
+    PROFILE_DATASET_DIR,
+    SSVEP_DATASET_DIR,
+    VISION_DATASET_DIR,
+    missing_required_paths,
+    required_workspace_paths,
+)
 
 CHECK_MODULES = {
     "core": ("numpy", "scipy"),
@@ -53,6 +61,11 @@ def format_environment_report(report: EnvironmentReport | None = None) -> str:
     lines = [
         f"python_executable={report.python_executable}",
         f"python_version={report.python_version}",
+        f"datasets_root={DATASETS_ROOT}",
+        f"mi_dataset_dir={MI_DATASET_DIR}",
+        f"ssvep_dataset_dir={SSVEP_DATASET_DIR}",
+        f"vision_dataset_dir={VISION_DATASET_DIR}",
+        f"profile_dataset_dir={PROFILE_DATASET_DIR}",
         f"required_paths={len(report.required_paths)}",
         f"missing_paths={len(report.missing_paths)}",
     ]

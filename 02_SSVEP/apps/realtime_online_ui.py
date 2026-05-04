@@ -32,9 +32,12 @@ from PyQt5.QtWidgets import (
 )
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
+if str(PROJECT_DIR.parent) not in sys.path:
+    sys.path.insert(0, str(PROJECT_DIR.parent))
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
+from brain_workspace.paths import HYBRID_SSVEP_PROFILE_DIR, SSVEP_PROFILE_DIR
 from ssvep_core.async_fbcca_idle_standalone import (
     AsyncDecisionGate,
     DEFAULT_BENCHMARK_MODELS,
@@ -105,39 +108,16 @@ from apps.async_fbcca_validation_ui import (
 
 THIS_DIR = Path(__file__).resolve().parent
 REALTIME_FBCCA_PROFILE_CANDIDATES = (
-    PROJECT_DIR
-    / "artifacts"
-    / "deployed_profiles"
-    / "fbcca_profile.json",
-    PROJECT_DIR
-    / "artifacts"
-    / "deployed_profiles"
-    / "fbcca_base_profile.json",
-    PROJECT_DIR
-    / "artifacts"
-    / "runs"
-    / "_legacy_imported"
-    / "legacy_2026-04_async_fbcca_idle_decoder"
-    / "server_profiles"
-    / "model_compare_20260413_223538__profile_best_fbcca_weighted.json",
-    PROJECT_DIR
-    / "_archive"
-    / "legacy_2026-04_async_fbcca_idle_decoder"
-    / "profiles"
-    / "server_profiles"
-    / "model_compare_20260413_223538__profile_best_fbcca_weighted.json",
-    PROJECT_DIR
-    / "_archive"
-    / "legacy_2026-04_async_fbcca_idle_decoder"
-    / "profiles"
-    / "default_profile.json",
+    SSVEP_PROFILE_DIR / "fbcca_profile.json",
+    SSVEP_PROFILE_DIR / "fbcca_base_profile.json",
+    SSVEP_PROFILE_DIR / "default_profile.json",
 )
 DEMO_EXPECTED_FREQS = (8.0, 10.0, 12.0, 15.0)
-SSVEP_FBCCA_BASE_PROFILE_PATH = PROJECT_DIR / "artifacts" / "deployed_profiles" / "fbcca_base_profile.json"
-SSVEP_REALTIME_PROFILE_PATH = PROJECT_DIR / "artifacts" / "deployed_profiles" / "fbcca_profile.json"
-SSVEP_REALTIME_PROFILE_V2_PATH = PROJECT_DIR / "artifacts" / "deployed_profiles" / "fbcca_profile_v2.json"
-SSVEP_NO_TRAIN_FBCCA_PROFILE_PATH = PROJECT_DIR / "artifacts" / "deployed_profiles" / "fbcca_no_train_profile.json"
-HYBRID_PROFILE_DIR = PROJECT_DIR.parent / "hybrid_controller" / "dataset" / "ssvep_profiles"
+SSVEP_FBCCA_BASE_PROFILE_PATH = SSVEP_PROFILE_DIR / "fbcca_base_profile.json"
+SSVEP_REALTIME_PROFILE_PATH = SSVEP_PROFILE_DIR / "fbcca_profile.json"
+SSVEP_REALTIME_PROFILE_V2_PATH = SSVEP_PROFILE_DIR / "fbcca_profile_v2.json"
+SSVEP_NO_TRAIN_FBCCA_PROFILE_PATH = SSVEP_PROFILE_DIR / "fbcca_no_train_profile.json"
+HYBRID_PROFILE_DIR = HYBRID_SSVEP_PROFILE_DIR
 HYBRID_CURRENT_PROFILE_PATH = HYBRID_PROFILE_DIR / "current_fbcca_profile.json"
 ENABLE_HYBRID_PROFILE_PUBLISH = False
 
@@ -223,7 +203,7 @@ REALTIME_CONTROL_PANEL_WIDTH = 440
 REALTIME_STIM_MIN_WIDTH = 760
 REALTIME_STIM_MIN_HEIGHT = 560
 REALTIME_SELECTED_BORDER_COLOR = QColor(80, 170, 255)
-REALTIME_PRETRAIN_HISTORY_DIR = PROJECT_DIR / "artifacts" / "deployed_profiles" / "pretrain_history"
+REALTIME_PRETRAIN_HISTORY_DIR = SSVEP_PROFILE_DIR / "pretrain_history"
 
 
 @dataclass(frozen=True)

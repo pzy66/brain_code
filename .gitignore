@@ -27,11 +27,44 @@ pytest_tmp/
 **/*.pyo
 **/*.pyd
 **/*.log
-!02_SSVEP/artifacts/**/*.log
 **/*.tmp
 **/*.bak
 **/Thumbs.db
 **/.DS_Store
+
+# Local datasets, models, run outputs, and hardware logs are intentionally
+# excluded from Git. Copy real assets into datasets/ or set BRAIN_DATA_ROOT.
+datasets/**
+!datasets/
+!datasets/README.md
+
+artifacts/**
+logs/**
+runtime/**
+**/runtime/**
+**/artifacts/**
+**/logs/**
+**/dataset/**
+**/datasets/**
+**/models/**/*.pt
+**/models/**/*.pth
+**/models/**/*.onnx
+**/models/**/*.engine
+!**/README.md
+!**/.gitkeep
+
+!datasets/**/
+!datasets/**/.gitkeep
+!datasets/README.md
+!datasets/profiles/SSVEP/default_profile.json
+
+02_SSVEP/_archive/
+05_Vision_Block_Recognition/dataset/
+01_MI/mi_classifier_latest/datasets/
+01_MI/mi_classifier_latest/runtime/
+hybrid_controller/models/
+hybrid_controller/dataset/
+
 logs/*.out
 logs/*.err
 02_SSVEP/artifacts/gpu_runtime/tmp/
@@ -41,8 +74,5 @@ logs/*.err
 02_SSVEP/artifacts/ui_smoke_*.png
 02_SSVEP/2026-04_async_fbcca_idle_decoder/
 02_SSVEP/2026-03_realtime_ui_and_online_decoder/
-
-01_MI/mi_classifier_latest/datasets/
-01_MI/mi_classifier_latest/runtime/
 
 hybrid_controller/tmp_test_dir/

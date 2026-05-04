@@ -1209,6 +1209,8 @@ class HybridControllerApplication:
             "resolved_cyl": resolved_cyl,
             "pixel_center": None if selected_slot is None else selected_slot.get("pixel_center"),
             "grasp_pixel": None if selected_slot is None else selected_slot.get("grasp_pixel"),
+            "grasp_angle_deg": None if selected_slot is None else selected_slot.get("grasp_angle_deg"),
+            "grasp_angle_quality": None if selected_slot is None else selected_slot.get("grasp_angle_quality"),
             "camera_to_world_raw": None if selected_slot is None else selected_slot.get("camera_to_world_raw"),
             "undistorted_pixel": None if selected_slot is None else selected_slot.get("undistorted_pixel"),
             "estimated_xy_error_mm": None if selected_slot is None else selected_slot.get("estimated_xy_error_mm"),
@@ -1235,7 +1237,7 @@ class HybridControllerApplication:
     @staticmethod
     def _command_vs_resolved_delta_mm(command: str, resolved_base_xy: object) -> float | None:
         parts = str(command or "").strip().split()
-        if len(parts) != 3 or str(parts[0]).upper() != "PICK_WORLD":
+        if len(parts) < 3 or str(parts[0]).upper() != "PICK_WORLD":
             return None
         if not isinstance(resolved_base_xy, (tuple, list)) or len(resolved_base_xy) < 2:
             return None
@@ -1482,6 +1484,15 @@ class HybridControllerApplication:
                             label += f" err={float(error_mm):.1f}mm"
                         except (TypeError, ValueError):
                             pass
+                    angle_deg = slot.get("grasp_angle_deg")
+                    angle_quality = slot.get("grasp_angle_quality")
+                    if angle_deg is not None:
+                        try:
+                            label += f" a={float(angle_deg):.0f}"
+                            if angle_quality is not None:
+                                label += f"/{float(angle_quality):.2f}"
+                        except (TypeError, ValueError):
+                            pass
                     cv2.putText(
                         overlay,
                         label[:96],
@@ -1667,11 +1678,33 @@ class HybridControllerApplication:
             if op == "MOVE_CYL_AUTO" and len(parts) == 3:
                 self.ros_client.send_move_cyl_auto(float(parts[1]), float(parts[2]), callback=callback)
                 return True
-            if op == "PICK_WORLD" and len(parts) == 3:
-                self.ros_client.send_pick_world(float(parts[1]), float(parts[2]), callback=callback)
+            if op == "PICK_WORLD" and len(parts) in {3, 4}:
+                angle = None if len(parts) < 4 else float(parts[3])
+                if angle is None:
+                    self.ros_client.send_pick_world(float(parts[1]), float(parts[2]), callback=callback)
+                else:
+                    self.ros_client.send_pick_world(
+                        float(parts[1]),
+                        float(parts[2]),
+                        sucker_rotation_deg=angle,
+                        callback=callback,
+                    )
                 return True
-            if op == "PICK_CYL" and len(parts) == 3:
-                self.ros_client.send_pick_cyl(float(parts[1]), float(parts[2]), callback=callback)
+            if op == "PICK_CYL" and len(parts) in {3, 4}:
+                angle = None if len(parts) < 4 else float(parts[3])
+                if angle is None:
+                    self.ros_client.send_pick_cyl(float(parts[1]), float(parts[2]), callback=callback)
+                else:
+                    self.ros_client.send_pick_cyl(
+                        float(parts[1]),
+                        float(parts[2]),
+                        sucker_rotation_deg=angle,
+                        callback=callback,
+                    )
+                return True
+            if op == "SET_SUCKER_ROTATION" and len(parts) in {2, 3}:
+                duration = None if len(parts) < 3 else float(parts[2])
+                self.ros_client.send_sucker_rotation(float(parts[1]), duration_sec=duration, callback=callback)
                 return True
             if op == "PLACE":
                 self.ros_client.send_place(callback=callback)
@@ -2110,7 +2143,9 @@ class HybridControllerApplication:
             self._rt_set("vision_servo_status", f"lost_target slot={slot_id}")
             self._handle_runtime_status("vision", f"Vision servo lost slot {slot_id}; pick cancelled.")
             return
-        command = build_pick_command_from_slot_payload(slot)
+        slot_for_command = dict(slot)
+        slot_for_command["grasp_angle_quality_threshold"] = float(self.config.sucker_rotation_angle_quality_threshold)
+        command = build_pick_command_from_slot_payload(slot_for_command)
         if command is not None:
             try:
                 attempts = int(pending.get("attempts", 0))
@@ -2404,7 +2439,9 @@ class HybridControllerApplication:
                     continue
                 if not bool(slot.get("actionable", False)):
                     continue
-                command = build_pick_command_from_slot_payload(slot)
+                slot_for_command = dict(slot)
+                slot_for_command["grasp_angle_quality_threshold"] = float(self.config.sucker_rotation_angle_quality_threshold)
+                command = build_pick_command_from_slot_payload(slot_for_command)
                 if command is not None:
                     return command
         for target in self.controller.context.latest_vision_targets:
@@ -3717,6 +3754,23 @@ def build_config_from_args(args: argparse.Namespace) -> AppConfig:
         pick_cyl_theta_bias_deg=float(
             getattr(args, "pick_cyl_theta_bias_deg", AppConfig.pick_cyl_theta_bias_deg)
         ),
+        sucker_rotation_enabled=bool(getattr(args, "sucker_rotation_enabled", AppConfig.sucker_rotation_enabled)),
+        sucker_rotation_offset_deg=float(
+            getattr(args, "sucker_rotation_offset_deg", AppConfig.sucker_rotation_offset_deg)
+        ),
+        sucker_rotation_invert=bool(getattr(args, "sucker_rotation_invert", AppConfig.sucker_rotation_invert)),
+        sucker_rotation_min_deg=float(getattr(args, "sucker_rotation_min_deg", AppConfig.sucker_rotation_min_deg)),
+        sucker_rotation_max_deg=float(getattr(args, "sucker_rotation_max_deg", AppConfig.sucker_rotation_max_deg)),
+        sucker_rotation_duration_sec=float(
+            getattr(args, "sucker_rotation_duration_sec", AppConfig.sucker_rotation_duration_sec)
+        ),
+        sucker_rotation_angle_quality_threshold=float(
+            getattr(
+                args,
+                "sucker_rotation_angle_quality_threshold",
+                AppConfig.sucker_rotation_angle_quality_threshold,
+            )
+        ),
     )
     stage_motion_sec = getattr(args, "stage_motion_sec", None)
     continue_motion_sec = getattr(args, "continue_motion_sec", None)
@@ -3946,6 +4000,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--pick-cyl-radius-bias-mm", type=float, default=AppConfig.pick_cyl_radius_bias_mm)
     parser.add_argument("--pick-cyl-tangent-bias-mm", type=float, default=AppConfig.pick_cyl_tangent_bias_mm)
     parser.add_argument("--pick-cyl-theta-bias-deg", type=float, default=AppConfig.pick_cyl_theta_bias_deg)
+    parser.add_argument("--sucker-rotation-enabled", action="store_true", default=AppConfig.sucker_rotation_enabled)
+    parser.add_argument("--no-sucker-rotation", action="store_false", dest="sucker_rotation_enabled")
+    parser.add_argument("--sucker-rotation-offset-deg", type=float, default=AppConfig.sucker_rotation_offset_deg)
+    parser.add_argument("--sucker-rotation-invert", action="store_true", default=AppConfig.sucker_rotation_invert)
+    parser.add_argument("--sucker-rotation-normal", action="store_false", dest="sucker_rotation_invert")
+    parser.add_argument("--sucker-rotation-min-deg", type=float, default=AppConfig.sucker_rotation_min_deg)
+    parser.add_argument("--sucker-rotation-max-deg", type=float, default=AppConfig.sucker_rotation_max_deg)
+    parser.add_argument("--sucker-rotation-duration-sec", type=float, default=AppConfig.sucker_rotation_duration_sec)
+    parser.add_argument(
+        "--sucker-rotation-angle-quality-threshold",
+        type=float,
+        default=AppConfig.sucker_rotation_angle_quality_threshold,
+    )
     parser.add_argument("--stage-motion-sec", type=float, default=None)
     parser.add_argument("--continue-motion-sec", type=float, default=None)
     parser.add_argument("--smoke-test-ms", type=int, default=0, help="Auto quit after N ms for smoke tests.")

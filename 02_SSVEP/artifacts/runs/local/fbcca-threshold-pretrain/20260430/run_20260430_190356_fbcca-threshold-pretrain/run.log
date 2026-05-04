@@ -1,7 +1,0 @@
-[2026-04-30T19:03:56] Threshold-only FBCCA pretrain start | manifests=1
-[2026-04-30T19:03:56] Dataset loaded | subject=subject002 sessions=1 trials=39 control=34 idle=5
-[2026-04-30T19:03:56] Default FBCCA feature extraction | win=3s step=0.25s backend=cpu
-[2026-04-30T19:03:57] Feature rows ready | rows=351 backend_used=cpu
-[2026-04-30T19:03:58] Thresholds fitted | score=0.162779 ratio=1.621237 margin=0.225247 recall=1.0000 idle_fp/min=0.0000
-[2026-04-30T19:03:58] Realtime profile published | C:\Users\P1233\Desktop\brain\brain_code\02_SSVEP\artifacts\deployed_profiles\fbcca_profile.json
-[2026-04-30T19:03:58] Threshold-only FBCCA pretrain complete | profile=C:\Users\P1233\Desktop\brain\brain_code\02_SSVEP\artifacts\runs\local\fbcca-threshold-pretrain\20260430\run_20260430_190356_fbcca-threshold-pretrain\fbcca_profile.json

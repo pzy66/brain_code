@@ -22,8 +22,11 @@ MNE_HOME_DIR.mkdir(parents=True, exist_ok=True)
 os.environ.setdefault("_MNE_FAKE_HOME_DIR", str(MNE_HOME_DIR))
 if str(SSVEP_ROOT) not in sys.path:
     sys.path.insert(0, str(SSVEP_ROOT))
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 import mne  # noqa: E402
+from brain_workspace.paths import SSVEP_DATASET_DIR  # noqa: E402
 from ssvep_core.async_fbcca_idle_standalone import TrialSpec, create_decoder  # noqa: E402
 
 
@@ -387,7 +390,7 @@ def main() -> int:
     parser.add_argument(
         "--dataset-root",
         type=Path,
-        default=SSVEP_ROOT / "artifacts" / "datasets" / "external" / "dataset_ssvep_led_github",
+        default=SSVEP_DATASET_DIR / "external" / "dataset_ssvep_led_github",
     )
     parser.add_argument("--win-secs", type=str, default="2.0,3.0")
     parser.add_argument("--latency-sec", type=float, default=0.14)

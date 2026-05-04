@@ -92,6 +92,39 @@ def test_cylindrical_target_selection_emits_pick_cyl_command() -> None:
     assert robot_commands == ["PICK_CYL 12.50 145.00"]
 
 
+def test_target_selection_appends_sucker_angle_when_quality_is_high() -> None:
+    config = AppConfig(
+        roi_center=(100.0, 100.0),
+        roi_radius=120.0,
+        sucker_rotation_offset_deg=2.0,
+        sucker_rotation_angle_quality_threshold=0.2,
+    )
+    controller = TaskController(config)
+    target = VisionTarget(
+        id=8,
+        bbox=(90, 90, 110, 110),
+        center_px=(100, 100),
+        raw_center=(100, 100),
+        confidence=0.95,
+        command_mode="world",
+        command_point=(10.0, -120.0),
+        grasp_angle_deg=20.0,
+        grasp_angle_quality=0.8,
+    )
+
+    start_effects = controller.handle_event(Event(source="system", type="start_task", timestamp=1.0))
+    timer_id = start_effects[-1].payload["timer_id"]
+    controller.handle_event(Event(source="vision", type="vision_update", value=[target], timestamp=2.0))
+    controller.handle_event(Event(source="system", type="timer_expired", value=timer_id, timestamp=11.0))
+    controller.handle_event(Event(source="ssvep", type="decision_confirm", timestamp=12.0))
+    controller.handle_event(Event(source="ssvep", type="target_selected", value=0, timestamp=13.0))
+
+    effects = controller.handle_event(Event(source="ssvep", type="decision_confirm", timestamp=14.0))
+
+    robot_commands = [effect.payload["command"] for effect in effects if effect.type == "robot_command"]
+    assert robot_commands == ["PICK_WORLD 10.00 -120.00 22.00"]
+
+
 def test_invalid_target_payload_is_rejected_before_grab_confirm() -> None:
     config = AppConfig(roi_center=(100.0, 100.0), roi_radius=120.0)
     controller = TaskController(config)

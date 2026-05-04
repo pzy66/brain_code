@@ -36,6 +36,8 @@ from hybrid_controller_ros.srv import (
     PickWorldResponse,
     SetPickTuning,
     SetPickTuningResponse,
+    SetSuckerRotation,
+    SetSuckerRotationResponse,
 )
 
 
@@ -217,6 +219,13 @@ class HybridControllerRuntimeNode(object):
                 "motion_settle_sec": 0.08,
                 "teleop_min_duration": 0.12,
                 "teleop_settle_sec": 0.02,
+                "sucker_rotation_offset_deg": 0.0,
+                "sucker_rotation_invert": False,
+                "sucker_rotation_center_deg": 90.0,
+                "sucker_rotation_min_deg": 45.0,
+                "sucker_rotation_max_deg": 135.0,
+                "sucker_rotation_duration_sec": 0.10,
+                "sucker_rotation_settle_sec": 0.05,
             },
             home_pose=(0.0, -120.0, 160.0),
         )
@@ -262,6 +271,7 @@ class HybridControllerRuntimeNode(object):
         rospy.Service("/hybrid_controller/move_cyl_auto", MoveCylAuto, self._handle_move_cyl_auto)
         rospy.Service("/hybrid_controller/pick_cyl", PickCyl, self._handle_pick_cyl)
         rospy.Service("/hybrid_controller/pick_world", PickWorld, self._handle_pick_world)
+        rospy.Service("/hybrid_controller/set_sucker_rotation", SetSuckerRotation, self._handle_set_sucker_rotation)
         rospy.Service("/hybrid_controller/get_pick_tuning", GetPickTuning, self._handle_get_pick_tuning)
         rospy.Service("/hybrid_controller/set_pick_tuning", SetPickTuning, self._handle_set_pick_tuning)
         rospy.Timer(rospy.Duration(0.05), self._on_teleop_tick)
@@ -383,6 +393,9 @@ class HybridControllerRuntimeNode(object):
             self.executor.start_pick_cyl,
             float(request.theta_deg),
             float(request.radius_mm),
+            None
+            if not bool(getattr(request, "use_sucker_rotation", False))
+            else float(getattr(request, "sucker_rotation_deg", 0.0) or 0.0),
         )
         return PickCylResponse(ok=ok, message=message)
 
@@ -392,8 +405,19 @@ class HybridControllerRuntimeNode(object):
             self.executor.start_pick_world,
             float(request.x_mm),
             float(request.y_mm),
+            None
+            if not bool(getattr(request, "use_sucker_rotation", False))
+            else float(getattr(request, "sucker_rotation_deg", 0.0) or 0.0),
         )
         return PickWorldResponse(ok=ok, message=message)
+
+    def _handle_set_sucker_rotation(self, request):
+        response = self.executor.set_sucker_rotation(
+            float(request.angle_deg),
+            None if float(request.duration_sec) <= 0.0 else float(request.duration_sec),
+        )
+        ok = str(response).strip().upper().startswith("ACK")
+        return SetSuckerRotationResponse(ok=ok, message=str(response))
 
     def _handle_get_pick_tuning(self, _request):
         tuning = self.executor.get_pick_tuning()
@@ -563,6 +587,11 @@ class HybridControllerRuntimeNode(object):
         msg.post_pick_settle_z = float(snapshot.get("post_pick_settle_z", 0.0) or 0.0)
         msg.release_mode_effective = str(snapshot.get("release_mode_effective", ""))
         msg.last_ack = str(snapshot.get("last_ack", ""))
+        msg.sucker_rotation_supported = bool(snapshot.get("sucker_rotation_supported", False))
+        msg.sucker_rotation_logical_deg = float(snapshot.get("sucker_rotation_logical_deg", 0.0) or 0.0)
+        msg.sucker_rotation_servo_deg = float(snapshot.get("sucker_rotation_servo_deg", 0.0) or 0.0)
+        msg.sucker_rotation_offset_deg = float(snapshot.get("sucker_rotation_offset_deg", 0.0) or 0.0)
+        msg.sucker_rotation_invert = bool(snapshot.get("sucker_rotation_invert", False))
         self._state_pub.publish(msg)
 
 

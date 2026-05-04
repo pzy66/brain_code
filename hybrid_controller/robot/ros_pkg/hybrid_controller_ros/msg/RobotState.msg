@@ -35,3 +35,8 @@ float32 z_carry_floor_mm
 float32 post_pick_settle_z
 string release_mode_effective
 string last_ack
+bool sucker_rotation_supported
+float32 sucker_rotation_logical_deg
+float32 sucker_rotation_servo_deg
+float32 sucker_rotation_offset_deg
+bool sucker_rotation_invert

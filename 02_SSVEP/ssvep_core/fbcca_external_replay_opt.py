@@ -12,6 +12,8 @@ from typing import Any, Callable, Mapping, Optional, Sequence
 
 import numpy as np
 
+from brain_workspace.paths import SSVEP_DATASET_DIR
+
 from . import fbcca_local_opt as _fbcca
 from . import tdca_local_opt as _tdca
 from .async_fbcca_idle_standalone import (
@@ -58,9 +60,7 @@ DEFAULT_FBCCA_EXTERNAL_TASK = "fbcca-external-replay-opt"
 DEFAULT_FBCCA_EXTERNAL_MODEL = "fbcca"
 DEFAULT_FBCCA_EXTERNAL_CHANNEL_MODE = "all8"
 DEFAULT_FBCCA_EXTERNAL_DATASET_ROOT = (
-    Path(__file__).resolve().parents[1]
-    / "artifacts"
-    / "datasets"
+    SSVEP_DATASET_DIR
     / "external"
     / "dataset_ssvep_led_github"
 )

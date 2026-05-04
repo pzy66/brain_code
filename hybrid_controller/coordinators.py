@@ -71,8 +71,9 @@ class RobotCoordinator:
     def send_move_cyl_auto(self, theta_deg: float, radius_mm: float) -> None:
         self.send_text(f"MOVE_CYL_AUTO {float(theta_deg):.2f} {float(radius_mm):.2f}")
 
-    def send_pick_cyl(self, theta_deg: float, radius_mm: float) -> None:
-        self.send_text(f"PICK_CYL {float(theta_deg):.2f} {float(radius_mm):.2f}")
+    def send_pick_cyl(self, theta_deg: float, radius_mm: float, sucker_rotation_deg: float | None = None) -> None:
+        suffix = "" if sucker_rotation_deg is None else f" {float(sucker_rotation_deg):.2f}"
+        self.send_text(f"PICK_CYL {float(theta_deg):.2f} {float(radius_mm):.2f}{suffix}")
 
     def send_place(self) -> None:
         self.send_text("PLACE")

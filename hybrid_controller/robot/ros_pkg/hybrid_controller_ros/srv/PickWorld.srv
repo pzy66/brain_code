@@ -1,5 +1,7 @@
 float32 x_mm
 float32 y_mm
+bool use_sucker_rotation
+float32 sucker_rotation_deg
 ---
 bool ok
 string message

@@ -136,11 +136,50 @@ class RosbridgeClient:
     def send_move_cyl_auto(self, theta_deg: float, radius_mm: float, *, callback: Optional[Callable[[RosServiceResult], None]] = None) -> None:
         self._call_service("move_cyl_auto", {"theta_deg": float(theta_deg), "radius_mm": float(radius_mm)}, callback=callback)
 
-    def send_pick_cyl(self, theta_deg: float, radius_mm: float, *, callback: Optional[Callable[[RosServiceResult], None]] = None) -> None:
-        self._call_service("pick_cyl", {"theta_deg": float(theta_deg), "radius_mm": float(radius_mm)}, callback=callback)
+    def send_pick_cyl(
+        self,
+        theta_deg: float,
+        radius_mm: float,
+        *,
+        sucker_rotation_deg: float | None = None,
+        callback: Optional[Callable[[RosServiceResult], None]] = None,
+    ) -> None:
+        payload = {
+            "theta_deg": float(theta_deg),
+            "radius_mm": float(radius_mm),
+            "use_sucker_rotation": sucker_rotation_deg is not None,
+            "sucker_rotation_deg": 0.0 if sucker_rotation_deg is None else float(sucker_rotation_deg),
+        }
+        self._call_service("pick_cyl", payload, callback=callback)
 
-    def send_pick_world(self, x_mm: float, y_mm: float, *, callback: Optional[Callable[[RosServiceResult], None]] = None) -> None:
-        self._call_service("pick_world", {"x_mm": float(x_mm), "y_mm": float(y_mm)}, callback=callback)
+    def send_pick_world(
+        self,
+        x_mm: float,
+        y_mm: float,
+        *,
+        sucker_rotation_deg: float | None = None,
+        callback: Optional[Callable[[RosServiceResult], None]] = None,
+    ) -> None:
+        payload = {
+            "x_mm": float(x_mm),
+            "y_mm": float(y_mm),
+            "use_sucker_rotation": sucker_rotation_deg is not None,
+            "sucker_rotation_deg": 0.0 if sucker_rotation_deg is None else float(sucker_rotation_deg),
+        }
+        self._call_service("pick_world", payload, callback=callback)
+
+    def send_sucker_rotation(
+        self,
+        angle_deg: float,
+        *,
+        duration_sec: float | None = None,
+        callback: Optional[Callable[[RosServiceResult], None]] = None,
+    ) -> None:
+        self._call_service(
+            "set_sucker_rotation",
+            {"angle_deg": float(angle_deg), "duration_sec": 0.0 if duration_sec is None else float(duration_sec)},
+            callback=callback,
+        )
 
     def get_pick_tuning(self, *, callback: Optional[Callable[[RosServiceResult], None]] = None) -> None:
         self._call_service("get_pick_tuning", {}, callback=callback)
@@ -268,6 +307,7 @@ class RosbridgeClient:
             "move_cyl_auto": roslibpy.Service(self._ros, "/hybrid_controller/move_cyl_auto", "hybrid_controller_ros/MoveCylAuto"),
             "pick_cyl": roslibpy.Service(self._ros, "/hybrid_controller/pick_cyl", "hybrid_controller_ros/PickCyl"),
             "pick_world": roslibpy.Service(self._ros, "/hybrid_controller/pick_world", "hybrid_controller_ros/PickWorld"),
+            "set_sucker_rotation": roslibpy.Service(self._ros, "/hybrid_controller/set_sucker_rotation", "hybrid_controller_ros/SetSuckerRotation"),
             "get_pick_tuning": roslibpy.Service(self._ros, "/hybrid_controller/get_pick_tuning", "hybrid_controller_ros/GetPickTuning"),
             "set_pick_tuning": roslibpy.Service(self._ros, "/hybrid_controller/set_pick_tuning", "hybrid_controller_ros/SetPickTuning"),
             "rosapi_get_param": roslibpy.Service(self._ros, "/rosapi/get_param", "rosapi/GetParam"),
@@ -374,6 +414,11 @@ class RosbridgeClient:
             },
             "post_pick_settle_z": float(message.get("post_pick_settle_z", 0.0)),
             "release_mode_effective": str(message.get("release_mode_effective", "")),
+            "sucker_rotation_supported": bool(message.get("sucker_rotation_supported", False)),
+            "sucker_rotation_logical_deg": message.get("sucker_rotation_logical_deg"),
+            "sucker_rotation_servo_deg": message.get("sucker_rotation_servo_deg"),
+            "sucker_rotation_offset_deg": float(message.get("sucker_rotation_offset_deg", 0.0)),
+            "sucker_rotation_invert": bool(message.get("sucker_rotation_invert", False)),
         }
 
     def _emit_status(self, message: str) -> None:

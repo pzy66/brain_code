@@ -11,6 +11,12 @@ def test_parse_command_text_success() -> None:
     assert args == ["10", "200"]
 
 
+def test_parse_command_text_accepts_optional_sucker_rotation_args() -> None:
+    assert parse_command_text("PICK_WORLD 10 -120 25")[1] == ["10", "-120", "25"]
+    assert parse_command_text("PICK_CYL 5 130 -15")[1] == ["5", "130", "-15"]
+    assert parse_command_text("SET_SUCKER_ROTATION 30 0.2")[1] == ["30", "0.2"]
+
+
 def test_parse_command_text_rejects_bad_arity() -> None:
     with pytest.raises(CommandParseError) as exc:
         parse_command_text("PICK_CYL 10")
@@ -21,4 +27,3 @@ def test_parse_command_text_rejects_unknown_command() -> None:
     with pytest.raises(CommandParseError) as exc:
         parse_command_text("FOO 1 2")
     assert "Unsupported command" in str(exc.value)
-

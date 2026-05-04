@@ -1,5 +1,7 @@
 float32 theta_deg
 float32 radius_mm
+bool use_sucker_rotation
+float32 sucker_rotation_deg
 ---
 bool ok
 string message

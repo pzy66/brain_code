@@ -198,11 +198,24 @@ class TaskController:
                 return
             command_mode = str(self.context.selected_target_command_mode or "pixel").strip().lower()
             raw_x, raw_y = self.context.selected_target_command_point
+            angle_suffix = ""
+            if (
+                bool(self.config.sucker_rotation_enabled)
+                and command_mode in {"world", "cyl"}
+                and self.context.selected_target_grasp_angle_deg is not None
+                and float(self.context.selected_target_grasp_angle_quality)
+                >= float(self.config.sucker_rotation_angle_quality_threshold)
+            ):
+                command_angle_deg = float(self.context.selected_target_grasp_angle_deg)
+                if bool(self.config.sucker_rotation_invert):
+                    command_angle_deg = -command_angle_deg
+                command_angle_deg += float(self.config.sucker_rotation_offset_deg)
+                angle_suffix = f" {command_angle_deg:.2f}"
             self._set_state(TaskState.S2_PICKING, effects)
             if command_mode == "world":
-                command = f"PICK_WORLD {raw_x:.2f} {raw_y:.2f}"
+                command = f"PICK_WORLD {raw_x:.2f} {raw_y:.2f}{angle_suffix}"
             elif command_mode == "cyl":
-                command = f"PICK_CYL {raw_x:.2f} {raw_y:.2f}"
+                command = f"PICK_CYL {raw_x:.2f} {raw_y:.2f}{angle_suffix}"
             else:
                 command = f"PICK {raw_x:.2f} {raw_y:.2f}"
             effects.append(Effect("robot_command", {"command": command}))
@@ -276,6 +289,8 @@ class TaskController:
         self.context.selected_target_raw_center = target.raw_center
         self.context.selected_target_command_mode = command_mode
         self.context.selected_target_command_point = command_point
+        self.context.selected_target_grasp_angle_deg = getattr(target, "grasp_angle_deg", None)
+        self.context.selected_target_grasp_angle_quality = float(getattr(target, "grasp_angle_quality", 0.0) or 0.0)
         self._set_state(TaskState.S2_GRAB_CONFIRM, effects)
 
     def _handle_robot_ack(self, event: Event, effects: list[Effect]) -> None:

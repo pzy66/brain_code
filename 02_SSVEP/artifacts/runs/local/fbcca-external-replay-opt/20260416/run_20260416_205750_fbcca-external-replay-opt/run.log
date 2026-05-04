@@ -1,3 +1,0 @@
-[fbcca-external-replay-opt] dataset loaded: subject=Subject2 sessions=4 preset=smoke8 outer_eval=loso4
-[fbcca-external-replay-opt] execution plan: folds=4 parallel_fold_workers=4 compute_backend=auto
-[fbcca-external-replay-opt] report saved: <repo>\02_SSVEP\artifacts\runs\local\fbcca-external-replay-opt\20260416\run_20260416_205750_fbcca-external-replay-opt\report.json

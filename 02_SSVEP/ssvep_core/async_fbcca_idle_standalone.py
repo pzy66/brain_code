@@ -23,6 +23,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import brainflow_compat  # noqa: F401
+from brain_workspace.paths import SSVEP_DATASET_DIR, SSVEP_PROFILE_DIR
 
 import numpy as np
 import scipy.linalg
@@ -71,8 +72,8 @@ DEFAULT_NH = 3
 DEFAULT_BOARD_ID = BoardIds.CYTON_BOARD.value if BoardIds is not None else 0
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 ARTIFACTS_DIR = PROJECT_DIR / "artifacts"
-DEPLOYED_PROFILES_DIR = ARTIFACTS_DIR / "deployed_profiles"
-DATASETS_DIR = ARTIFACTS_DIR / "datasets"
+DEPLOYED_PROFILES_DIR = SSVEP_PROFILE_DIR
+DATASETS_DIR = SSVEP_DATASET_DIR
 DEFAULT_PROFILE_PATH = DEPLOYED_PROFILES_DIR / "default_profile.json"
 MODEL_FEATURE_NAMES = ("top1_score", "ratio", "margin", "normalized_top1", "score_entropy")
 DEFAULT_STREAM_WARMUP_SEC = 1.0

@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
+import os
 import sys
 import socket
 import time
 import math
+from pathlib import Path
 import cv2
 import numpy as np
 from ultralytics import YOLO
@@ -11,13 +13,19 @@ from PyQt5.QtWidgets import QApplication, QWidget
 from PyQt5.QtGui import QPainter, QPen, QColor, QImage, QBrush, QFont
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QPoint
 
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from brain_workspace.paths import VISION_DATASET_DIR
+
 # === 1. 配置区域 ===
 ROBOT_IP = "192.168.149.1"
 ROBOT_PORT = 8888
 STREAM_URL = f"http://{ROBOT_IP}:8080/stream?topic=/usb_cam/image_rect_color"
 
 # YOLO 模型路径 (请修改为你电脑上的实际路径)
-WEIGHTS = r"C:\Users\Administrator\PycharmProjects\Robot\runs\segment\train_640_x_model2\weights\best.pt"
+WEIGHTS = str(Path(os.environ.get("BRAIN_VISION_WEIGHTS", VISION_DATASET_DIR / "models" / "best.pt")).expanduser())
 CONF = 0.60
 
 # 机械臂物理范围 (和 Server 端保持一致)

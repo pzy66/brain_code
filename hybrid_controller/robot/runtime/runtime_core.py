@@ -12,13 +12,14 @@ COMMAND_ARG_COUNTS = {
     "RESET": 0,
     "ABORT": 0,
     "SUCKER_OFF": 0,
+    "SET_SUCKER_ROTATION": (1, 2),
     "PLACE": 0,
     "MOVE": 2,
     "MOVE_CYL": 3,
     "MOVE_CYL_AUTO": 2,
     "PICK": 2,
-    "PICK_WORLD": 2,
-    "PICK_CYL": 2,
+    "PICK_WORLD": (2, 3),
+    "PICK_CYL": (2, 3),
 }
 
 COMMAND_ARG_MESSAGES = {
@@ -26,13 +27,14 @@ COMMAND_ARG_MESSAGES = {
     "RESET": "RESET takes no arguments",
     "ABORT": "ABORT takes no arguments",
     "SUCKER_OFF": "SUCKER_OFF takes no arguments",
+    "SET_SUCKER_ROTATION": "SET_SUCKER_ROTATION requires angle_deg [duration_sec]",
     "PLACE": "PLACE takes no arguments",
     "MOVE": "MOVE requires x y",
     "MOVE_CYL": "MOVE_CYL requires theta r z",
     "MOVE_CYL_AUTO": "MOVE_CYL_AUTO requires theta r",
     "PICK": "PICK requires pixel_x pixel_y",
-    "PICK_WORLD": "PICK_WORLD requires x y",
-    "PICK_CYL": "PICK_CYL requires theta r",
+    "PICK_WORLD": "PICK_WORLD requires x y [sucker_angle_deg]",
+    "PICK_CYL": "PICK_CYL requires theta r [sucker_angle_deg]",
 }
 
 
@@ -46,7 +48,13 @@ def parse_command_text(line: str) -> Tuple[str, List[str]]:
     if expected is None:
         raise CommandParseError("Unsupported command: {}".format(text))
     args = list(parts[1:])
-    if len(args) != int(expected):
+    if isinstance(expected, (tuple, list)):
+        lower = int(expected[0])
+        upper = int(expected[1])
+        valid_arity = lower <= len(args) <= upper
+    else:
+        valid_arity = len(args) == int(expected)
+    if not valid_arity:
         message = COMMAND_ARG_MESSAGES.get(command, "Invalid command arguments")
         raise CommandParseError(message)
     return command, args

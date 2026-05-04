@@ -7,6 +7,8 @@ from typing import Any, Callable, Optional, Sequence
 
 import numpy as np
 
+from brain_workspace.paths import SSVEP_PROFILE_DIR
+
 from .async_fbcca_idle_standalone import (
     DEFAULT_CALIBRATION_SEED,
     DEFAULT_GPU_CACHE_MODE,
@@ -34,8 +36,8 @@ from .profile_v2 import DEFAULT_GATE_FEATURES, PROFILE_V2_VERSION
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
-DEFAULT_FAST_FBCCA_SESSION_PROFILE_PATH = PROJECT_DIR / "artifacts" / "deployed_profiles" / "fbcca_profile.json"
-DEFAULT_FAST_FBCCA_HISTORY_DIR = PROJECT_DIR / "artifacts" / "deployed_profiles" / "pretrain_history"
+DEFAULT_FAST_FBCCA_SESSION_PROFILE_PATH = SSVEP_PROFILE_DIR / "fbcca_profile.json"
+DEFAULT_FAST_FBCCA_HISTORY_DIR = SSVEP_PROFILE_DIR / "pretrain_history"
 DEFAULT_FAST_FBCCA_TARGET_REPEATS = 2
 DEFAULT_FAST_FBCCA_IDLE_REPEATS = 4
 DEFAULT_FAST_FBCCA_PREPARE_SEC = 0.75

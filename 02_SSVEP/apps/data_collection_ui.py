@@ -38,9 +38,12 @@ except Exception:
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 BRAIN_CODE_ROOT = PROJECT_DIR.parent
+if str(BRAIN_CODE_ROOT) not in sys.path:
+    sys.path.insert(0, str(BRAIN_CODE_ROOT))
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
+from brain_workspace.paths import DATASETS_ROOT, SSVEP_DATASET_DIR, resolve_data_path
 from ssvep_core.async_fbcca_idle_standalone import (
     BoardShim,
     DEFAULT_BOARD_ID,
@@ -79,7 +82,7 @@ except Exception:
 
 
 THIS_DIR = Path(__file__).resolve().parent
-DEFAULT_DATASET_DIR = PROJECT_DIR / "artifacts" / "datasets"
+DEFAULT_DATASET_DIR = SSVEP_DATASET_DIR
 MIN_TRIAL_QUALITY_RATIO = 0.90
 MAX_TRIAL_RETRIES = 3
 MIN_ACTIVE_SEC_FOR_TRAINING = 1.5
@@ -126,14 +129,12 @@ def _path_is_relative_to(path: Path, root: Path) -> bool:
 
 
 def resolve_dataset_dir(value: str | Path | None = None) -> Path:
-    raw = "" if value is None else str(value).strip()
-    candidate = Path(raw).expanduser() if raw else DEFAULT_DATASET_DIR
-    if not candidate.is_absolute():
-        candidate = PROJECT_DIR / candidate
-    resolved = candidate.resolve()
-    if not _path_is_relative_to(resolved, BRAIN_CODE_ROOT):
-        raise ValueError(f"SSVEP dataset dir must be inside brain_code: {resolved}")
-    return resolved
+    return resolve_data_path(
+        value,
+        base=DATASETS_ROOT,
+        default=DEFAULT_DATASET_DIR,
+        purpose="SSVEP dataset dir",
+    )
 
 
 def wallclock_iso_timestamp() -> str:

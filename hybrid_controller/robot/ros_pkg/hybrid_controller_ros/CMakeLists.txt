@@ -22,6 +22,7 @@ add_service_files(
   PickCyl.srv
   PickWorld.srv
   SetPickTuning.srv
+  SetSuckerRotation.srv
 )
 
 generate_messages(

@@ -1,2 +1,0 @@
-[fbcca-external-replay-opt] dataset loaded: subject=Subject2 sessions=4 preset=reduced24 outer_eval=loso4
-[fbcca-external-replay-opt] execution plan: folds=4 parallel_fold_workers=4 compute_backend=auto

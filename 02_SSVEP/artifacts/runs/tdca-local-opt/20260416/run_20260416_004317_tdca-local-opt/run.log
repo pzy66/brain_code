@@ -1,8 +1,0 @@
-[00:43:17] [tdca-local-opt] report directory prepared: <repo>\02_SSVEP\artifacts\runs\tdca-local-opt\20260416\run_20260416_004317_tdca-local-opt
-[00:43:17] [tdca-local-opt] compute backend prepared: requested=cpu effective=cpu
-[00:43:24] [tdca-local-opt] repeat=1/1 candidate=1/4 variant=tdca_like_legacy|win=2|delay=2|n_components=2
-[00:43:29] [tdca-local-opt] repeat=1/1 candidate=2/4 variant=tdca_like_legacy|win=2.5|delay=2|n_components=2
-[00:43:33] [tdca-local-opt] repeat=1/1 candidate=3/4 variant=tdca_paper_aligned|win=3|delay=3|n_components=2
-[00:43:37] [tdca-local-opt] repeat=1/1 candidate=4/4 variant=tdca_paper_aligned|win=3.5|delay=3|n_components=2
-[00:44:07] [tdca-local-opt] report saved: <repo>\02_SSVEP\artifacts\runs\tdca-local-opt\20260416\run_20260416_004317_tdca-local-opt\report.json
-[00:44:07] [tdca-local-opt] profile saved: <repo>\02_SSVEP\artifacts\runs\tdca-local-opt\20260416\run_20260416_004317_tdca-local-opt\default_profile.json

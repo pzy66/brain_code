@@ -17,6 +17,11 @@ from sklearn.metrics import accuracy_score, cohen_kappa_score, confusion_matrix,
 from sklearn.model_selection import GroupShuffleSplit, train_test_split
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+BRAIN_CODE_ROOT = PROJECT_ROOT.parents[1]
+if str(BRAIN_CODE_ROOT) not in sys.path:
+    sys.path.insert(0, str(BRAIN_CODE_ROOT))
+from brain_workspace.paths import MI_DATASET_DIR
+
 SHARED_ROOT = PROJECT_ROOT / "code" / "shared"
 if str(SHARED_ROOT) not in sys.path:
     sys.path.insert(0, str(SHARED_ROOT))
@@ -49,7 +54,7 @@ GATE_CLASS_NAMES = ["rest", "control"]
 GATE_DISPLAY_CLASS_NAMES = ["NO CONTROL", "CONTROL"]
 ARTIFACT_REJECTOR_DISPLAY_CLASS_NAMES = ["CLEAN", "ARTIFACT"]
 CONTINUOUS_NO_CONTROL_LABEL = "no_control"
-DEFAULT_DATASET_ROOT = PROJECT_ROOT / "datasets" / "custom_mi"
+DEFAULT_DATASET_ROOT = MI_DATASET_DIR
 DEFAULT_MODEL_PATH = PROJECT_ROOT / "code" / "realtime" / "models" / "custom_mi_realtime.joblib"
 DEFAULT_REPORT_PATH = PROJECT_ROOT / "code" / "training" / "reports" / "custom_mi_training_summary.json"
 DEFAULT_WINDOW_SECS = [2.0, 2.5, 3.0]

@@ -35,9 +35,12 @@ from PyQt5.QtWidgets import (
 )
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
+if str(PROJECT_DIR.parent) not in sys.path:
+    sys.path.insert(0, str(PROJECT_DIR.parent))
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
+from brain_workspace.paths import HYBRID_SSVEP_PROFILE_DIR, SSVEP_DATASET_DIR, SSVEP_PROFILE_DIR
 from ssvep_core.async_fbcca_idle_standalone import (
     DEFAULT_ASYNC_DECISION_TIME_MODE,
     DEFAULT_BENCHMARK_CHANNEL_MODES,
@@ -146,12 +149,12 @@ THIS_DIR = Path(__file__).resolve().parent
 DEFAULT_ARTIFACT_ROOT = PROJECT_DIR / "artifacts"
 DEFAULT_LOCAL_RUN_ROOT = DEFAULT_ARTIFACT_ROOT / "runs" / "local"
 DEFAULT_REPORT_DIR = DEFAULT_LOCAL_RUN_ROOT
-DEFAULT_DATASET_ROOT = PROJECT_DIR / "artifacts" / "datasets"
+DEFAULT_DATASET_ROOT = SSVEP_DATASET_DIR
 DEFAULT_REPORT_ROOT = DEFAULT_LOCAL_RUN_ROOT
-HYBRID_PROFILE_DIR = PROJECT_DIR.parent / "hybrid_controller" / "dataset" / "ssvep_profiles"
+HYBRID_PROFILE_DIR = HYBRID_SSVEP_PROFILE_DIR
 HYBRID_CURRENT_PROFILE_PATH = HYBRID_PROFILE_DIR / "current_fbcca_profile.json"
-SSVEP_REALTIME_PROFILE_PATH = DEFAULT_ARTIFACT_ROOT / "deployed_profiles" / "fbcca_profile.json"
-SSVEP_REALTIME_PROFILE_V2_PATH = DEFAULT_ARTIFACT_ROOT / "deployed_profiles" / "fbcca_profile_v2.json"
+SSVEP_REALTIME_PROFILE_PATH = SSVEP_PROFILE_DIR / "fbcca_profile.json"
+SSVEP_REALTIME_PROFILE_V2_PATH = SSVEP_PROFILE_DIR / "fbcca_profile_v2.json"
 SSVEP_REALTIME_EXPECTED_FREQS = (8.0, 10.0, 12.0, 15.0)
 TRAIN_EVAL_DEFAULT_COMPUTE_BACKEND = "cuda"
 TRAIN_EVAL_DEFAULT_GPU_PRECISION = "float32"
@@ -1721,7 +1724,7 @@ class TrainingEvaluationWindow(QMainWindow):
     def _resolve_local_artifacts(self, *, task_name: str) -> dict[str, Path]:
         task_token = str(task_name or self._task or DEFAULT_TRAIN_EVAL_TASK)
         report_stub = DEFAULT_LOCAL_RUN_ROOT / "report.json"
-        profile_stub = PROJECT_DIR / "artifacts" / "deployed_profiles" / "profile.json"
+        profile_stub = SSVEP_PROFILE_DIR / "profile.json"
         artifacts = resolve_ssvep_run_artifacts(
             task=task_token,
             report_path=report_stub,

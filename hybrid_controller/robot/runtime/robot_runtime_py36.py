@@ -12,17 +12,26 @@ import sys
 
 try:
     from hybrid_controller.robot.runtime.runtime_core import CommandParseError, parse_command_text
+    from hybrid_controller.robot.runtime.sucker_rotation import (
+        map_logical_to_servo_angle_deg,
+        normalize_logical_sucker_angle_deg,
+    )
 except Exception:
     _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
     if _THIS_DIR not in sys.path:
         sys.path.insert(0, _THIS_DIR)
     try:
         from runtime_core import CommandParseError, parse_command_text
+        from sucker_rotation import map_logical_to_servo_angle_deg, normalize_logical_sucker_angle_deg
     except Exception:
         _REPO_ROOT = os.path.abspath(os.path.join(_THIS_DIR, "..", "..", ".."))
         if _REPO_ROOT not in sys.path:
             sys.path.insert(0, _REPO_ROOT)
         from hybrid_controller.robot.runtime.runtime_core import CommandParseError, parse_command_text
+        from hybrid_controller.robot.runtime.sucker_rotation import (
+            map_logical_to_servo_angle_deg,
+            normalize_logical_sucker_angle_deg,
+        )
 
 
 STATE_IDLE = "IDLE"
@@ -151,9 +160,10 @@ class Sender(object):
 
 
 class ActuatorAdapter(object):
-    def __init__(self, arm, sucker):
+    def __init__(self, arm, sucker, sucker_rotation_servo=None):
         self._arm = arm
         self._sucker = sucker
+        self._sucker_rotation_servo = sucker_rotation_servo
 
     def go_home(self, duration):
         self._arm.go_home(float(duration), 1)
@@ -190,6 +200,15 @@ class ActuatorAdapter(object):
             return True
         return False
 
+    def sucker_rotation_supported(self):
+        return callable(getattr(self._sucker_rotation_servo, "set_position", None))
+
+    def set_sucker_rotation(self, servo_angle_deg, duration_sec):
+        if not self.sucker_rotation_supported():
+            return False
+        self._sucker_rotation_servo.set_position(float(servo_angle_deg), float(duration_sec))
+        return True
+
 
 class LegacyCartesianKernel(object):
     name = "legacy_cartesian"
@@ -205,9 +224,14 @@ class LegacyCartesianKernel(object):
         self._executor._mark_control_kernel(self.name)
         return self._executor.handle_pick_pixel()
 
-    def start_pick_world(self, sender, target_x, target_y):
+    def start_pick_world(self, sender, target_x, target_y, sucker_rotation_deg=None):
         self._executor._mark_control_kernel(self.name)
-        return self._executor._legacy_start_pick_world_impl(sender, target_x, target_y)
+        return self._executor._legacy_start_pick_world_impl(
+            sender,
+            target_x,
+            target_y,
+            sucker_rotation_deg=sucker_rotation_deg,
+        )
 
 
 class CylindricalKernel(object):
@@ -224,9 +248,14 @@ class CylindricalKernel(object):
         self._executor._mark_control_kernel(self.name)
         return self._executor._cyl_start_move_auto_impl(sender, theta_deg, radius_mm)
 
-    def start_pick(self, sender, theta_deg, radius_mm):
+    def start_pick(self, sender, theta_deg, radius_mm, sucker_rotation_deg=None):
         self._executor._mark_control_kernel(self.name)
-        return self._executor._cyl_start_pick_impl(sender, theta_deg, radius_mm)
+        return self._executor._cyl_start_pick_impl(
+            sender,
+            theta_deg,
+            radius_mm,
+            sucker_rotation_deg=sucker_rotation_deg,
+        )
 
 
 class JetMaxExecutor(object):
@@ -242,7 +271,8 @@ class JetMaxExecutor(object):
             rospy.init_node("hybrid_robot_runtime", anonymous=True, disable_signals=True)
         self.arm = hiwonder.JetMax()
         self.sucker = hiwonder.Sucker()
-        self.actuator = ActuatorAdapter(self.arm, self.sucker)
+        self.sucker_rotation_servo = getattr(hiwonder, "pwm_servo1", None)
+        self.actuator = ActuatorAdapter(self.arm, self.sucker, self.sucker_rotation_servo)
         rospy.sleep(0.15)
 
         self.x_min = float(limits["x_min"])
@@ -284,6 +314,13 @@ class JetMaxExecutor(object):
         self.motion_settle_sec = float(limits.get("motion_settle_sec", 0.08))
         self.teleop_min_duration = float(limits.get("teleop_min_duration", 0.12))
         self.teleop_settle_sec = float(limits.get("teleop_settle_sec", 0.02))
+        self.sucker_rotation_offset_deg = float(limits.get("sucker_rotation_offset_deg", 0.0))
+        self.sucker_rotation_invert = bool(limits.get("sucker_rotation_invert", False))
+        self.sucker_rotation_center_deg = float(limits.get("sucker_rotation_center_deg", 90.0))
+        self.sucker_rotation_min_deg = float(limits.get("sucker_rotation_min_deg", 45.0))
+        self.sucker_rotation_max_deg = float(limits.get("sucker_rotation_max_deg", 135.0))
+        self.sucker_rotation_duration_sec = float(limits.get("sucker_rotation_duration_sec", 0.10))
+        self.sucker_rotation_settle_sec = float(limits.get("sucker_rotation_settle_sec", 0.05))
         origin = getattr(self.arm, "origin", None)
         if origin is not None and len(origin) == 3:
             self.home_pose = (
@@ -322,6 +359,8 @@ class JetMaxExecutor(object):
         self._auto_z_profile = self._build_auto_z_profile()
         self._last_post_pick_settle_z = float(self.z_carry_floor_mm)
         self._last_release_mode_effective = "off"
+        self._last_sucker_rotation_logical_deg = None
+        self._last_sucker_rotation_servo_deg = None
         self._validation_cache_pose = None
         self._validation_cache_report = None
         self._validation_cache_ts = 0.0
@@ -381,6 +420,12 @@ class JetMaxExecutor(object):
                 "pick_tuning": self.get_pick_tuning(),
                 "post_pick_settle_z": float(self._last_post_pick_settle_z),
                 "release_mode_effective": str(self._last_release_mode_effective),
+                "sucker_rotation_supported": self.actuator.sucker_rotation_supported(),
+                "sucker_rotation_logical_deg": self._last_sucker_rotation_logical_deg,
+                "sucker_rotation_servo_deg": self._last_sucker_rotation_servo_deg,
+                "sucker_rotation_offset_deg": float(self.sucker_rotation_offset_deg),
+                "sucker_rotation_invert": bool(self.sucker_rotation_invert),
+                "sucker_rotation_limits_deg": [float(self.sucker_rotation_min_deg), float(self.sucker_rotation_max_deg)],
             }
 
     def get_pick_tuning(self):
@@ -427,11 +472,29 @@ class JetMaxExecutor(object):
     def start_move_cyl_auto(self, sender, theta_deg, radius_mm):
         return self.cylindrical_kernel.start_move_auto(sender, theta_deg, radius_mm)
 
-    def start_pick_world(self, sender, target_x, target_y):
-        return self.legacy_kernel.start_pick_world(sender, target_x, target_y)
+    def start_pick_world(self, sender, target_x, target_y, sucker_rotation_deg=None):
+        return self.legacy_kernel.start_pick_world(sender, target_x, target_y, sucker_rotation_deg)
 
-    def start_pick_cyl(self, sender, theta_deg, radius_mm):
-        return self.cylindrical_kernel.start_pick(sender, theta_deg, radius_mm)
+    def start_pick_cyl(self, sender, theta_deg, radius_mm, sucker_rotation_deg=None):
+        return self.cylindrical_kernel.start_pick(sender, theta_deg, radius_mm, sucker_rotation_deg)
+
+    def set_sucker_rotation(self, angle_deg, duration_sec=None):
+        with self._lock:
+            if self._busy:
+                return "BUSY"
+            if self._state == STATE_ERROR:
+                return format_error_line(ERR_INVALID_STATE, "Robot is in ERROR state; reset is required.")
+        result = self._apply_sucker_rotation(
+            angle_deg,
+            self.sucker_rotation_duration_sec if duration_sec is None else float(duration_sec),
+            True,
+        )
+        if result.get("supported"):
+            return "ACK SET_SUCKER_ROTATION {0:.2f} {1:.2f}".format(
+                float(result.get("logical_angle_deg", 0.0)),
+                float(result.get("servo_angle_deg", 0.0)),
+            )
+        return "ACK SET_SUCKER_ROTATION_UNSUPPORTED"
 
     def _legacy_start_move_impl(self, sender, target_x, target_y):
         target_x = self._clamp(float(target_x), self.x_min, self.x_max)
@@ -513,7 +576,7 @@ class JetMaxExecutor(object):
             self._action_thread.start()
         return None
 
-    def _legacy_start_pick_world_impl(self, sender, target_x, target_y):
+    def _legacy_start_pick_world_impl(self, sender, target_x, target_y, sucker_rotation_deg=None):
         target_x = float(target_x)
         target_y = float(target_y)
         theta_deg, radius_mm, _ = cartesian_to_cylindrical(target_x, target_y, self.z_pick)
@@ -534,19 +597,19 @@ class JetMaxExecutor(object):
             self._abort_event.clear()
             self._action_thread = threading.Thread(
                 target=self._run_pick_world,
-                args=(sender, target_x, target_y),
+                args=(sender, target_x, target_y, self._normalize_optional_sucker_rotation(sucker_rotation_deg)),
                 name="jetmax-pick",
                 daemon=True,
             )
             self._action_thread.start()
         return "ACK PICK_STARTED"
 
-    def _cyl_start_pick_impl(self, sender, theta_deg, radius_mm):
+    def _cyl_start_pick_impl(self, sender, theta_deg, radius_mm, sucker_rotation_deg=None):
         validation = self._validate_cyl_target(theta_deg, radius_mm, self.z_pick)
         if not validation["ok"]:
             return format_error_line(ERR_TARGET_OUT_OF_WORKSPACE, validation["message"])
         target_x, target_y, _ = cylindrical_to_cartesian(theta_deg, radius_mm, self.z_pick)
-        return self._legacy_start_pick_world_impl(sender, target_x, target_y)
+        return self._legacy_start_pick_world_impl(sender, target_x, target_y, sucker_rotation_deg=sucker_rotation_deg)
 
     def start_place(self, sender):
         with self._lock:
@@ -662,6 +725,46 @@ class JetMaxExecutor(object):
             return "off_fallback"
         return "off"
 
+    def _normalize_optional_sucker_rotation(self, angle_deg):
+        if angle_deg is None:
+            return None
+        return normalize_logical_sucker_angle_deg(float(angle_deg))
+
+    def _sucker_servo_angle_for_logical(self, angle_deg):
+        return map_logical_to_servo_angle_deg(
+            float(angle_deg),
+            offset_deg=float(self.sucker_rotation_offset_deg),
+            invert=bool(self.sucker_rotation_invert),
+            center_deg=float(self.sucker_rotation_center_deg),
+            min_deg=float(self.sucker_rotation_min_deg),
+            max_deg=float(self.sucker_rotation_max_deg),
+        )
+
+    def _apply_sucker_rotation(self, angle_deg, duration_sec, allow_unsupported):
+        logical_angle = self._normalize_optional_sucker_rotation(angle_deg)
+        servo_angle = self._sucker_servo_angle_for_logical(logical_angle)
+        with self._lock:
+            self._last_sucker_rotation_logical_deg = float(logical_angle)
+            self._last_sucker_rotation_servo_deg = float(servo_angle)
+        if not self.actuator.sucker_rotation_supported():
+            if allow_unsupported:
+                return {
+                    "ok": True,
+                    "supported": False,
+                    "message": "Sucker rotation unsupported by hardware.",
+                    "logical_angle_deg": float(logical_angle),
+                    "servo_angle_deg": float(servo_angle),
+                }
+            raise RobotCommandError(ERR_HARDWARE_FAILURE, "Sucker rotation unsupported by hardware.")
+        self.actuator.set_sucker_rotation(float(servo_angle), float(duration_sec))
+        return {
+            "ok": True,
+            "supported": True,
+            "message": "ok",
+            "logical_angle_deg": float(logical_angle),
+            "servo_angle_deg": float(servo_angle),
+        }
+
     def _run_move(self, sender, target_x, target_y):
         try:
             self._sync_from_hardware_position()
@@ -735,7 +838,7 @@ class JetMaxExecutor(object):
         except Exception as error:
             self._recover_from_error(ERR_HARDWARE_FAILURE, "MOVE_CYL_AUTO failed: {0}".format(error), sender)
 
-    def _run_pick_world(self, sender, target_x, target_y):
+    def _run_pick_world(self, sender, target_x, target_y, sucker_rotation_deg=None):
         try:
             self._sync_from_hardware_position()
             current_x, current_y, current_z = self._get_position()
@@ -744,6 +847,9 @@ class JetMaxExecutor(object):
                 self._move_to(current_x, current_y, settle_z, None, True)
             self._set_state(STATE_PICK_APPROACH, True, "pick")
             self._move_to(target_x, target_y, self.pick_approach_z_mm, None, True)
+            if sucker_rotation_deg is not None:
+                self._apply_sucker_rotation(sucker_rotation_deg, self.sucker_rotation_duration_sec, True)
+                self._sleep_with_abort(float(self.sucker_rotation_settle_sec))
             self._set_state(STATE_PICK_SUCTION_ON, True, "pick")
             self.actuator.set_sucker(True)
             self._sleep_with_abort(float(self.pick_pre_suction_sec))
@@ -1126,6 +1232,9 @@ class RobotGateway(object):
                 return self.executor.abort()
             if command == "SUCKER_OFF":
                 return self.executor.request_sucker_off()
+            if command == "SET_SUCKER_ROTATION":
+                duration = None if len(args) < 2 else float(args[1])
+                return self.executor.set_sucker_rotation(float(args[0]), duration)
             if command == "MOVE":
                 return self.executor.legacy_kernel.start_move(sender, float(args[0]), float(args[1]))
             if command == "MOVE_CYL":
@@ -1135,9 +1244,11 @@ class RobotGateway(object):
             if command == "PICK":
                 return self.executor.legacy_kernel.start_pick_pixel(sender, float(args[0]), float(args[1]))
             if command == "PICK_WORLD":
-                return self.executor.legacy_kernel.start_pick_world(sender, float(args[0]), float(args[1]))
+                sucker_rotation = None if len(args) < 3 else float(args[2])
+                return self.executor.legacy_kernel.start_pick_world(sender, float(args[0]), float(args[1]), sucker_rotation)
             if command == "PICK_CYL":
-                return self.executor.cylindrical_kernel.start_pick(sender, float(args[0]), float(args[1]))
+                sucker_rotation = None if len(args) < 3 else float(args[2])
+                return self.executor.cylindrical_kernel.start_pick(sender, float(args[0]), float(args[1]), sucker_rotation)
             if command == "PLACE":
                 return self.executor.start_place(sender)
         except CommandParseError as error:

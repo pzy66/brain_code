@@ -31,6 +31,8 @@ class VisionTarget:
     servo_command_point: tuple[float, float] | None = None
     calibration_profile_id: str = ""
     grasp_quality: float = 0.0
+    grasp_angle_deg: float | None = None
+    grasp_angle_quality: float = 0.0
 
     def __post_init__(self) -> None:
         if self.command_point is None and str(self.command_mode or "").strip().lower() == "pixel":
@@ -70,6 +72,8 @@ class VisionTarget:
             "servo_command_point": self.servo_command_point,
             "calibration_profile_id": self.calibration_profile_id,
             "grasp_quality": self.grasp_quality,
+            "grasp_angle_deg": self.grasp_angle_deg,
+            "grasp_angle_quality": self.grasp_angle_quality,
         }
 
 
@@ -136,6 +140,10 @@ def normalize_detections(detections: Iterable[object]) -> list[VisionTarget]:
                     ),
                     calibration_profile_id=str(item.get("calibration_profile_id", "")),
                     grasp_quality=float(item.get("grasp_quality", 0.0)),
+                    grasp_angle_deg=(
+                        None if item.get("grasp_angle_deg") is None else float(item.get("grasp_angle_deg"))
+                    ),
+                    grasp_angle_quality=float(item.get("grasp_angle_quality", 0.0)),
                 )
             )
             continue

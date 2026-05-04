@@ -20,6 +20,8 @@ class TaskContext:
     selected_target_raw_center: Optional[tuple[float, float]] = None
     selected_target_command_mode: Optional[str] = None
     selected_target_command_point: Optional[tuple[float, float]] = None
+    selected_target_grasp_angle_deg: Optional[float] = None
+    selected_target_grasp_angle_quality: float = 0.0
     carrying: bool = False
     last_robot_status: Optional[str] = None
     last_error: Optional[str] = None
@@ -30,3 +32,5 @@ class TaskContext:
         self.selected_target_raw_center = None
         self.selected_target_command_mode = None
         self.selected_target_command_point = None
+        self.selected_target_grasp_angle_deg = None
+        self.selected_target_grasp_angle_quality = 0.0

@@ -18,6 +18,7 @@ def ros_command_requires_ros_route(opcode: str) -> bool:
         "MOVE_CYL_AUTO",
         "PICK_WORLD",
         "PICK_CYL",
+        "SET_SUCKER_ROTATION",
         "PLACE",
         "ABORT",
         "RESET",
@@ -35,7 +36,7 @@ def rewrite_pick_command_with_bias(
 ) -> str:
     text = str(command or "").strip()
     parts = text.split()
-    if len(parts) != 3:
+    if len(parts) not in {3, 4}:
         return text
     opcode = extract_command_opcode(text)
     if opcode not in {"PICK_CYL", "PICK_WORLD"}:
@@ -44,6 +45,7 @@ def rewrite_pick_command_with_bias(
     try:
         raw_a = float(parts[1])
         raw_b = float(parts[2])
+        angle_suffix = "" if len(parts) < 4 else " {0:.2f}".format(float(parts[3]))
     except (TypeError, ValueError):
         return text
 
@@ -63,7 +65,11 @@ def rewrite_pick_command_with_bias(
             tangent_bias_mm=float(tangent_bias_mm),
             pick_z_mm=float(pick_z_mm),
         )
-        return "PICK_CYL {0:.2f} {1:.2f}".format(float(adjusted_theta_deg), float(adjusted_radius_mm))
+        return "PICK_CYL {0:.2f} {1:.2f}{2}".format(
+            float(adjusted_theta_deg),
+            float(adjusted_radius_mm),
+            angle_suffix,
+        )
 
     theta_deg, radius_mm, _ = cartesian_to_cylindrical(float(raw_a), float(raw_b), float(pick_z_mm))
     _, _, adjusted_x_mm, adjusted_y_mm = apply_pick_tool_bias(
@@ -74,7 +80,7 @@ def rewrite_pick_command_with_bias(
         tangent_bias_mm=float(tangent_bias_mm),
         pick_z_mm=float(pick_z_mm),
     )
-    return "PICK_WORLD {0:.2f} {1:.2f}".format(float(adjusted_x_mm), float(adjusted_y_mm))
+    return "PICK_WORLD {0:.2f} {1:.2f}{2}".format(float(adjusted_x_mm), float(adjusted_y_mm), angle_suffix)
 
 
 def apply_pick_tool_bias(
@@ -110,7 +116,28 @@ def apply_pick_tool_bias(
     )
 
 
-def build_pick_command_from_mode_and_point(mode: str, point: object) -> str | None:
+def _coerce_optional_angle_deg(value: object, *, min_quality: float = 0.0, quality: object = None) -> float | None:
+    if value is None:
+        return None
+    try:
+        if quality is not None and float(quality) < float(min_quality):
+            return None
+        angle = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(angle):
+        return None
+    return angle
+
+
+def build_pick_command_from_mode_and_point(
+    mode: str,
+    point: object,
+    *,
+    sucker_angle_deg: object = None,
+    sucker_angle_quality: object = None,
+    sucker_angle_quality_threshold: float = 0.0,
+) -> str | None:
     if not isinstance(point, (tuple, list)) or len(point) < 2:
         return None
     try:
@@ -118,11 +145,17 @@ def build_pick_command_from_mode_and_point(mode: str, point: object) -> str | No
         y_value = float(point[1])
     except (TypeError, ValueError):
         return None
+    angle = _coerce_optional_angle_deg(
+        sucker_angle_deg,
+        min_quality=float(sucker_angle_quality_threshold),
+        quality=sucker_angle_quality,
+    )
+    suffix = "" if angle is None else f" {angle:.2f}"
     mode_text = str(mode or "").strip().lower()
     if mode_text == "cyl":
-        return f"PICK_CYL {x_value:.2f} {y_value:.2f}"
+        return f"PICK_CYL {x_value:.2f} {y_value:.2f}{suffix}"
     if mode_text == "world":
-        return f"PICK_WORLD {x_value:.2f} {y_value:.2f}"
+        return f"PICK_WORLD {x_value:.2f} {y_value:.2f}{suffix}"
     if mode_text in {"pixel", "px"}:
         return f"PICK {x_value:.2f} {y_value:.2f}"
     return None
@@ -131,9 +164,17 @@ def build_pick_command_from_mode_and_point(mode: str, point: object) -> str | No
 def build_pick_command_from_slot_payload(slot: dict[str, object]) -> str | None:
     if not bool(slot.get("actionable", True)):
         return None
+    threshold_raw = slot.get("grasp_angle_quality_threshold")
+    try:
+        angle_quality_threshold = 0.20 if threshold_raw is None else float(threshold_raw)
+    except (TypeError, ValueError):
+        angle_quality_threshold = 0.20
     return build_pick_command_from_mode_and_point(
         str(slot.get("command_mode", "world")),
         slot.get("command_point"),
+        sucker_angle_deg=slot.get("grasp_angle_deg"),
+        sucker_angle_quality=slot.get("grasp_angle_quality"),
+        sucker_angle_quality_threshold=angle_quality_threshold,
     )
 
 
@@ -143,6 +184,9 @@ def build_pick_command_from_target(target: object) -> str | None:
     return build_pick_command_from_mode_and_point(
         str(getattr(target, "command_mode", "world")),
         getattr(target, "command_point", None),
+        sucker_angle_deg=getattr(target, "grasp_angle_deg", None),
+        sucker_angle_quality=getattr(target, "grasp_angle_quality", None),
+        sucker_angle_quality_threshold=0.20,
     )
 
 

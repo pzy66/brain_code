@@ -66,6 +66,7 @@ $trackedFileRows |
     Write-Output
 
 $artifactPatterns = [ordered]@{
+    "root_datasets" = "^datasets/"
     "ssvep_artifacts" = "^02_SSVEP/artifacts/"
     "ssvep_runs" = "^02_SSVEP/artifacts/runs/"
     "ssvep_datasets" = "^02_SSVEP/artifacts/datasets/"

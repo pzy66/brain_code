@@ -1,37 +1,45 @@
-# START HERE
+# Start Here
 
-这个目录是正式代码仓库。日常开发、提交、分支、测试和推送都应该在 `brain_code` 里完成。
+`brain_code` 是正式代码仓库。请在这个目录里开发、测试、提交和推送。
 
-上一级目录是本地工作区，用来放环境文件、本地数据集、交付物和 IDE 配置。
+## 第一次运行
+
+```powershell
+cd C:\Users\P1233\Desktop\brain\brain_code
+$py = & .\tools\resolve_brain_python.cmd
+& $py -m pip install -e ".[dev,gui,ssvep,mi,hybrid]"
+& $py -m brain diagnose
+& $py -m brain launch --simulate
+```
+
+需要打开统一入口时运行：
+
+```powershell
+& $py -m brain
+```
 
 ## 常用入口
 
-- 统一采集界面：[run_unified_collection.py](./run_unified_collection.py)
-- 统一采集历史兼容入口：[unified_collection_ui.py](./unified_collection_ui.py)
-- 混合控制器电脑端 GUI：[hybrid_controller/run_real.py](./hybrid_controller/run_real.py)
-- 混合控制器 SSVEP GUI：[hybrid_controller/run_real_ssvep.py](./hybrid_controller/run_real_ssvep.py)
-- JetMax 端运行脚本：[hybrid_controller/robot/run_hybrid_controller_ros_runtime.sh](./hybrid_controller/robot/run_hybrid_controller_ros_runtime.sh)
+- 统一入口：`python -m brain`
+- 环境诊断：`python -m brain diagnose`
+- MI/SSVEP 统一采集：`run_unified_collection.py`
+- SSVEP 工具启动器：`02_SSVEP/START_SSVEP.py`
+- Hybrid Controller：`hybrid_controller/run_real.py`
+- Hybrid Controller SSVEP 模式：`hybrid_controller/run_real_ssvep.py`
 
-## 目录说明
+## 数据位置
 
-- `brain_workspace`：共享路径、启动引导和环境诊断工具。
-- `unified_collection`：统一 MI/SSVEP 采集界面的实际实现。
-- `01_MI`：MI 采集、训练、实时推理和共享工具。
-- `02_SSVEP`：SSVEP 采集、训练、回放、验证和产物。
-- `hybrid_controller`：集成 MI、SSVEP、视觉和机械臂控制的主程序。
-- `docs`：环境配置、产物策略、代码状态和路线图。
+默认使用仓库内 `datasets/`：
 
-## 维护命令
+- `datasets/MI/`
+- `datasets/SSVEP/`
+- `datasets/vision/`
+- `datasets/profiles/`
+
+如果数据放在外部磁盘，设置：
 
 ```powershell
-cd <repo>
-tools\resolve_brain_python.cmd
-$env:BRAIN_PYTHON_EXE = (& .\tools\resolve_brain_python.cmd)
-& $env:BRAIN_PYTHON_EXE -m brain_workspace.environment
-& $env:BRAIN_PYTHON_EXE -m pytest --collect-only -q -o addopts=
-powershell -ExecutionPolicy Bypass -File .\tools\clean_workspace_temp.ps1 -DryRun
-powershell -ExecutionPolicy Bypass -File .\tools\diagnose_workspace.ps1
-git status --short --ignored
+$env:BRAIN_DATA_ROOT = "D:\brain_data"
 ```
 
-清理脚本只处理缓存和临时产物，不会删除正式数据集、部署 profile、模型或运行结果。
+真实数据、模型权重、运行报告和日志不会进入 Git。

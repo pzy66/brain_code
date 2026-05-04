@@ -45,7 +45,12 @@ from PyQt5.QtWidgets import (
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_DATASET_ROOT = PROJECT_ROOT / "datasets" / "custom_mi"
+BRAIN_CODE_ROOT = PROJECT_ROOT.parents[1]
+if str(BRAIN_CODE_ROOT) not in sys.path:
+    sys.path.insert(0, str(BRAIN_CODE_ROOT))
+from brain_workspace.paths import MI_DATASET_DIR
+
+DEFAULT_DATASET_ROOT = MI_DATASET_DIR
 COLLECTION_MANIFEST_NAME = "collection_manifest.csv"
 RUN_FILENAME_PATTERN = re.compile(
     r"sub-(?P<subject>.+?)_ses-(?P<session>.+?)_run-(?P<run>\d{3})_tpc-(?P<tpc>\d+)_n-(?P<n>\d+)_ok-(?P<ok>\d+)"

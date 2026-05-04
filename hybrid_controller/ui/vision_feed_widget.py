@@ -288,7 +288,17 @@ class VisionFeedWidget(QWidget):
             status = "OK" if slot.get("actionable") else str(slot.get("invalid_reason") or "X")
             err = slot.get("estimated_xy_error_mm")
             err_text = "" if err is None else f" e={float(err):.1f}mm"
-            label = f"[{slot['slot_id']}] {float(slot['freq_hz']):g}Hz {status}{err_text}"
+            angle = slot.get("grasp_angle_deg")
+            angle_quality = slot.get("grasp_angle_quality")
+            angle_text = ""
+            if angle is not None:
+                try:
+                    angle_text = f" a={float(angle):.0f}"
+                    if angle_quality is not None:
+                        angle_text += f"/{float(angle_quality):.2f}"
+                except (TypeError, ValueError):
+                    angle_text = ""
+            label = f"[{slot['slot_id']}] {float(slot['freq_hz']):g}Hz {status}{err_text}{angle_text}"
             painter.setPen(QPen(QColor(245, 245, 245), 1))
             painter.drawText(center_x + 10, center_y - 10, label)
 

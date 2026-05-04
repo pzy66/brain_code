@@ -1,32 +1,32 @@
-# 产物说明
+# Artifacts
 
-这个仓库会有意识地把较大的实验产物保留在 Git 中，优先保证完整备份和可复现性，而不是追求最小克隆体积。
+仓库策略已经改为轻量协作模式：Git 保存源码、配置、文档和少量占位文件；真实数据、模型权重、运行报告和硬件日志留在本地。
 
-## 已跟踪的产物类型
+## Ignored By Default
 
-- `02_SSVEP/artifacts/runs`：正式本地运行和导入的 SSVEP 运行结果、报告、profile 快照和选择快照。
-- `02_SSVEP/artifacts/datasets`：当前实验使用的 SSVEP 采集包和外部回放数据集。
-- `02_SSVEP/artifacts/deployed_profiles`：已部署或候选的 SSVEP profile。
-- `02_SSVEP/_archive`：保留的历史代码和对应历史输出。
-- `hybrid_controller/models`：集成视觉/机械臂流程需要的训练模型。
-- `artifacts`：仓库级生成索引和跨流程输出。
+- `datasets/**` 中除 README 和 `.gitkeep` 外的真实数据。
+- `artifacts/**` 运行报告、训练输出和临时产物。
+- `logs/**` 硬件和 GUI 日志。
+- `runtime/**` 本地运行状态。
+- `02_SSVEP/artifacts/**`
+- `05_Vision_Block_Recognition/dataset/**`
+- `hybrid_controller/models/**`
+- `hybrid_controller/dataset/**`
 
-## 不应该跟踪的内容
+## Local Copy Targets
 
-下面这些属于缓存或本地临时产物，应该保持忽略：
+- MI 数据：`datasets/MI/`
+- SSVEP 数据：`datasets/SSVEP/`
+- 视觉模型：`datasets/vision/models/best.pt`
+- 视觉标定：`datasets/vision/calibration/current_profile.json`
+- SSVEP profile：`datasets/profiles/SSVEP/`
+- Hybrid Controller SSVEP profile：`datasets/profiles/hybrid_controller/ssvep_profiles/`
 
-- `__pycache__`、`.pytest_cache`、`.pytest_tmp*`、`.tmp*`
-- `pytest-cache-files-*`、`pytest_tmp*`、`pytest_temp*`、`tmp_pytest*`
-- `02_SSVEP/artifacts/gpu_runtime/cupy_cache`
-- `02_SSVEP/artifacts/gpu_runtime/tmp`
-- 冒烟测试截图和本地 UI 探测输出
-
-## 诊断
-
-运行：
+## Diagnostics
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File tools\diagnose_workspace.ps1
+powershell -ExecutionPolicy Bypass -File .\tools\diagnose_workspace.ps1
+python -m brain diagnose
 ```
 
-诊断脚本会汇报已跟踪体积、最大文件、产物类别统计、忽略条目和权限受限的临时目录。
+`diagnose_workspace.ps1` 用于统计 Git 当前追踪体积；`brain diagnose` 用于检查运行环境和本地资产位置。
