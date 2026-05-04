@@ -51,6 +51,24 @@ def median_point(points: list[tuple[int, int]]) -> tuple[int, int] | None:
     return (int(round(float(np.median(xs)))), int(round(float(np.median(ys)))))
 
 
+def _angle_distance_deg(angle_a: float, angle_b: float) -> float:
+    delta = float(angle_a) - float(angle_b)
+    while delta <= -45.0:
+        delta += 90.0
+    while delta > 45.0:
+        delta -= 90.0
+    return float(delta)
+
+
+def median_grasp_angle_deg(angles: list[float]) -> float | None:
+    values = [float(angle) for angle in angles if math.isfinite(float(angle))]
+    if not values:
+        return None
+    reference = values[-1]
+    aligned = [reference + _angle_distance_deg(value, reference) for value in values]
+    return normalize_rect_grasp_angle_deg(float(np.median(np.array(aligned, dtype=np.float64))), 1.0, 1.0)
+
+
 def normalize_rect_grasp_angle_deg(angle_deg: float, width_px: float, height_px: float) -> float:
     """Return the grasp angle of a minAreaRect long edge in [-45, 45] deg."""
     value = float(angle_deg)
@@ -91,11 +109,11 @@ def largest_component(binary_mask: np.ndarray) -> tuple[np.ndarray | None, int]:
     return component, area
 
 
-def estimate_top_face_grasp_pixel(
+def _estimate_top_face_grasp_pixel_and_quality(
     component: np.ndarray,
     frame_bgr: np.ndarray | None,
     fallback_pixel: tuple[int, int],
-) -> tuple[int, int]:
+) -> tuple[tuple[int, int], float]:
     dist = cv2.distanceTransform(component, cv2.DIST_L2, 5)
     _, max_value, _, max_loc = cv2.minMaxLoc(dist)
     core = np.where(dist >= max(4.0, 0.35 * float(max_value)), 255, 0).astype(np.uint8)
@@ -110,23 +128,23 @@ def estimate_top_face_grasp_pixel(
         core_pixel = (int(max_loc[0]), int(max_loc[1])) if max_value > 0 else fallback_pixel
 
     if frame_bgr is None or frame_bgr.shape[:2] != component.shape[:2]:
-        return core_pixel
+        return core_pixel, 0.0
 
     hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
     ys, xs = np.where(component > 0)
     if len(xs) < 20:
-        return core_pixel
+        return core_pixel, 0.0
     values = hsv[ys, xs]
     saturation = values[:, 1]
     brightness = values[:, 2]
     chromatic = saturation > 45
     if int(np.count_nonzero(chromatic)) < 20:
-        return core_pixel
+        return core_pixel, 0.0
 
     brightness_cutoff = float(np.percentile(brightness[chromatic], 35.0))
     selected_indexes = np.where(chromatic & (brightness >= brightness_cutoff))[0]
     if len(selected_indexes) < 20:
-        return core_pixel
+        return core_pixel, 0.0
 
     top_mask = np.zeros(component.shape, dtype=np.uint8)
     top_mask[ys[selected_indexes], xs[selected_indexes]] = 255
@@ -139,17 +157,32 @@ def estimate_top_face_grasp_pixel(
     top_mask = cv2.bitwise_and(top_mask, component)
     top_moments = cv2.moments(top_mask, binaryImage=True)
     if top_moments["m00"] <= 0:
-        return core_pixel
+        return core_pixel, 0.0
     color_pixel = (
         int(round(top_moments["m10"] / top_moments["m00"])),
         int(round(top_moments["m01"] / top_moments["m00"])),
     )
     if euclidean_distance(color_pixel, core_pixel) > 35.0:
-        return core_pixel
+        return core_pixel, 0.0
+    component_area = max(1, int(np.count_nonzero(component)))
+    top_area = int(np.count_nonzero(top_mask))
+    top_ratio = float(top_area) / float(component_area)
+    top_fill_quality = clamp01((top_ratio - 0.12) / 0.45)
+    distance_quality = clamp01(1.0 - euclidean_distance(color_pixel, core_pixel) / 35.0)
+    quality = clamp01(0.65 * top_fill_quality + 0.35 * distance_quality)
     return (
         int(round((float(core_pixel[0]) + float(color_pixel[0])) / 2.0)),
         int(round((float(core_pixel[1]) + float(color_pixel[1])) / 2.0)),
-    )
+    ), float(quality)
+
+
+def estimate_top_face_grasp_pixel(
+    component: np.ndarray,
+    frame_bgr: np.ndarray | None,
+    fallback_pixel: tuple[int, int],
+) -> tuple[int, int]:
+    pixel, _ = _estimate_top_face_grasp_pixel_and_quality(component, frame_bgr, fallback_pixel)
+    return pixel
 
 
 def contour_to_grasp_geometry(
@@ -189,7 +222,14 @@ def contour_to_grasp_geometry(
     oriented_bbox = [(int(round(point[0])), int(round(point[1]))) for point in box_points]
     grasp_x = int(round(float(rect_center[0])))
     grasp_y = int(round(float(rect_center[1])))
-    grasp_pixel = estimate_top_face_grasp_pixel(component, frame_bgr, (grasp_x, grasp_y))
+    rect_grasp_pixel = (grasp_x, grasp_y)
+    top_pixel, top_quality = _estimate_top_face_grasp_pixel_and_quality(component, frame_bgr, rect_grasp_pixel)
+    max_top_shift_px = max(8.0, min(rect_w, rect_h) * 0.35)
+    grasp_pixel = (
+        top_pixel
+        if top_quality >= 0.35 and euclidean_distance(top_pixel, rect_grasp_pixel) <= max_top_shift_px
+        else rect_grasp_pixel
+    )
     bbox = (int(x), int(y), int(x + w), int(y + h))
     return GeometryResult(
         polygon=polygon,
@@ -342,7 +382,7 @@ def frame_to_block_candidates(
             or geometry.bbox[2] >= frame_w - 1
             or geometry.bbox[3] >= frame_h - 1
         )
-        quality = clamp01(float(geometry.grasp_quality) * (0.75 if edge_touch else 1.0))
+        quality = clamp01(float(geometry.grasp_quality) * (0.35 if edge_touch else 1.0))
         candidates.append(
             DetectionCandidate(
                 center=geometry.center,
@@ -386,6 +426,7 @@ class SlotState:
     pixel_center: tuple[int, int] | None = None
     grasp_pixel: tuple[int, int] | None = None
     grasp_history: list[tuple[int, int]] = field(default_factory=list)
+    grasp_angle_history: list[float] = field(default_factory=list)
     bbox: tuple[int, int, int, int] | None = None
     area_px: int = 0
     confidence: float = 0.0
@@ -394,6 +435,7 @@ class SlotState:
     grasp_quality: float = 0.0
     grasp_angle_deg: float | None = None
     grasp_angle_quality: float = 0.0
+    grasp_angle_stability_deg: float | None = None
     age: int = 0
     lost_frames: int = 0
     command_mode: str = "cyl"
@@ -427,6 +469,7 @@ class SlotState:
         grasp_history_len: int = 5,
         grasp_stability_tolerance_px: float = 6.0,
         grasp_history_reset_px: float = 22.0,
+        grasp_angle_stability_tolerance_deg: float = 15.0,
     ) -> None:
         self.valid = True
         self.observed = True
@@ -436,6 +479,7 @@ class SlotState:
             grasp_history_reset_px
         ):
             self.grasp_history = []
+            self.grasp_angle_history = []
         self.grasp_history.append(candidate.grasp_pixel)
         history_len = max(1, int(grasp_history_len))
         if len(self.grasp_history) > history_len:
@@ -458,8 +502,29 @@ class SlotState:
         self.polygon = list(candidate.polygon)
         self.oriented_bbox = list(candidate.oriented_bbox)
         self.grasp_quality = float(candidate.grasp_quality)
-        self.grasp_angle_deg = None if candidate.grasp_angle_deg is None else float(candidate.grasp_angle_deg)
         self.grasp_angle_quality = float(candidate.grasp_angle_quality)
+        if candidate.grasp_angle_deg is None or not math.isfinite(float(candidate.grasp_angle_deg)):
+            self.grasp_angle_history = []
+            self.grasp_angle_deg = None
+            self.grasp_angle_stability_deg = None
+        else:
+            current_angle = float(candidate.grasp_angle_deg)
+            previous_angle = median_grasp_angle_deg(self.grasp_angle_history)
+            if previous_angle is not None and abs(_angle_distance_deg(current_angle, previous_angle)) > 35.0:
+                self.grasp_angle_history = []
+            self.grasp_angle_history.append(current_angle)
+            if len(self.grasp_angle_history) > history_len:
+                del self.grasp_angle_history[:-history_len]
+            median_angle = median_grasp_angle_deg(self.grasp_angle_history)
+            self.grasp_angle_deg = None if median_angle is None else float(median_angle)
+            if self.grasp_angle_history and median_angle is not None:
+                self.grasp_angle_stability_deg = max(
+                    abs(_angle_distance_deg(angle, median_angle)) for angle in self.grasp_angle_history
+                )
+                if float(self.grasp_angle_stability_deg) > float(grasp_angle_stability_tolerance_deg):
+                    self.grasp_angle_quality = min(float(self.grasp_angle_quality), 0.1)
+            else:
+                self.grasp_angle_stability_deg = None
         self.lost_frames = 0
         self.age = self.age + 1 if increment_age else 1
 
@@ -476,6 +541,7 @@ class SlotState:
         self.pixel_center = None
         self.grasp_pixel = None
         self.grasp_history = []
+        self.grasp_angle_history = []
         self.bbox = None
         self.area_px = 0
         self.confidence = 0.0
@@ -484,6 +550,7 @@ class SlotState:
         self.grasp_quality = 0.0
         self.grasp_angle_deg = None
         self.grasp_angle_quality = 0.0
+        self.grasp_angle_stability_deg = None
         self.age = 0
         self.lost_frames = 0
         self.command_point = None
@@ -525,6 +592,9 @@ class SlotState:
             "grasp_quality": float(self.grasp_quality),
             "grasp_angle_deg": None if self.grasp_angle_deg is None else float(self.grasp_angle_deg),
             "grasp_angle_quality": float(self.grasp_angle_quality),
+            "grasp_angle_stability_deg": (
+                None if self.grasp_angle_stability_deg is None else float(self.grasp_angle_stability_deg)
+            ),
             "age": int(self.age),
             "lost_frames": int(self.lost_frames),
             "command_mode": self.command_mode,
@@ -717,6 +787,7 @@ def update_slots(
     grasp_history_len: int = 5,
     grasp_stability_tolerance_px: float = 6.0,
     grasp_history_reset_px: float = 22.0,
+    grasp_angle_stability_tolerance_deg: float = 15.0,
 ) -> None:
     matched_slots: set[int] = set()
     matched_candidates: set[int] = set()
@@ -743,6 +814,7 @@ def update_slots(
             grasp_history_len=grasp_history_len,
             grasp_stability_tolerance_px=grasp_stability_tolerance_px,
             grasp_history_reset_px=grasp_history_reset_px,
+            grasp_angle_stability_tolerance_deg=grasp_angle_stability_tolerance_deg,
         )
         matched_slots.add(slot_index)
         matched_candidates.add(candidate_index)
@@ -763,6 +835,7 @@ def update_slots(
             grasp_history_len=grasp_history_len,
             grasp_stability_tolerance_px=grasp_stability_tolerance_px,
             grasp_history_reset_px=grasp_history_reset_px,
+            grasp_angle_stability_tolerance_deg=grasp_angle_stability_tolerance_deg,
         )
 
 
@@ -781,8 +854,10 @@ def annotate_slots_with_cylindrical(
     center_tolerance_px: float = 8.0,
     action_center_tolerance_px: float = 14.0,
     alignment_target_pixel: tuple[float, float] | None = None,
+    alignment_target_required: bool = False,
     grasp_quality_threshold: float = 0.25,
     required_stable_frames: int = 3,
+    grasp_angle_stability_tolerance_deg: float = 15.0,
 ) -> None:
     scale_xy = float(world_scale_xy)
     offset_x = float(world_offset_xy_mm[0])
@@ -833,6 +908,9 @@ def annotate_slots_with_cylindrical(
         effective_alignment_target = alignment_target_pixel
         if effective_alignment_target is None and calibration_profile is not None:
             effective_alignment_target = calibration_profile.target_pixel
+        if effective_alignment_target is None and bool(alignment_target_required):
+            slot.invalid_reason = "alignment_target_unavailable"
+            continue
         if effective_alignment_target is None and roi_center is not None:
             effective_alignment_target = (float(roi_center[0]), float(roi_center[1]))
         if effective_alignment_target is not None:
@@ -899,6 +977,13 @@ def annotate_slots_with_cylindrical(
                 mapping_mode_text == "delta_servo"
                 and int(required_stable_frames) > 1
                 and int(slot.grasp_stable_frames) < int(required_stable_frames)
+            ):
+                slot.invalid_reason = "grasp_unstable"
+                continue
+            elif (
+                mapping_mode_text == "delta_servo"
+                and slot.grasp_angle_stability_deg is not None
+                and float(slot.grasp_angle_stability_deg) > float(grasp_angle_stability_tolerance_deg)
             ):
                 slot.invalid_reason = "grasp_unstable"
                 continue

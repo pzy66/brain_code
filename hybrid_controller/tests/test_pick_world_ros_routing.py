@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import types
+from dataclasses import replace
 
 import pytest
 
@@ -149,6 +150,7 @@ def test_manual_pick_in_robot_camera_detection_mode_does_not_fallback_to_slot_ca
 
 def test_pick_world_bias_rewrite_applies_theta_and_radius_bias() -> None:
     app = _make_ros_app_stub()
+    app.config = replace(app.config, pick_tool_offset_source="command_bias")
     app._pick_cyl_radius_bias_mm = -5.0
     app._pick_cyl_tangent_bias_mm = 0.0
     app._pick_cyl_theta_bias_deg = 3.0
@@ -161,6 +163,7 @@ def test_pick_world_bias_rewrite_applies_theta_and_radius_bias() -> None:
 
 def test_pick_world_bias_rewrite_applies_tangent_bias_in_tool_frame() -> None:
     app = _make_ros_app_stub()
+    app.config = replace(app.config, pick_tool_offset_source="command_bias")
     app._pick_cyl_radius_bias_mm = 0.0
     app._pick_cyl_tangent_bias_mm = 10.0
     app._pick_cyl_theta_bias_deg = 0.0
@@ -188,6 +191,7 @@ def test_pick_tool_bias_reconstructs_live_suction_center_sample() -> None:
 
 def test_default_pick_bias_keeps_theta_and_adds_measured_radius_offset() -> None:
     app = _make_ros_app_stub()
+    app.config = replace(app.config, pick_tool_offset_source="command_bias")
     app._pick_cyl_radius_bias_mm = AppConfig.pick_cyl_radius_bias_mm
     app._pick_cyl_tangent_bias_mm = AppConfig.pick_cyl_tangent_bias_mm
     app._pick_cyl_theta_bias_deg = AppConfig.pick_cyl_theta_bias_deg
@@ -203,6 +207,7 @@ def test_default_pick_bias_keeps_theta_and_adds_measured_radius_offset() -> None
 
 def test_pick_trace_records_bias_and_command_delta() -> None:
     app = _make_ros_app_stub()
+    app.config = replace(app.config, pick_tool_offset_source="command_bias")
     app._pick_cyl_radius_bias_mm = -5.0
     app._pick_cyl_tangent_bias_mm = 0.0
     app._pick_cyl_theta_bias_deg = 3.0

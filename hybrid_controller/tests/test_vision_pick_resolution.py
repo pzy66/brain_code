@@ -107,6 +107,34 @@ def test_delta_servo_resolution_tracks_robot_pose() -> None:
     assert app_b.runtime_info["vision_invalid_reason"] == "--"
 
 
+def test_target_pixel_offset_source_does_not_rewrite_pick_bias() -> None:
+    app = _make_app_stub(
+        config=AppConfig(pick_tool_offset_source="target_pixel", pick_cyl_radius_bias_mm=46.0),
+        snapshot=_snapshot((0.0, -120.0)),
+        snapshot_age_ms=20.0,
+    )
+    app._pick_cyl_radius_bias_mm = 46.0
+    app._pick_cyl_tangent_bias_mm = 0.0
+    app._pick_cyl_theta_bias_deg = 0.0
+
+    assert app._rewrite_outgoing_robot_command("PICK_WORLD 10.00 -120.00") == "PICK_WORLD 10.00 -120.00"
+
+
+def test_command_bias_offset_source_keeps_legacy_pick_bias() -> None:
+    app = _make_app_stub(
+        config=AppConfig(pick_tool_offset_source="command_bias", pick_cyl_radius_bias_mm=46.0),
+        snapshot=_snapshot((0.0, -120.0)),
+        snapshot_age_ms=20.0,
+    )
+    app._pick_cyl_radius_bias_mm = 10.0
+    app._pick_cyl_tangent_bias_mm = 0.0
+    app._pick_cyl_theta_bias_deg = 0.0
+
+    rewritten = app._rewrite_outgoing_robot_command("PICK_CYL 0.00 120.00")
+
+    assert rewritten == "PICK_CYL 0.00 130.00"
+
+
 def test_delta_servo_resolution_rejects_stale_robot_snapshot() -> None:
     config = AppConfig(vision_snapshot_max_age_ms=200.0)
     app = _make_app_stub(config=config, snapshot=_snapshot((0.0, -120.0)), snapshot_age_ms=500.0)

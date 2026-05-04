@@ -183,6 +183,7 @@ class AppConfig:
     vision_grasp_history_frames: int = 5
     vision_grasp_stable_frames: int = 3
     vision_grasp_stability_tolerance_px: float = 6.0
+    vision_grasp_angle_stability_tolerance_deg: float = 15.0
     vision_grasp_history_reset_px: float = 22.0
     vision_grasp_stability_wait_frames: int = 10
     vision_frame_fallback_enabled: bool = True
@@ -198,6 +199,9 @@ class AppConfig:
     vision_pick_z_tolerance_mm: float = 4.0
     vision_debug_bundle_enabled: bool = True
     vision_debug_bundle_dir: Path = LOGS_ROOT / "vision_debug"
+    pick_tool_offset_source: str = "target_pixel"
+    vision_residual_model: str = "grid"
+    vision_calibration_grid_size: int = 7
     pick_cyl_radius_bias_mm: float = 46.0
     pick_cyl_tangent_bias_mm: float = 0.0
     pick_cyl_theta_bias_deg: float = 0.0
@@ -251,12 +255,21 @@ class AppConfig:
                 sim_place_delay_sec=0.2,
                 sim_vision_interval_ms=120,
             )
+        offset_source = str(config.pick_tool_offset_source or "target_pixel").strip().lower()
+        if offset_source not in {"target_pixel", "command_bias"}:
+            offset_source = "target_pixel"
+        residual_model = str(config.vision_residual_model or "grid").strip().lower()
+        if residual_model not in {"grid", "idw", "none"}:
+            residual_model = "grid"
         return replace(
             config,
             motion_bounds_x=config.robot_limits_x,
             motion_bounds_y=config.robot_limits_y,
             fake_robot_ack_delay_sec=float(config.sim_pick_delay_sec),
             fake_vision_interval_ms=int(config.sim_vision_interval_ms),
+            pick_tool_offset_source=offset_source,
+            vision_residual_model=residual_model,
+            vision_calibration_grid_size=max(2, int(config.vision_calibration_grid_size)),
         )
 
     def resolve_vision_stream_url(self) -> str:

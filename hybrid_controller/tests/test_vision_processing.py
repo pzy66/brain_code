@@ -195,6 +195,39 @@ def test_grasp_history_requires_stable_recent_pixels_and_resets_on_jump():
     assert slots[0].grasp_stable_frames == 1
 
 
+def test_grasp_angle_history_uses_stable_median_angle():
+    slots = [SlotState(slot=1, freq_hz=8.0)]
+
+    def candidate(angle: float) -> DetectionCandidate:
+        return DetectionCandidate(
+            center=(100, 100),
+            grasp_pixel=(100, 100),
+            bbox=(80, 90, 120, 110),
+            area_px=800,
+            confidence=0.9,
+            polygon=[(80, 90), (120, 90), (120, 110), (80, 110)],
+            grasp_quality=1.0,
+            oriented_bbox=[(80, 90), (120, 90), (120, 110), (80, 110)],
+            distance_to_roi=0.0,
+            grasp_angle_deg=angle,
+            grasp_angle_quality=0.9,
+        )
+
+    for angle in (10.0, 12.0, 11.0):
+        update_slots(
+            slots,
+            [candidate(angle)],
+            match_distance=120.0,
+            lost_ttl=6,
+            grasp_history_len=5,
+            grasp_angle_stability_tolerance_deg=8.0,
+        )
+
+    assert slots[0].grasp_angle_deg == 11.0
+    assert slots[0].grasp_angle_stability_deg is not None
+    assert slots[0].grasp_angle_stability_deg <= 2.0
+
+
 def test_mask_grasp_geometry_prefers_bright_top_face_over_full_silhouette_center():
     mask = np.zeros((100, 100), dtype=np.float32)
     mask[20:80, 20:80] = 1.0
@@ -299,6 +332,92 @@ def test_profile_mapping_subtracts_alignment_target_pixel():
 
     assert mapped.delta_xy_mm == (20.0, 5.0)
     assert mapped.estimated_error_mm == 2.0
+
+
+def test_profile_mapping_applies_residual_grid_correction():
+    profile = VisionCalibrationProfile.from_dict(
+        {
+            "profile_id": "grid-profile",
+            "image_size": [100, 100],
+            "pixel_to_delta": {"model": "affine", "matrix": [[1, 0, 0], [0, 1, 0]]},
+            "residual_grid": {
+                "model": "grid",
+                "x_values": [0, 10],
+                "y_values": [0, 10],
+                "correction_dx_mm": [[2, 2], [2, 2]],
+                "correction_dy_mm": [[-1, -1], [-1, -1]],
+                "error_mm": [[1, 2], [3, 5]],
+            },
+            "valid_workspace": {"undistorted_pixel_polygon": [[0, 0], [10, 0], [10, 10], [0, 10]]},
+        }
+    )
+
+    mapped = profile.map_pixel_to_delta((5.0, 5.0), frame_size=(100, 100))
+
+    assert mapped.delta_xy_mm == (7.0, 4.0)
+    assert mapped.estimated_error_mm == 2.75
+
+
+def test_profile_mapping_rejects_points_outside_valid_workspace():
+    profile = VisionCalibrationProfile.from_dict(
+        {
+            "profile_id": "workspace-profile",
+            "image_size": [100, 100],
+            "pixel_to_delta": {"model": "affine", "matrix": [[1, 0, 0], [0, 1, 0]]},
+            "valid_workspace": {"undistorted_pixel_polygon": [[0, 0], [10, 0], [10, 10], [0, 10]]},
+        }
+    )
+
+    slots = [SlotState(slot=1, freq_hz=8.0)]
+    slot = slots[0]
+    slot.valid = True
+    slot.observed = True
+    slot.pixel_center = (50, 50)
+    slot.grasp_pixel = (50, 50)
+    slot.grasp_quality = 1.0
+
+    annotate_slots_with_cylindrical(
+        slots,
+        calibration=None,
+        calibration_profile=profile,
+        frame_size=(100, 100),
+        roi_center=(5, 5),
+        mapping_mode="delta_servo",
+        calibration_profile_required=True,
+    )
+
+    assert slot.actionable is False
+    assert "calibration_profile_point_outside_valid_workspace" in slot.invalid_reason
+
+
+def test_target_pixel_mode_requires_alignment_target():
+    profile = VisionCalibrationProfile.from_dict(
+        {
+            "profile_id": "no-target-profile",
+            "image_size": [100, 100],
+            "pixel_to_delta": {"model": "affine", "matrix": [[1, 0, 0], [0, 1, 0]]},
+        }
+    )
+    slots = [SlotState(slot=1, freq_hz=8.0)]
+    slot = slots[0]
+    slot.valid = True
+    slot.observed = True
+    slot.pixel_center = (50, 50)
+    slot.grasp_pixel = (50, 50)
+    slot.grasp_quality = 1.0
+
+    annotate_slots_with_cylindrical(
+        slots,
+        calibration=None,
+        calibration_profile=profile,
+        frame_size=(100, 100),
+        roi_center=(5, 5),
+        mapping_mode="delta_servo",
+        calibration_profile_required=True,
+        alignment_target_required=True,
+    )
+
+    assert slot.invalid_reason == "alignment_target_unavailable"
 
 
 def test_annotation_uses_alignment_target_for_servo_distance_and_delta():

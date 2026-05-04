@@ -1201,6 +1201,7 @@ class HybridControllerApplication:
             "original_command": original_text,
             "command": str(command),
             "pick_bias_applied": original_text.strip() != str(command).strip(),
+            "pick_tool_offset_source": str(getattr(self.config, "pick_tool_offset_source", "target_pixel")),
             "pick_cyl_radius_bias_mm": float(getattr(self, "_pick_cyl_radius_bias_mm", 0.0)),
             "pick_cyl_tangent_bias_mm": float(getattr(self, "_pick_cyl_tangent_bias_mm", 0.0)),
             "pick_cyl_theta_bias_deg": float(getattr(self, "_pick_cyl_theta_bias_deg", 0.0)),
@@ -1284,6 +1285,7 @@ class HybridControllerApplication:
             "last_robot_error",
         )
         snapshot = {key: self._rt_get(key) for key in keys}
+        snapshot["pick_tool_offset_source"] = str(getattr(self.config, "pick_tool_offset_source", "target_pixel"))
         snapshot["pick_cyl_radius_bias_mm"] = float(getattr(self, "_pick_cyl_radius_bias_mm", 0.0))
         snapshot["pick_cyl_tangent_bias_mm"] = float(getattr(self, "_pick_cyl_tangent_bias_mm", 0.0))
         snapshot["pick_cyl_theta_bias_deg"] = float(getattr(self, "_pick_cyl_theta_bias_deg", 0.0))
@@ -1504,6 +1506,9 @@ class HybridControllerApplication:
                     )
 
         header = str(trace_payload.get("command") or trace_payload.get("original_command") or "")
+        offset_source = trace_payload.get("pick_tool_offset_source")
+        if offset_source is not None:
+            header = f"{header} offset={offset_source}"
         delta = trace_payload.get("command_vs_resolved_delta_mm")
         if delta is not None:
             try:
@@ -1640,6 +1645,8 @@ class HybridControllerApplication:
         self._clear_pending_command()
 
     def _rewrite_outgoing_robot_command(self, command: str) -> str:
+        if str(getattr(self.config, "pick_tool_offset_source", "target_pixel")).strip().lower() != "command_bias":
+            return str(command or "")
         return rewrite_pick_command_with_bias(
             str(command or ""),
             theta_bias_deg=float(self._pick_cyl_theta_bias_deg),
@@ -3706,6 +3713,13 @@ def build_config_from_args(args: argparse.Namespace) -> AppConfig:
         vision_grasp_stability_tolerance_px=float(
             getattr(args, "vision_grasp_stability_tolerance_px", AppConfig.vision_grasp_stability_tolerance_px)
         ),
+        vision_grasp_angle_stability_tolerance_deg=float(
+            getattr(
+                args,
+                "vision_grasp_angle_stability_tolerance_deg",
+                AppConfig.vision_grasp_angle_stability_tolerance_deg,
+            )
+        ),
         vision_grasp_history_reset_px=float(
             getattr(args, "vision_grasp_history_reset_px", AppConfig.vision_grasp_history_reset_px)
         ),
@@ -3745,6 +3759,11 @@ def build_config_from_args(args: argparse.Namespace) -> AppConfig:
             getattr(args, "vision_debug_bundle_enabled", AppConfig.vision_debug_bundle_enabled)
         ),
         vision_debug_bundle_dir=Path(getattr(args, "vision_debug_bundle_dir", AppConfig.vision_debug_bundle_dir)),
+        pick_tool_offset_source=str(getattr(args, "pick_tool_offset_source", AppConfig.pick_tool_offset_source)),
+        vision_residual_model=str(getattr(args, "vision_residual_model", AppConfig.vision_residual_model)),
+        vision_calibration_grid_size=int(
+            getattr(args, "vision_calibration_grid_size", AppConfig.vision_calibration_grid_size)
+        ),
         pick_cyl_radius_bias_mm=float(
             getattr(args, "pick_cyl_radius_bias_mm", AppConfig.pick_cyl_radius_bias_mm)
         ),
@@ -3936,6 +3955,11 @@ def main(argv: list[str] | None = None) -> int:
         default=AppConfig.vision_grasp_stability_tolerance_px,
     )
     parser.add_argument(
+        "--vision-grasp-angle-stability-tolerance-deg",
+        type=float,
+        default=AppConfig.vision_grasp_angle_stability_tolerance_deg,
+    )
+    parser.add_argument(
         "--vision-grasp-history-reset-px",
         type=float,
         default=AppConfig.vision_grasp_history_reset_px,
@@ -3997,6 +4021,17 @@ def main(argv: list[str] | None = None) -> int:
         dest="vision_debug_bundle_enabled",
     )
     parser.add_argument("--vision-debug-bundle-dir", type=Path, default=AppConfig.vision_debug_bundle_dir)
+    parser.add_argument(
+        "--pick-tool-offset-source",
+        choices=("target_pixel", "command_bias"),
+        default=AppConfig.pick_tool_offset_source,
+    )
+    parser.add_argument(
+        "--vision-residual-model",
+        choices=("grid", "idw", "none"),
+        default=AppConfig.vision_residual_model,
+    )
+    parser.add_argument("--vision-calibration-grid-size", type=int, default=AppConfig.vision_calibration_grid_size)
     parser.add_argument("--pick-cyl-radius-bias-mm", type=float, default=AppConfig.pick_cyl_radius_bias_mm)
     parser.add_argument("--pick-cyl-tangent-bias-mm", type=float, default=AppConfig.pick_cyl_tangent_bias_mm)
     parser.add_argument("--pick-cyl-theta-bias-deg", type=float, default=AppConfig.pick_cyl_theta_bias_deg)

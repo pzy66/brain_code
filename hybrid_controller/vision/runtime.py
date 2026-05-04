@@ -502,6 +502,9 @@ class _VisionWorker(QObject):
                 grasp_history_len=int(self.config.vision_grasp_history_frames),
                 grasp_stability_tolerance_px=float(self.config.vision_grasp_stability_tolerance_px),
                 grasp_history_reset_px=float(self.config.vision_grasp_history_reset_px),
+                grasp_angle_stability_tolerance_deg=float(
+                    self.config.vision_grasp_angle_stability_tolerance_deg
+                ),
             )
             annotate_slots_with_cylindrical(
                 self._slots,
@@ -520,8 +523,12 @@ class _VisionWorker(QObject):
                 center_tolerance_px=float(self.config.vision_servo_center_tolerance_px),
                 action_center_tolerance_px=float(self.config.vision_servo_action_tolerance_px),
                 alignment_target_pixel=alignment_target_pixel,
+                alignment_target_required=str(self.config.pick_tool_offset_source).strip().lower() == "target_pixel",
                 grasp_quality_threshold=float(self.config.vision_grasp_quality_threshold),
                 required_stable_frames=int(self.config.vision_grasp_stable_frames),
+                grasp_angle_stability_tolerance_deg=float(
+                    self.config.vision_grasp_angle_stability_tolerance_deg
+                ),
             )
             calibration_ready = self._calibration is not None or (
                 self._calibration_profile is not None and self._calibration_profile.has_pixel_to_delta_model
@@ -591,7 +598,7 @@ class _VisionWorker(QObject):
         frame_w: int,
         frame_h: int,
         roi_center: tuple[int, int],
-    ) -> tuple[float, float]:
+    ) -> tuple[float, float] | None:
         configured = self._coerce_frame_pixel(self.config.vision_pick_target_pixel, frame_w, frame_h)
         if configured is not None:
             return configured
@@ -599,6 +606,8 @@ class _VisionWorker(QObject):
             profile_target = self._coerce_frame_pixel(self._calibration_profile.target_pixel, frame_w, frame_h)
             if profile_target is not None:
                 return profile_target
+        if str(self.config.pick_tool_offset_source).strip().lower() == "target_pixel":
+            return None
         return (float(roi_center[0]), float(roi_center[1]))
 
     def _reload_calibration_profile_if_needed(self) -> None:
