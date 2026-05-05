@@ -223,14 +223,19 @@ def contour_to_grasp_geometry(
     grasp_x = int(round(float(rect_center[0])))
     grasp_y = int(round(float(rect_center[1])))
     rect_grasp_pixel = (grasp_x, grasp_y)
-    top_pixel, top_quality = _estimate_top_face_grasp_pixel_and_quality(component, frame_bgr, rect_grasp_pixel)
+    safe_pixel, top_quality = _estimate_top_face_grasp_pixel_and_quality(component, frame_bgr, rect_grasp_pixel)
     max_top_shift_px = max(8.0, min(rect_w, rect_h) * 0.35)
-    grasp_pixel = (
-        top_pixel
-        if top_quality >= 0.35 and euclidean_distance(top_pixel, rect_grasp_pixel) <= max_top_shift_px
-        else rect_grasp_pixel
-    )
     bbox = (int(x), int(y), int(x + w), int(y + h))
+    edge_touch = x <= 1 or y <= 1 or (x + w) >= component.shape[1] - 1 or (y + h) >= component.shape[0] - 1
+    if top_quality >= 0.35 and euclidean_distance(safe_pixel, rect_grasp_pixel) <= max_top_shift_px:
+        grasp_pixel = safe_pixel
+    else:
+        # The default pick point is the deepest point inside the mask, not the
+        # projected silhouette center. This is more robust when the visible
+        # side face shifts the contour away from the true suction point.
+        grasp_pixel = safe_pixel
+    if edge_touch:
+        grasp_quality = min(float(grasp_quality), 0.15)
     return GeometryResult(
         polygon=polygon,
         center=(center_x, center_y),
@@ -427,6 +432,7 @@ class SlotState:
     grasp_pixel: tuple[int, int] | None = None
     grasp_history: list[tuple[int, int]] = field(default_factory=list)
     grasp_angle_history: list[float] = field(default_factory=list)
+    area_history: list[int] = field(default_factory=list)
     bbox: tuple[int, int, int, int] | None = None
     area_px: int = 0
     confidence: float = 0.0
@@ -454,6 +460,7 @@ class SlotState:
     estimated_xy_error_mm: float | None = None
     grasp_stable_frames: int = 0
     grasp_stability_px: float | None = None
+    area_stability_ratio: float | None = None
     servo_required: bool = False
     calibration_profile_id: str = ""
     actionable: bool = False
@@ -480,6 +487,7 @@ class SlotState:
         ):
             self.grasp_history = []
             self.grasp_angle_history = []
+            self.area_history = []
         self.grasp_history.append(candidate.grasp_pixel)
         history_len = max(1, int(grasp_history_len))
         if len(self.grasp_history) > history_len:
@@ -498,6 +506,15 @@ class SlotState:
             self.grasp_stable_frames = 0
         self.bbox = candidate.bbox
         self.area_px = int(candidate.area_px)
+        self.area_history.append(int(candidate.area_px))
+        if len(self.area_history) > history_len:
+            del self.area_history[:-history_len]
+        if self.area_history:
+            area_values = np.array(self.area_history, dtype=np.float64)
+            median_area = max(1.0, float(np.median(area_values)))
+            self.area_stability_ratio = float(np.max(np.abs(area_values - median_area)) / median_area)
+        else:
+            self.area_stability_ratio = None
         self.confidence = float(candidate.confidence)
         self.polygon = list(candidate.polygon)
         self.oriented_bbox = list(candidate.oriented_bbox)
@@ -542,6 +559,7 @@ class SlotState:
         self.grasp_pixel = None
         self.grasp_history = []
         self.grasp_angle_history = []
+        self.area_history = []
         self.bbox = None
         self.area_px = 0
         self.confidence = 0.0
@@ -568,6 +586,7 @@ class SlotState:
         self.estimated_xy_error_mm = None
         self.grasp_stable_frames = 0
         self.grasp_stability_px = None
+        self.area_stability_ratio = None
         self.servo_required = False
         self.calibration_profile_id = ""
         self.actionable = False
@@ -586,6 +605,7 @@ class SlotState:
             "grasp_pixel": None if self.grasp_pixel is None else [int(self.grasp_pixel[0]), int(self.grasp_pixel[1])],
             "bbox": None if self.bbox is None else [int(v) for v in self.bbox],
             "area_px": int(self.area_px),
+            "area_stability_ratio": None if self.area_stability_ratio is None else float(self.area_stability_ratio),
             "confidence": float(self.confidence),
             "polygon": [[int(x), int(y)] for x, y in self.polygon],
             "oriented_bbox": [[int(x), int(y)] for x, y in self.oriented_bbox],
@@ -855,6 +875,8 @@ def annotate_slots_with_cylindrical(
     action_center_tolerance_px: float = 14.0,
     alignment_target_pixel: tuple[float, float] | None = None,
     alignment_target_required: bool = False,
+    calibration_stage: str | None = None,
+    calibration_z_mm: float | None = None,
     grasp_quality_threshold: float = 0.25,
     required_stable_frames: int = 3,
     grasp_angle_stability_tolerance_deg: float = 15.0,
@@ -893,21 +915,35 @@ def annotate_slots_with_cylindrical(
         if slot.grasp_quality < float(grasp_quality_threshold):
             slot.invalid_reason = "grasp_quality_low"
             continue
+        if slot.area_stability_ratio is not None and float(slot.area_stability_ratio) > 0.40:
+            slot.invalid_reason = "grasp_unstable"
+            continue
         if calibration_profile_required and calibration_profile is None:
             slot.invalid_reason = "calibration_profile_unavailable"
             continue
-        if calibration_profile is not None and not calibration_profile.is_valid_for_image_size(frame_size):
+        active_profile = calibration_profile
+        if calibration_profile is not None:
+            try:
+                active_profile = calibration_profile.model_for_stage(
+                    calibration_stage,
+                    z_mm=calibration_z_mm,
+                    allow_fallback=True,
+                )
+            except Exception as error:
+                slot.invalid_reason = f"calibration_stage_model_failed:{error}"
+                continue
+        if active_profile is not None and not active_profile.is_valid_for_image_size(frame_size):
             slot.invalid_reason = "calibration_profile_image_size_mismatch"
             continue
-        if calibration is None and (calibration_profile is None or not calibration_profile.has_pixel_to_delta_model):
+        if calibration is None and (active_profile is None or not active_profile.has_pixel_to_delta_model):
             if slot.valid:
                 slot.invalid_reason = "calibration_unavailable"
             continue
 
         point_for_mapping = slot.grasp_pixel or slot.pixel_center
         effective_alignment_target = alignment_target_pixel
-        if effective_alignment_target is None and calibration_profile is not None:
-            effective_alignment_target = calibration_profile.target_pixel
+        if effective_alignment_target is None and active_profile is not None:
+            effective_alignment_target = active_profile.target_pixel
         if effective_alignment_target is None and bool(alignment_target_required):
             slot.invalid_reason = "alignment_target_unavailable"
             continue
@@ -920,11 +956,13 @@ def annotate_slots_with_cylindrical(
             )
             slot.alignment_target_pixel = effective_alignment_target
         try:
-            if calibration_profile is not None and calibration_profile.has_pixel_to_delta_model:
-                mapped = calibration_profile.map_pixel_to_delta(
+            if active_profile is not None and active_profile.has_pixel_to_delta_model:
+                mapped = active_profile.map_pixel_to_delta(
                     (float(point_for_mapping[0]), float(point_for_mapping[1])),
                     frame_size=frame_size,
                     target_pixel=effective_alignment_target,
+                    stage=calibration_stage,
+                    z_mm=calibration_z_mm,
                 )
                 raw_world_xyz = (float(mapped.delta_xy_mm[0]), float(mapped.delta_xy_mm[1]), 0.0)
                 slot.undistorted_pixel = mapped.undistorted_pixel
@@ -946,9 +984,9 @@ def annotate_slots_with_cylindrical(
                     )
                 slot.undistorted_pixel = undistorted
                 slot.calibration_profile_id = calibration.profile_id
-                if calibration_profile is not None:
-                    slot.estimated_xy_error_mm = calibration_profile.estimate_error_mm(undistorted)
-                    slot.calibration_profile_id = calibration_profile.profile_id
+                if active_profile is not None:
+                    slot.estimated_xy_error_mm = active_profile.estimate_error_mm(undistorted)
+                    slot.calibration_profile_id = active_profile.profile_id
         except Exception as error:
             slot.invalid_reason = f"camera_to_world_failed:{error}"
             continue
@@ -963,8 +1001,8 @@ def annotate_slots_with_cylindrical(
                 float(point_for_mapping[1]) - float(effective_alignment_target[1]),
             )
             profile_tolerance = (
-                float(calibration_profile.center_tolerance_px)
-                if calibration_profile is not None
+                float(active_profile.center_tolerance_px)
+                if active_profile is not None
                 else float(center_tolerance_px)
             )
             action_tolerance = max(float(profile_tolerance), float(action_center_tolerance_px))
@@ -1084,10 +1122,14 @@ def build_vision_packet(
     queue_age_ms: float,
     detected_count: int,
     calibration_ready: bool,
+    capture_ts: float | None = None,
+    stream_age_ms: float | None = None,
     mapping_mode: str = "absolute_base",
     calibration_profile_id: str = "",
     calibration_profile_required: bool = False,
     alignment_target_pixel: tuple[float, float] | None = None,
+    calibration_stage: str | None = None,
+    calibration_z_mm: float | None = None,
 ) -> dict[str, Any]:
     return {
         "frame_id": int(frame_id),
@@ -1101,8 +1143,10 @@ def build_vision_packet(
             else [float(alignment_target_pixel[0]), float(alignment_target_pixel[1])]
         ),
         "capture_fps": float(capture_fps),
+        "capture_ts": None if capture_ts is None else float(capture_ts),
         "infer_ms": float(infer_ms),
         "queue_age_ms": float(queue_age_ms),
+        "stream_age_ms": None if stream_age_ms is None else float(stream_age_ms),
         "detected_count": int(detected_count),
         "selected_slot": None,
         "slots": [slot.to_packet() for slot in slots],
@@ -1110,4 +1154,6 @@ def build_vision_packet(
         "mapping_mode": str(mapping_mode),
         "calibration_profile_id": str(calibration_profile_id),
         "calibration_profile_required": bool(calibration_profile_required),
+        "calibration_stage": None if calibration_stage is None else str(calibration_stage),
+        "calibration_z_mm": None if calibration_z_mm is None else float(calibration_z_mm),
     }

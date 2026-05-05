@@ -175,6 +175,7 @@ class AppConfig:
     vision_mapping_mode: str = "delta_servo"
     vision_target_frame: str = "robot_base"
     vision_snapshot_max_age_ms: float = 200.0
+    vision_frame_pose_max_age_ms: float = 250.0
     vision_action_requires_calibration: bool = True
     vision_calibration_profile_path: Path = VISION_DATASET_DIR / "calibration" / "current_profile.json"
     vision_calibration_profile_required: bool = True
@@ -270,6 +271,7 @@ class AppConfig:
             pick_tool_offset_source=offset_source,
             vision_residual_model=residual_model,
             vision_calibration_grid_size=max(2, int(config.vision_calibration_grid_size)),
+            vision_frame_pose_max_age_ms=max(1.0, float(config.vision_frame_pose_max_age_ms)),
         )
 
     def resolve_vision_stream_url(self) -> str:

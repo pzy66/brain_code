@@ -87,6 +87,23 @@ def test_resolve_delta_servo_rejects_stale_snapshot() -> None:
     assert slot["invalid_reason"] == "robot_snapshot_stale"
 
 
+def test_resolve_delta_servo_rejects_pose_stale_for_frame() -> None:
+    config = AppConfig(vision_frame_pose_max_age_ms=150.0)
+    resolved = resolve_vision_packet(
+        _packet(mapping_mode="delta_servo"),
+        config=config,
+        snapshot=_snapshot((0.0, -120.0)),
+        snapshot_age_ms=20.0,
+        frame_pose_age_ms=240.0,
+    ).packet
+
+    slot = resolved["slots"][0]
+    assert slot["actionable"] is False
+    assert slot["command_point"] is None
+    assert slot["invalid_reason"] == "robot_pose_stale_for_frame"
+    assert slot["frame_pose_age_ms"] == 240.0
+
+
 def test_resolve_absolute_base_uses_world_xyz() -> None:
     resolved = resolve_vision_packet(
         _packet(mapping_mode="absolute_base", world_xyz=(66.0, -170.0, 0.0)),

@@ -358,6 +358,81 @@ def test_profile_mapping_applies_residual_grid_correction():
     assert mapped.estimated_error_mm == 2.75
 
 
+def test_profile_mapping_selects_stage_model_by_name():
+    profile = VisionCalibrationProfile.from_dict(
+        {
+            "profile_id": "stage-profile",
+            "image_size": [100, 100],
+            "pixel_to_delta": {"model": "affine", "matrix": [[1, 0, 0], [0, 1, 0]]},
+            "stage_models": {
+                "search": {
+                    "z_mm": 190.0,
+                    "pixel_to_delta": {"model": "affine", "matrix": [[1, 0, 0], [0, 1, 0]]},
+                },
+                "confirm": {
+                    "z_mm": 130.0,
+                    "pixel_to_delta": {"model": "affine", "matrix": [[2, 0, 0], [0, 2, 0]]},
+                },
+            },
+        }
+    )
+
+    mapped = profile.map_pixel_to_delta((5.0, 4.0), frame_size=(100, 100), stage="confirm")
+
+    assert mapped.delta_xy_mm == (10.0, 8.0)
+    assert profile.model_for_stage("confirm").z_mm == 130.0
+
+
+def test_profile_mapping_does_not_reuse_wrong_stage_when_named_stage_is_missing():
+    profile = VisionCalibrationProfile.from_dict(
+        {
+            "profile_id": "stage-profile",
+            "image_size": [100, 100],
+            "stage_models": {
+                "search": {
+                    "z_mm": 190.0,
+                    "pixel_to_delta": {"model": "affine", "matrix": [[1, 0, 0], [0, 1, 0]]},
+                }
+            },
+        }
+    )
+    slots = [SlotState(slot=1, freq_hz=8.0)]
+    slot = slots[0]
+    slot.valid = True
+    slot.observed = True
+    slot.pixel_center = (50, 50)
+    slot.grasp_pixel = (50, 50)
+    slot.grasp_quality = 1.0
+
+    annotate_slots_with_cylindrical(
+        slots,
+        calibration=None,
+        calibration_profile=profile,
+        frame_size=(100, 100),
+        roi_center=(50, 50),
+        mapping_mode="delta_servo",
+        calibration_profile_required=True,
+        calibration_stage="confirm",
+        calibration_z_mm=130.0,
+    )
+
+    assert slot.actionable is False
+    assert slot.invalid_reason == "calibration_unavailable"
+
+
+def test_mask_grasp_geometry_prefers_inner_safe_point_over_silhouette_center():
+    mask = np.zeros((120, 120), dtype=np.uint8)
+    mask[25:85, 25:85] = 255
+    mask[25:45, 85:110] = 255
+
+    geometry = mask_to_grasp_geometry(mask, (120, 120))
+
+    assert geometry is not None
+    assert geometry.center == (60, 52)
+    assert geometry.grasp_pixel[0] < geometry.center[0]
+    assert geometry.grasp_quality > 0.5
+
+
 def test_profile_mapping_rejects_points_outside_valid_workspace():
     profile = VisionCalibrationProfile.from_dict(
         {

@@ -6,7 +6,7 @@ import math
 import socketserver
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Callable, Optional, Protocol, TextIO
 
@@ -133,6 +133,34 @@ class PickTuning:
             "place_release_sec": float(self.place_release_sec),
             "place_post_release_hold_sec": float(self.place_post_release_hold_sec),
             "z_carry_floor_mm": float(self.z_carry_floor_mm),
+        }
+
+
+@dataclass
+class RobotActionRecord:
+    action_id: int
+    action_type: str
+    stage: str
+    started_at: float
+    updated_at: float
+    command: str = ""
+    feedback: dict[str, object] = field(default_factory=dict)
+    result: str | None = None
+    error: str | None = None
+    cancelled: bool = False
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "action_id": int(self.action_id),
+            "type": str(self.action_type),
+            "stage": str(self.stage),
+            "started_at": float(self.started_at),
+            "updated_at": float(self.updated_at),
+            "command": str(self.command),
+            "feedback": dict(self.feedback),
+            "result": self.result,
+            "error": self.error,
+            "cancelled": bool(self.cancelled),
         }
 
 
@@ -492,6 +520,9 @@ class RobotExecutor:
         self._last_release_mode_effective = "off"
         self._last_sucker_rotation_logical_deg: float | None = None
         self._last_sucker_rotation_servo_deg: float | None = None
+        self._action_seq = 0
+        self._current_action: RobotActionRecord | None = None
+        self._last_action: RobotActionRecord | None = None
         self.legacy_kernel = LegacyCartesianKernel(self)
         self.cylindrical_kernel = CylindricalKernel(self)
 
@@ -524,6 +555,8 @@ class RobotExecutor:
                 "state": self._state.value,
                 "action_phase": self._state.value,
                 "busy_action": self._busy_action_name(),
+                "current_action": None if self._current_action is None else self._current_action.to_dict(),
+                "last_action": None if self._last_action is None else self._last_action.to_dict(),
                 "busy": is_busy_state(self._state),
                 "carrying": self._carrying,
                 "control_kernel": self._control_kernel,
@@ -633,6 +666,11 @@ class RobotExecutor:
             self._abort_requested.clear()
             tx = self._clamp(x, self.limits.x_min, self.limits.x_max)
             ty = self._clamp(y, self.limits.y_min, self.limits.y_max)
+            self._start_action_unlocked(
+                "move_xy",
+                command=f"MOVE {tx:.2f} {ty:.2f}",
+                feedback={"target_xyz": [float(tx), float(ty), float(self.limits.z_carry)]},
+            )
             self._set_state(RobotExecutorState.MOVING_XY)
             current = self.actuator.get_position()
 
@@ -648,10 +686,15 @@ class RobotExecutor:
                 self._last_error_code = RobotErrorCode.HARDWARE_FAILURE.value
                 self._last_error_message = str(error)
                 self._set_state(RobotExecutorState.ERROR)
+                self._finish_action_unlocked("failed", error=str(error))
             raise
 
         with self._lock:
             self._set_state(RobotExecutorState.CARRY_READY if self._carrying else RobotExecutorState.IDLE)
+            self._finish_action_unlocked(
+                "ok",
+                feedback={"final_xyz": [float(tx), float(ty), float(self.limits.z_carry)]},
+            )
             return (tx, ty, self.limits.z_carry)
 
     def _move_cyl_impl(self, pose: CylindricalPose) -> CylindricalMovePlan:
@@ -660,6 +703,14 @@ class RobotExecutor:
             self._clear_last_error()
             self._abort_requested.clear()
             plan = self._build_cylindrical_move_plan(pose)
+            self._start_action_unlocked(
+                "move_cyl",
+                command=f"MOVE_CYL {plan.theta_deg:.2f} {plan.radius_mm:.2f} {plan.z_mm:.2f}",
+                feedback={
+                    "target_cyl": [float(plan.theta_deg), float(plan.radius_mm), float(plan.z_mm)],
+                    "target_xyz": [float(plan.x_mm), float(plan.y_mm), float(plan.z_mm)],
+                },
+            )
             self._set_state(RobotExecutorState.MOVING_XY)
             current = self.actuator.get_position()
 
@@ -675,10 +726,12 @@ class RobotExecutor:
                 self._last_error_code = RobotErrorCode.HARDWARE_FAILURE.value
                 self._last_error_message = str(error)
                 self._set_state(RobotExecutorState.ERROR)
+                self._finish_action_unlocked("failed", error=str(error))
             raise
 
         with self._lock:
             self._set_state(RobotExecutorState.CARRY_READY if self._carrying else RobotExecutorState.IDLE)
+            self._finish_action_unlocked("ok", feedback={"final_xyz": [float(plan.x_mm), float(plan.y_mm), float(plan.z_mm)]})
             return plan
 
     def _move_cyl_auto_impl(self, theta_deg: float, radius_mm: float) -> CylindricalMovePlan:
@@ -715,6 +768,14 @@ class RobotExecutor:
             plan = self._build_cylindrical_move_plan(
                 CylindricalPose(theta_deg=theta_deg, radius_mm=radius_mm, z_mm=z_mm).normalized()
             )
+            self._start_action_unlocked(
+                "move_cyl_auto",
+                command=f"MOVE_CYL_AUTO {float(theta_deg):.2f} {float(radius_mm):.2f}",
+                feedback={
+                    "target_cyl": [float(plan.theta_deg), float(plan.radius_mm), float(plan.z_mm)],
+                    "target_xyz": [float(plan.x_mm), float(plan.y_mm), float(plan.z_mm)],
+                },
+            )
             self._set_state(RobotExecutorState.MOVING_XY)
             current = self.actuator.get_position()
 
@@ -730,10 +791,12 @@ class RobotExecutor:
                 self._last_error_code = RobotErrorCode.HARDWARE_FAILURE.value
                 self._last_error_message = str(error)
                 self._set_state(RobotExecutorState.ERROR)
+                self._finish_action_unlocked("failed", error=str(error))
             raise
 
         with self._lock:
             self._set_state(RobotExecutorState.CARRY_READY if self._carrying else RobotExecutorState.IDLE)
+            self._finish_action_unlocked("ok", feedback={"final_xyz": [float(plan.x_mm), float(plan.y_mm), float(plan.z_mm)]})
             return plan
 
     def _begin_pick_pixel_legacy_impl(self, pixel_x: float, pixel_y: float) -> PickPlan:
@@ -774,6 +837,15 @@ class RobotExecutor:
             target_y=float(target_y),
         )
         with self._lock:
+            self._start_action_unlocked(
+                "pick_pixel",
+                command=f"PICK {float(pixel_x):.2f} {float(pixel_y):.2f}",
+                feedback={
+                    "pixel": [float(pixel_x), float(pixel_y)],
+                    "target_xy": [float(target_x), float(target_y)],
+                    "raw_target_xy": [float(raw_target_x), float(raw_target_y)],
+                },
+            )
             self._set_state(RobotExecutorState.PICK_APPROACH)
         return plan
 
@@ -799,11 +871,24 @@ class RobotExecutor:
                     RobotErrorCode.TARGET_OUT_OF_WORKSPACE,
                     str(cyl_validation.get("message") or "World target violates cylindrical limits."),
                 )
+            normalized_angle = self._normalize_optional_sucker_rotation(sucker_rotation_deg)
+            feedback: dict[str, object] = {"target_xy": [float(target_x), float(target_y)]}
+            if normalized_angle is not None:
+                feedback["sucker_rotation_deg"] = float(normalized_angle)
+            self._start_action_unlocked(
+                "pick_world",
+                command=(
+                    f"PICK_WORLD {target_x:.2f} {target_y:.2f}"
+                    if normalized_angle is None
+                    else f"PICK_WORLD {target_x:.2f} {target_y:.2f} {normalized_angle:.2f}"
+                ),
+                feedback=feedback,
+            )
             self._set_state(RobotExecutorState.PICK_APPROACH)
             return WorldPickPlan(
                 target_x=target_x,
                 target_y=target_y,
-                sucker_rotation_deg=self._normalize_optional_sucker_rotation(sucker_rotation_deg),
+                sucker_rotation_deg=normalized_angle,
             )
 
     def _begin_pick_cyl_impl(
@@ -827,13 +912,29 @@ class RobotExecutor:
                     str(validation.get("message") or "Invalid cylindrical pick target."),
                 )
             x_mm, y_mm, _ = pose.as_cartesian()
+            normalized_angle = self._normalize_optional_sucker_rotation(sucker_rotation_deg)
+            feedback = {
+                "target_cyl": [float(pose.theta_deg), float(pose.radius_mm), float(pose.z_mm)],
+                "target_xy": [float(x_mm), float(y_mm)],
+            }
+            if normalized_angle is not None:
+                feedback["sucker_rotation_deg"] = float(normalized_angle)
+            self._start_action_unlocked(
+                "pick_cyl",
+                command=(
+                    f"PICK_CYL {pose.theta_deg:.2f} {pose.radius_mm:.2f}"
+                    if normalized_angle is None
+                    else f"PICK_CYL {pose.theta_deg:.2f} {pose.radius_mm:.2f} {normalized_angle:.2f}"
+                ),
+                feedback=feedback,
+            )
             self._set_state(RobotExecutorState.PICK_APPROACH)
             return CylindricalPickPlan(
                 theta_deg=float(pose.theta_deg),
                 radius_mm=float(pose.radius_mm),
                 target_x=float(x_mm),
                 target_y=float(y_mm),
-                sucker_rotation_deg=self._normalize_optional_sucker_rotation(sucker_rotation_deg),
+                sucker_rotation_deg=normalized_angle,
             )
 
     def complete_pick(self, plan: PickPlan | WorldPickPlan | CylindricalPickPlan) -> None:
@@ -899,6 +1000,10 @@ class RobotExecutor:
             self._last_post_pick_settle_z = float(settle_z)
             self._set_state(RobotExecutorState.CARRY_READY)
             self._clear_last_error()
+            self._finish_action_unlocked(
+                "ok",
+                feedback={"final_xyz": [float(target_x), float(target_y), float(settle_z)]},
+            )
 
     def begin_place(self) -> PlacePlan:
         with self._lock:
@@ -908,6 +1013,11 @@ class RobotExecutor:
             self._clear_last_error()
             self._abort_requested.clear()
             cur_x, cur_y, _ = self.actuator.get_position()
+            self._start_action_unlocked(
+                "place",
+                command="PLACE",
+                feedback={"target_xy": [float(cur_x), float(cur_y)]},
+            )
             self._set_state(RobotExecutorState.PLACE_DESCEND)
             return PlacePlan(target_x=float(cur_x), target_y=float(cur_y))
 
@@ -948,6 +1058,13 @@ class RobotExecutor:
             self._last_release_mode_effective = str(release_mode)
             self._set_state(RobotExecutorState.IDLE)
             self._clear_last_error()
+            self._finish_action_unlocked(
+                "ok",
+                feedback={
+                    "release_mode_effective": str(release_mode),
+                    "final_xyz": [float(plan.target_x), float(plan.target_y), float(settle_z)],
+                },
+            )
 
     def abort(
         self,
@@ -962,6 +1079,8 @@ class RobotExecutor:
             self._log(f"Failed to disable sucker during abort: {error.message}")
         with self._lock:
             busy = is_busy_state(self._state)
+            if self._current_action is not None:
+                self._update_action_stage_unlocked("abort_requested", feedback={"abort_message": str(message)})
         if busy:
             return
         self._set_abort_error(code, message)
@@ -1045,10 +1164,16 @@ class RobotExecutor:
                 self._set_state(RobotExecutorState.ERROR)
                 self._last_error_code = RobotErrorCode.RECOVER_FAILED.value
                 self._last_error_message = str(recover_error)
+                self._finish_action_unlocked("failed", error=str(recover_error))
             return RobotCommandError(RobotErrorCode.RECOVER_FAILED, str(recover_error))
 
         with self._lock:
             self._set_state(RobotExecutorState.ERROR)
+            self._finish_action_unlocked(
+                "cancelled" if command_error.code == RobotErrorCode.ABORTED.value else "failed",
+                error=command_error.message,
+                cancelled=command_error.code == RobotErrorCode.ABORTED.value,
+            )
         return command_error
 
     def _recover_to_safe_pose(self, *, disable_sucker: bool) -> None:
@@ -1411,8 +1536,67 @@ class RobotExecutor:
 
     def _set_state(self, state: RobotExecutorState) -> None:
         self._state = state
+        self._update_action_stage_unlocked(state.value)
         self._revision += 1
         self._log(f"Executor state -> {state.value}")
+
+    def _start_action_unlocked(
+        self,
+        action_type: str,
+        *,
+        command: str = "",
+        stage: str | None = None,
+        feedback: dict[str, object] | None = None,
+    ) -> RobotActionRecord:
+        now = time.time()
+        self._action_seq += 1
+        action = RobotActionRecord(
+            action_id=int(self._action_seq),
+            action_type=str(action_type),
+            stage=str(stage or self._state.value),
+            started_at=float(now),
+            updated_at=float(now),
+            command=str(command),
+            feedback=dict(feedback or {}),
+        )
+        self._current_action = action
+        self._revision += 1
+        return action
+
+    def _update_action_stage_unlocked(
+        self,
+        stage: str,
+        *,
+        feedback: dict[str, object] | None = None,
+    ) -> None:
+        action = self._current_action
+        if action is None or action.result is not None:
+            return
+        action.stage = str(stage)
+        action.updated_at = time.time()
+        if feedback:
+            action.feedback.update(feedback)
+
+    def _finish_action_unlocked(
+        self,
+        result: str,
+        *,
+        error: str | None = None,
+        cancelled: bool = False,
+        feedback: dict[str, object] | None = None,
+    ) -> None:
+        action = self._current_action
+        if action is None:
+            return
+        action.result = str(result)
+        action.error = None if error is None else str(error)
+        action.cancelled = bool(cancelled)
+        action.updated_at = time.time()
+        if feedback:
+            action.feedback.update(feedback)
+        self._last_action = action
+        self._current_action = None
+        self._revision += 1
 
     def _clear_last_error(self) -> None:
         self._last_error_code = None
@@ -1470,6 +1654,7 @@ class RobotExecutor:
             self._set_state(RobotExecutorState.ERROR)
             self._last_error_code = code_text
             self._last_error_message = str(message)
+            self._finish_action_unlocked("cancelled", error=str(message), cancelled=True)
 
 
 class RobotTcpGateway:

@@ -300,6 +300,20 @@ def test_move_cyl_and_move_cyl_auto_ack(monkeypatch) -> None:
     assert len(runtime._hardware.moves) == 2
 
 
+def test_move_records_last_action_metadata(monkeypatch) -> None:
+    _patch_executor_sleep(monkeypatch)
+    runtime = _runtime()
+    stream = FakeStream()
+
+    runtime.dispatch_command("MOVE_CYL 10 130 160", stream)
+
+    status = runtime.healthcheck()
+    assert status["current_action"] is None
+    assert status["last_action"]["type"] == "move_cyl"
+    assert status["last_action"]["result"] == "ok"
+    assert status["last_action"]["feedback"]["target_cyl"] == [10.0, 130.0, 160.0]
+
+
 def test_pick_world_uses_settle_pose_for_post_pick_state(monkeypatch) -> None:
     _patch_executor_sleep(monkeypatch)
     runtime = _runtime()
@@ -311,6 +325,28 @@ def test_pick_world_uses_settle_pose_for_post_pick_state(monkeypatch) -> None:
     status = runtime.healthcheck()
     assert float(status["post_pick_settle_z"]) >= float(status["pick_tuning"]["z_carry_floor_mm"])
     assert status["state"] == RobotExecutorState.CARRY_READY.value
+
+
+def test_pick_records_current_and_last_action_metadata(monkeypatch) -> None:
+    _patch_executor_sleep(monkeypatch)
+    runtime = _runtime()
+    runtime._initialize_executor()
+    executor = runtime._executor
+    assert executor is not None
+
+    plan = executor.begin_pick_world(0.0, -170.0, sucker_rotation_deg=15.0)
+    status = executor.healthcheck()
+    assert status["current_action"]["type"] == "pick_world"
+    assert status["current_action"]["stage"] == RobotExecutorState.PICK_APPROACH.value
+    assert status["current_action"]["feedback"]["sucker_rotation_deg"] == 15.0
+
+    executor.complete_pick(plan)
+
+    status = executor.healthcheck()
+    assert status["current_action"] is None
+    assert status["last_action"]["type"] == "pick_world"
+    assert status["last_action"]["result"] == "ok"
+    assert status["carrying"] is True
 
 
 def test_place_release_prefers_release_api_when_available(monkeypatch) -> None:

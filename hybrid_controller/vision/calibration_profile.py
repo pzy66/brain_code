@@ -278,12 +278,51 @@ def _first_present(payload: dict[str, Any], keys: tuple[str, ...]) -> object:
     return None
 
 
+def _merge_stage_payload(parent: dict[str, Any], child: dict[str, Any], stage_name: str) -> dict[str, Any]:
+    merged = dict(child)
+    merged.setdefault("stage", str(stage_name).strip().lower())
+    for key in (
+        "image_size",
+        "frame_size",
+        "K",
+        "camera_matrix",
+        "D",
+        "dist_coeffs",
+        "distCoeffs",
+        "distortion_coefficients",
+        "hand_eye",
+        "T_camera_to_tool",
+        "created_at",
+    ):
+        if key not in merged and key in parent:
+            merged[key] = parent[key]
+    parent_servo = parent.get("servo")
+    child_servo = merged.get("servo")
+    if isinstance(parent_servo, dict):
+        servo = dict(parent_servo)
+        if isinstance(child_servo, dict):
+            servo.update(child_servo)
+        merged["servo"] = servo
+    parent_limits = parent.get("limits")
+    child_limits = merged.get("limits")
+    if isinstance(parent_limits, dict):
+        limits = dict(parent_limits)
+        if isinstance(child_limits, dict):
+            limits.update(child_limits)
+        merged["limits"] = limits
+    merged.pop("stage_models", None)
+    return merged
+
+
 @dataclass(frozen=True, slots=True)
 class VisionCalibrationProfile:
     profile_id: str
+    stage: str = ""
+    z_mm: float | None = None
     image_size: tuple[int, int] | None = None
     camera_matrix: np.ndarray | None = None
     dist_coeffs: np.ndarray | None = None
+    hand_eye_camera_to_tool: np.ndarray | None = None
     target_pixel: tuple[float, float] | None = None
     model: str = "affine"
     pixel_to_delta_matrix: np.ndarray | None = None
@@ -299,6 +338,7 @@ class VisionCalibrationProfile:
     valid_workspace: tuple[tuple[float, float], ...] = ()
     samples_summary: dict[str, Any] | None = None
     created_at: str = ""
+    stage_models: dict[str, "VisionCalibrationProfile"] | None = None
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "VisionCalibrationProfile":
@@ -312,6 +352,17 @@ class VisionCalibrationProfile:
         dist_coeffs = None if dist_value is None else np.array(dist_value, dtype=np.float64).reshape(-1, 1)
         if dist_coeffs is not None and not np.all(np.isfinite(dist_coeffs)):
             raise ValueError("distortion coefficients contain non-finite values")
+        hand_eye_payload = payload.get("hand_eye") or {}
+        if not isinstance(hand_eye_payload, dict):
+            hand_eye_payload = {}
+        hand_eye_matrix_value = hand_eye_payload.get("T_camera_to_tool")
+        if hand_eye_matrix_value is None:
+            hand_eye_matrix_value = payload.get("T_camera_to_tool")
+        hand_eye_camera_to_tool = _as_optional_matrix(
+            hand_eye_matrix_value,
+            rows=4,
+            cols=4,
+        )
 
         mapping = payload.get("pixel_to_delta") or payload.get("pixel_to_delta_model") or {}
         if not isinstance(mapping, dict):
@@ -372,12 +423,23 @@ class VisionCalibrationProfile:
         samples_summary = payload.get("samples_summary")
         if not isinstance(samples_summary, dict):
             samples_summary = None
+        stage_models_payload = payload.get("stage_models") or {}
+        stage_models: dict[str, VisionCalibrationProfile] = {}
+        if isinstance(stage_models_payload, dict):
+            for stage_name, stage_payload in stage_models_payload.items():
+                if not isinstance(stage_payload, dict):
+                    continue
+                merged_payload = _merge_stage_payload(payload, stage_payload, str(stage_name))
+                stage_models[str(stage_name).strip().lower()] = cls.from_dict(merged_payload)
 
         return cls(
             profile_id=profile_id or "vision-profile",
+            stage=str(payload.get("stage") or "").strip().lower(),
+            z_mm=_optional_float(payload.get("z_mm")),
             image_size=image_size,
             camera_matrix=camera_matrix,
             dist_coeffs=dist_coeffs,
+            hand_eye_camera_to_tool=hand_eye_camera_to_tool,
             target_pixel=target_pixel,
             model=model if model in {"affine", "homography"} else "affine",
             pixel_to_delta_matrix=pixel_to_delta_matrix,
@@ -393,6 +455,7 @@ class VisionCalibrationProfile:
             valid_workspace=valid_workspace,
             samples_summary=samples_summary,
             created_at=str(payload.get("created_at") or ""),
+            stage_models=stage_models or None,
         )
 
     @classmethod
@@ -408,9 +471,16 @@ class VisionCalibrationProfile:
             mapping["matrix"] = self.pixel_to_delta_matrix.tolist()
         return {
             "profile_id": self.profile_id,
+            "stage": self.stage,
+            "z_mm": self.z_mm,
             "image_size": None if self.image_size is None else [int(self.image_size[0]), int(self.image_size[1])],
             "K": None if self.camera_matrix is None else self.camera_matrix.tolist(),
             "D": None if self.dist_coeffs is None else self.dist_coeffs.reshape(-1).tolist(),
+            "hand_eye": {
+                "T_camera_to_tool": None
+                if self.hand_eye_camera_to_tool is None
+                else self.hand_eye_camera_to_tool.tolist()
+            },
             "pixel_to_delta": mapping,
             "residual": {
                 "median_error_mm": self.median_error_mm,
@@ -436,11 +506,47 @@ class VisionCalibrationProfile:
                 "gain": float(self.servo_gain),
                 "max_attempts": int(self.max_servo_attempts),
             },
+            "stage_models": (
+                {}
+                if not self.stage_models
+                else {str(name): model.to_dict() for name, model in self.stage_models.items()}
+            ),
         }
 
     @property
     def has_pixel_to_delta_model(self) -> bool:
         return self.pixel_to_delta_matrix is not None
+
+    @property
+    def has_stage_models(self) -> bool:
+        return bool(self.stage_models)
+
+    def model_for_stage(
+        self,
+        stage: str | None = None,
+        *,
+        z_mm: float | None = None,
+        allow_fallback: bool = True,
+    ) -> "VisionCalibrationProfile":
+        models = self.stage_models or {}
+        if not models:
+            if allow_fallback:
+                return self
+            raise ValueError("calibration_profile_stage_model_unavailable")
+        key = str(stage or "").strip().lower()
+        if key and key in models:
+            return models[key]
+        if key:
+            if allow_fallback:
+                return self
+            raise ValueError("calibration_profile_stage_model_unavailable")
+        if z_mm is not None:
+            candidates = [model for model in models.values() if model.z_mm is not None]
+            if candidates:
+                return min(candidates, key=lambda model: abs(float(model.z_mm) - float(z_mm)))
+        if allow_fallback:
+            return self
+        raise ValueError("calibration_profile_stage_model_unavailable")
 
     def is_valid_for_image_size(self, frame_size: tuple[int, int] | None) -> bool:
         if self.image_size is None or frame_size is None:
@@ -510,7 +616,19 @@ class VisionCalibrationProfile:
         *,
         frame_size: tuple[int, int] | None = None,
         target_pixel: tuple[float, float] | None = None,
+        stage: str | None = None,
+        z_mm: float | None = None,
+        allow_stage_fallback: bool = True,
     ) -> VisionMappingResult:
+        if stage is not None or z_mm is not None:
+            stage_model = self.model_for_stage(stage, z_mm=z_mm, allow_fallback=allow_stage_fallback)
+            if stage_model is not self:
+                return stage_model.map_pixel_to_delta(
+                    pixel,
+                    frame_size=frame_size,
+                    target_pixel=target_pixel,
+                    allow_stage_fallback=allow_stage_fallback,
+                )
         if not self.is_valid_for_image_size(frame_size):
             raise ValueError("calibration_profile_image_size_mismatch")
         if self.pixel_to_delta_matrix is None:
