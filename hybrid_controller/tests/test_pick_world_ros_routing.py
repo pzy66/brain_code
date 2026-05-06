@@ -202,7 +202,7 @@ def test_default_pick_bias_keeps_theta_and_adds_measured_radius_offset() -> None
     x_text, y_text = rewritten.split()[1:3]
     theta_deg, radius_mm, _ = cartesian_to_cylindrical(float(x_text), float(y_text), AppConfig.robot_pick_z)
     assert theta_deg == pytest.approx(0.355, abs=0.02)
-    assert radius_mm == pytest.approx(238.564, abs=0.02)
+    assert radius_mm == pytest.approx(242.564, abs=0.02)
 
 
 def test_pick_trace_records_bias_and_command_delta() -> None:

@@ -172,6 +172,11 @@ STIMULUS_MODE_ELAPSED_TIME_SINE = "elapsed_time_sine"
 STIMULUS_MODE_FRAME_LOCKED_SINE = "frame_locked_sine"
 STIMULUS_MODES = (STIMULUS_MODE_ELAPSED_TIME_SINE, STIMULUS_MODE_FRAME_LOCKED_SINE)
 
+try:
+    from ssvep_core.stimulus_profiles import DEFAULT_STIMULUS_PROFILE_ID
+except Exception:
+    DEFAULT_STIMULUS_PROFILE_ID = "comfort_fbcca_v1"
+
 
 class StimClockThread(QThread):
     tick = pyqtSignal(float, int)
@@ -228,8 +233,31 @@ def validate_stimulus_mode(value: str) -> str:
     return mode
 
 
-def stimulus_luminance_elapsed(freq: float, t_sec: float, *, mean: float, amp: float, phi: float) -> float:
-    value = float(mean) + float(amp) * np.sin(2.0 * np.pi * float(freq) * float(t_sec) + float(phi))
+def stimulus_ramp_envelope(t_sec: float, *, active_sec: Optional[float] = None, ramp_sec: float = 0.0) -> float:
+    ramp = max(0.0, float(ramp_sec))
+    if ramp <= 1e-12:
+        return 1.0
+    t = max(0.0, float(t_sec))
+    onset = min(1.0, t / ramp)
+    if active_sec is None:
+        return float(onset)
+    remaining = max(0.0, float(active_sec) - t)
+    offset = min(1.0, remaining / ramp)
+    return float(max(0.0, min(1.0, onset, offset)))
+
+
+def stimulus_luminance_elapsed(
+    freq: float,
+    t_sec: float,
+    *,
+    mean: float,
+    amp: float,
+    phi: float,
+    ramp_sec: float = 0.0,
+    active_sec: Optional[float] = None,
+) -> float:
+    envelope = stimulus_ramp_envelope(t_sec, active_sec=active_sec, ramp_sec=ramp_sec)
+    value = float(mean) + float(amp) * float(envelope) * np.sin(2.0 * np.pi * float(freq) * float(t_sec) + float(phi))
     return float(np.clip(value, 0.0, 1.0))
 
 
@@ -241,16 +269,43 @@ def stimulus_luminance_frame_locked(
     mean: float,
     amp: float,
     phi: float,
+    ramp_sec: float = 0.0,
+    active_sec: Optional[float] = None,
 ) -> float:
     hz = float(refresh_rate_hz)
     if not np.isfinite(hz) or hz <= 0.0:
         raise ValueError("refresh_rate_hz must be positive")
     frame = max(0, int(frame_index))
-    return stimulus_luminance_elapsed(float(freq), float(frame) / hz, mean=mean, amp=amp, phi=phi)
+    return stimulus_luminance_elapsed(
+        float(freq),
+        float(frame) / hz,
+        mean=mean,
+        amp=amp,
+        phi=phi,
+        ramp_sec=ramp_sec,
+        active_sec=active_sec,
+    )
 
 
-def stimulus_luminance(freq: float, t_sec: float, *, mean: float, amp: float, phi: float) -> float:
-    return stimulus_luminance_elapsed(freq, t_sec, mean=mean, amp=amp, phi=phi)
+def stimulus_luminance(
+    freq: float,
+    t_sec: float,
+    *,
+    mean: float,
+    amp: float,
+    phi: float,
+    ramp_sec: float = 0.0,
+    active_sec: Optional[float] = None,
+) -> float:
+    return stimulus_luminance_elapsed(
+        freq,
+        t_sec,
+        mean=mean,
+        amp=amp,
+        phi=phi,
+        ramp_sec=ramp_sec,
+        active_sec=active_sec,
+    )
 
 
 def stimulus_frame_qc_report(
@@ -262,6 +317,7 @@ def stimulus_frame_qc_report(
     mean: float,
     amp: float,
     phi: float,
+    ramp_sec: float = 0.0,
 ) -> dict[str, Any]:
     mode = validate_stimulus_mode(stimulus_mode)
     hz = float(refresh_rate_hz)
@@ -281,6 +337,8 @@ def stimulus_frame_qc_report(
                         mean=mean,
                         amp=amp,
                         phi=phi,
+                        ramp_sec=ramp_sec,
+                        active_sec=float(active_sec),
                     )
                     for frame in frame_indices
                 ],
@@ -288,7 +346,18 @@ def stimulus_frame_qc_report(
             )
         else:
             samples = np.asarray(
-                [stimulus_luminance_elapsed(freq, float(t), mean=mean, amp=amp, phi=phi) for t in timeline],
+                [
+                    stimulus_luminance_elapsed(
+                        freq,
+                        float(t),
+                        mean=mean,
+                        amp=amp,
+                        phi=phi,
+                        ramp_sec=ramp_sec,
+                        active_sec=float(active_sec),
+                    )
+                    for t in timeline
+                ],
                 dtype=float,
             )
         centered = samples - float(np.mean(samples))
@@ -304,13 +373,27 @@ def stimulus_frame_qc_report(
                 "peak_hz": float(fft_freqs[peak_index]),
                 "target_bin_hz": float(fft_freqs[target_index]),
                 "target_amplitude": float(spectrum[target_index]),
+                "luminance_min": float(np.min(samples)),
+                "luminance_max": float(np.max(samples)),
+                "clipped_low_count": int(np.sum(samples <= 0.0)),
+                "clipped_high_count": int(np.sum(samples >= 1.0)),
             }
         )
+    luminance_min = float(max(0.0, float(mean) - abs(float(amp))))
+    luminance_max = float(min(1.0, float(mean) + abs(float(amp))))
+    denom = float(luminance_max + luminance_min)
     return {
         "stimulus_mode": mode,
         "refresh_rate_hz": hz,
         "active_sec": float(active_sec),
         "frame_count": int(frame_count),
+        "mean": float(mean),
+        "amp": float(amp),
+        "ramp_sec": float(ramp_sec),
+        "luminance_min": luminance_min,
+        "luminance_max": luminance_max,
+        "michelson_contrast": float((luminance_max - luminance_min) / denom) if denom > 1e-12 else 0.0,
+        "clipping": bool(luminance_min <= 0.0 or luminance_max >= 1.0),
         "rows": rows,
     }
 
@@ -327,6 +410,8 @@ class FourArrowStimWidget(QOpenGLWidget):
         amp: float,
         phi: float,
         stimulus_mode: str = STIMULUS_MODE_ELAPSED_TIME_SINE,
+        stimulus_profile_id: str = DEFAULT_STIMULUS_PROFILE_ID,
+        ramp_sec: float = 0.0,
         selected_border_color: Optional[QColor] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
@@ -337,6 +422,8 @@ class FourArrowStimWidget(QOpenGLWidget):
         self.amp = float(amp)
         self.phi = float(phi)
         self.stimulus_mode = validate_stimulus_mode(stimulus_mode)
+        self.stimulus_profile_id = str(stimulus_profile_id or DEFAULT_STIMULUS_PROFILE_ID)
+        self.ramp_sec = max(0.0, float(ramp_sec))
         self.selected_border_color = selected_border_color or QColor(64, 220, 140)
 
         self.clock_thread: Optional[StimClockThread] = None
@@ -345,11 +432,13 @@ class FourArrowStimWidget(QOpenGLWidget):
         self.current_frame = -1
         self.clock_start_ns: Optional[int] = None
         self._last_frame_swap_ns: Optional[int] = None
+        self._frame_intervals_ms: list[float] = []
 
         self.phase_mode = PHASE_IDLE
         self.phase_title = "Ready"
         self.phase_detail = "Click Full Workflow to calibrate, then enter 4-arrow validation."
         self.remaining_sec = 0
+        self.active_phase_duration_sec: Optional[float] = None
         self.flicker_enabled = False
         self.cue_freq: Optional[float] = None
         self.pred_freq: Optional[float] = None
@@ -389,6 +478,7 @@ class FourArrowStimWidget(QOpenGLWidget):
         self.current_frame = 0
         self.clock_start_ns = time.perf_counter_ns()
         self._last_frame_swap_ns = None
+        self._frame_intervals_ms = []
         self.update()
 
     def stop_clock(self) -> None:
@@ -424,6 +514,11 @@ class FourArrowStimWidget(QOpenGLWidget):
         self.phase_title = str(payload.get("title", ""))
         self.phase_detail = str(payload.get("detail", ""))
         self.remaining_sec = int(payload.get("remaining_sec", 0) or 0)
+        try:
+            duration_value = payload.get("active_sec", payload.get("duration_sec"))
+            self.active_phase_duration_sec = None if duration_value is None else float(duration_value)
+        except Exception:
+            self.active_phase_duration_sec = None
         self.flicker_enabled = bool(payload.get("flicker", False))
         self.cue_freq = payload.get("cue_freq")
         requires_ack = bool(self._phase_requires_presented_ack(self.phase_mode) and self.flicker_enabled)
@@ -467,9 +562,19 @@ class FourArrowStimWidget(QOpenGLWidget):
                     mean=self.mean,
                     amp=self.amp,
                     phi=self.phi,
+                    ramp_sec=self.ramp_sec,
+                    active_sec=self.active_phase_duration_sec,
                 )
             else:
-                luminance = stimulus_luminance_elapsed(freq, t_sec, mean=self.mean, amp=self.amp, phi=self.phi)
+                luminance = stimulus_luminance_elapsed(
+                    freq,
+                    t_sec,
+                    mean=self.mean,
+                    amp=self.amp,
+                    phi=self.phi,
+                    ramp_sec=self.ramp_sec,
+                    active_sec=self.active_phase_duration_sec,
+                )
         else:
             luminance = 0.22
         gray = int(round(255 * luminance))
@@ -500,6 +605,34 @@ class FourArrowStimWidget(QOpenGLWidget):
             "stimulus_mode": str(self.stimulus_mode),
             "refresh_rate_hz": float(self.refresh_rate_hz),
             "presented_perf_counter_ns": int(time.perf_counter_ns()),
+            "stimulus_profile_id": str(self.stimulus_profile_id),
+            "stim_mean": float(self.mean),
+            "stim_amp": float(self.amp),
+            "stim_phi": float(self.phi),
+            "ramp_sec": float(self.ramp_sec),
+            "active_sec": self.active_phase_duration_sec,
+            "frame_interval_stats": self.frame_interval_stats(),
+        }
+
+    def frame_interval_stats(self) -> dict[str, float | int]:
+        values = np.asarray(self._frame_intervals_ms, dtype=float)
+        if values.size <= 0:
+            return {
+                "count": 0,
+                "mean_ms": 0.0,
+                "std_ms": 0.0,
+                "p95_ms": 0.0,
+                "max_ms": 0.0,
+                "refresh_rate_hz_estimate": 0.0,
+            }
+        mean_ms = float(np.mean(values))
+        return {
+            "count": int(values.size),
+            "mean_ms": mean_ms,
+            "std_ms": float(np.std(values)),
+            "p95_ms": float(np.percentile(values, 95)),
+            "max_ms": float(np.max(values)),
+            "refresh_rate_hz_estimate": float(1000.0 / mean_ms) if mean_ms > 1e-9 else 0.0,
         }
 
     def _maybe_emit_active_phase_frame_presented(self, *, t_sec: float, frame_index: int) -> None:
@@ -530,13 +663,20 @@ class FourArrowStimWidget(QOpenGLWidget):
         )
 
     def _on_frame_swapped(self) -> None:
+        now_ns = time.perf_counter_ns()
         payload = self._queued_active_phase_frame_payload
         self._queued_active_phase_frame_payload = None
+        if self.clock_running and self.flicker_enabled and self._last_frame_swap_ns is not None:
+            interval_ms = float((now_ns - int(self._last_frame_swap_ns)) / 1_000_000.0)
+            if np.isfinite(interval_ms) and interval_ms > 0.0:
+                self._frame_intervals_ms.append(interval_ms)
+                if len(self._frame_intervals_ms) > 600:
+                    del self._frame_intervals_ms[: len(self._frame_intervals_ms) - 600]
         if payload is not None:
+            payload = {**payload, "frame_interval_stats": self.frame_interval_stats()}
             self.active_phase_frame_presented.emit(payload)
         if not self.clock_running or not self.flicker_enabled:
             return
-        now_ns = time.perf_counter_ns()
         if self.clock_start_ns is not None:
             self.current_t = max(0.0, (now_ns - int(self.clock_start_ns)) / 1_000_000_000.0)
         self.current_frame = max(0, int(self.current_frame) + 1)

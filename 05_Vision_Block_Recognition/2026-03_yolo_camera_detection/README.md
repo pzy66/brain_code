@@ -25,7 +25,7 @@
 
 这个入口默认会使用：
 
-- 权重：`<workspace>\dataset\camara\best.pt`
+- 权重：`datasets/vision/models/best.pt`，也可以用 `BRAIN_VISION_WEIGHTS` 指向其它本地 `.pt` 文件
 - 相机流：`http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80`
 - 设备：`auto`
 - `imgsz=512`
@@ -108,6 +108,6 @@ cmd /c "<repo>\05_Vision_Block_Recognition\2026-03_yolo_camera_detection\START_B
 
 ## 常见说明
 
-- 如果窗口能开起来，但没有识别结果，先检查权重文件 `dataset/camara/best.pt` 是否存在。
+- 如果窗口能开起来，但没有识别结果，先检查权重文件 `datasets/vision/models/best.pt` 是否存在，或检查 `BRAIN_VISION_WEIGHTS` 是否指向有效文件。
 - 如果画面打不开，先检查 JetMax 是否在线，以及 `192.168.149.1:8080` 这路流是否正常。
 - 如果你之后要继续增强识别准确率，建议只在这个主程序上继续迭代，不要再回到 `computer/test2.py` 那条旧主线。

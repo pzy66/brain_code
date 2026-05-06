@@ -74,6 +74,16 @@ from ssvep_core.dataset import (
     save_collection_dataset_bundle,
     sanitize_collection_token,
 )
+from ssvep_core.stimulus_profiles import (
+    DEFAULT_STIMULUS_PROFILE_ID,
+    STIMULUS_PROFILES,
+    STIMULUS_PROFILE_COMFORT_FBCCA_V1,
+    get_stimulus_profile,
+    profile_matches_freqs,
+    select_stimulus_mode_for_profile,
+    stimulus_profile_metadata,
+    validate_stimulus_profile_id,
+)
 
 try:
     import winsound
@@ -107,11 +117,14 @@ VOICE_PROMPT_GUARD_SEC = 0.8
 VOICE_PROMPT_FINISH_TIMEOUT_SEC = 5.0
 VOICE_PROMPT_RATE = 0.0
 VOICE_PROMPT_DIRECTIONS_CN = ("看上方", "看左方", "看下方", "看右方")
-STIM_REFRESH_RATE_HZ = 240.0
-STIM_MEAN = 0.5
-STIM_AMP = 0.5
-STIM_PHI = 0.0
-DEFAULT_COLLECTION_STIMULUS_MODE = STIMULUS_MODE_ELAPSED_TIME_SINE
+_DEFAULT_STIMULUS_PROFILE = get_stimulus_profile(DEFAULT_STIMULUS_PROFILE_ID)
+STIM_REFRESH_RATE_HZ = float(_DEFAULT_STIMULUS_PROFILE.refresh_rate_hz)
+STIM_MEAN = float(_DEFAULT_STIMULUS_PROFILE.mean)
+STIM_AMP = float(_DEFAULT_STIMULUS_PROFILE.amp)
+STIM_PHI = float(_DEFAULT_STIMULUS_PROFILE.phi)
+STIM_RAMP_SEC = float(_DEFAULT_STIMULUS_PROFILE.ramp_sec)
+DEFAULT_COLLECTION_STIMULUS_PROFILE_ID = DEFAULT_STIMULUS_PROFILE_ID
+DEFAULT_COLLECTION_STIMULUS_MODE = _DEFAULT_STIMULUS_PROFILE.fallback_mode
 STIM_FRAME_FORMULA = "luminance(frame)=mean+amp*sin(2*pi*freq*frame/refresh_rate_hz+phi)"
 ACTIVE_STIMULUS_ARM_SEC = 1.0 / STIM_REFRESH_RATE_HZ
 STIMULUS_PHASE_APPLY_TIMEOUT_SEC = 1.0
@@ -383,6 +396,22 @@ def validate_stimulus_frequency_set(freqs: Sequence[float], *, refresh_rate_hz: 
         )
 
 
+def resolve_collection_stimulus_mode(
+    *,
+    stimulus_profile_id: str,
+    refresh_rate_hz: float,
+    requested_mode: Optional[str] = None,
+) -> tuple[str, str]:
+    requested = str(requested_mode or "").strip().lower()
+    manual_mode = "" if requested in ("", "auto") else validate_stimulus_mode(requested)
+    mode, reason = select_stimulus_mode_for_profile(
+        stimulus_profile_id,
+        refresh_rate_hz=float(refresh_rate_hz),
+        requested_mode=manual_mode or "auto",
+    )
+    return validate_stimulus_mode(mode), str(reason)
+
+
 def validate_stimulus_backend(value: str) -> str:
     backend = str(value or "").strip().lower()
     if backend not in STIMULUS_BACKENDS:
@@ -473,8 +502,10 @@ def make_collection_stim_widget(
     *,
     refresh_rate_hz: Optional[float] = None,
     stimulus_mode: str = DEFAULT_COLLECTION_STIMULUS_MODE,
+    stimulus_profile_id: str = DEFAULT_COLLECTION_STIMULUS_PROFILE_ID,
     parent: Optional[QWidget] = None,
 ) -> FourArrowStimWidget:
+    profile = get_stimulus_profile(stimulus_profile_id)
     resolved_refresh_rate_hz = (
         resolve_collection_stim_refresh_rate_hz() if refresh_rate_hz is None else float(refresh_rate_hz)
     )
@@ -483,10 +514,12 @@ def make_collection_stim_widget(
     return FourArrowStimWidget(
         freqs=tuple(float(freq) for freq in freqs),
         refresh_rate_hz=resolved_refresh_rate_hz,
-        mean=STIM_MEAN,
-        amp=STIM_AMP,
-        phi=STIM_PHI,
+        mean=float(profile.mean),
+        amp=float(profile.amp),
+        phi=float(profile.phi),
         stimulus_mode=resolved_stimulus_mode,
+        stimulus_profile_id=str(profile.profile_id),
+        ramp_sec=float(profile.ramp_sec),
         parent=parent,
     )
 
@@ -578,6 +611,7 @@ class CollectionFullscreenStimWindow(QMainWindow):
         freqs: Sequence[float],
         refresh_rate_hz: float,
         stimulus_mode: str,
+        stimulus_profile_id: str = DEFAULT_COLLECTION_STIMULUS_PROFILE_ID,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
@@ -589,6 +623,7 @@ class CollectionFullscreenStimWindow(QMainWindow):
             freqs,
             refresh_rate_hz=refresh_rate_hz,
             stimulus_mode=stimulus_mode,
+            stimulus_profile_id=stimulus_profile_id,
         )
         self.stim.active_phase_frame_presented.connect(self.active_phase_frame_presented.emit)
         self.setCentralWidget(self.stim)
@@ -716,8 +751,12 @@ class CollectionConfig:
     rounds_planned: int = 1
     round_index: int = 1
     estimated_round_sec: float = 0.0
+    stimulus_profile_id: str = DEFAULT_COLLECTION_STIMULUS_PROFILE_ID
     stim_refresh_rate_hz: float = STIM_REFRESH_RATE_HZ
     stimulus_mode: str = DEFAULT_COLLECTION_STIMULUS_MODE
+    stimulus_mode_selection_reason: str = ""
+    comfort_rating: Optional[int] = None
+    screen_brightness_note: str = "not_recorded"
     stimulus_backend: str = STIMULUS_BACKEND_HEADLESS_NO_VISUAL
     sync_stimulus_phase: bool = False
     sync_voice_prompt: bool = False
@@ -784,13 +823,26 @@ class CollectionWorker(QObject):
         self._last_stimulus_phase_payload: dict[str, Any] = {}
         self._voice_prompt_finished_event = threading.Event()
         self._voice_prompt_request_id = 0
+        self._current_trial_active_sec = float(config.active_sec)
 
     def request_stop(self) -> None:
         self._stop_event.set()
         self._stimulus_phase_applied_event.set()
         self._voice_prompt_finished_event.set()
 
-    def _emit_phase(self, mode: str, title: str, detail: str, *, flicker: bool, cue_freq: Optional[float]) -> None:
+    def _emit_phase(
+        self,
+        mode: str,
+        title: str,
+        detail: str,
+        *,
+        flicker: bool,
+        cue_freq: Optional[float],
+        active_sec: Optional[float] = None,
+    ) -> None:
+        phase_active_sec = float(self.config.active_sec if active_sec is None else active_sec)
+        if active_sec is None and mode == PHASE_CAL_ACTIVE and bool(flicker):
+            phase_active_sec = float(self._current_trial_active_sec)
         self.phase_changed.emit(
             {
                 "mode": mode,
@@ -798,6 +850,8 @@ class CollectionWorker(QObject):
                 "detail": detail,
                 "flicker": flicker,
                 "cue_freq": cue_freq,
+                "active_sec": float(phase_active_sec),
+                "stimulus_profile_id": str(self.config.stimulus_profile_id),
             }
         )
 
@@ -999,6 +1053,7 @@ class CollectionWorker(QObject):
         failure_reason: str = "",
         continuous_board_error: str = "",
     ) -> dict[str, Any]:
+        profile = get_stimulus_profile(self.config.stimulus_profile_id)
         protocol_config = {
             "collection_aborted": bool(collection_aborted),
             "requested_session_id": str(self.config.session_id),
@@ -1030,21 +1085,26 @@ class CollectionWorker(QObject):
             "active_stimulus_arm_sec_estimate": float(
                 estimate_active_stimulus_arm_sec(self.config.stim_refresh_rate_hz)
             ),
-            "stimulus_mode": str(self.config.stimulus_mode),
-            "stim_refresh_rate_hz": float(self.config.stim_refresh_rate_hz),
-            "stim_mean": float(STIM_MEAN),
-            "stim_amp": float(STIM_AMP),
-            "stim_phi": float(STIM_PHI),
             "stim_frame_formula": str(STIM_FRAME_FORMULA),
             "sync_stimulus_phase": bool(self.config.sync_stimulus_phase),
         }
+        protocol_config.update(
+            stimulus_profile_metadata(
+                self.config.stimulus_profile_id,
+                stimulus_mode=str(self.config.stimulus_mode),
+                refresh_rate_hz=float(self.config.stim_refresh_rate_hz),
+                mode_selection_reason=str(self.config.stimulus_mode_selection_reason),
+                comfort_rating=self.config.comfort_rating,
+                screen_brightness_note=str(self.config.screen_brightness_note),
+            )
+        )
         protocol_config.update(stimulus_backend_metadata(self.config.stimulus_backend))
         protocol_config.update(
             stimulus_sample_window_alignment_metadata(
                 self.config.freqs,
                 refresh_rate_hz=self.config.stim_refresh_rate_hz,
                 backend=self.config.stimulus_backend,
-                base_phi=STIM_PHI,
+                base_phi=float(profile.phi),
             )
         )
         if bool(collection_aborted):
@@ -1218,6 +1278,7 @@ class CollectionWorker(QObject):
                 if is_long_idle and float(self.config.long_idle_sec) > 0.0
                 else float(self.config.active_sec)
             )
+            self._current_trial_active_sec = float(trial_active_sec)
             prompt_base = (
                 f"第 {self.config.round_index} 轮 Trial {index}/{total} 空闲（看中心）"
                 if cue_freq is None
@@ -1384,6 +1445,7 @@ class CollectionWorker(QObject):
                     if is_long_idle and float(self.config.long_idle_sec) > 0.0
                     else float(self.config.active_sec)
                 )
+                self._current_trial_active_sec = float(trial_active_sec)
                 active_samples = int(round(trial_active_sec * fs))
                 prompt_base = (
                     f"第{self.config.round_index}轮 Trial {index}/{total} 空闲（看中心）"
@@ -1414,6 +1476,7 @@ class CollectionWorker(QObject):
                 stimulus_first_frame_mode = ""
                 stimulus_first_frame_ack_latency_sec: Optional[float] = None
                 stimulus_first_frame_ack_timed_out = False
+                stimulus_frame_interval_stats: dict[str, Any] = {}
                 board_buffer_cleared_at = ""
                 board_buffer_clear_samples = 0
                 while retry_count <= MAX_TRIAL_RETRIES:
@@ -1440,7 +1503,14 @@ class CollectionWorker(QObject):
                     self._clear_stimulus_phase_ack()
                     stimulus_phase_apply_requested_at = wallclock_iso_timestamp()
                     stimulus_phase_apply_perf = time.perf_counter()
-                    self._emit_phase(PHASE_CAL_ACTIVE, "采样即将开始", prompt, flicker=True, cue_freq=cue_freq)
+                    self._emit_phase(
+                        PHASE_CAL_ACTIVE,
+                        "采样即将开始",
+                        prompt,
+                        flicker=True,
+                        cue_freq=cue_freq,
+                        active_sec=trial_active_sec,
+                    )
                     stimulus_ack_ready, stimulus_ack_payload = self._wait_for_stimulus_phase_applied()
                     if self._stop_event.is_set():
                         break
@@ -1487,6 +1557,8 @@ class CollectionWorker(QObject):
                             stimulus_first_frame_ack_latency_sec = max(0.0, ack_perf - float(stimulus_phase_apply_perf))
                         except Exception:
                             stimulus_first_frame_ack_latency_sec = None
+                        frame_stats = stimulus_ack_payload.get("frame_interval_stats", {})
+                        stimulus_frame_interval_stats = dict(frame_stats) if isinstance(frame_stats, dict) else {}
 
                     board_buffer_cleared_at = wallclock_iso_timestamp()
                     board_buffer_clear_samples = self._drain_board_data(board, raw_board_chunks)
@@ -1503,7 +1575,14 @@ class CollectionWorker(QObject):
                     active_window_started_at = wallclock_iso_timestamp()
                     if self._stop_event.is_set():
                         break
-                    self._emit_phase(PHASE_CAL_ACTIVE, "采集中", prompt, flicker=True, cue_freq=cue_freq)
+                    self._emit_phase(
+                        PHASE_CAL_ACTIVE,
+                        "采集中",
+                        prompt,
+                        flicker=True,
+                        cue_freq=cue_freq,
+                        active_sec=trial_active_sec,
+                    )
                     if self._sleep_interruptible(trial_active_sec):
                         break
                     active_window_ended_at = wallclock_iso_timestamp()
@@ -1557,6 +1636,7 @@ class CollectionWorker(QObject):
                 if accepted_segment is None:
                     raise RuntimeError(f"Trial {index} 未采到有效片段，流程中止")
 
+                stim_profile = get_stimulus_profile(self.config.stimulus_profile_id)
                 collected.append((trial, accepted_segment))
                 quality_rows.append(
                     {
@@ -1581,6 +1661,11 @@ class CollectionWorker(QObject):
                         "stimulus_first_frame_mode": str(stimulus_first_frame_mode),
                         "stimulus_first_frame_ack_latency_sec": stimulus_first_frame_ack_latency_sec,
                         "stimulus_first_frame_ack_timed_out": bool(stimulus_first_frame_ack_timed_out),
+                        "stimulus_frame_interval_stats": dict(stimulus_frame_interval_stats),
+                        "stimulus_profile_id": str(self.config.stimulus_profile_id),
+                        "stim_mean": float(stim_profile.mean),
+                        "stim_amp": float(stim_profile.amp),
+                        "ramp_sec": float(stim_profile.ramp_sec),
                         "board_buffer_cleared_at": str(board_buffer_cleared_at),
                         "board_buffer_clear_samples": int(board_buffer_clear_samples),
                     }
@@ -1772,9 +1857,12 @@ class CollectionWorker(QObject):
 
 
 def run_collection_cli(config: CollectionConfig) -> dict[str, Any]:
+    profile = get_stimulus_profile(config.stimulus_profile_id)
     config = replace(
         config,
         stimulus_backend=STIMULUS_BACKEND_HEADLESS_NO_VISUAL,
+        stimulus_mode_selection_reason=str(config.stimulus_mode_selection_reason or "headless_no_visual"),
+        screen_brightness_note=str(config.screen_brightness_note or profile.screen_brightness_note),
         sync_stimulus_phase=False,
         sync_voice_prompt=False,
     )
@@ -1851,7 +1939,13 @@ class DatasetCollectionWindow(QMainWindow):
         self.preset_combo.setCurrentText(STABLE_12M_PRESET.display)
         self.simulation_only_check = QCheckBox("流程测试模式（不连接板卡，不保存数据）")
         self.simulation_only_check.setChecked(bool(simulation_only_default))
+        self.stimulus_profile_combo = QComboBox()
+        for profile_id, profile in STIMULUS_PROFILES.items():
+            self.stimulus_profile_combo.addItem(f"{profile_id} ({profile.mean:.2f}/{profile.amp:.2f})", profile_id)
+        profile_index = self.stimulus_profile_combo.findData(DEFAULT_COLLECTION_STIMULUS_PROFILE_ID)
+        self.stimulus_profile_combo.setCurrentIndex(max(0, profile_index))
         self.stimulus_mode_combo = QComboBox()
+        self.stimulus_mode_combo.addItem("Auto (profile decides)", "auto")
         self.stimulus_mode_combo.addItem("Elapsed time sine（采集默认，按时间计算）", STIMULUS_MODE_ELAPSED_TIME_SINE)
         self.stimulus_mode_combo.addItem("Frame locked sine（可选，按帧采样）", STIMULUS_MODE_FRAME_LOCKED_SINE)
         self.stimulus_mode_combo.setCurrentIndex(0)
@@ -1897,6 +1991,7 @@ class DatasetCollectionWindow(QMainWindow):
         form.addRow("数据集目录", self.dataset_dir_edit)
         form.addRow("预设协议", self.preset_combo)
         form.addRow("运行方式", self.simulation_only_check)
+        form.addRow("Stimulus profile", self.stimulus_profile_combo)
         form.addRow("刺激生成方式", self.stimulus_mode_combo)
         form.addRow("刺激刷新率Hz（0=自动）", self.stim_refresh_rate_spin)
         form.addRow("准备时长（秒）", self.prepare_spin)
@@ -1936,6 +2031,7 @@ class DatasetCollectionWindow(QMainWindow):
             self.default_freqs,
             refresh_rate_hz=None if initial_refresh_rate <= 1.0 else initial_refresh_rate,
             stimulus_mode=self._current_stimulus_mode(),
+            stimulus_profile_id=self._current_stimulus_profile_id(),
         )
         self.stim.active_phase_frame_presented.connect(self._on_active_phase_frame_presented)
         right_layout.addWidget(self.stim, 1)
@@ -1954,6 +2050,7 @@ class DatasetCollectionWindow(QMainWindow):
             self.dataset_dir_edit,
             self.preset_combo,
             self.simulation_only_check,
+            self.stimulus_profile_combo,
             self.stimulus_mode_combo,
             self.stim_refresh_rate_spin,
             self.prepare_spin,
@@ -1970,6 +2067,7 @@ class DatasetCollectionWindow(QMainWindow):
         self.btn_start.clicked.connect(self._start_collection)
         self.btn_stop.clicked.connect(self._stop_collection)
         self.preset_combo.currentTextChanged.connect(self._on_preset_changed)
+        self.stimulus_profile_combo.currentIndexChanged.connect(self._on_stimulus_profile_changed)
         self.stimulus_mode_combo.currentIndexChanged.connect(self._on_stimulus_mode_changed)
         self.stim_refresh_rate_spin.valueChanged.connect(self._on_stim_refresh_rate_changed)
         self.prepare_spin.valueChanged.connect(self._on_protocol_value_changed)
@@ -2028,7 +2126,35 @@ class DatasetCollectionWindow(QMainWindow):
 
     def _current_stimulus_mode(self) -> str:
         value = self.stimulus_mode_combo.currentData()
-        return validate_stimulus_mode(str(value) if value is not None else self.stimulus_mode_combo.currentText())
+        raw = str(value) if value is not None else self.stimulus_mode_combo.currentText()
+        if not hasattr(self, "stim_refresh_rate_spin"):
+            return DEFAULT_COLLECTION_STIMULUS_MODE
+        if str(raw).strip().lower() == "auto":
+            mode, _reason = resolve_collection_stimulus_mode(
+                stimulus_profile_id=self._current_stimulus_profile_id(),
+                refresh_rate_hz=self._resolve_stim_refresh_rate_hz(),
+                requested_mode="auto",
+            )
+            return mode
+        return validate_stimulus_mode(raw)
+
+    def _current_stimulus_mode_selection_reason(self) -> str:
+        value = self.stimulus_mode_combo.currentData()
+        raw = str(value) if value is not None else self.stimulus_mode_combo.currentText()
+        if not hasattr(self, "stim_refresh_rate_spin"):
+            return "initializing"
+        _mode, reason = resolve_collection_stimulus_mode(
+            stimulus_profile_id=self._current_stimulus_profile_id(),
+            refresh_rate_hz=self._resolve_stim_refresh_rate_hz(),
+            requested_mode=raw,
+        )
+        return str(reason)
+
+    def _current_stimulus_profile_id(self) -> str:
+        if not hasattr(self, "stimulus_profile_combo"):
+            return DEFAULT_COLLECTION_STIMULUS_PROFILE_ID
+        value = self.stimulus_profile_combo.currentData()
+        return validate_stimulus_profile_id(str(value) if value is not None else self.stimulus_profile_combo.currentText())
 
     def _apply_preset(self, preset_name: str) -> None:
         key = normalize_preset_name(preset_name)
@@ -2057,11 +2183,35 @@ class DatasetCollectionWindow(QMainWindow):
             self.preset_combo.setCurrentText(CUSTOM_PRESET.display)
         self._refresh_estimate_label()
 
+    def _on_stimulus_profile_changed(self, _index: int) -> None:
+        if self.worker_thread is not None:
+            return
+        try:
+            profile_id = self._current_stimulus_profile_id()
+            profile = get_stimulus_profile(profile_id)
+            self.stim.mean = float(profile.mean)
+            self.stim.amp = float(profile.amp)
+            self.stim.phi = float(profile.phi)
+            self.stim.ramp_sec = float(profile.ramp_sec)
+            self.stim.stimulus_profile_id = str(profile.profile_id)
+            self._sync_stim_freqs(
+                parse_freqs(self.freqs_edit.text().strip()),
+                refresh_rate_hz=self._resolve_stim_refresh_rate_hz(),
+                stimulus_mode=self._current_stimulus_mode(),
+                stimulus_profile_id=profile_id,
+            )
+            if not profile_matches_freqs(profile_id, parse_freqs(self.freqs_edit.text().strip())):
+                self._log("warning: selected stimulus profile freqs differ from the UI frequency list")
+            self._refresh_estimate_label()
+        except Exception as exc:
+            self._log(f"stimulus profile error: {exc}")
+
     def _on_stimulus_mode_changed(self, _index: int) -> None:
         if self.worker_thread is not None:
             return
         try:
             self.stim.stimulus_mode = self._current_stimulus_mode()
+            self.stim.stimulus_profile_id = self._current_stimulus_profile_id()
             self.stim.update()
         except Exception as exc:
             self._log(f"刺激模式错误：{exc}")
@@ -2074,6 +2224,7 @@ class DatasetCollectionWindow(QMainWindow):
                 parse_freqs(self.freqs_edit.text().strip()),
                 refresh_rate_hz=self._resolve_stim_refresh_rate_hz(),
                 stimulus_mode=self._current_stimulus_mode(),
+                stimulus_profile_id=self._current_stimulus_profile_id(),
             )
         except Exception as exc:
             self._log(f"刺激刷新率错误：{exc}")
@@ -2128,11 +2279,18 @@ class DatasetCollectionWindow(QMainWindow):
         *,
         refresh_rate_hz: Optional[float] = None,
         stimulus_mode: Optional[str] = None,
+        stimulus_profile_id: Optional[str] = None,
     ) -> None:
         values = tuple(float(freq) for freq in freqs)
         resolved_refresh_rate_hz = (
             self._resolve_stim_refresh_rate_hz() if refresh_rate_hz is None else float(refresh_rate_hz)
         )
+        resolved_profile_id = (
+            self._current_stimulus_profile_id()
+            if stimulus_profile_id is None
+            else validate_stimulus_profile_id(stimulus_profile_id)
+        )
+        profile = get_stimulus_profile(resolved_profile_id)
         resolved_stimulus_mode = (
             self._current_stimulus_mode() if stimulus_mode is None else validate_stimulus_mode(stimulus_mode)
         )
@@ -2140,6 +2298,11 @@ class DatasetCollectionWindow(QMainWindow):
         self.stim.freqs = values
         self.stim.refresh_rate_hz = resolved_refresh_rate_hz
         self.stim.stimulus_mode = resolved_stimulus_mode
+        self.stim.stimulus_profile_id = str(profile.profile_id)
+        self.stim.mean = float(profile.mean)
+        self.stim.amp = float(profile.amp)
+        self.stim.phi = float(profile.phi)
+        self.stim.ramp_sec = float(profile.ramp_sec)
         self.stim.update()
 
     def _show_fullscreen_stimulus(
@@ -2148,6 +2311,7 @@ class DatasetCollectionWindow(QMainWindow):
         *,
         refresh_rate_hz: float,
         stimulus_mode: str,
+        stimulus_profile_id: str,
     ) -> None:
         self._close_fullscreen_stimulus()
         screen = self._stim_target_screen()
@@ -2155,6 +2319,7 @@ class DatasetCollectionWindow(QMainWindow):
             freqs=freqs,
             refresh_rate_hz=refresh_rate_hz,
             stimulus_mode=stimulus_mode,
+            stimulus_profile_id=stimulus_profile_id,
         )
         window.escape_requested.connect(self._stop_collection)
         window.active_phase_frame_presented.connect(self._on_active_phase_frame_presented)
@@ -2206,7 +2371,9 @@ class DatasetCollectionWindow(QMainWindow):
         session_id = _build_round_session_id(session_base, round_index)
         dataset_dir = resolve_dataset_dir(self.dataset_dir_edit.text().strip())
         protocol_name = self._current_preset_name()
+        stimulus_profile_id = self._current_stimulus_profile_id()
         stimulus_mode = self._current_stimulus_mode()
+        stimulus_mode_selection_reason = self._current_stimulus_mode_selection_reason()
         prepare_sec = float(self.prepare_spin.value())
         active_sec = float(self.active_spin.value())
         long_idle_sec = float(self.long_idle_spin.value())
@@ -2251,8 +2418,10 @@ class DatasetCollectionWindow(QMainWindow):
             rounds_planned=rounds_planned,
             round_index=round_index,
             estimated_round_sec=estimated_round_sec,
+            stimulus_profile_id=stimulus_profile_id,
             stim_refresh_rate_hz=stim_refresh_rate_hz,
             stimulus_mode=stimulus_mode,
+            stimulus_mode_selection_reason=stimulus_mode_selection_reason,
             simulation_only=simulation_only,
         )
 
@@ -2334,11 +2503,14 @@ class DatasetCollectionWindow(QMainWindow):
         )
         stim_refresh_rate_hz = self._resolve_stim_refresh_rate_hz()
         validate_stimulus_frequency_set(cfg.freqs, refresh_rate_hz=stim_refresh_rate_hz)
+        stimulus_profile_id = self._current_stimulus_profile_id()
         stimulus_mode = self._current_stimulus_mode()
         cfg = replace(
             cfg,
             stim_refresh_rate_hz=stim_refresh_rate_hz,
+            stimulus_profile_id=stimulus_profile_id,
             stimulus_mode=stimulus_mode,
+            stimulus_mode_selection_reason=self._current_stimulus_mode_selection_reason(),
             stimulus_backend=STIMULUS_BACKEND_PYQT_FULLSCREEN,
             sync_stimulus_phase=True,
             sync_voice_prompt=True,
@@ -2349,11 +2521,17 @@ class DatasetCollectionWindow(QMainWindow):
             f"刺激刷新率={stim_refresh_rate_hz:g}Hz，目标频率={','.join(f'{freq:g}' for freq in cfg.freqs)}Hz，"
             f"刺激模式={stimulus_mode}"
         )
-        self._sync_stim_freqs(cfg.freqs, refresh_rate_hz=stim_refresh_rate_hz, stimulus_mode=stimulus_mode)
+        self._sync_stim_freqs(
+            cfg.freqs,
+            refresh_rate_hz=stim_refresh_rate_hz,
+            stimulus_mode=stimulus_mode,
+            stimulus_profile_id=stimulus_profile_id,
+        )
         self._show_fullscreen_stimulus(
             cfg.freqs,
             refresh_rate_hz=stim_refresh_rate_hz,
             stimulus_mode=stimulus_mode,
+            stimulus_profile_id=stimulus_profile_id,
         )
         worker = CollectionWorker(cfg)
         thread = QThread(self)
@@ -2537,11 +2715,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--switch-trials", type=int, default=DEFAULT_STABLE_SWITCH_TRIALS)
     parser.add_argument("--seed", type=int, default=20260410)
     parser.add_argument(
+        "--stimulus-profile-id",
+        type=str,
+        default=DEFAULT_COLLECTION_STIMULUS_PROFILE_ID,
+        choices=tuple(sorted(STIMULUS_PROFILES)),
+        help="stimulus profile id, default comfort_fbcca_v1",
+    )
+    parser.add_argument(
         "--stimulus-mode",
         type=str,
-        default=DEFAULT_COLLECTION_STIMULUS_MODE,
-        choices=STIMULUS_MODES,
-        help="elapsed_time_sine|frame_locked_sine",
+        default="auto",
+        choices=("auto",) + STIMULUS_MODES,
+        help="auto|elapsed_time_sine|frame_locked_sine",
     )
     parser.add_argument(
         "--stim-refresh-rate-hz",
@@ -2597,7 +2782,7 @@ def _resolve_cli_protocol(
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = build_parser().parse_args(argv)
     freqs = parse_freqs(args.freqs)
-    stimulus_mode = validate_stimulus_mode(str(args.stimulus_mode))
+    stimulus_profile_id = validate_stimulus_profile_id(str(args.stimulus_profile_id))
     requested_refresh_rate_hz = float(args.stim_refresh_rate_hz)
     refresh_rate_is_manual = bool(np.isfinite(requested_refresh_rate_hz) and requested_refresh_rate_hz > 1.0)
     if refresh_rate_is_manual:
@@ -2605,6 +2790,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     else:
         stim_refresh_rate_hz = float(STIM_REFRESH_RATE_HZ)
     validate_stimulus_frequency_set(freqs, refresh_rate_hz=stim_refresh_rate_hz)
+    stimulus_mode, stimulus_mode_selection_reason = resolve_collection_stimulus_mode(
+        stimulus_profile_id=stimulus_profile_id,
+        refresh_rate_hz=stim_refresh_rate_hz,
+        requested_mode=str(args.stimulus_mode),
+    )
     requested_preset = str(args.protocol).strip() or str(args.preset).strip()
     (
         protocol_name,
@@ -2665,8 +2855,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         rounds_planned=max(1, int(args.rounds_planned)),
         round_index=round_index,
         estimated_round_sec=estimated_round_sec,
+        stimulus_profile_id=stimulus_profile_id,
         stim_refresh_rate_hz=stim_refresh_rate_hz,
         stimulus_mode=stimulus_mode,
+        stimulus_mode_selection_reason=stimulus_mode_selection_reason,
         simulation_only=bool(args.simulation_only),
     )
     if bool(args.headless):
@@ -2704,7 +2896,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     window.session_index_spin.setValue(config.session_index)
     window.rounds_planned_spin.setValue(config.rounds_planned)
     window.session_base_edit.setText(session_base)
-    stimulus_mode_index = window.stimulus_mode_combo.findData(config.stimulus_mode)
+    stimulus_profile_index = window.stimulus_profile_combo.findData(config.stimulus_profile_id)
+    if stimulus_profile_index >= 0:
+        window.stimulus_profile_combo.setCurrentIndex(stimulus_profile_index)
+    raw_mode = str(args.stimulus_mode)
+    stimulus_mode_index = window.stimulus_mode_combo.findData(raw_mode if raw_mode == "auto" else config.stimulus_mode)
     if stimulus_mode_index >= 0:
         window.stimulus_mode_combo.setCurrentIndex(stimulus_mode_index)
     if config.protocol_name in COLLECTION_PRESETS:

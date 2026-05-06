@@ -53,7 +53,7 @@ def test_servo_controller_lowers_actionable_search_target_before_pick() -> None:
 
     assert decision.action == "MOVE"
     assert decision.state == SERVO_LOW_CONFIRM
-    assert decision.command == "MOVE_CYL 5.00 150.00 130.00"
+    assert decision.command == "MOVE_CYL 5.00 150.00 175.00"
 
 
 def test_servo_controller_picks_actionable_confirm_target() -> None:
@@ -69,7 +69,7 @@ def test_servo_controller_picks_actionable_confirm_target() -> None:
             "command_point": [20.0, -130.0],
         },
         packet={"frame_id": 9},
-        current_cyl_pose=(5.0, 150.0, 130.0),
+        current_cyl_pose=(5.0, 150.0, 175.0),
         at_confirm_z=True,
         eye_in_hand_enabled=True,
     )

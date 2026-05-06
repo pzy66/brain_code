@@ -5,6 +5,8 @@
 .mypy_cache/
 .ruff_cache/
 .vscode/
+.codex-presentations/
+汇报/
 **/.idea/
 **/.venv/
 **/.pytest_cache/

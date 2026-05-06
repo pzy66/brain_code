@@ -99,6 +99,26 @@ def test_orchestrator_mi_missing_provider_reports_health() -> None:
     assert result.events == ()
 
 
+def test_orchestrator_mi_disabled_does_not_require_provider() -> None:
+    orchestrator = InputOrchestrator(
+        sim_input=SimInputAdapter(),
+        ssvep_adapter=SSVEPAdapter(),
+        move_source="mi",
+        decision_source="sim",
+        ssvep_keyboard_debug_enabled=True,
+        mi_provider=None,
+        mi_enabled=False,
+    )
+
+    health = orchestrator.initialize()
+    assert health is not None
+    assert health.status == "disabled"
+    result = orchestrator.poll()
+    assert result.mi_health is not None
+    assert result.mi_health.status == "disabled"
+    assert result.events == ()
+
+
 def test_orchestrator_mi_cooldown_blocks_duplicate_direction() -> None:
     provider = _StubMiProvider(ready=True, direction="forward")
     orchestrator = InputOrchestrator(
@@ -120,4 +140,3 @@ def test_orchestrator_mi_cooldown_blocks_duplicate_direction() -> None:
     assert len(first.events) == 1
     assert first.events[0].value == "forward"
     assert second.events == ()
-

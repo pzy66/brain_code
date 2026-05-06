@@ -278,6 +278,25 @@ def test_frame_block_fallback_detects_colored_block_without_color_name():
     assert candidates[0].grasp_quality > 0.6
 
 
+def test_frame_block_fallback_prefers_full_block_over_small_colored_artifact():
+    frame = np.full((240, 320, 3), 235, dtype=np.uint8)
+    frame[98:133, 148:174] = (210, 40, 30)
+    frame[152:224, 86:166] = (40, 170, 70)
+
+    candidates = frame_to_block_candidates(
+        frame,
+        roi_center=(160, 120),
+        roi_radius=220,
+        max_det=4,
+        min_area_px=500,
+    )
+
+    assert len(candidates) >= 2
+    assert candidates[0].bbox[0] <= 90
+    assert candidates[0].bbox[2] >= 160
+    assert candidates[0].area_px > candidates[1].area_px
+
+
 def test_profile_mapping_marks_far_eye_in_hand_target_for_servo():
     slots = [SlotState(slot=1, freq_hz=8.0)]
     result = _Result(xyxy=[[690, 350, 730, 390]], conf=[0.9])

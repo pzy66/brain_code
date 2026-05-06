@@ -20,6 +20,9 @@ from brain_workspace.paths import (
 )
 
 configure_qt_offscreen()
+from brain_workspace.paths import ensure_runtime_import_paths
+
+ensure_runtime_import_paths()
 
 from apps.data_collection_ui import DEFAULT_DATASET_DIR, resolve_dataset_dir  # noqa: E402
 from mi_data_collector import DEFAULT_OUTPUT_ROOT, build_initial_config_from_args, resolve_output_root  # noqa: E402

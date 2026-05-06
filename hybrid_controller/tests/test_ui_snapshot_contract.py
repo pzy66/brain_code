@@ -57,6 +57,7 @@ def test_ui_coordinator_builds_typed_snapshot() -> None:
                 "last_error": None,
             },
         },
+        input_profile="bci_experimental",
         move_source="sim",
         decision_source="ssvep",
         robot_mode="real",
@@ -97,6 +98,7 @@ def test_main_window_accepts_app_snapshot() -> None:
                 "last_error": None,
             },
         },
+        input_profile="operator_keyboard",
         move_source="sim",
         decision_source="sim",
         robot_mode="real",
@@ -110,6 +112,11 @@ def test_main_window_accepts_app_snapshot() -> None:
     window = MainWindow()
     window.update_snapshot(snapshot)
     assert "State=idle" in window.top_status_label.text()
+    assert "Input=Keyboard" in window.top_status_label.text()
+    assert "SSVEP=disabled" in window.top_status_label.text()
+    assert "keyboard active" in window.raw_input_label.text()
+    assert not window.ssvep_connect_button.isEnabled()
+    assert not window.ssvep_recognition_toggle_button.isEnabled()
     assert "Vision:" in window.bottom_status_label.text()
     assert window.vision_widget._flash_enabled is False
     window.close()
@@ -150,6 +157,7 @@ def test_update_panels_does_not_drive_vision_channel() -> None:
                 "last_error": None,
             },
         },
+        input_profile="operator_keyboard",
         move_source="sim",
         decision_source="sim",
         robot_mode="real",

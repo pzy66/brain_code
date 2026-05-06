@@ -795,13 +795,22 @@ class MainWindow(QMainWindow):
         robot_error_compact = self._compact_text(snapshot.last_error, max_len=80)
         profile_path_compact = self._compact_path(ssvep.profile_path)
         latest_profile_compact = self._compact_path(ssvep.latest_profile_path)
+        keyboard_mode = (
+            str(snapshot.input_profile).strip().lower() == "operator_keyboard"
+            and str(snapshot.move_source).strip().lower() == "sim"
+            and str(snapshot.decision_source).strip().lower() == "sim"
+        )
+        input_label = "Keyboard" if keyboard_mode else str(snapshot.input_profile)
+        mi_label = "disabled" if snapshot.move_source != "mi" else "enabled"
+        ssvep_label = "disabled" if snapshot.decision_source != "ssvep" else "enabled"
 
         self._set_label_text(
             self.top_status_label,
-            "State={} | move={} decision={} robot={} vision={} | timer={}".format(
+            "State={} | Input={} | MI={} | SSVEP={} | robot={} vision={} | timer={}".format(
                 state,
-                snapshot.move_source,
-                snapshot.decision_source,
+                input_label,
+                mi_label,
+                ssvep_label,
                 snapshot.robot_mode,
                 snapshot.vision_mode,
                 self._format_timer(snapshot.motion_deadline_ts),
@@ -857,7 +866,13 @@ class MainWindow(QMainWindow):
             )
         else:
             self._set_label_text(self.targets_label, f"Slots: {[target['id'] for target in snapshot.frozen_targets]}")
-        self._set_label_text(self.raw_input_label, "Input: ssvep={}".format(snapshot.last_ssvep_raw))
+        if keyboard_mode:
+            self._set_label_text(
+                self.raw_input_label,
+                "Input: keyboard active | N=start R=reset WASD/Arrows=move 1-4=target Enter/C=confirm Esc/X=cancel",
+            )
+        else:
+            self._set_label_text(self.raw_input_label, "Input: ssvep={}".format(snapshot.last_ssvep_raw))
         self._set_label_text(
             self.status_label,
             "Status: robot={} error={} carrying={} vision={}".format(
@@ -909,7 +924,13 @@ class MainWindow(QMainWindow):
             )
         )
 
-        self._set_label_text(self.ssvep_profile_hint_label, str(ssvep.status_hint))
+        if keyboard_mode:
+            self._set_label_text(
+                self.ssvep_profile_hint_label,
+                "Keyboard operator mode is active. SSVEP controls are disabled here; use 02_SSVEP for standalone debugging.",
+            )
+        else:
+            self._set_label_text(self.ssvep_profile_hint_label, str(ssvep.status_hint))
         self._update_profile_combo(
             ssvep.available_profiles,
             selected_path=ssvep.profile_path,
@@ -923,15 +944,18 @@ class MainWindow(QMainWindow):
             or ssvep.pretrain_active
             or ssvep.online_active
         )
-        self._set_button_enabled(self.ssvep_apply_config_button, ssvep_runtime_idle)
-        self.ssvep_pretrain_preset_combo.setEnabled(ssvep_runtime_idle)
-        self._set_button_enabled(self.ssvep_connect_button, not ssvep.busy)
-        self._set_button_enabled(self.ssvep_pretrain_button, ssvep.connected and not ssvep.busy)
-        self._set_button_enabled(self.ssvep_load_profile_button, not ssvep.busy)
+        self._set_button_enabled(self.ssvep_apply_config_button, (not keyboard_mode) and ssvep_runtime_idle)
+        self.ssvep_pretrain_preset_combo.setEnabled((not keyboard_mode) and ssvep_runtime_idle)
+        self.ssvep_serial_edit.setEnabled(not keyboard_mode)
+        self.ssvep_board_edit.setEnabled(not keyboard_mode)
+        self.ssvep_profile_combo.setEnabled(not keyboard_mode)
+        self._set_button_enabled(self.ssvep_connect_button, (not keyboard_mode) and not ssvep.busy)
+        self._set_button_enabled(self.ssvep_pretrain_button, (not keyboard_mode) and ssvep.connected and not ssvep.busy)
+        self._set_button_enabled(self.ssvep_load_profile_button, (not keyboard_mode) and not ssvep.busy)
         stim_enabled = bool(ssvep.stim_enabled)
         self._set_button_checked(self.ssvep_stim_toggle_button, stim_enabled)
         self._set_button_text(self.ssvep_stim_toggle_button, "关闭SSVEP刺激" if stim_enabled else "开启SSVEP刺激")
-        self._set_button_enabled(self.ssvep_stim_toggle_button, True)
+        self._set_button_enabled(self.ssvep_stim_toggle_button, not keyboard_mode)
 
         recognition_enabled = bool(ssvep.running)
         self._set_button_checked(self.ssvep_recognition_toggle_button, recognition_enabled)
@@ -941,9 +965,9 @@ class MainWindow(QMainWindow):
         )
         self._set_button_enabled(
             self.ssvep_recognition_toggle_button,
-            recognition_enabled or (ssvep.connected and not ssvep.busy),
+            (not keyboard_mode) and (recognition_enabled or (ssvep.connected and not ssvep.busy)),
         )
-        self._set_button_enabled(self.ssvep_open_profile_dir_button, True)
+        self._set_button_enabled(self.ssvep_open_profile_dir_button, not keyboard_mode)
         self._set_button_text(
             self.robot_start_button,
             "启动中..." if robot.start_active else ("重启机械臂" if robot.connected else "启动机械臂"),

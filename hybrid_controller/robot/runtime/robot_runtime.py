@@ -1706,6 +1706,14 @@ class RobotTcpGateway:
                     self._send_line(stream, "ACK SET_SUCKER_ROTATION_UNSUPPORTED")
                 return
 
+            if command == "SET_PICK_TUNING":
+                payload = json.loads(args[0])
+                if not isinstance(payload, dict):
+                    raise ValueError("SET_PICK_TUNING payload must be a JSON object")
+                tuning = self.executor.set_pick_tuning(payload)
+                self._send_line(stream, "ACK PICK_TUNING {0}".format(json.dumps(tuning, separators=(",", ":"))))
+                return
+
             if command == "RESET":
                 self.executor.reset_error()
                 self._send_line(stream, "ACK RESET")

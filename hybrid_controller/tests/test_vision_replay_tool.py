@@ -1,7 +1,9 @@
+from hybrid_controller.config import AppConfig
 from hybrid_controller.tools.replay_vision_debug_bundle import replay
 
 
 def test_replay_vision_debug_bundle_recreates_pick_decision() -> None:
+    confirm_z = AppConfig().resolved().vision_pick_confirm_z_mm
     result = replay(
         debug={
             "runtime": {},
@@ -23,8 +25,8 @@ def test_replay_vision_debug_bundle_recreates_pick_decision() -> None:
         },
         snapshot_override={
             "robot_xy": [0.0, -120.0],
-            "robot_z": 130.0,
-            "robot_cyl": {"theta_deg": 0.0, "radius_mm": 120.0, "z_mm": 130.0},
+            "robot_z": confirm_z,
+            "robot_cyl": {"theta_deg": 0.0, "radius_mm": 120.0, "z_mm": confirm_z},
         },
     )
 

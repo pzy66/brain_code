@@ -53,6 +53,17 @@ DEFAULT_REPORT_ROOT = PROJECT_DIR / "artifacts" / "runs" / "local"
 DEFAULT_REALTIME_PROFILE_PATH = SSVEP_PROFILE_DIR / "fbcca_profile.json"
 DEFAULT_REALTIME_PROFILE_V2_PATH = SSVEP_PROFILE_DIR / "fbcca_profile_v2.json"
 DEFAULT_FBCCA_THRESHOLD_TASK = "fbcca-threshold-pretrain"
+DEFAULT_FAST_CONTROL_PRETRAIN_TASK = "fast-control-pretrain-v1"
+DEFAULT_FAST_CONTROL_WIN_SEC_CANDIDATES = (1.5, 2.0, 2.5, 3.0)
+DEFAULT_FAST_CONTROL_GATE_POLICY_CANDIDATES = ("balanced", "speed")
+DEFAULT_FAST_CONTROL_MIN_ENTER_CANDIDATES = (1, 2)
+DEFAULT_FAST_CONTROL_MIN_EXIT_CANDIDATES = (1, 2)
+DEFAULT_FAST_CONTROL_RELEASE_IDLE_FP_MAX = 0.0
+DEFAULT_FAST_CONTROL_RELEASE_CONTROL_RECALL_MIN = 0.95
+DEFAULT_FAST_CONTROL_RELEASE_CONTROL_RECALL_AT_3S_MIN = 0.80
+DEFAULT_FAST_CONTROL_RELEASE_SWITCH_DETECT_RATE_MIN = 0.90
+DEFAULT_FAST_CONTROL_RELEASE_RELEASE_LATENCY_MAX_S = 2.0
+DEFAULT_FAST_CONTROL_RELEASE_SWITCH_LATENCY_MAX_S = 2.5
 
 
 @dataclass(frozen=True)
@@ -68,6 +79,11 @@ class FBCCAThresholdPretrainConfig:
     gate_policy: str = DEFAULT_GATE_POLICY
     min_enter_windows: int = 1
     min_exit_windows: int = 2
+    fast_control_grid_search: bool = True
+    win_sec_candidates: tuple[float, ...] = DEFAULT_FAST_CONTROL_WIN_SEC_CANDIDATES
+    gate_policy_candidates: tuple[str, ...] = DEFAULT_FAST_CONTROL_GATE_POLICY_CANDIDATES
+    min_enter_windows_candidates: tuple[int, ...] = DEFAULT_FAST_CONTROL_MIN_ENTER_CANDIDATES
+    min_exit_windows_candidates: tuple[int, ...] = DEFAULT_FAST_CONTROL_MIN_EXIT_CANDIDATES
     dynamic_stop_enabled: bool = False
     dynamic_stop_alpha: float = DEFAULT_DYNAMIC_STOP_ALPHA
     seed: int = DEFAULT_CALIBRATION_SEED
@@ -162,6 +178,39 @@ def _finite_metrics(metrics: dict[str, Any]) -> dict[str, float]:
     return output
 
 
+def _metric_payload(metrics: dict[str, Any]) -> dict[str, Any]:
+    output: dict[str, Any] = {}
+    for key, value in metrics.items():
+        if isinstance(value, dict):
+            output[str(key)] = {
+                str(child_key): (
+                    float(child_value)
+                    if isinstance(child_value, (int, float)) and np.isfinite(float(child_value))
+                    else child_value
+                )
+                for child_key, child_value in value.items()
+            }
+        elif isinstance(value, (int, float)) and np.isfinite(float(value)):
+            output[str(key)] = float(value)
+        elif isinstance(value, (str, bool)):
+            output[str(key)] = value
+    return output
+
+
+def _all_zero_logreg_gate(per_freq_gate: dict[str, dict[str, Any]]) -> bool:
+    if not per_freq_gate:
+        return True
+    for payload in per_freq_gate.values():
+        item = dict(payload or {})
+        coef = [float(value) for value in item.get("coef", [])]
+        intercept = float(item.get("intercept", 0.0))
+        if abs(intercept) > 1e-12:
+            return False
+        if any(abs(value) > 1e-12 for value in coef):
+            return False
+    return True
+
+
 def _profile_v2_payload(profile: ThresholdProfile, metrics: dict[str, Any]) -> dict[str, Any]:
     per_freq_gate: dict[str, dict[str, Any]] = {}
     freq_specific = profile.frequency_specific_thresholds
@@ -184,11 +233,13 @@ def _profile_v2_payload(profile: ThresholdProfile, metrics: dict[str, Any]) -> d
                 "enter_logit_th": float(enter_llr if enter_llr is not None else 0.35),
                 "exit_logit_th": float(exit_llr if exit_llr is not None else 0.05),
             }
+    gate_type = "threshold_only_global_gate" if _all_zero_logreg_gate(per_freq_gate) else "frequency_specific_logreg"
     profile_v2 = build_profile_v2(
         base_profile=profile,
         per_freq_gate=per_freq_gate,
         metrics=dict(metrics),
         feature_names=tuple(DEFAULT_GATE_FEATURES),
+        gate_type=gate_type,
         evidence={
             "lambda": 0.85,
             "beta_consistency": 0.5,
@@ -198,6 +249,101 @@ def _profile_v2_payload(profile: ThresholdProfile, metrics: dict[str, Any]) -> d
         refractory_sec=0.8,
     )
     return dict(profile_v2.to_payload())
+
+
+def _candidate_sort_key(candidate: dict[str, Any]) -> tuple[float, ...]:
+    metrics = dict(candidate.get("async_metrics", {}))
+    idle_fp = float(metrics.get("idle_fp_per_min", float("inf")))
+    idle_selected = float(metrics.get("idle_selected_windows_per_min", float("inf")))
+    control_recall = float(metrics.get("control_recall", 0.0))
+    control_recall_25 = float(metrics.get("control_recall_at_2.5s", metrics.get("control_recall_at_3s", 0.0)))
+    control_recall_3 = float(metrics.get("control_recall_at_3s", 0.0))
+    switch_rate_28 = float(metrics.get("switch_detect_rate_at_2.8s", 0.0))
+    release_latency = float(metrics.get("release_latency_s", float("inf")))
+    switch_latency = float(metrics.get("switch_latency_s", float("inf")))
+    gate_policy = str(candidate.get("gate_policy", "balanced"))
+    speed_penalty = 0.0 if gate_policy == "speed" else 0.01
+    zero_idle_penalty = 0.0 if idle_fp <= 1e-12 else 1000.0 + idle_fp
+    return (
+        0.0 if _candidate_release_valid(candidate) else 1.0,
+        zero_idle_penalty,
+        idle_selected,
+        -control_recall_25,
+        -control_recall_3,
+        -control_recall,
+        release_latency,
+        switch_latency,
+        -switch_rate_28,
+        speed_penalty,
+        float(candidate.get("win_sec", float("inf"))),
+        float(candidate.get("min_enter_windows", 99)),
+        float(candidate.get("min_exit_windows", 99)),
+    )
+
+
+def _candidate_allowed(candidate: dict[str, Any]) -> bool:
+    metrics = dict(candidate.get("async_metrics", {}))
+    if str(candidate.get("gate_policy", "balanced")) != "speed":
+        return True
+    if float(metrics.get("idle_fp_per_min", float("inf"))) > 1e-12:
+        return False
+    if float(metrics.get("idle_selected_windows_per_min", float("inf"))) > 12.0:
+        return False
+    return True
+
+
+def _fast_control_release_failures(metrics: dict[str, Any]) -> list[str]:
+    values = dict(metrics or {})
+    failures: list[str] = []
+    if float(values.get("idle_fp_per_min", float("inf"))) > float(DEFAULT_FAST_CONTROL_RELEASE_IDLE_FP_MAX) + 1e-12:
+        failures.append("idle_fp_per_min must be 0 for fast-control deployment")
+    if float(values.get("control_recall", 0.0)) < float(DEFAULT_FAST_CONTROL_RELEASE_CONTROL_RECALL_MIN):
+        failures.append(
+            f"control_recall must be >= {DEFAULT_FAST_CONTROL_RELEASE_CONTROL_RECALL_MIN:g}"
+        )
+    if float(values.get("control_recall_at_3s", 0.0)) < float(DEFAULT_FAST_CONTROL_RELEASE_CONTROL_RECALL_AT_3S_MIN):
+        failures.append(
+            f"control_recall_at_3s must be >= {DEFAULT_FAST_CONTROL_RELEASE_CONTROL_RECALL_AT_3S_MIN:g}"
+        )
+    if float(values.get("switch_detect_rate", 0.0)) < float(DEFAULT_FAST_CONTROL_RELEASE_SWITCH_DETECT_RATE_MIN):
+        failures.append(
+            f"switch_detect_rate must be >= {DEFAULT_FAST_CONTROL_RELEASE_SWITCH_DETECT_RATE_MIN:g}"
+        )
+    if float(values.get("release_latency_s", float("inf"))) > float(DEFAULT_FAST_CONTROL_RELEASE_RELEASE_LATENCY_MAX_S):
+        failures.append(
+            f"release_latency_s must be <= {DEFAULT_FAST_CONTROL_RELEASE_RELEASE_LATENCY_MAX_S:g}"
+        )
+    if float(values.get("switch_latency_s", float("inf"))) > float(DEFAULT_FAST_CONTROL_RELEASE_SWITCH_LATENCY_MAX_S):
+        failures.append(
+            f"switch_latency_s must be <= {DEFAULT_FAST_CONTROL_RELEASE_SWITCH_LATENCY_MAX_S:g}"
+        )
+    return failures
+
+
+def _candidate_release_valid(candidate: dict[str, Any]) -> bool:
+    if not _candidate_allowed(candidate):
+        return False
+    return not _fast_control_release_failures(dict(candidate.get("async_metrics", {})))
+
+
+def _dedup_float_candidates(values: Sequence[float], *, fallback: float) -> tuple[float, ...]:
+    output: list[float] = []
+    for value in tuple(values or ()) + (float(fallback),):
+        item = float(value)
+        if not np.isfinite(item) or item <= 0.0:
+            continue
+        if all(abs(item - existing) > 1e-9 for existing in output):
+            output.append(item)
+    return tuple(output)
+
+
+def _dedup_int_candidates(values: Sequence[int], *, fallback: int) -> tuple[int, ...]:
+    output: list[int] = []
+    for value in tuple(values or ()) + (int(fallback),):
+        item = max(1, int(value))
+        if item not in output:
+            output.append(item)
+    return tuple(output)
 
 
 def _copy_if_different(source: Path, destination: Path) -> bool:
@@ -253,9 +399,13 @@ def _render_markdown_report(payload: dict[str, Any]) -> str:
         "## Metrics",
         "",
         f"- Control recall: {float(metrics.get('control_recall', 0.0)):.4f}",
+        f"- Control recall @2.5s: {float(metrics.get('control_recall_at_2.5s', 0.0)):.4f}",
+        f"- Control recall @3s: {float(metrics.get('control_recall_at_3s', 0.0)):.4f}",
         f"- Idle false positives/min: {float(metrics.get('idle_fp_per_min', 0.0)):.4f}",
+        f"- Idle selected windows/min: {float(metrics.get('idle_selected_windows_per_min', 0.0)):.4f}",
         f"- Detection latency: {float(metrics.get('detection_latency_s', float('inf'))):.4f}s",
         f"- Switch detect rate: {float(metrics.get('switch_detect_rate', 0.0)):.4f}",
+        f"- Release latency: {float(metrics.get('release_latency_s', float('inf'))):.4f}s",
         "",
         "## Notes",
         "",
@@ -359,54 +509,135 @@ def run_fbcca_threshold_pretrain(
 
     fs = int(base_dataset.sampling_rate)
     freqs = tuple(float(item) for item in base_dataset.freqs)
-    win_sec = min(float(config.win_sec), min(np.asarray(segment).shape[0] / max(float(fs), 1.0) for _trial, segment in segments))
-    if win_sec <= 0.25:
-        raise ValueError(f"invalid threshold pretrain window length: {win_sec:g}s")
+    max_segment_sec = min(np.asarray(segment).shape[0] / max(float(fs), 1.0) for _trial, segment in segments)
     compute_backend = parse_compute_backend_name(config.compute_backend or DEFAULT_COMPUTE_BACKEND_NAME)
     gpu_precision = parse_gpu_precision(config.gpu_precision)
     gpu_cache_policy = parse_gpu_cache_policy(config.gpu_cache_policy)
 
-    emit("feature_extract", 25.0, f"default FBCCA feature extraction, win={win_sec:g}s", force=True)
-    log(
-        "Default FBCCA feature extraction | "
-        f"win={win_sec:g}s step={float(config.step_sec):g}s backend={compute_backend}"
+    raw_win_candidates = (
+        config.win_sec_candidates if bool(config.fast_control_grid_search) else (float(config.win_sec),)
     )
-    decoder = create_decoder(
-        "fbcca_fixed_all8",
-        sampling_rate=fs,
-        freqs=freqs,
-        win_sec=float(win_sec),
-        step_sec=float(config.step_sec),
-        model_params={"Nh": DEFAULT_NH},
-        compute_backend=compute_backend,
-        gpu_device=int(config.gpu_device),
-        gpu_precision=gpu_precision,
-        gpu_warmup=bool(config.gpu_warmup),
-        gpu_cache_policy=gpu_cache_policy,
+    win_candidates = tuple(
+        min(float(win), float(max_segment_sec)) for win in _dedup_float_candidates(raw_win_candidates, fallback=config.win_sec)
     )
-    if decoder.requires_fit:
-        decoder.fit(segments)
-    feature_rows = build_feature_rows_with_decoder(decoder, segments)
-    if not feature_rows:
+    win_candidates = _dedup_float_candidates(
+        tuple(win for win in win_candidates if float(win) > 0.25),
+        fallback=min(float(config.win_sec), float(max_segment_sec)),
+    )
+    if not win_candidates:
+        raise ValueError("threshold pretrain has no valid window candidates")
+    gate_policy_candidates = (
+        tuple(parse_gate_policy(item) for item in config.gate_policy_candidates)
+        if bool(config.fast_control_grid_search)
+        else (parse_gate_policy(config.gate_policy),)
+    )
+    min_enter_candidates = _dedup_int_candidates(
+        config.min_enter_windows_candidates if bool(config.fast_control_grid_search) else (config.min_enter_windows,),
+        fallback=config.min_enter_windows,
+    )
+    min_exit_candidates = _dedup_int_candidates(
+        config.min_exit_windows_candidates if bool(config.fast_control_grid_search) else (config.min_exit_windows,),
+        fallback=config.min_exit_windows,
+    )
+    emit("feature_extract", 25.0, f"default FBCCA feature extraction, wins={list(win_candidates)}", force=True)
+    candidate_rows: list[dict[str, Any]] = []
+    decoder_backend_used = str(compute_backend)
+    decoder_model_params: dict[str, Any] = {}
+    best_payload: Optional[dict[str, Any]] = None
+    for win_index, win_sec in enumerate(win_candidates):
+        log(
+            "Default FBCCA feature extraction | "
+            f"win={float(win_sec):g}s step={float(config.step_sec):g}s backend={compute_backend}"
+        )
+        decoder = create_decoder(
+            "fbcca_fixed_all8",
+            sampling_rate=fs,
+            freqs=freqs,
+            win_sec=float(win_sec),
+            step_sec=float(config.step_sec),
+            model_params={"Nh": DEFAULT_NH},
+            compute_backend=compute_backend,
+            gpu_device=int(config.gpu_device),
+            gpu_precision=gpu_precision,
+            gpu_warmup=bool(config.gpu_warmup),
+            gpu_cache_policy=gpu_cache_policy,
+        )
+        if decoder.requires_fit:
+            decoder.fit(segments)
+        feature_rows_for_win = build_feature_rows_with_decoder(decoder, segments)
+        if not feature_rows_for_win:
+            log(f"Feature rows empty for win={float(win_sec):g}s; skipping")
+            continue
+        decoder_backend_used = str(decoder.compute_backend_used)
+        decoder_model_params = dict(getattr(decoder, "model_params", {}) or {})
+        log(
+            f"Feature rows ready | win={float(win_sec):g}s rows={len(feature_rows_for_win)} "
+            f"backend_used={decoder.compute_backend_used}"
+        )
+        emit(
+            "threshold_fit",
+            45.0 + 30.0 * float(win_index + 1) / max(len(win_candidates), 1),
+            f"fitting gate grid for win={float(win_sec):g}s",
+            force=True,
+        )
+        for gate_policy in gate_policy_candidates:
+            for min_enter in min_enter_candidates:
+                for min_exit in min_exit_candidates:
+                    profile_candidate = fit_threshold_profile(
+                        feature_rows_for_win,
+                        freqs=freqs,
+                        win_sec=float(win_sec),
+                        step_sec=float(config.step_sec),
+                        min_enter_windows=max(1, int(min_enter)),
+                        min_exit_windows=max(1, int(min_exit)),
+                        gate_policy=parse_gate_policy(gate_policy),
+                        evaluation_rows=feature_rows_for_win,
+                        dynamic_stop_enabled=bool(config.dynamic_stop_enabled),
+                        dynamic_stop_alpha=float(config.dynamic_stop_alpha),
+                        control_state_mode="unified",
+                    )
+                    profile_quality_candidate = summarize_profile_quality(feature_rows_for_win, profile_candidate)
+                    async_metrics_candidate = evaluate_profile_on_feature_rows(feature_rows_for_win, profile_candidate)
+                    candidate = {
+                        "win_sec": float(win_sec),
+                        "step_sec": float(config.step_sec),
+                        "gate_policy": parse_gate_policy(gate_policy),
+                        "min_enter_windows": int(min_enter),
+                        "min_exit_windows": int(min_exit),
+                        "feature_rows": int(len(feature_rows_for_win)),
+                        "async_metrics": _metric_payload(async_metrics_candidate),
+                        "profile_quality": _finite_metrics(profile_quality_candidate),
+                        "allowed_for_release": bool(_candidate_allowed(
+                            {
+                                "gate_policy": parse_gate_policy(gate_policy),
+                                "async_metrics": async_metrics_candidate,
+                            }
+                        )),
+                    }
+                    candidate_rows.append(candidate)
+                    comparable = {**candidate, "profile": profile_candidate, "feature_rows_raw": feature_rows_for_win}
+                    if best_payload is None:
+                        best_payload = comparable
+                    else:
+                        best_allowed = _candidate_allowed(best_payload)
+                        new_allowed = _candidate_allowed(comparable)
+                        if (new_allowed and not best_allowed) or (
+                            new_allowed == best_allowed and _candidate_sort_key(comparable) < _candidate_sort_key(best_payload)
+                        ):
+                            best_payload = comparable
+    if best_payload is None:
         raise RuntimeError("default FBCCA did not produce any feature rows")
-    log(f"Feature rows ready | rows={len(feature_rows)} backend_used={decoder.compute_backend_used}")
 
-    emit("threshold_fit", 55.0, "fitting realtime decision thresholds", force=True)
-    profile = fit_threshold_profile(
-        feature_rows,
-        freqs=freqs,
-        win_sec=float(win_sec),
-        step_sec=float(config.step_sec),
-        min_enter_windows=max(1, int(config.min_enter_windows)),
-        min_exit_windows=max(1, int(config.min_exit_windows)),
-        gate_policy=parse_gate_policy(config.gate_policy),
-        evaluation_rows=feature_rows,
-        dynamic_stop_enabled=bool(config.dynamic_stop_enabled),
-        dynamic_stop_alpha=float(config.dynamic_stop_alpha),
-        control_state_mode="unified",
-    )
+    profile = best_payload["profile"]
+    feature_rows = list(best_payload["feature_rows_raw"])
+    win_sec = float(best_payload["win_sec"])
     profile_quality = summarize_profile_quality(feature_rows, profile)
     async_metrics = evaluate_profile_on_feature_rows(feature_rows, profile)
+    chosen_candidate = {
+        key: value for key, value in best_payload.items() if key not in {"profile", "feature_rows_raw"}
+    }
+    chosen_candidate["async_metrics"] = _metric_payload(async_metrics)
+    chosen_candidate["profile_quality"] = _finite_metrics(profile_quality)
     warnings: list[str] = []
     if float(async_metrics.get("control_recall", 0.0)) <= 0.0:
         warnings.append("control_recall is 0; realtime detection may not trigger")
@@ -414,15 +645,31 @@ def run_fbcca_threshold_pretrain(
         warnings.append("raw 4-class accuracy is below chance-level guidance")
     if float(async_metrics.get("idle_fp_per_min", 0.0)) > 10.0:
         warnings.append("idle false positive rate is high")
+    if str(chosen_candidate.get("gate_policy", "")) == "speed" and not _candidate_allowed(chosen_candidate):
+        warnings.append("speed gate was not allowed by idle safety checks")
+    release_failures = _fast_control_release_failures(async_metrics)
+    warnings.extend(release_failures)
     recommended = not warnings
     validation_status = {
         "mode": "threshold_only_default_fbcca",
         "passed": bool(recommended),
         "warnings": warnings,
+        "release_failures": list(release_failures),
         "feature_rows": int(len(feature_rows)),
         "segment_counts": counts,
+        "selection_policy": DEFAULT_FAST_CONTROL_PRETRAIN_TASK if bool(config.fast_control_grid_search) else "single_candidate",
+        "chosen_candidate": _metric_payload(chosen_candidate),
+        "candidate_count": int(len(candidate_rows)),
+        "release_thresholds": {
+            "idle_fp_per_min_max": float(DEFAULT_FAST_CONTROL_RELEASE_IDLE_FP_MAX),
+            "control_recall_min": float(DEFAULT_FAST_CONTROL_RELEASE_CONTROL_RECALL_MIN),
+            "control_recall_at_3s_min": float(DEFAULT_FAST_CONTROL_RELEASE_CONTROL_RECALL_AT_3S_MIN),
+            "switch_detect_rate_min": float(DEFAULT_FAST_CONTROL_RELEASE_SWITCH_DETECT_RATE_MIN),
+            "release_latency_s_max": float(DEFAULT_FAST_CONTROL_RELEASE_RELEASE_LATENCY_MAX_S),
+            "switch_latency_s_max": float(DEFAULT_FAST_CONTROL_RELEASE_SWITCH_LATENCY_MAX_S),
+        },
     }
-    model_params = dict(getattr(decoder, "model_params", {}) or {})
+    model_params = dict(decoder_model_params or {})
     model_params.setdefault("Nh", DEFAULT_NH)
     model_params.setdefault("_decoder_model_name", "fbcca_fixed_all8")
     model_params.setdefault("subband_weight_mode", "chen_fixed")
@@ -434,7 +681,7 @@ def run_fbcca_threshold_pretrain(
         calibration_split_seed=int(config.seed),
         benchmark_metrics=_finite_metrics(async_metrics),
         eeg_channels=tuple(int(item) for item in base_dataset.board_eeg_channels),
-        gate_policy=parse_gate_policy(config.gate_policy),
+        gate_policy=parse_gate_policy(str(chosen_candidate.get("gate_policy", config.gate_policy))),
         dynamic_stop=dict(profile.dynamic_stop or {}),
         channel_weight_mode=None,
         channel_weights=None,
@@ -447,11 +694,11 @@ def run_fbcca_threshold_pretrain(
         joint_weight_training=None,
         profile_validation_status=validation_status,
         recommended_for_realtime=bool(recommended),
-        runtime_backend_preference=str(decoder.compute_backend_used),
+        runtime_backend_preference=str(decoder_backend_used),
         runtime_precision_preference=str(gpu_precision),
-        training_window_policy="threshold_only_fixed_default_fbcca",
+        training_window_policy=DEFAULT_FAST_CONTROL_PRETRAIN_TASK if bool(config.fast_control_grid_search) else "threshold_only_fixed_default_fbcca",
         metadata={
-            "source": "fbcca_threshold_pretrain",
+            "source": DEFAULT_FAST_CONTROL_PRETRAIN_TASK if bool(config.fast_control_grid_search) else "fbcca_threshold_pretrain",
             "profile_kind": "threshold_only_default_fbcca",
             "decoder_variant": "fbcca_fixed_all8",
             "fixed_fbcca_params": {
@@ -463,9 +710,11 @@ def run_fbcca_threshold_pretrain(
             "dataset_manifests": [str(path) for path in manifests],
             "feature_rows": int(len(feature_rows)),
             "profile_quality": _finite_metrics(profile_quality),
-            "async_metrics": _finite_metrics(async_metrics),
+            "async_metrics": _metric_payload(async_metrics),
+            "chosen_candidate": _metric_payload(chosen_candidate),
+            "candidate_count": int(len(candidate_rows)),
             "compute_backend_requested": str(compute_backend),
-            "compute_backend_used": str(decoder.compute_backend_used),
+            "compute_backend_used": str(decoder_backend_used),
             "gpu_precision": str(gpu_precision),
         },
     )
@@ -505,9 +754,11 @@ def run_fbcca_threshold_pretrain(
         "published_paths": published_paths,
         "chosen_model": "fbcca",
         "recommended_model": "fbcca",
-        "chosen_model_rationale": "threshold_only_default_fbcca",
-        "chosen_async_metrics": _finite_metrics(async_metrics),
-        "chosen_metrics": _finite_metrics(async_metrics),
+        "chosen_model_rationale": DEFAULT_FAST_CONTROL_PRETRAIN_TASK if bool(config.fast_control_grid_search) else "threshold_only_default_fbcca",
+        "chosen_candidate": _metric_payload(chosen_candidate),
+        "candidate_grid": [_metric_payload(candidate) for candidate in candidate_rows],
+        "chosen_async_metrics": _metric_payload(async_metrics),
+        "chosen_metrics": _metric_payload(async_metrics),
         "chosen_metrics_4class": {
             "acc": float(profile_quality.get("raw_accuracy", 0.0)),
             "macro_f1": float(profile_quality.get("raw_accuracy", 0.0)),
@@ -519,7 +770,7 @@ def run_fbcca_threshold_pretrain(
         "quality_kept_trials_session1": int(counts["total"]),
         "quality_total_trials_session1": int(counts["total"]),
         "data_policy": "threshold_only_all_selected_sessions",
-        "decision_search_target": "threshold_only",
+        "decision_search_target": DEFAULT_FAST_CONTROL_PRETRAIN_TASK if bool(config.fast_control_grid_search) else "threshold_only",
         "final_selection_target": "all_feature_rows",
         "dataset_manifests": [str(path) for path in manifests],
         "dataset_summary": {

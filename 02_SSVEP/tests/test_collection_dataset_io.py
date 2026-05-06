@@ -91,6 +91,17 @@ def test_collection_dataset_bundle_roundtrip() -> None:
                     "stimulus_first_frame_mode": "calibration_active",
                     "stimulus_first_frame_ack_latency_sec": 0.016,
                     "stimulus_first_frame_ack_timed_out": False,
+                    "stimulus_frame_interval_stats": {
+                        "count": 240,
+                        "mean_ms": 4.1667,
+                        "p95_ms": 4.4,
+                        "max_ms": 5.2,
+                        "refresh_rate_hz_estimate": 240.0,
+                    },
+                    "stimulus_profile_id": "comfort_fbcca_v1",
+                    "stim_mean": 0.4,
+                    "stim_amp": 0.2,
+                    "ramp_sec": 0.3,
                     "board_buffer_cleared_at": "2026-04-24T10:00:00.027+08:00",
                     "board_buffer_clear_samples": 32,
                 },
@@ -136,6 +147,12 @@ def test_collection_dataset_bundle_roundtrip() -> None:
         )
         assert abs(float(protocol_config.get("stim_refresh_rate_hz", 0.0)) - 60.0) < 1e-9
         assert str(protocol_config.get("stim_frame_formula", "")).startswith("luminance(frame)")
+        frame_stats = dict(protocol_config.get("frame_interval_stats", {}))
+        assert int(frame_stats.get("trial_count", 0)) == len(segments)
+        assert int(frame_stats.get("nonempty_trial_count", 0)) == 1
+        assert int(frame_stats.get("sample_count_total", 0)) == 240
+        assert abs(float(frame_stats.get("p95_ms_max", 0.0)) - 4.4) < 1e-9
+        assert abs(float(frame_stats.get("max_ms_max", 0.0)) - 5.2) < 1e-9
         generated_at = str(loaded.manifest.get("generated_at", ""))
         assert datetime.fromisoformat(generated_at).tzinfo is not None
         quality_summary = dict(loaded.manifest.get("quality_summary", {}))
@@ -161,6 +178,11 @@ def test_collection_dataset_bundle_roundtrip() -> None:
         assert str(trial_rows[0].get("active_start_tone_started_at", "")) == "2026-04-24T10:00:00+08:00"
         assert str(trial_rows[0].get("stimulus_first_frame_presented_at", "")).strip()
         assert int(trial_rows[0].get("stimulus_first_frame_frame_index", -1)) == 0
+        assert int(dict(trial_rows[0].get("stimulus_frame_interval_stats", {})).get("count", 0)) == 240
+        assert str(trial_rows[0].get("stimulus_profile_id", "")) == "comfort_fbcca_v1"
+        assert abs(float(trial_rows[0].get("stim_mean", 0.0)) - 0.4) < 1e-9
+        assert abs(float(trial_rows[0].get("stim_amp", 0.0)) - 0.2) < 1e-9
+        assert abs(float(trial_rows[0].get("ramp_sec", 0.0)) - 0.3) < 1e-9
         assert int(trial_rows[0].get("board_buffer_clear_samples", 0)) == 32
         assert datetime.fromisoformat(str(trial_rows[0].get("active_window_started_at", ""))).tzinfo is not None
         assert datetime.fromisoformat(str(trial_rows[0].get("segment_captured_at", ""))).tzinfo is not None

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import posixpath
+import shlex
 import socket
 import sys
 import time
@@ -27,8 +28,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_arg_parser().parse_args(argv)
     repo_root = Path(__file__).resolve().parents[2]
-    local_runtime = repo_root / "robot" / "runtime" / "robot_runtime_py36.py"
+    local_runtime_dir = repo_root / "robot" / "runtime"
+    runtime_files = ("runtime_core.py", "sucker_rotation.py", "robot_runtime_py36.py")
     remote_runtime = f"{args.remote_root}/hybrid_controller/robot/runtime/robot_runtime_py36.py"
+    remote_runtime_dir = f"{args.remote_root}/hybrid_controller/robot/runtime"
 
     ssh = paramiko.SSHClient()
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -36,8 +39,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         sftp = ssh.open_sftp()
         try:
-            ensure_remote_dir(sftp, f"{args.remote_root}/hybrid_controller/robot/runtime")
-            sftp.put(str(local_runtime), remote_runtime)
+            ensure_remote_dir(sftp, remote_runtime_dir)
+            for filename in runtime_files:
+                sftp.put(str(local_runtime_dir / filename), f"{remote_runtime_dir}/{filename}")
         finally:
             sftp.close()
 
@@ -45,7 +49,7 @@ def main(argv: list[str] | None = None) -> int:
             f"python3 -m py_compile {remote_runtime}",
         ]
         for command in strict_commands:
-            _, stdout, stderr = ssh.exec_command(f"bash -lc {command!r}")
+            _, stdout, stderr = ssh.exec_command(_bash_login(command))
             exit_code = stdout.channel.recv_exit_status()
             out = stdout.read().decode("utf-8", errors="ignore").strip()
             err = stderr.read().decode("utf-8", errors="ignore").strip()
@@ -56,7 +60,7 @@ def main(argv: list[str] | None = None) -> int:
             if exit_code != 0:
                 raise RuntimeError(f"Remote command failed ({exit_code}): {command}")
         restart_commands = [
-            "pkill -f robot_runtime_py36.py >/dev/null 2>&1 || true",
+            "ps -eo pid=,args= | awk '/robot_runtime_py36[.]py/ {print $1}' | xargs -r kill",
             f"rm -f {args.remote_root}/robot_runtime.log",
             (
                 "source /opt/ros/melodic/setup.bash >/dev/null 2>&1 || true; "
@@ -68,8 +72,9 @@ def main(argv: list[str] | None = None) -> int:
             ),
         ]
         for command in restart_commands:
-            ssh.exec_command(f"bash -lc {command!r}")
-        _, stdout, _ = ssh.exec_command("bash -lc 'ps -ef | grep robot_runtime_py36.py | grep -v grep || true'")
+            _, stdout, stderr = ssh.exec_command(_bash_login(command))
+            stdout.channel.recv_exit_status()
+        _, stdout, _ = ssh.exec_command(_bash_login("ps -ef | grep robot_runtime_py36.py | grep -v grep || true"))
         process_listing = stdout.read().decode("utf-8", errors="ignore").strip()
         if process_listing:
             print(process_listing)
@@ -94,12 +99,11 @@ def main(argv: list[str] | None = None) -> int:
         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         ssh.connect(args.host, username=args.user, password=args.password, timeout=10)
         try:
-            _, stdout, stderr = ssh.exec_command(f"bash -lc 'tail -n 80 {args.remote_root}/robot_runtime.log 2>/dev/null || true'")
+            _, stdout, stderr = ssh.exec_command(_bash_login(f"tail -n 80 {args.remote_root}/robot_runtime.log 2>/dev/null || true"))
             out = stdout.read().decode("utf-8", errors="ignore").strip()
             err = stderr.read().decode("utf-8", errors="ignore").strip()
             _, diag_stdout, diag_stderr = ssh.exec_command(
-                "bash -lc "
-                + repr(
+                _bash_login(
                     "source /opt/ros/melodic/setup.bash >/dev/null 2>&1 || true; "
                     "source ~/ros/devel/setup.bash >/dev/null 2>&1 || true; "
                     "source ~/catkin_ws/devel/setup.bash >/dev/null 2>&1 || true; "
@@ -125,6 +129,10 @@ def main(argv: list[str] | None = None) -> int:
         raise RuntimeError(f"JetMax runtime did not start listening on 8888: {last_error}")
     print(payload)
     return 0
+
+
+def _bash_login(command: str) -> str:
+    return "bash -lc {0}".format(shlex.quote(str(command)))
 
 
 def ensure_remote_dir(sftp: paramiko.SFTPClient, remote_dir: str) -> None:

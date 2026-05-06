@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 
 from PyQt5.QtCore import QCoreApplication
@@ -109,3 +110,29 @@ def test_infer_interval_controller_respects_hysteresis_and_bounds() -> None:
     worker._adjust_infer_interval(infer_ms=15.0, queue_age_ms=10.0)
     third = worker._infer_interval_dynamic_ms  # pylint: disable=protected-access
     assert 45.0 <= third <= 220.0
+
+
+def test_worker_reports_missing_target_pixel_for_target_pixel_pick_flow(tmp_path) -> None:
+    profile_path = tmp_path / "current_profile.json"
+    profile_path.write_text(
+        json.dumps(
+            {
+                "profile_id": "missing-target-test",
+                "image_size": [640, 480],
+                "mapping": {"model": "affine", "matrix": [[1, 0, 0], [0, 1, 0]]},
+                "servo": {"target_pixel": None},
+            }
+        ),
+        encoding="utf-8",
+    )
+    worker = vision_runtime._VisionWorker(  # pylint: disable=protected-access
+        AppConfig(vision_calibration_profile_path=profile_path),
+        calibration_params=None,
+        cv2_module=_FakeCv2,
+        yolo_class=_FakeYOLO,
+    )
+
+    assert worker._calibration_profile is not None  # pylint: disable=protected-access
+    assert worker._calibration_profile.target_pixel is None  # pylint: disable=protected-access
+    assert worker._pending_status is not None  # pylint: disable=protected-access
+    assert "servo.target_pixel is missing" in worker._pending_status  # pylint: disable=protected-access

@@ -61,6 +61,7 @@ class SsvEpPanelState:
 class AppSnapshot:
     task_state: str
     task_context: dict[str, object]
+    input_profile: str
     move_source: str
     decision_source: str
     robot_mode: str

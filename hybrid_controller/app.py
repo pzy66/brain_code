@@ -17,8 +17,7 @@ from typing import Callable
 
 from hybrid_controller.adapters.control_sim_slots import ControlSimSlotCatalog
 from hybrid_controller.adapters.input_orchestrator import InputOrchestrator
-from hybrid_controller.adapters.input_provider import InputHealth
-from hybrid_controller.adapters.mi_input import MiInputProvider
+from hybrid_controller.adapters.input_provider import InputHealth, InputProvider
 from hybrid_controller.adapters.remote_snapshot_poller import RemoteSnapshotPoller
 from hybrid_controller.adapters.rosbridge_client import RosServiceResult, RosbridgeClient
 from hybrid_controller.adapters.robot_client import RobotClient, fetch_robot_status
@@ -49,7 +48,6 @@ from hybrid_controller.runtime_state import (
     RuntimeInfoCompat,
     RuntimeStore,
 )
-from hybrid_controller.ssvep.runtime import SSVEPRuntime
 from hybrid_controller.vision.pose_buffer import RobotPoseBuffer
 from hybrid_controller.vision.servo_controller import VisionServoController
 
@@ -85,10 +83,7 @@ class HybridControllerApplication:
             ssvep_keyboard_debug_enabled=config.ssvep_keyboard_debug_enabled,
         )
         self.ssvep_adapter = SSVEPAdapter(config.ssvep_freqs)
-        self.mi_provider = MiInputProvider(
-            backend=str(config.mi_backend),
-            poll_interval_ms=int(config.mi_poll_interval_ms),
-        )
+        self.mi_provider: InputProvider | None = self._build_mi_provider_if_enabled()
         self.input_orchestrator = InputOrchestrator(
             sim_input=self.sim_input,
             ssvep_adapter=self.ssvep_adapter,
@@ -102,7 +97,7 @@ class HybridControllerApplication:
         self.main_window = MainWindow()
         self.slot_catalog = ControlSimSlotCatalog(config) if config.control_sim_enabled else None
         self.vision_runtime: VisionRuntime | None = None
-        self.ssvep_runtime: SSVEPRuntime | None = None
+        self.ssvep_runtime = None
         self.timers: dict[str, QTimer] = {}
         self._last_logged_world_revision: int | None = None
         self._latest_world_snapshot: dict[str, object] | None = None
@@ -182,6 +177,7 @@ class HybridControllerApplication:
             "simulation_enabled": config.simulation_enabled,
             "timing_profile": config.timing_profile,
             "scenario_name": config.scenario_name,
+            "input_profile": config.input_profile,
             "move_source": config.move_source,
             "decision_source": config.decision_source,
             "mi_backend": config.mi_backend,
@@ -217,7 +213,12 @@ class HybridControllerApplication:
             "limits_cyl": None,
             "auto_z_current": None,
             "control_kernel": "cylindrical_kernel",
-            "ssvep_runtime_status": "stopped",
+            "ssvep_runtime_enabled": self._ssvep_runtime_enabled(),
+            "ssvep_runtime_status": (
+                "idle (click Connect Device)"
+                if self._ssvep_runtime_enabled()
+                else "disabled: keyboard operator mode"
+            ),
             "ssvep_running": False,
             "ssvep_stim_enabled": False,
             "ssvep_busy": False,
@@ -226,13 +227,17 @@ class HybridControllerApplication:
             "ssvep_pretrain_active": False,
             "ssvep_online_active": False,
             "ssvep_profile_path": str(config.ssvep_current_profile_path),
-            "ssvep_profile_source": "fallback",
+            "ssvep_profile_source": "uninitialized" if not self._ssvep_runtime_enabled() else "fallback",
             "ssvep_last_pretrain_time": "--",
             "ssvep_latest_profile_path": "--",
             "ssvep_profile_count": 0,
             "ssvep_available_profiles": (),
             "ssvep_allow_fallback_profile": config.ssvep_allow_fallback_profile,
-            "ssvep_status_hint": "当前没有已训练 Profile，可先预训练，或直接用默认 fallback 启动。",
+            "ssvep_status_hint": (
+                "Keyboard operator mode is active. SSVEP is disabled in the main program; use 02_SSVEP for standalone debugging."
+                if not self._ssvep_runtime_enabled()
+                else "当前没有已训练 Profile，可先预训练，或直接用默认 fallback 启动。"
+            ),
             "ssvep_mode": "idle",
             "ssvep_last_state": "--",
             "ssvep_last_selected_freq": "--",
@@ -306,6 +311,20 @@ class HybridControllerApplication:
         self._update_ssvep_mode()
         self._capture_world_snapshot(reason="startup", force=True)
         self._refresh_view()
+
+    def _ssvep_runtime_enabled(self) -> bool:
+        return bool(self.config.ssvep_runtime_enabled) or str(self.config.decision_source).strip().lower() == "ssvep"
+
+    def _build_mi_provider_if_enabled(self) -> InputProvider | None:
+        move_source = str(self.config.move_source or "sim").strip().lower()
+        if move_source != "mi" or not bool(self.config.mi_enabled):
+            return None
+        from hybrid_controller.adapters.mi_input import MiInputProvider
+
+        return MiInputProvider(
+            backend=str(self.config.mi_backend),
+            poll_interval_ms=int(self.config.mi_poll_interval_ms),
+        )
 
     def shutdown(self) -> None:
         if self._shutdown_started:
@@ -1016,6 +1035,41 @@ class HybridControllerApplication:
             self._rt_set("vision_health", "starting")
 
     def _setup_brain_sources(self) -> None:
+        self.input_orchestrator.set_sources(
+            move_source=str(self.config.move_source),
+            decision_source=str(self.config.decision_source),
+            ssvep_keyboard_debug_enabled=bool(self.config.ssvep_keyboard_debug_enabled),
+            mi_enabled=bool(self.config.mi_enabled),
+        )
+        if not self._ssvep_runtime_enabled():
+            self.ssvep_runtime = None
+            self.ssvep_coordinator.bind_runtime(None)
+            self._rt_update(
+                {
+                    "ssvep_runtime_enabled": False,
+                    "ssvep_running": False,
+                    "ssvep_stim_enabled": False,
+                    "ssvep_busy": False,
+                    "ssvep_connected": False,
+                    "ssvep_connect_active": False,
+                    "ssvep_pretrain_active": False,
+                    "ssvep_online_active": False,
+                    "ssvep_profile_source": "uninitialized",
+                    "ssvep_runtime_status": "disabled: keyboard operator mode",
+                    "ssvep_status_hint": (
+                        "Keyboard operator mode is active. SSVEP is disabled in the main program; "
+                        "use 02_SSVEP for standalone debugging."
+                    ),
+                    "last_ssvep_raw": "--",
+                    "target_frequency_map": [],
+                }
+            )
+            initial_mi_health = self.input_orchestrator.initialize()
+            self._update_mi_runtime_state(initial_mi_health, emit_runtime_status=True)
+            return
+
+        from hybrid_controller.ssvep.runtime import SSVEPRuntime
+
         self.ssvep_runtime = SSVEPRuntime(
             self.config,
             command_callback=self.dispatch_ssvep_command,
@@ -1042,14 +1096,9 @@ class HybridControllerApplication:
                 "ssvep_profile_count": len(initial_profiles),
                 "ssvep_latest_profile_path": str(latest_profile.path) if latest_profile is not None else "--",
                 "ssvep_status_hint": self.ssvep_runtime.status_hint(initial_profiles),
+                "ssvep_runtime_enabled": True,
                 "ssvep_runtime_status": "idle (click Connect Device)",
             }
-        )
-        self.input_orchestrator.set_sources(
-            move_source=str(self.config.move_source),
-            decision_source=str(self.config.decision_source),
-            ssvep_keyboard_debug_enabled=bool(self.config.ssvep_keyboard_debug_enabled),
-            mi_enabled=bool(self.config.mi_enabled),
         )
         initial_mi_health = self.input_orchestrator.initialize()
         self._update_mi_runtime_state(initial_mi_health, emit_runtime_status=True)
@@ -3215,6 +3264,10 @@ class HybridControllerApplication:
 
     def _on_ssvep_connect_requested(self) -> None:
         if self.ssvep_runtime is None:
+            self._handle_runtime_status(
+                "ssvep",
+                "SSVEP runtime is disabled in keyboard operator mode. Use 02_SSVEP standalone or start with --enable-ssvep-runtime.",
+            )
             return
         if not self._apply_ssvep_runtime_config_from_ui(announce=True):
             return
@@ -3222,6 +3275,11 @@ class HybridControllerApplication:
 
     def _apply_ssvep_runtime_config_from_ui(self, *, announce: bool) -> bool:
         if self.ssvep_runtime is None:
+            if announce:
+                self._handle_runtime_status(
+                    "ssvep",
+                    "SSVEP config ignored because keyboard operator mode disables the SSVEP runtime.",
+                )
             return False
         try:
             runtime_config = self.main_window.ssvep_runtime_config()
@@ -3261,6 +3319,10 @@ class HybridControllerApplication:
 
     def _on_ssvep_pretrain_requested(self) -> None:
         if self.ssvep_runtime is None:
+            self._handle_runtime_status(
+                "ssvep",
+                "SSVEP pretrain is disabled in keyboard operator mode. Debug SSVEP inside 02_SSVEP first.",
+            )
             return
         if not self._apply_ssvep_runtime_config_from_ui(announce=True):
             return
@@ -3268,6 +3330,10 @@ class HybridControllerApplication:
 
     def _on_ssvep_load_profile_requested(self) -> None:
         if self.ssvep_runtime is None:
+            self._handle_runtime_status(
+                "ssvep",
+                "SSVEP profile loading is disabled in keyboard operator mode.",
+            )
             return
         if self.main_window.is_ssvep_profile_auto_selected():
             self.ssvep_coordinator.clear_session_profile()
@@ -3298,6 +3364,10 @@ class HybridControllerApplication:
 
     def _on_ssvep_start_requested(self) -> None:
         if self.ssvep_runtime is None:
+            self._handle_runtime_status(
+                "ssvep",
+                "SSVEP recognition is disabled in keyboard operator mode. Keyboard decisions are active.",
+            )
             return
         if not self._apply_ssvep_runtime_config_from_ui(announce=True):
             return
@@ -3305,6 +3375,7 @@ class HybridControllerApplication:
 
     def _on_ssvep_stop_requested(self) -> None:
         if self.ssvep_runtime is None:
+            self._handle_runtime_status("ssvep", "SSVEP runtime is already disabled.")
             return
         self._rt_update(
             {
@@ -3610,6 +3681,12 @@ class HybridControllerApplication:
 
 
 def build_config_from_args(args: argparse.Namespace) -> AppConfig:
+    input_profile = str(getattr(args, "input_profile", AppConfig.input_profile) or AppConfig.input_profile).strip().lower()
+    move_source = str(args.move_source or AppConfig.move_source).strip().lower()
+    decision_source = str(args.decision_source or AppConfig.decision_source).strip().lower()
+    ssvep_runtime_enabled = bool(getattr(args, "ssvep_runtime_enabled", AppConfig.ssvep_runtime_enabled))
+    if decision_source == "ssvep":
+        ssvep_runtime_enabled = True
     config = AppConfig(
         control_sim_enabled=True,
         sim_process_mode="external_lab",
@@ -3617,12 +3694,13 @@ def build_config_from_args(args: argparse.Namespace) -> AppConfig:
         simulation_enabled=False,
         timing_profile=args.timing_profile,
         scenario_name=args.scenario_name,
+        input_profile=input_profile,
         robot_mode=args.robot_mode,
         vision_mode=args.vision_mode,
-        move_source=args.move_source,
-        decision_source=args.decision_source,
+        move_source=move_source,
+        decision_source=decision_source,
         mi_backend=str(getattr(args, "mi_backend", AppConfig.mi_backend)),
-        mi_enabled=bool(getattr(args, "mi_enabled", AppConfig.mi_enabled)),
+        mi_enabled=bool(getattr(args, "mi_enabled", AppConfig.mi_enabled)) and move_source == "mi",
         mi_poll_interval_ms=int(getattr(args, "mi_poll_interval_ms", AppConfig.mi_poll_interval_ms)),
         mi_command_cooldown_ms=int(
             getattr(args, "mi_command_cooldown_ms", AppConfig.mi_command_cooldown_ms)
@@ -3782,6 +3860,7 @@ def build_config_from_args(args: argparse.Namespace) -> AppConfig:
                 AppConfig.sucker_rotation_angle_quality_threshold,
             )
         ),
+        ssvep_runtime_enabled=ssvep_runtime_enabled,
     )
     stage_motion_sec = getattr(args, "stage_motion_sec", None)
     continue_motion_sec = getattr(args, "continue_motion_sec", None)
@@ -3794,7 +3873,8 @@ def build_config_from_args(args: argparse.Namespace) -> AppConfig:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Hybrid Controller v1")
-    parser.add_argument("--robot-mode", choices=("real",), default="real")
+    parser.add_argument("--input-profile", choices=("operator_keyboard", "bci_experimental"), default=AppConfig.input_profile)
+    parser.add_argument("--robot-mode", choices=("real", "fake"), default="real")
     parser.add_argument("--robot-transport", choices=("tcp", "ros"), default=AppConfig.robot_transport)
     parser.add_argument(
         "--vision-mode",
@@ -3803,6 +3883,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--move-source", choices=("sim", "mi"), default="sim")
     parser.add_argument("--decision-source", choices=("sim", "ssvep"), default="sim")
+    parser.add_argument("--enable-ssvep-runtime", action="store_true", dest="ssvep_runtime_enabled", default=False)
+    parser.add_argument("--disable-ssvep-runtime", action="store_false", dest="ssvep_runtime_enabled")
     parser.add_argument("--mi-backend", choices=("brainflow",), default=AppConfig.mi_backend)
     parser.add_argument("--mi-enabled", action="store_true", default=AppConfig.mi_enabled)
     parser.add_argument("--mi-disabled", action="store_false", dest="mi_enabled")

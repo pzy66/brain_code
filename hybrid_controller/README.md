@@ -1,5 +1,7 @@
 # Hybrid Controller 机械臂视觉抓取主程序
 
+Current default: launch real-robot work with `hybrid_controller/run_real.py`. The main program runs in `operator_keyboard` mode, so keyboard/operator input replaces MI and SSVEP recognition while robot connection, ROS transport, camera vision, MOVE/PICK/PLACE, tuning, logs, and safety gates stay active. `run_real_ssvep.py` is kept only as an experimental/manual BCI path.
+
 `hybrid_controller` 是当前 JetMax 机械臂联调主线，负责把电脑端 GUI、机械臂 ROS runtime、摄像头视觉检测、SSVEP/键盘决策、视觉闭环对中、吸盘抓取和放置流程串起来。
 
 当前推荐链路是：
@@ -919,7 +921,7 @@ vision_servo_max_attempts = 5
 ```text
 pick_tool_offset_source = target_pixel
 vision_pick_target_pixel = None
-pick_cyl_radius_bias_mm = 46.0
+pick_cyl_radius_bias_mm = 50.0
 ```
 
 说明：

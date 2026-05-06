@@ -280,7 +280,7 @@ def test_pending_servo_pick_lowers_to_confirm_z_before_pick_from_search_height()
         }
     )
 
-    assert app.sent_commands == ["MOVE_CYL 12.00 175.00 130.00"]
+    assert app.sent_commands == ["MOVE_CYL 12.00 175.00 175.00"]
     assert app._vision_servo_pick is not None
     assert app._vision_servo_pick["stage"] == "low_confirm"
     assert app._vision_servo_pick["waiting_for_ack"] is True

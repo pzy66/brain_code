@@ -15,6 +15,7 @@ from ssvep_core.async_fbcca_idle_standalone import (
     BaseSSVEPDecoder,
     TrialSpec,
     ThresholdProfile,
+    _aggregate_numeric_metric_dicts,
     _decision_latency_with_mode,
     compute_classification_metrics,
     compute_confusion_matrix_counts,
@@ -150,6 +151,25 @@ def test_pack_ranking_metrics_uses_4class_fields() -> None:
     assert abs(float(merged["acc_4class"]) - 0.9) < 1e-9
     assert abs(float(merged["macro_f1_4class"]) - 0.88) < 1e-9
     assert abs(float(merged["itr_bpm_4class"]) - 25.0) < 1e-9
+
+
+def test_aggregate_numeric_metric_dicts_preserves_nested_per_frequency_metrics() -> None:
+    aggregated = _aggregate_numeric_metric_dicts(
+        [
+            {
+                "control_recall": 0.8,
+                "per_frequency_recall": {"8": 1.0, "10": 0.5},
+            },
+            {
+                "control_recall": 1.0,
+                "per_frequency_recall": {"8": 0.5, "10": 1.0},
+            },
+        ]
+    )
+    assert abs(float(aggregated["control_recall"]) - 0.9) < 1e-9
+    per_freq = dict(aggregated["per_frequency_recall"])
+    assert abs(float(per_freq["8"]) - 0.75) < 1e-9
+    assert abs(float(per_freq["10"]) - 0.75) < 1e-9
 
 
 def test_export_evaluation_figures_writes_pngs() -> None:

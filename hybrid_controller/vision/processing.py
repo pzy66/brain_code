@@ -403,7 +403,21 @@ def frame_to_block_candidates(
                 distance_to_roi=float(distance_to_roi),
             )
         )
-    candidates.sort(key=lambda item: (item.distance_to_roi, -item.area_px, -item.confidence))
+    if candidates:
+        largest_area = max(1.0, float(max(item.area_px for item in candidates)))
+        roi_scale = max(1.0, float(roi_radius))
+
+        def candidate_score(item: DetectionCandidate) -> float:
+            area_ratio = min(1.0, float(item.area_px) / largest_area)
+            distance_penalty = min(1.0, float(item.distance_to_roi) / roi_scale)
+            return (
+                2.4 * float(item.grasp_quality)
+                + 1.4 * area_ratio
+                + 0.4 * float(item.confidence)
+                - 0.5 * distance_penalty
+            )
+
+        candidates.sort(key=lambda item: (-candidate_score(item), item.distance_to_roi, -item.area_px))
     return candidates[: int(max_det)]
 
 

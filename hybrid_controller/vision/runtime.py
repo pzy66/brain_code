@@ -93,6 +93,15 @@ class _VisionWorker(QObject):
             try:
                 self._calibration_profile = VisionCalibrationProfile.load(profile_path)
                 self._calibration_profile_mtime = float(profile_path.stat().st_mtime)
+                if (
+                    self._calibration_profile is not None
+                    and str(self.config.pick_tool_offset_source).strip().lower() == "target_pixel"
+                    and self._calibration_profile.target_pixel is None
+                ):
+                    self._pending_status = (
+                        "Vision calibration profile loaded, but servo.target_pixel is missing. "
+                        "Run suction-target calibration before automatic pick alignment."
+                    )
             except Exception as error:
                 self._calibration_profile = None
                 self._pending_status = f"Vision calibration profile unavailable: {error}"

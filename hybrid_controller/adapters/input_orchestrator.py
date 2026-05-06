@@ -61,16 +61,6 @@ class InputOrchestrator:
     def initialize(self) -> InputHealth | None:
         if self.move_source != "mi":
             return None
-        if self.mi_provider is None:
-            self._mi_ready = False
-            return InputHealth(
-                source="mi",
-                connected=False,
-                running=False,
-                ready=False,
-                status="provider_missing",
-                last_error="provider_missing",
-            )
         if not self.mi_enabled:
             self._mi_ready = False
             return InputHealth(
@@ -80,6 +70,16 @@ class InputOrchestrator:
                 ready=False,
                 status="disabled",
                 last_error="mi_disabled",
+            )
+        if self.mi_provider is None:
+            self._mi_ready = False
+            return InputHealth(
+                source="mi",
+                connected=False,
+                running=False,
+                ready=False,
+                status="provider_missing",
+                last_error="provider_missing",
             )
         self.mi_provider.set_mode("move")
         connected = bool(self.mi_provider.connect())
@@ -115,18 +115,6 @@ class InputOrchestrator:
     def poll(self) -> InputPollResult:
         if self.move_source != "mi":
             return InputPollResult()
-        if self.mi_provider is None:
-            return InputPollResult(
-                events=(),
-                mi_health=InputHealth(
-                    source="mi",
-                    connected=False,
-                    running=False,
-                    ready=False,
-                    status="provider_missing",
-                    last_error="provider_missing",
-                ),
-            )
         if not self.mi_enabled:
             return InputPollResult(
                 events=(),
@@ -139,7 +127,18 @@ class InputOrchestrator:
                     last_error="mi_disabled",
                 ),
             )
-
+        if self.mi_provider is None:
+            return InputPollResult(
+                events=(),
+                mi_health=InputHealth(
+                    source="mi",
+                    connected=False,
+                    running=False,
+                    ready=False,
+                    status="provider_missing",
+                    last_error="provider_missing",
+                ),
+            )
         health = self.mi_provider.healthcheck()
         frame = self.mi_provider.read_frame()
         events: list[Event] = []
@@ -174,4 +173,3 @@ class InputOrchestrator:
         self._last_mi_emit_ts = now
         self._last_mi_direction = direction
         return True
-

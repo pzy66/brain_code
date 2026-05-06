@@ -164,6 +164,7 @@ class UiCoordinator:
         self,
         *,
         controller_snapshot: dict[str, object],
+        input_profile: str,
         move_source: str,
         decision_source: str,
         robot_mode: str,
@@ -226,6 +227,7 @@ class UiCoordinator:
         return AppSnapshot(
             task_state=task_state,
             task_context=task_context,
+            input_profile=input_profile,
             move_source=move_source,
             decision_source=decision_source,
             robot_mode=robot_mode,

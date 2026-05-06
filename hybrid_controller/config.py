@@ -11,6 +11,62 @@ PACKAGE_ROOT = Path(__file__).resolve().parent
 DATASET_ROOT = PROFILE_DATASET_DIR / "hybrid_controller"
 MODELS_ROOT = VISION_DATASET_DIR / "models"
 LOGS_ROOT = PACKAGE_ROOT / "logs"
+LEGACY_DATASET_ROOT = PACKAGE_ROOT / "dataset"
+
+
+def _prefer_existing_file(canonical_path: Path, legacy_path: Path) -> Path:
+    if canonical_path.exists():
+        return canonical_path
+    if legacy_path.exists():
+        return legacy_path
+    return canonical_path
+
+
+def _directory_has_expected_files(path: Path, *, expected_names: tuple[str, ...]) -> bool:
+    if not path.exists() or not path.is_dir():
+        return False
+    try:
+        if expected_names:
+            return any((path / name).exists() for name in expected_names)
+        return any(child.is_file() for child in path.iterdir())
+    except OSError:
+        return False
+
+
+def _prefer_dataset_dir(
+    canonical_dir: Path,
+    legacy_dir: Path,
+    *,
+    expected_names: tuple[str, ...] = (),
+) -> Path:
+    if _directory_has_expected_files(canonical_dir, expected_names=expected_names):
+        return canonical_dir
+    if _directory_has_expected_files(legacy_dir, expected_names=expected_names):
+        return legacy_dir
+    return canonical_dir
+
+
+def _default_vision_calibration_profile_path() -> Path:
+    canonical = VISION_DATASET_DIR / "calibration" / "current_profile.json"
+    legacy = LEGACY_DATASET_ROOT / "vision_calibration" / "current_profile.json"
+    return _prefer_existing_file(canonical, legacy)
+
+
+def _default_pick_tuning_profile_path() -> Path:
+    canonical = DATASET_ROOT / "robot_pick_tuning" / "current_pick_tuning.json"
+    legacy = LEGACY_DATASET_ROOT / "robot_pick_tuning" / "current_pick_tuning.json"
+    return _prefer_existing_file(canonical, legacy)
+
+
+def _default_ssvep_profile_dir() -> Path:
+    return _prefer_dataset_dir(
+        HYBRID_SSVEP_PROFILE_DIR,
+        LEGACY_DATASET_ROOT / "ssvep_profiles",
+        expected_names=("current_fbcca_profile.json", "default_fbcca_profile.json"),
+    )
+
+
+DEFAULT_SSVEP_PROFILE_DIR = _default_ssvep_profile_dir()
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +111,7 @@ class AppConfig:
     simulation_enabled: bool = True
     timing_profile: str = "formal"
     scenario_name: str = "basic"
+    input_profile: str = "operator_keyboard"
     robot_mode: str = "real"
     vision_mode: str = "robot_camera_detection"
     move_source: str = "sim"
@@ -177,7 +234,7 @@ class AppConfig:
     vision_snapshot_max_age_ms: float = 200.0
     vision_frame_pose_max_age_ms: float = 250.0
     vision_action_requires_calibration: bool = True
-    vision_calibration_profile_path: Path = VISION_DATASET_DIR / "calibration" / "current_profile.json"
+    vision_calibration_profile_path: Path = _default_vision_calibration_profile_path()
     vision_calibration_profile_required: bool = True
     vision_action_max_error_mm: float = 6.0
     vision_grasp_quality_threshold: float = 0.25
@@ -196,14 +253,14 @@ class AppConfig:
     vision_servo_max_attempts: int = 5
     vision_eye_in_hand_pick_flow_enabled: bool = True
     vision_pick_search_z_mm: float = 190.0
-    vision_pick_confirm_z_mm: float = 130.0
+    vision_pick_confirm_z_mm: float = 175.0
     vision_pick_z_tolerance_mm: float = 4.0
     vision_debug_bundle_enabled: bool = True
     vision_debug_bundle_dir: Path = LOGS_ROOT / "vision_debug"
     pick_tool_offset_source: str = "target_pixel"
     vision_residual_model: str = "grid"
     vision_calibration_grid_size: int = 7
-    pick_cyl_radius_bias_mm: float = 46.0
+    pick_cyl_radius_bias_mm: float = 50.0
     pick_cyl_tangent_bias_mm: float = 0.0
     pick_cyl_theta_bias_deg: float = 0.0
     sucker_rotation_enabled: bool = True
@@ -213,7 +270,7 @@ class AppConfig:
     sucker_rotation_max_deg: float = 135.0
     sucker_rotation_duration_sec: float = 0.10
     sucker_rotation_angle_quality_threshold: float = 0.20
-    pick_tuning_profile_path: Path = DATASET_ROOT / "robot_pick_tuning" / "current_pick_tuning.json"
+    pick_tuning_profile_path: Path = _default_pick_tuning_profile_path()
     ssvep_backend: str = "async_fbcca_idle"
     ssvep_serial_port: str = "auto"
     ssvep_board_id: int = 0
@@ -225,13 +282,14 @@ class AppConfig:
     ssvep_score_threshold: float = 0.02
     ssvep_ratio_threshold: float = 1.10
     ssvep_history_len: int = 5
-    ssvep_profile_dir: Path = HYBRID_SSVEP_PROFILE_DIR
-    ssvep_current_profile_path: Path = HYBRID_SSVEP_PROFILE_DIR / "current_fbcca_profile.json"
-    ssvep_default_profile_path: Path = HYBRID_SSVEP_PROFILE_DIR / "default_fbcca_profile.json"
+    ssvep_profile_dir: Path = DEFAULT_SSVEP_PROFILE_DIR
+    ssvep_current_profile_path: Path = DEFAULT_SSVEP_PROFILE_DIR / "current_fbcca_profile.json"
+    ssvep_default_profile_path: Path = DEFAULT_SSVEP_PROFILE_DIR / "default_fbcca_profile.json"
     ssvep_allow_fallback_profile: bool = True
     ssvep_auto_use_latest_profile: bool = True
     ssvep_prefer_default_profile: bool = True
     ssvep_recent_profile_limit: int = 12
+    ssvep_runtime_enabled: bool = False
     ssvep_keyboard_debug_enabled: bool = True
     ssvep_model_name: str = "fbcca"
     ssvep_pretrain_prepare_sec: float = 1.0

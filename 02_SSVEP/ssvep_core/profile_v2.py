@@ -64,6 +64,7 @@ def build_profile_v2(
     per_freq_gate: dict[str, dict[str, Any]],
     metrics: dict[str, Any],
     feature_names: tuple[str, ...] = DEFAULT_GATE_FEATURES,
+    gate_type: str = "frequency_specific_logreg",
     evidence: dict[str, Any] | None = None,
     refractory_sec: float = 0.8,
 ) -> ProfileV2:
@@ -79,7 +80,7 @@ def build_profile_v2(
             channels=channels,
         ),
         gate=GateProfileV2(
-            type="frequency_specific_logreg",
+            type=str(gate_type or "frequency_specific_logreg"),
             feature_names=tuple(str(name) for name in feature_names),
             per_freq=dict(per_freq_gate),
         ),

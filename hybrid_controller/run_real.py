@@ -12,6 +12,8 @@ if str(PROJECT_ROOT) not in sys.path:
 
 
 DEFAULT_ARGS = [
+    "--input-profile",
+    "operator_keyboard",
     "--robot-mode",
     "real",
     "--robot-transport",

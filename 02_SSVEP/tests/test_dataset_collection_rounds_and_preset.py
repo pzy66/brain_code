@@ -25,6 +25,7 @@ from apps.data_collection_ui import (
     ACTIVE_START_CUE_SEC,
     ACTIVE_STIMULUS_ARM_SEC,
     PHASE_CAL_ACTIVE,
+    PHASE_CAL_REST,
     DEFAULT_STABLE_ACTIVE_SEC,
     DEFAULT_STABLE_IDLE_REPEATS,
     DEFAULT_STABLE_LONG_IDLE_SEC,
@@ -52,6 +53,7 @@ from apps.data_collection_ui import (
     estimate_stimulus_sample_window_frame_offset,
     prompt_text_for_freq,
     resolve_collection_stim_refresh_rate_hz,
+    resolve_collection_stimulus_mode,
     stimulus_backend_metadata,
     stimulus_sample_window_alignment_metadata,
     tone_sequence_duration_sec,
@@ -59,6 +61,12 @@ from apps.data_collection_ui import (
     trial_count_for_protocol,
     validate_stimulus_frequency_set,
     build_parser,
+)
+from ssvep_core.stimulus_profiles import (
+    DEFAULT_STIMULUS_PROFILE_ID,
+    STIMULUS_PROFILE_COMFORT_FBCCA_V1,
+    get_stimulus_profile,
+    stimulus_profile_metadata,
 )
 from apps.async_fbcca_validation_ui import (
     FourArrowStimWidget,
@@ -872,12 +880,66 @@ def test_validate_stimulus_mode_rejects_unknown_values() -> None:
         validate_stimulus_mode("unknown")
 
 
-def test_collection_cli_defaults_to_elapsed_time_stimulus_mode() -> None:
+def test_collection_cli_defaults_to_auto_comfort_stimulus_mode() -> None:
     parser = build_parser()
     args = parser.parse_args([])
-    assert str(args.stimulus_mode) == STIMULUS_MODE_ELAPSED_TIME_SINE
+    assert str(args.stimulus_profile_id) == DEFAULT_STIMULUS_PROFILE_ID
+    assert str(args.stimulus_mode) == "auto"
     args = parser.parse_args(["--stimulus-mode", STIMULUS_MODE_FRAME_LOCKED_SINE])
     assert str(args.stimulus_mode) == STIMULUS_MODE_FRAME_LOCKED_SINE
+
+
+def test_comfort_fbcca_profile_uses_lower_contrast_and_ramp() -> None:
+    profile = get_stimulus_profile(STIMULUS_PROFILE_COMFORT_FBCCA_V1)
+    assert profile.freqs == (8.0, 10.0, 12.0, 15.0)
+    assert abs(float(profile.mean) - 0.40) < 1e-12
+    assert abs(float(profile.amp) - 0.20) < 1e-12
+    assert abs(float(profile.ramp_sec) - 0.30) < 1e-12
+    assert abs(float(profile.luminance_min) - 0.20) < 1e-12
+    assert abs(float(profile.luminance_max) - 0.60) < 1e-12
+    assert abs(float(profile.michelson_contrast) - 0.50) < 1e-12
+
+    report = stimulus_frame_qc_report(
+        freqs=profile.freqs,
+        refresh_rate_hz=240.0,
+        active_sec=3.0,
+        stimulus_mode=STIMULUS_MODE_FRAME_LOCKED_SINE,
+        mean=float(profile.mean),
+        amp=float(profile.amp),
+        phi=float(profile.phi),
+        ramp_sec=float(profile.ramp_sec),
+    )
+    assert report["clipping"] is False
+    assert float(report["luminance_min"]) > 0.0
+    assert float(report["luminance_max"]) < 1.0
+    peaks = {float(row["target_hz"]): float(row["peak_hz"]) for row in report["rows"]}
+    assert peaks == {8.0: 8.0, 10.0: 10.0, 12.0: 12.0, 15.0: 15.0}
+
+
+def test_collection_auto_stimulus_mode_prefers_frame_locked_only_at_stable_240hz() -> None:
+    mode, reason = resolve_collection_stimulus_mode(
+        stimulus_profile_id=STIMULUS_PROFILE_COMFORT_FBCCA_V1,
+        refresh_rate_hz=240.0,
+        requested_mode="auto",
+    )
+    assert mode == STIMULUS_MODE_FRAME_LOCKED_SINE
+    assert reason == "stable_240hz_frame_locked"
+
+    mode, reason = resolve_collection_stimulus_mode(
+        stimulus_profile_id=STIMULUS_PROFILE_COMFORT_FBCCA_V1,
+        refresh_rate_hz=144.0,
+        requested_mode="auto",
+    )
+    assert mode == STIMULUS_MODE_ELAPSED_TIME_SINE
+    assert reason == "fallback_refresh_not_confirmed_240hz"
+
+    mode, reason = resolve_collection_stimulus_mode(
+        stimulus_profile_id=STIMULUS_PROFILE_COMFORT_FBCCA_V1,
+        refresh_rate_hz=144.0,
+        requested_mode=STIMULUS_MODE_FRAME_LOCKED_SINE,
+    )
+    assert mode == STIMULUS_MODE_FRAME_LOCKED_SINE
+    assert reason == "manual"
 
 
 def test_collection_cli_defaults_to_legacy_manual_refresh_rate() -> None:
@@ -911,6 +973,30 @@ def test_collection_config_defaults_to_headless_no_visual_backend() -> None:
         dataset_dir=PROJECT_DIR / "artifacts" / "datasets",
     )
     assert config.stimulus_backend == STIMULUS_BACKEND_HEADLESS_NO_VISUAL
+
+
+def test_collection_worker_active_phase_uses_current_trial_active_sec() -> None:
+    config = CollectionConfig(
+        serial_port="auto",
+        board_id=0,
+        freqs=(8.0, 10.0, 12.0, 15.0),
+        subject_id="subject",
+        session_id="subject_session_r01",
+        session_index=1,
+        dataset_dir=PROJECT_DIR / "artifacts" / "datasets",
+        active_sec=3.0,
+        long_idle_sec=60.0,
+    )
+    worker = CollectionWorker(config)
+    phases: list[dict[str, object]] = []
+    worker.phase_changed.connect(lambda payload: phases.append(dict(payload)))  # type: ignore[arg-type]
+
+    worker._current_trial_active_sec = 60.0
+    worker._emit_phase(PHASE_CAL_ACTIVE, "active", "", flicker=True, cue_freq=None)
+    worker._emit_phase(PHASE_CAL_REST, "rest", "", flicker=False, cue_freq=None)
+
+    assert abs(float(phases[0]["active_sec"]) - 60.0) < 1e-9
+    assert abs(float(phases[1]["active_sec"]) - 3.0) < 1e-9
 
 
 def test_resolve_collection_stim_refresh_rate_hz_uses_screen_value() -> None:
@@ -1485,6 +1571,77 @@ def test_protocol_signature_changes_when_stimulus_mode_changes() -> None:
         board_eeg_channels=(1, 2, 3, 4, 5, 6, 7, 8),
     )
     assert elapsed != frame_locked
+
+
+def test_protocol_signature_includes_comfort_stimulus_profile_fields() -> None:
+    base_config = {
+        "prepare_sec": 1.0,
+        "active_sec": 5.0,
+        "rest_sec": 4.0,
+        "target_repeats": 10,
+        "idle_repeats": 20,
+        "switch_trials": 14,
+        "long_idle_sec": 0.0,
+        "stimulus_backend": STIMULUS_BACKEND_PYQT_FULLSCREEN,
+        **stimulus_profile_metadata(
+            STIMULUS_PROFILE_COMFORT_FBCCA_V1,
+            stimulus_mode=STIMULUS_MODE_FRAME_LOCKED_SINE,
+            refresh_rate_hz=240.0,
+            mode_selection_reason="stable_240hz_frame_locked",
+            comfort_rating=3,
+            screen_brightness_note="50_percent",
+            frame_interval_stats={"p95_ms": 4.3, "max_ms": 5.0},
+        ),
+    }
+    base = build_protocol_signature(
+        sampling_rate=250,
+        protocol_config=base_config,
+        freqs=(8.0, 10.0, 12.0, 15.0),
+        board_eeg_channels=(1, 2, 3, 4, 5, 6, 7, 8),
+    )
+    changed_amp = build_protocol_signature(
+        sampling_rate=250,
+        protocol_config={**base_config, "stim_amp": 0.25, "stim_luminance_max": 0.65},
+        freqs=(8.0, 10.0, 12.0, 15.0),
+        board_eeg_channels=(1, 2, 3, 4, 5, 6, 7, 8),
+    )
+    changed_ramp = build_protocol_signature(
+        sampling_rate=250,
+        protocol_config={**base_config, "ramp_sec": 0.0},
+        freqs=(8.0, 10.0, 12.0, 15.0),
+        board_eeg_channels=(1, 2, 3, 4, 5, 6, 7, 8),
+    )
+    changed_profile = build_protocol_signature(
+        sampling_rate=250,
+        protocol_config={**base_config, "stimulus_profile_id": "legacy_full_contrast"},
+        freqs=(8.0, 10.0, 12.0, 15.0),
+        board_eeg_channels=(1, 2, 3, 4, 5, 6, 7, 8),
+    )
+    changed_frame_stats = build_protocol_signature(
+        sampling_rate=250,
+        protocol_config={**base_config, "frame_interval_stats": {"p95_ms": 99.0}},
+        freqs=(8.0, 10.0, 12.0, 15.0),
+        board_eeg_channels=(1, 2, 3, 4, 5, 6, 7, 8),
+    )
+    changed_comfort = build_protocol_signature(
+        sampling_rate=250,
+        protocol_config={**base_config, "comfort_rating": 4},
+        freqs=(8.0, 10.0, 12.0, 15.0),
+        board_eeg_channels=(1, 2, 3, 4, 5, 6, 7, 8),
+    )
+    changed_brightness_note = build_protocol_signature(
+        sampling_rate=250,
+        protocol_config={**base_config, "screen_brightness_note": "80_percent"},
+        freqs=(8.0, 10.0, 12.0, 15.0),
+        board_eeg_channels=(1, 2, 3, 4, 5, 6, 7, 8),
+    )
+
+    assert base != changed_amp
+    assert base != changed_ramp
+    assert base != changed_profile
+    assert base != changed_frame_stats
+    assert base != changed_comfort
+    assert base != changed_brightness_note
 
 
 def test_save_collection_dataset_bundle_marks_long_idle_stage() -> None:

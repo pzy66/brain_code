@@ -98,6 +98,7 @@ from ssvep_core.fbcca_local_opt import (
 )
 from ssvep_core.fbcca_threshold_pretrain import (
     DEFAULT_FBCCA_THRESHOLD_TASK,
+    DEFAULT_FAST_CONTROL_WIN_SEC_CANDIDATES,
     FBCCAThresholdPretrainConfig,
     run_fbcca_threshold_pretrain,
 )
@@ -173,7 +174,7 @@ FBCCA_LOCAL_OPT_SEARCH_PRESET = DEFAULT_FBCCA_LOCAL_SEARCH_PRESET
 FBCCA_THRESHOLD_PRETRAIN_MODELS = ("fbcca_fixed_all8",)
 FBCCA_THRESHOLD_PRETRAIN_CHANNEL_MODES = ("all8",)
 FBCCA_THRESHOLD_PRETRAIN_MULTI_SEED_COUNT = 1
-FBCCA_THRESHOLD_PRETRAIN_WIN_CANDIDATES = (3.0,)
+FBCCA_THRESHOLD_PRETRAIN_WIN_CANDIDATES = DEFAULT_FAST_CONTROL_WIN_SEC_CANDIDATES
 FBCCA_THRESHOLD_PRETRAIN_COMPUTE_BACKEND = "cpu"
 FBCCA_EXTERNAL_REPLAY_MODELS = ("fbcca",)
 FBCCA_EXTERNAL_REPLAY_CHANNEL_MODES = ("all8",)
@@ -572,6 +573,7 @@ class TrainEvalWorker(QObject):
                     report_root_dir=self.config.report_root_dir,
                     organize_report_dir=bool(self.config.organize_report_dir),
                     win_sec=float(win_sec),
+                    win_sec_candidates=tuple(float(item) for item in self.config.win_candidates) or DEFAULT_FAST_CONTROL_WIN_SEC_CANDIDATES,
                     gate_policy=self.config.gate_policy,
                     dynamic_stop_enabled=False,
                     dynamic_stop_alpha=self.config.dynamic_stop_alpha,
@@ -2374,7 +2376,7 @@ class TrainingEvaluationWindow(QMainWindow):
         self.dynamic_stop_edit.setText("0")
         self.compute_backend_combo.setCurrentText(str(FBCCA_THRESHOLD_PRETRAIN_COMPUTE_BACKEND))
         self._log(
-            "切换到 FBCCA 阈值快速预训练：默认 FBCCA 参数 / 只拟合实时识别阈值 / 自动发布到实时识别 profile"
+            "切换到 fast-control-pretrain-v1：固定 FBCCA / 搜索 1.5-3.0s 窗口与 balanced/speed 门控 / 自动发布到实时识别 profile"
         )
         if bool(auto_start):
             self._start_local_run()
@@ -2788,6 +2790,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 report_root_dir=Path(args.report_root_dir).expanduser().resolve(),
                 organize_report_dir=bool(int(args.organize_report_dir)),
                 win_sec=float(win_candidates[0] if win_candidates else 3.0),
+                win_sec_candidates=tuple(float(item) for item in win_candidates) or DEFAULT_FAST_CONTROL_WIN_SEC_CANDIDATES,
                 gate_policy=parse_gate_policy(args.gate_policy),
                 dynamic_stop_enabled=False,
                 dynamic_stop_alpha=float(args.dynamic_stop_alpha),

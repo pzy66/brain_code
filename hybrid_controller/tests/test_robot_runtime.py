@@ -434,6 +434,23 @@ def test_set_sucker_rotation_command_maps_logical_angle() -> None:
     assert status["sucker_rotation_servo_deg"] == 120.0
 
 
+def test_set_pick_tuning_command_updates_runtime_tuning() -> None:
+    runtime = _runtime()
+    stream = FakeStream()
+
+    runtime.dispatch_command('SET_PICK_TUNING {"pick_bottom_hold_sec":0.45,"pick_lift_sec":1.2}', stream)
+
+    assert stream.lines() == [
+        'ACK PICK_TUNING {"pick_approach_z_mm":130.0,"pick_descend_z_mm":85.0,'
+        '"pick_pre_suction_sec":0.25,"pick_bottom_hold_sec":0.45,"pick_lift_sec":1.2,'
+        '"place_descend_z_mm":85.0,"place_release_mode":"release","place_release_sec":0.25,'
+        '"place_post_release_hold_sec":0.1,"z_carry_floor_mm":160.0}'
+    ]
+    tuning = runtime.healthcheck()["pick_tuning"]
+    assert tuning["pick_bottom_hold_sec"] == 0.45
+    assert tuning["pick_lift_sec"] == 1.2
+
+
 def test_pick_world_rotates_before_suction_when_angle_is_provided(monkeypatch) -> None:
     _patch_executor_sleep(monkeypatch)
     hardware = FakeHardwareWithRotation()

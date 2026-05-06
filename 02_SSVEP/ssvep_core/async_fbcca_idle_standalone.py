@@ -4282,7 +4282,7 @@ def _latency_or_penalty(value: float, *, penalty: float = 1_000_000.0) -> float:
 def evaluate_profile_on_feature_rows(
     feature_rows: Sequence[dict[str, Any]],
     profile: ThresholdProfile,
-) -> dict[str, float]:
+) -> dict[str, Any]:
     rows = [dict(row) for row in feature_rows]
     if not rows:
         return {
@@ -4327,7 +4327,13 @@ def evaluate_profile_on_feature_rows(
     switch_latencies: list[float] = []
     release_latencies: list[float] = []
     control_detected_trials_at_2s = 0
+    control_detected_trials_at_2p5s = 0
     control_detected_trials_at_3s = 0
+    per_freq_trials: dict[str, int] = {}
+    per_freq_detected: dict[str, int] = {}
+    per_freq_gate_pass: dict[str, int] = {}
+    per_freq_windows: dict[str, int] = {}
+    per_freq_headroom: dict[str, list[float]] = {}
     last_control_freq: Optional[float] = None
     previous_trial_expected_freq: Optional[float] = None
     has_explicit_switch = any(
@@ -4354,6 +4360,17 @@ def evaluate_profile_on_feature_rows(
             selected_active = selected is not None
             window_index = int(row.get("window_index", 0))
             latency_value = float(profile.win_sec + window_index * profile.step_sec)
+            if expected_numeric is not None:
+                freq_key = f"{float(expected_numeric):g}"
+                per_freq_windows[freq_key] = int(per_freq_windows.get(freq_key, 0) + 1)
+                if selected_active:
+                    per_freq_gate_pass[freq_key] = int(per_freq_gate_pass.get(freq_key, 0) + 1)
+                try:
+                    headroom = float(row.get("top1_score", 0.0)) - float(profile.enter_score_th)
+                    if np.isfinite(headroom):
+                        per_freq_headroom.setdefault(freq_key, []).append(float(headroom))
+                except Exception:
+                    pass
 
             if expected_numeric is None:
                 idle_windows += 1
@@ -4387,11 +4404,16 @@ def evaluate_profile_on_feature_rows(
             continue
 
         control_trials += 1
+        freq_key = f"{float(expected_numeric):g}"
+        per_freq_trials[freq_key] = int(per_freq_trials.get(freq_key, 0) + 1)
         if first_correct_latency is not None:
             control_detected_trials += 1
+            per_freq_detected[freq_key] = int(per_freq_detected.get(freq_key, 0) + 1)
             detection_latencies.append(float(first_correct_latency))
             if float(first_correct_latency) <= float(DEFAULT_CONTROL_RECALL_AT_2S_DEADLINE):
                 control_detected_trials_at_2s += 1
+            if float(first_correct_latency) <= 2.5:
+                control_detected_trials_at_2p5s += 1
             if float(first_correct_latency) <= float(DEFAULT_CONTROL_RECALL_AT_3S_DEADLINE):
                 control_detected_trials_at_3s += 1
 
@@ -4422,6 +4444,7 @@ def evaluate_profile_on_feature_rows(
     )
     release_detect_rate = float(release_detected_trials / release_trials) if release_trials else 0.0
     control_recall_at_2s = float(control_detected_trials_at_2s / control_trials) if control_trials else 0.0
+    control_recall_at_2p5s = float(control_detected_trials_at_2p5s / control_trials) if control_trials else 0.0
     control_recall_at_3s = float(control_detected_trials_at_3s / control_trials) if control_trials else 0.0
     switch_latency = float(np.median(np.asarray(switch_latencies, dtype=float))) if switch_latencies else float("inf")
     release_latency = (
@@ -4430,11 +4453,24 @@ def evaluate_profile_on_feature_rows(
     detection_latency = (
         float(np.median(np.asarray(detection_latencies, dtype=float))) if detection_latencies else float("inf")
     )
+    per_frequency_recall = {
+        key: float(per_freq_detected.get(key, 0) / max(count, 1))
+        for key, count in sorted(per_freq_trials.items(), key=lambda item: float(item[0]))
+    }
+    per_frequency_gate_pass_rate = {
+        key: float(per_freq_gate_pass.get(key, 0) / max(count, 1))
+        for key, count in sorted(per_freq_windows.items(), key=lambda item: float(item[0]))
+    }
+    reference_headroom_p50 = {
+        key: float(np.median(np.asarray(values, dtype=float))) if values else float("nan")
+        for key, values in sorted(per_freq_headroom.items(), key=lambda item: float(item[0]))
+    }
     return {
         "idle_fp_per_min": idle_fp_per_min,
         "idle_selected_windows_per_min": idle_selected_windows_per_min,
         "control_recall": control_recall,
         "control_recall_at_2s": control_recall_at_2s,
+        "control_recall_at_2.5s": control_recall_at_2p5s,
         "control_recall_at_3s": control_recall_at_3s,
         "switch_detect_rate": switch_detect_rate,
         "switch_detect_rate_at_2.8s": switch_detect_rate_at_2p8s,
@@ -4452,6 +4488,9 @@ def evaluate_profile_on_feature_rows(
         "switch_trials": float(switch_trials),
         "switch_detected_trials_at_2.8s": float(switch_detected_trials_at_2p8s),
         "release_trials": float(release_trials),
+        "per_frequency_recall": per_frequency_recall,
+        "per_frequency_gate_pass_rate": per_frequency_gate_pass_rate,
+        "reference_headroom_p50": reference_headroom_p50,
     }
 
 
@@ -4991,7 +5030,7 @@ def optimize_fbcca_diag_channel_weights(
         "selected_spatial_rank": None if best_rank is None else int(best_rank),
         "joint_weight_iters": int(joint_iters),
         "iterations": json_safe(iteration_logs),
-        "gate_metrics": {key: float(value) for key, value in best_metrics.items()},
+        "gate_metrics": json_safe(best_metrics),
         "fit_profile": json_safe(asdict(best_profile)),
         "optimized_model_params": json_safe(dict(best_model_params)),
         "optimized_spatial_projection": (
@@ -5038,19 +5077,26 @@ def _split_trial_segments_kfold(
     return results or [(list(trial_segments), list(trial_segments))]
 
 
-def _aggregate_numeric_metric_dicts(metric_rows: Sequence[dict[str, Any]]) -> dict[str, float]:
+def _aggregate_numeric_metric_dicts(metric_rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
     if not metric_rows:
         return {}
     keys = sorted({str(key) for row in metric_rows for key in row.keys()})
-    aggregated: dict[str, float] = {}
+    aggregated: dict[str, Any] = {}
     for key in keys:
         values = []
+        nested_rows = []
         for row in metric_rows:
             value = row.get(key)
             if isinstance(value, (int, float)) and np.isfinite(float(value)):
                 values.append(float(value))
+            elif isinstance(value, dict):
+                nested_rows.append(dict(value))
         if values:
             aggregated[str(key)] = float(np.mean(np.asarray(values, dtype=float)))
+        elif nested_rows:
+            nested = _aggregate_numeric_metric_dicts(nested_rows)
+            if nested:
+                aggregated[str(key)] = nested
     return aggregated
 
 
