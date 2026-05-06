@@ -25,12 +25,14 @@ from apps.realtime_online_ui import (
     build_pretrain_profile_path,
     pretrain_estimated_seconds,
     pretrain_trial_count,
+    realtime_pretrain_protocol_config,
     save_no_train_fbcca_profile,
     _profile_model_name,
     _read_probe_window,
     _validate_loaded_profile,
     resolve_realtime_model_choice,
 )
+from ssvep_core.stimulus_profiles import STIMULUS_PROFILE_COMFORT_FBCCA_V1
 
 
 def _get_qapp() -> QApplication:
@@ -170,6 +172,60 @@ def test_realtime_pretrain_plan_is_about_one_minute(tmp_path: Path) -> None:
     assert history_name.endswith(".json")
 
 
+def test_realtime_pretrain_protocol_records_comfort_stimulus_provenance(tmp_path: Path) -> None:
+    cfg = RealtimePretrainConfig(
+        serial_port="auto",
+        board_id=0,
+        freqs=(8.0, 10.0, 12.0, 15.0),
+        base_profile_path=tmp_path / "base.json",
+        fallback_profile_path=tmp_path / "fallback.json",
+        output_profile_path=tmp_path / "profile.json",
+        history_profile_path=tmp_path / "history.json",
+        compute_backend="cpu",
+        gpu_device=0,
+        gpu_precision="float32",
+        gpu_warmup=False,
+        gpu_cache_policy="windows",
+        stimulus_profile_id=STIMULUS_PROFILE_COMFORT_FBCCA_V1,
+        stim_refresh_rate_hz=144.0,
+    )
+    payload = realtime_pretrain_protocol_config(cfg, saved_trial_count=pretrain_trial_count(cfg))
+
+    assert payload["protocol_name"] == "fast-control-pretrain-v1"
+    assert payload["stimulus_profile_id"] == STIMULUS_PROFILE_COMFORT_FBCCA_V1
+    assert payload["stimulus_mode"] == "elapsed_time_sine"
+    assert payload["stimulus_mode_selection_reason"] == "fallback_refresh_not_confirmed_240hz"
+    assert abs(float(payload["stim_mean"]) - 0.40) < 1e-12
+    assert abs(float(payload["stim_amp"]) - 0.20) < 1e-12
+    assert abs(float(payload["stim_luminance_min"]) - 0.20) < 1e-12
+    assert abs(float(payload["stim_luminance_max"]) - 0.60) < 1e-12
+    assert abs(float(payload["ramp_sec"]) - 0.30) < 1e-12
+    assert abs(float(payload["stim_refresh_rate_hz"]) - 144.0) < 1e-12
+
+    frame_locked_cfg = RealtimePretrainConfig(
+        serial_port=cfg.serial_port,
+        board_id=cfg.board_id,
+        freqs=cfg.freqs,
+        base_profile_path=cfg.base_profile_path,
+        fallback_profile_path=cfg.fallback_profile_path,
+        output_profile_path=cfg.output_profile_path,
+        history_profile_path=cfg.history_profile_path,
+        compute_backend=cfg.compute_backend,
+        gpu_device=cfg.gpu_device,
+        gpu_precision=cfg.gpu_precision,
+        gpu_warmup=cfg.gpu_warmup,
+        gpu_cache_policy=cfg.gpu_cache_policy,
+        stimulus_profile_id=cfg.stimulus_profile_id,
+        stim_refresh_rate_hz=240.0,
+    )
+    frame_locked_payload = realtime_pretrain_protocol_config(
+        frame_locked_cfg,
+        saved_trial_count=pretrain_trial_count(frame_locked_cfg),
+    )
+    assert frame_locked_payload["stimulus_mode"] == "frame_locked_sine"
+    assert frame_locked_payload["stimulus_mode_selection_reason"] == "stable_240hz_frame_locked"
+
+
 def test_no_train_fbcca_profile_is_direct_runtime_safe(tmp_path: Path) -> None:
     profile_path = tmp_path / "fbcca_no_train_profile.json"
     saved_profile, saved_v2 = save_no_train_fbcca_profile(profile_path, freqs=(8.0, 10.0, 12.0, 15.0))
@@ -234,6 +290,31 @@ def test_pretrain_profile_ready_defers_autostart_until_cleanup(tmp_path: Path) -
 
         window._on_pretrain_finished()
         assert calls == ["start"]
+    finally:
+        window.close()
+
+
+def test_pretrain_profile_ready_surfaces_dataset_save_failure(tmp_path: Path) -> None:
+    _ = _get_qapp()
+    window = RealtimeOnlineWindow(serial_port="auto", board_id=0, freqs=(8.0, 10.0, 12.0, 15.0))
+    profile_path = tmp_path / "profile.json"
+    history_path = tmp_path / "history.json"
+    try:
+        window._on_pretrain_profile_ready(
+            {
+                "profile_path": str(profile_path),
+                "history_profile_path": str(history_path),
+                "summary_text": "quality ok",
+                "model_name": "fbcca",
+                "selected_eeg_channels": [0, 1, 2, 3],
+                "dataset_save_valid": False,
+                "dataset_save_error": "disk full",
+            }
+        )
+
+        text = window.profile_meta_label.text()
+        assert "dataset_save_valid=0" in text
+        assert "dataset=n/a" in text
     finally:
         window.close()
 

@@ -195,6 +195,39 @@ def test_grasp_history_requires_stable_recent_pixels_and_resets_on_jump():
     assert slots[0].grasp_stable_frames == 1
 
 
+def test_grasp_angle_history_uses_stable_median_angle():
+    slots = [SlotState(slot=1, freq_hz=8.0)]
+
+    def candidate(angle: float) -> DetectionCandidate:
+        return DetectionCandidate(
+            center=(100, 100),
+            grasp_pixel=(100, 100),
+            bbox=(80, 90, 120, 110),
+            area_px=800,
+            confidence=0.9,
+            polygon=[(80, 90), (120, 90), (120, 110), (80, 110)],
+            grasp_quality=1.0,
+            oriented_bbox=[(80, 90), (120, 90), (120, 110), (80, 110)],
+            distance_to_roi=0.0,
+            grasp_angle_deg=angle,
+            grasp_angle_quality=0.9,
+        )
+
+    for angle in (10.0, 12.0, 11.0):
+        update_slots(
+            slots,
+            [candidate(angle)],
+            match_distance=120.0,
+            lost_ttl=6,
+            grasp_history_len=5,
+            grasp_angle_stability_tolerance_deg=8.0,
+        )
+
+    assert slots[0].grasp_angle_deg == 11.0
+    assert slots[0].grasp_angle_stability_deg is not None
+    assert slots[0].grasp_angle_stability_deg <= 2.0
+
+
 def test_mask_grasp_geometry_prefers_bright_top_face_over_full_silhouette_center():
     mask = np.zeros((100, 100), dtype=np.float32)
     mask[20:80, 20:80] = 1.0
@@ -243,6 +276,25 @@ def test_frame_block_fallback_detects_colored_block_without_color_name():
     assert candidates[0].bbox[0] <= 75
     assert candidates[0].bbox[2] >= 140
     assert candidates[0].grasp_quality > 0.6
+
+
+def test_frame_block_fallback_prefers_full_block_over_small_colored_artifact():
+    frame = np.full((240, 320, 3), 235, dtype=np.uint8)
+    frame[98:133, 148:174] = (210, 40, 30)
+    frame[152:224, 86:166] = (40, 170, 70)
+
+    candidates = frame_to_block_candidates(
+        frame,
+        roi_center=(160, 120),
+        roi_radius=220,
+        max_det=4,
+        min_area_px=500,
+    )
+
+    assert len(candidates) >= 2
+    assert candidates[0].bbox[0] <= 90
+    assert candidates[0].bbox[2] >= 160
+    assert candidates[0].area_px > candidates[1].area_px
 
 
 def test_profile_mapping_marks_far_eye_in_hand_target_for_servo():
@@ -299,6 +351,167 @@ def test_profile_mapping_subtracts_alignment_target_pixel():
 
     assert mapped.delta_xy_mm == (20.0, 5.0)
     assert mapped.estimated_error_mm == 2.0
+
+
+def test_profile_mapping_applies_residual_grid_correction():
+    profile = VisionCalibrationProfile.from_dict(
+        {
+            "profile_id": "grid-profile",
+            "image_size": [100, 100],
+            "pixel_to_delta": {"model": "affine", "matrix": [[1, 0, 0], [0, 1, 0]]},
+            "residual_grid": {
+                "model": "grid",
+                "x_values": [0, 10],
+                "y_values": [0, 10],
+                "correction_dx_mm": [[2, 2], [2, 2]],
+                "correction_dy_mm": [[-1, -1], [-1, -1]],
+                "error_mm": [[1, 2], [3, 5]],
+            },
+            "valid_workspace": {"undistorted_pixel_polygon": [[0, 0], [10, 0], [10, 10], [0, 10]]},
+        }
+    )
+
+    mapped = profile.map_pixel_to_delta((5.0, 5.0), frame_size=(100, 100))
+
+    assert mapped.delta_xy_mm == (7.0, 4.0)
+    assert mapped.estimated_error_mm == 2.75
+
+
+def test_profile_mapping_selects_stage_model_by_name():
+    profile = VisionCalibrationProfile.from_dict(
+        {
+            "profile_id": "stage-profile",
+            "image_size": [100, 100],
+            "pixel_to_delta": {"model": "affine", "matrix": [[1, 0, 0], [0, 1, 0]]},
+            "stage_models": {
+                "search": {
+                    "z_mm": 190.0,
+                    "pixel_to_delta": {"model": "affine", "matrix": [[1, 0, 0], [0, 1, 0]]},
+                },
+                "confirm": {
+                    "z_mm": 130.0,
+                    "pixel_to_delta": {"model": "affine", "matrix": [[2, 0, 0], [0, 2, 0]]},
+                },
+            },
+        }
+    )
+
+    mapped = profile.map_pixel_to_delta((5.0, 4.0), frame_size=(100, 100), stage="confirm")
+
+    assert mapped.delta_xy_mm == (10.0, 8.0)
+    assert profile.model_for_stage("confirm").z_mm == 130.0
+
+
+def test_profile_mapping_does_not_reuse_wrong_stage_when_named_stage_is_missing():
+    profile = VisionCalibrationProfile.from_dict(
+        {
+            "profile_id": "stage-profile",
+            "image_size": [100, 100],
+            "stage_models": {
+                "search": {
+                    "z_mm": 190.0,
+                    "pixel_to_delta": {"model": "affine", "matrix": [[1, 0, 0], [0, 1, 0]]},
+                }
+            },
+        }
+    )
+    slots = [SlotState(slot=1, freq_hz=8.0)]
+    slot = slots[0]
+    slot.valid = True
+    slot.observed = True
+    slot.pixel_center = (50, 50)
+    slot.grasp_pixel = (50, 50)
+    slot.grasp_quality = 1.0
+
+    annotate_slots_with_cylindrical(
+        slots,
+        calibration=None,
+        calibration_profile=profile,
+        frame_size=(100, 100),
+        roi_center=(50, 50),
+        mapping_mode="delta_servo",
+        calibration_profile_required=True,
+        calibration_stage="confirm",
+        calibration_z_mm=130.0,
+    )
+
+    assert slot.actionable is False
+    assert slot.invalid_reason == "calibration_unavailable"
+
+
+def test_mask_grasp_geometry_prefers_inner_safe_point_over_silhouette_center():
+    mask = np.zeros((120, 120), dtype=np.uint8)
+    mask[25:85, 25:85] = 255
+    mask[25:45, 85:110] = 255
+
+    geometry = mask_to_grasp_geometry(mask, (120, 120))
+
+    assert geometry is not None
+    assert geometry.center == (60, 52)
+    assert geometry.grasp_pixel[0] < geometry.center[0]
+    assert geometry.grasp_quality > 0.5
+
+
+def test_profile_mapping_rejects_points_outside_valid_workspace():
+    profile = VisionCalibrationProfile.from_dict(
+        {
+            "profile_id": "workspace-profile",
+            "image_size": [100, 100],
+            "pixel_to_delta": {"model": "affine", "matrix": [[1, 0, 0], [0, 1, 0]]},
+            "valid_workspace": {"undistorted_pixel_polygon": [[0, 0], [10, 0], [10, 10], [0, 10]]},
+        }
+    )
+
+    slots = [SlotState(slot=1, freq_hz=8.0)]
+    slot = slots[0]
+    slot.valid = True
+    slot.observed = True
+    slot.pixel_center = (50, 50)
+    slot.grasp_pixel = (50, 50)
+    slot.grasp_quality = 1.0
+
+    annotate_slots_with_cylindrical(
+        slots,
+        calibration=None,
+        calibration_profile=profile,
+        frame_size=(100, 100),
+        roi_center=(5, 5),
+        mapping_mode="delta_servo",
+        calibration_profile_required=True,
+    )
+
+    assert slot.actionable is False
+    assert "calibration_profile_point_outside_valid_workspace" in slot.invalid_reason
+
+
+def test_target_pixel_mode_requires_alignment_target():
+    profile = VisionCalibrationProfile.from_dict(
+        {
+            "profile_id": "no-target-profile",
+            "image_size": [100, 100],
+            "pixel_to_delta": {"model": "affine", "matrix": [[1, 0, 0], [0, 1, 0]]},
+        }
+    )
+    slots = [SlotState(slot=1, freq_hz=8.0)]
+    slot = slots[0]
+    slot.valid = True
+    slot.observed = True
+    slot.pixel_center = (50, 50)
+    slot.grasp_pixel = (50, 50)
+    slot.grasp_quality = 1.0
+
+    annotate_slots_with_cylindrical(
+        slots,
+        calibration=None,
+        calibration_profile=profile,
+        frame_size=(100, 100),
+        roi_center=(5, 5),
+        mapping_mode="delta_servo",
+        calibration_profile_required=True,
+        alignment_target_required=True,
+    )
+
+    assert slot.invalid_reason == "alignment_target_unavailable"
 
 
 def test_annotation_uses_alignment_target_for_servo_distance_and_delta():

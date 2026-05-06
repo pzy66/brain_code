@@ -8,7 +8,7 @@ from ultralytics import YOLO
 # --- 1. 配置参数 (请确认路径正确) ---
 STREAM_URL = "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color"
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_WEIGHTS = REPO_ROOT / "hybrid_controller" / "models" / "vision" / "best.pt"
+DEFAULT_WEIGHTS = REPO_ROOT / "datasets" / "vision" / "models" / "best.pt"
 WEIGHTS = Path(os.environ.get("BRAIN_VISION_WEIGHTS", DEFAULT_WEIGHTS)).expanduser()
 
 CONF = 0.35  # 置信度阈值
@@ -31,7 +31,7 @@ def main():
     if not WEIGHTS.exists():
         raise FileNotFoundError(
             f"YOLO weights not found: {WEIGHTS}. "
-            "Set BRAIN_VISION_WEIGHTS to a .pt file or keep the default model in hybrid_controller/models/vision/."
+            "Set BRAIN_VISION_WEIGHTS to a .pt file or keep the default model in datasets/vision/models/best.pt."
         )
     print(f"正在加载模型: {WEIGHTS} ...")
     model = YOLO(WEIGHTS)

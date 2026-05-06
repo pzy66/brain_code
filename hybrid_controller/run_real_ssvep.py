@@ -12,6 +12,8 @@ if str(PROJECT_ROOT) not in sys.path:
 
 
 DEFAULT_ARGS = [
+    "--input-profile",
+    "bci_experimental",
     "--robot-mode",
     "real",
     "--robot-transport",
@@ -28,6 +30,7 @@ DEFAULT_ARGS = [
     "sim",
     "--decision-source",
     "ssvep",
+    "--enable-ssvep-runtime",
     "--timing-profile",
     "formal",
     "--scenario-name",

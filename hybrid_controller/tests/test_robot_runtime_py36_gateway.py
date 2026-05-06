@@ -49,6 +49,9 @@ class _DummyExecutor:
         self.sucker_rotation_calls.append((float(angle_deg), duration_sec))
         return "ACK SET_SUCKER_ROTATION 30.00 120.00"
 
+    def set_pick_tuning(self, payload):  # noqa: ANN001
+        return dict(payload)
+
     def start_place(self, sender) -> str:  # noqa: ANN001
         return "ACK PLACE_STARTED"
 
@@ -94,3 +97,12 @@ def test_gateway_routes_set_sucker_rotation() -> None:
 
     assert response == "ACK SET_SUCKER_ROTATION 30.00 120.00"
     assert executor.sucker_rotation_calls == [(30.0, 0.2)]
+
+
+def test_gateway_routes_set_pick_tuning() -> None:
+    executor = _DummyExecutor(state="IDLE")
+    gateway = RobotGateway(executor)
+
+    response = gateway.handle('SET_PICK_TUNING {"pick_bottom_hold_sec":0.45}', sender=None)
+
+    assert response == 'ACK PICK_TUNING {"pick_bottom_hold_sec":0.45}'

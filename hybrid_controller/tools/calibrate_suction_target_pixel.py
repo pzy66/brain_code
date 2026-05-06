@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import sys
 import time
 from pathlib import Path
 from urllib.parse import urlparse
@@ -10,7 +11,12 @@ from urllib.parse import urlparse
 import cv2
 import numpy as np
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 from hybrid_controller.config import AppConfig
+from hybrid_controller.vision.processing import frame_to_block_candidates
 
 
 def _default_stream_url(host: str) -> str:
@@ -73,6 +79,38 @@ def _find_orange_block_center(frame_bgr: np.ndarray, *, min_area: float) -> tupl
     return (float(center[0]), float(center[1]), area)
 
 
+def _find_auto_block_grasp_pixel(frame_bgr: np.ndarray, *, min_area: float) -> tuple[float, float, float]:
+    frame_h, frame_w = frame_bgr.shape[:2]
+    candidates = frame_to_block_candidates(
+        frame_bgr,
+        roi_center=(frame_w // 2, frame_h // 2),
+        roi_radius=max(frame_w, frame_h),
+        max_det=1,
+        min_area_px=max(1, int(round(float(min_area)))),
+    )
+    if not candidates:
+        raise RuntimeError("No color-agnostic block candidate found.")
+    candidate = candidates[0]
+    if float(candidate.area_px) < float(min_area):
+        raise RuntimeError(f"Detected block is too small: area={candidate.area_px:.1f}px.")
+    point = candidate.grasp_pixel or candidate.center
+    return (float(point[0]), float(point[1]), float(candidate.area_px))
+
+
+def _parse_manual_pixel(value: str) -> tuple[float, float] | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    parts = [part.strip() for part in text.replace(";", ",").split(",") if part.strip()]
+    if len(parts) != 2:
+        raise RuntimeError("--manual-pixel must be formatted as x,y")
+    x = float(parts[0])
+    y = float(parts[1])
+    if not math.isfinite(x) or not math.isfinite(y):
+        raise RuntimeError("--manual-pixel contains non-finite values")
+    return (x, y)
+
+
 def _write_profile_target(profile_path: Path, target_pixel: tuple[float, float]) -> None:
     with profile_path.open("r", encoding="utf-8") as fh:
         payload = json.load(fh)
@@ -131,6 +169,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--timeout-sec", type=float, default=4.0)
     parser.add_argument("--drain-frames", type=int, default=12)
     parser.add_argument("--min-area", type=float, default=500.0)
+    parser.add_argument("--detect-mode", choices=("auto", "orange"), default="auto")
+    parser.add_argument("--manual-pixel", default="", help="Use an explicit x,y target pixel instead of auto detection.")
     parser.add_argument("--no-write", action="store_true")
     return parser.parse_args()
 
@@ -142,7 +182,14 @@ def main() -> int:
     if parsed.scheme and not parsed.netloc:
         raise RuntimeError(f"Invalid stream URL: {stream_url}")
     frame = _capture_frame(stream_url, timeout_sec=float(args.timeout_sec), drain_frames=int(args.drain_frames))
-    x, y, area = _find_orange_block_center(frame, min_area=float(args.min_area))
+    manual_pixel = _parse_manual_pixel(str(args.manual_pixel))
+    if manual_pixel is not None:
+        x, y = manual_pixel
+        area = 0.0
+    elif str(args.detect_mode) == "orange":
+        x, y, area = _find_orange_block_center(frame, min_area=float(args.min_area))
+    else:
+        x, y, area = _find_auto_block_grasp_pixel(frame, min_area=float(args.min_area))
     target_pixel = (float(x), float(y))
     if not bool(args.no_write):
         _write_profile_target(Path(args.profile), target_pixel)
@@ -152,6 +199,7 @@ def main() -> int:
             {
                 "target_pixel": [float(target_pixel[0]), float(target_pixel[1])],
                 "area_px": float(area),
+                "method": "manual_pixel" if manual_pixel is not None else str(args.detect_mode),
                 "profile": str(args.profile),
                 "overlay": str(args.output),
                 "wrote_profile": not bool(args.no_write),

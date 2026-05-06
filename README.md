@@ -1,5 +1,7 @@
 # brain_code
 
+Current main-program policy: `hybrid_controller/run_real.py` is the recommended real-robot launcher and runs in `operator_keyboard` mode by default. MI and SSVEP remain independent modules for standalone testing, but the main program does not start their realtime recognition path unless an experimental BCI launcher/flag is used.
+
 这是团队协作使用的正式 Git 仓库。上一级 `brain` 目录只作为本地工作区，用来放个人环境文件、未入库数据、备份和交付物。
 
 ## Windows 快速开始

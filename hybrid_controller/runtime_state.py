@@ -35,6 +35,7 @@ class RuntimeState:
     simulation_enabled: bool = False
     timing_profile: str = "formal"
     scenario_name: str = "basic"
+    input_profile: str = "operator_keyboard"
     move_source: str = "sim"
     decision_source: str = "sim"
     mi_backend: str = "brainflow"
@@ -62,6 +63,7 @@ class RuntimeState:
     auto_z_current: float | None = None
     control_kernel: str = "cylindrical_kernel"
     ssvep_runtime_status: str = "stopped"
+    ssvep_runtime_enabled: bool = False
     ssvep_running: bool = False
     ssvep_stim_enabled: bool = False
     ssvep_busy: bool = False
@@ -181,6 +183,7 @@ class RuntimeStore:
                 simulation_enabled=bool(getattr(config, "simulation_enabled", False)),
                 timing_profile=str(getattr(config, "timing_profile", "formal")),
                 scenario_name=str(getattr(config, "scenario_name", "basic")),
+                input_profile=str(getattr(config, "input_profile", "operator_keyboard")),
                 move_source=str(getattr(config, "move_source", "sim")),
                 decision_source=str(getattr(config, "decision_source", "sim")),
                 mi_backend=str(getattr(config, "mi_backend", "brainflow")),
@@ -189,6 +192,7 @@ class RuntimeStore:
                 robot_transport=str(getattr(config, "robot_transport", "tcp")),
                 vision_mode=str(getattr(config, "vision_mode", "robot_camera_detection")),
                 ssvep_profile_path=str(getattr(config, "ssvep_current_profile_path", "--")),
+                ssvep_runtime_enabled=bool(getattr(config, "ssvep_runtime_enabled", False)),
                 ssvep_allow_fallback_profile=bool(getattr(config, "ssvep_allow_fallback_profile", True)),
                 ssvep_model_name=str(getattr(config, "ssvep_model_name", "fbcca")),
                 ssvep_debug_keyboard=bool(getattr(config, "ssvep_keyboard_debug_enabled", True)),

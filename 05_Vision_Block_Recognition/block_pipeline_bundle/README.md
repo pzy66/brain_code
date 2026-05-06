@@ -18,9 +18,8 @@
    `http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80`
 2. 模型加载
    默认权重是：
-   `C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\models\vision\best.pt`
-   如果这个不存在，启动脚本会尝试：
-   `C:\Users\P1233\Desktop\brain\dataset\camara\best.pt`
+   `datasets/vision/models/best.pt`
+   也可以用 `BRAIN_VISION_WEIGHTS` 指向其它本地 `.pt` 文件。
 3. 模型类型
    已检查当前 `best.pt`：Ultralytics YOLO `segment`，类别名是 `upside of cube`。
 4. 后处理
@@ -50,15 +49,15 @@ START_02_TRAIN_YOLO_SEGMENTATION.cmd --epochs 100 --imgsz 640 --device auto
 训练完成后，如果要把新 profile 部署给实时识别使用：
 
 ```bat
-START_02_TRAIN_YOLO_SEGMENTATION.cmd --epochs 100 --imgsz 640 --device auto --deploy-to C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\models\vision\best.pt
+START_02_TRAIN_YOLO_SEGMENTATION.cmd --epochs 100 --imgsz 640 --device auto --deploy-to C:\Users\P1233\Desktop\brain\brain_code\datasets\vision\models\best.pt
 ```
 
 ## 训练数据要求
 
-`02_train_yolo_segmentation.py` 默认使用这个训练目录：
+`02_train_yolo_segmentation.py` 默认使用仓库内这个训练目录：
 
 ```text
-C:\Users\P1233\Desktop\brain\dataset\camara\yolo_seg\
+C:\Users\P1233\Desktop\brain\brain_code\datasets\vision\yolo_seg\
   data.yaml
   images\
     train\
@@ -83,7 +82,7 @@ class_id x1 y1 x2 y2 x3 y3 ...
 `03_collect_images.py` 默认保存到：
 
 ```text
-C:\Users\P1233\Desktop\brain\dataset\camara\captures
+C:\Users\P1233\Desktop\brain\brain_code\datasets\vision\captures
 ```
 
 每次新建 session 会生成：
@@ -139,10 +138,8 @@ block_collect_YYYYMMDD_HHMMSS\
 
 ## 当前数据现状
 
-我看到本地已有：
+历史机器上曾经使用过这些位置，后续只作为迁移参考，不作为默认路径：
 
-- `C:\Users\P1233\Desktop\brain\dataset\camara\best.pt`
-- `C:\Users\P1233\Desktop\brain\brain_code\hybrid_controller\models\vision\best.pt`
 - `C:\Users\P1233\Desktop\brain\dataset\camara\row\images` 约 101 张原始图片
 - `C:\Users\P1233\Desktop\brain\dataset\camara\row\cylinder` 约 100 张原始图片
 - `C:\Users\P1233\Desktop\brain\dataset\camara\captures` 下有若干 session，但目前基本只有 `session_meta.json`

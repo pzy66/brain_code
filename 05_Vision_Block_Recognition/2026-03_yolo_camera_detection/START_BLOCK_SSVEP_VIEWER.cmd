@@ -5,8 +5,7 @@ for %%I in ("%~dp0..\..") do set "CODE_ROOT=%%~fI"
 for %%I in ("%~dp0..\..\..") do set "BRAIN_ROOT=%%~fI"
 set "RESOLVER=%CODE_ROOT%\tools\resolve_brain_python.cmd"
 set "SCRIPT=%~dp0block_center_ssvep_single.py"
-set "WEIGHTS=%CODE_ROOT%\hybrid_controller\models\vision\best.pt"
-if not exist "%WEIGHTS%" set "WEIGHTS=%BRAIN_ROOT%\dataset\camara\best.pt"
+set "WEIGHTS=%CODE_ROOT%\datasets\vision\models\best.pt"
 set "SOURCE=http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80"
 
 if not exist "%RESOLVER%" (
@@ -38,8 +37,8 @@ if /I "%~1"=="-h" goto :show_help
 if not exist "%WEIGHTS%" (
   echo Weight file not found:
   echo Tried:
-  echo   %CODE_ROOT%\hybrid_controller\models\vision\best.pt
-  echo   %BRAIN_ROOT%\dataset\camara\best.pt
+  echo   %CODE_ROOT%\datasets\vision\models\best.pt
+  echo Or set BRAIN_VISION_WEIGHTS to another local .pt file.
   set "EXIT_CODE=1"
   goto :fail
 )

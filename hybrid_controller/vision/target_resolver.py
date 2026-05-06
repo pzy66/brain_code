@@ -51,6 +51,7 @@ def resolve_vision_packet(
     config: AppConfig,
     snapshot: Mapping[str, object] | None,
     snapshot_age_ms: float,
+    frame_pose_age_ms: float | None = None,
 ) -> VisionResolutionResult:
     resolved: dict[str, object] = dict(packet)
     mapping_mode = _resolve_mapping_mode(packet.get("mapping_mode"), config.vision_mapping_mode)
@@ -74,6 +75,7 @@ def resolve_vision_packet(
     first_resolved_cyl: list[float] | None = None
     calibration_ready = bool(packet.get("calibration_ready", False))
     snapshot_max_age_ms = float(config.vision_snapshot_max_age_ms)
+    frame_pose_max_age_ms = float(getattr(config, "vision_frame_pose_max_age_ms", snapshot_max_age_ms))
     requires_calibration = bool(config.vision_action_requires_calibration)
     pick_z = float(config.robot_pick_z)
 
@@ -183,6 +185,18 @@ def resolve_vision_packet(
                 if first_invalid_reason == "--":
                     first_invalid_reason = str(slot_resolved["invalid_reason"])
                 continue
+            if frame_pose_age_ms is not None:
+                try:
+                    frame_pose_age_value = float(frame_pose_age_ms)
+                except (TypeError, ValueError):
+                    frame_pose_age_value = float("inf")
+                if not math.isfinite(frame_pose_age_value) or frame_pose_age_value > frame_pose_max_age_ms:
+                    slot_resolved["invalid_reason"] = "robot_pose_stale_for_frame"
+                    slot_resolved["frame_pose_age_ms"] = float(frame_pose_age_value)
+                    slots_resolved.append(slot_resolved)
+                    if first_invalid_reason == "--":
+                        first_invalid_reason = str(slot_resolved["invalid_reason"])
+                    continue
             if not math.isfinite(snapshot_age_ms) or snapshot_age_ms > snapshot_max_age_ms:
                 slot_resolved["invalid_reason"] = "robot_snapshot_stale"
                 slots_resolved.append(slot_resolved)

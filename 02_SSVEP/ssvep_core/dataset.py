@@ -295,6 +295,16 @@ def _build_collection_records(
                 record[key] = _safe_int(quality.get(key), 0)
         if "stimulus_first_frame_ack_timed_out" in quality:
             record["stimulus_first_frame_ack_timed_out"] = bool(quality.get("stimulus_first_frame_ack_timed_out"))
+        for key in ("stimulus_profile_id",):
+            value = str(quality.get(key, "")).strip()
+            if value:
+                record[key] = value
+        for key in ("stim_mean", "stim_amp", "ramp_sec"):
+            if key in quality and quality.get(key) is not None:
+                record[key] = _safe_float(quality.get(key), 0.0)
+        frame_stats = quality.get("stimulus_frame_interval_stats", {})
+        if isinstance(frame_stats, dict):
+            record["stimulus_frame_interval_stats"] = _jsonable(frame_stats)
         records.append(record)
     return records
 
@@ -316,6 +326,25 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return int(default)
 
 
+def _signature_value(value: Any) -> Any:
+    if isinstance(value, np.generic):
+        return _signature_value(value.item())
+    if isinstance(value, dict):
+        return {str(key): _signature_value(item) for key, item in sorted(value.items(), key=lambda item: str(item[0]))}
+    if isinstance(value, (list, tuple)):
+        return [_signature_value(item) for item in value]
+    if isinstance(value, bool):
+        return bool(value)
+    if isinstance(value, (int, float)):
+        numeric = float(value)
+        if np.isfinite(numeric):
+            return round(numeric, 6)
+        return str(value)
+    if value is None:
+        return None
+    return str(value)
+
+
 def _protocol_signature_payload(
     *,
     sampling_rate: int,
@@ -333,9 +362,19 @@ def _protocol_signature_payload(
         "target_repeats": _safe_int(cfg.get("target_repeats", 0), 0),
         "idle_repeats": _safe_int(cfg.get("idle_repeats", 0), 0),
         "switch_trials": _safe_int(cfg.get("switch_trials", 0), 0),
+        "stimulus_profile_id": str(cfg.get("stimulus_profile_id", "")),
         "stimulus_mode": str(cfg.get("stimulus_mode", "")),
         "stimulus_backend": str(cfg.get("stimulus_backend", "")),
         "stim_refresh_rate_hz": round(_safe_float(cfg.get("stim_refresh_rate_hz", 0.0), 0.0), 6),
+        "stim_mean": round(_safe_float(cfg.get("stim_mean", 0.0), 0.0), 6),
+        "stim_amp": round(_safe_float(cfg.get("stim_amp", 0.0), 0.0), 6),
+        "stim_luminance_min": round(_safe_float(cfg.get("stim_luminance_min", 0.0), 0.0), 6),
+        "stim_luminance_max": round(_safe_float(cfg.get("stim_luminance_max", 0.0), 0.0), 6),
+        "stim_michelson_contrast": round(_safe_float(cfg.get("stim_michelson_contrast", 0.0), 0.0), 6),
+        "ramp_sec": round(_safe_float(cfg.get("ramp_sec", 0.0), 0.0), 6),
+        "frame_interval_stats": _signature_value(cfg.get("frame_interval_stats", {})),
+        "comfort_rating": _signature_value(cfg.get("comfort_rating", None)),
+        "screen_brightness_note": str(cfg.get("screen_brightness_note", "")),
         "active_start_cue_sec": round(_safe_float(cfg.get("active_start_cue_sec", 0.0), 0.0), 6),
         "active_start_buffer_clear_timing": str(cfg.get("active_start_buffer_clear_timing", "")),
         "active_saved_window": str(cfg.get("active_saved_window", "")),
@@ -361,6 +400,34 @@ def build_protocol_signature(
     canonical = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     digest = hashlib.sha1(canonical.encode("utf-8")).hexdigest()
     return f"sha1:{digest}"
+
+
+def _aggregate_frame_interval_stats(trial_records: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    stats_rows = [
+        dict(row.get("stimulus_frame_interval_stats", {}))
+        for row in trial_records
+        if isinstance(row.get("stimulus_frame_interval_stats", {}), dict)
+    ]
+    nonempty = [row for row in stats_rows if _safe_int(row.get("count", 0), 0) > 0]
+    if not stats_rows:
+        return {}
+    counts = np.asarray([_safe_int(row.get("count", 0), 0) for row in stats_rows], dtype=int)
+    p95_values = np.asarray([_safe_float(row.get("p95_ms", 0.0), 0.0) for row in nonempty], dtype=float)
+    max_values = np.asarray([_safe_float(row.get("max_ms", 0.0), 0.0) for row in nonempty], dtype=float)
+    mean_values = np.asarray([_safe_float(row.get("mean_ms", 0.0), 0.0) for row in nonempty], dtype=float)
+    refresh_values = np.asarray(
+        [_safe_float(row.get("refresh_rate_hz_estimate", 0.0), 0.0) for row in nonempty],
+        dtype=float,
+    )
+    return {
+        "trial_count": int(len(stats_rows)),
+        "nonempty_trial_count": int(len(nonempty)),
+        "sample_count_total": int(np.sum(counts)) if counts.size else 0,
+        "mean_ms_mean": float(np.mean(mean_values)) if mean_values.size else 0.0,
+        "p95_ms_max": float(np.max(p95_values)) if p95_values.size else 0.0,
+        "max_ms_max": float(np.max(max_values)) if max_values.size else 0.0,
+        "refresh_rate_hz_estimate_mean": float(np.mean(refresh_values)) if refresh_values.size else 0.0,
+    }
 
 
 def _build_quality_summary(trial_records: Sequence[dict[str, Any]]) -> dict[str, Any]:
@@ -465,13 +532,14 @@ def save_collection_dataset_bundle(
                 **dict(continuous_board_info or {}),
             }
 
+    protocol_payload = dict(protocol_config)
+    protocol_payload.setdefault("frame_interval_stats", _aggregate_frame_interval_stats(trial_records))
     protocol_signature = build_protocol_signature(
         sampling_rate=int(sampling_rate),
-        protocol_config=dict(protocol_config),
+        protocol_config=protocol_payload,
         freqs=freqs,
         board_eeg_channels=board_eeg_channels,
     )
-    protocol_payload = dict(protocol_config)
     protocol_payload.setdefault("requested_session_id", requested_session_id or safe_session_id)
     protocol_payload["saved_session_id"] = safe_session_id
     if requested_subject_id and requested_subject_id != safe_subject_id:

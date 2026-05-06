@@ -13,7 +13,7 @@
 
 - 相机来源：JetMax 相机流
 - 检测模型：仓库内权重
-  - [models/vision/best.pt](<repo>\hybrid_controller\models\vision\best.pt)
+  - [datasets/vision/models/best.pt](<repo>\datasets\vision\models\best.pt)
 - 运行时代码：
   - [vision/runtime.py](<repo>\hybrid_controller\vision\runtime.py)
   - [vision/processing.py](<repo>\hybrid_controller\vision\processing.py)

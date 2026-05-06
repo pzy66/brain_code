@@ -8,7 +8,7 @@ from typing import Callable, Optional
 from urllib.parse import urlparse
 
 import numpy as np
-from PyQt5.QtCore import QMetaObject, QObject, QThread, QTimer, Qt, pyqtSignal, pyqtSlot
+from PyQt5.QtCore import Q_ARG, QMetaObject, QObject, QThread, QTimer, Qt, pyqtSignal, pyqtSlot
 
 from hybrid_controller.adapters.vision_adapter import VisionTarget
 from hybrid_controller.config import AppConfig
@@ -93,6 +93,15 @@ class _VisionWorker(QObject):
             try:
                 self._calibration_profile = VisionCalibrationProfile.load(profile_path)
                 self._calibration_profile_mtime = float(profile_path.stat().st_mtime)
+                if (
+                    self._calibration_profile is not None
+                    and str(self.config.pick_tool_offset_source).strip().lower() == "target_pixel"
+                    and self._calibration_profile.target_pixel is None
+                ):
+                    self._pending_status = (
+                        "Vision calibration profile loaded, but servo.target_pixel is missing. "
+                        "Run suction-target calibration before automatic pick alignment."
+                    )
             except Exception as error:
                 self._calibration_profile = None
                 self._pending_status = f"Vision calibration profile unavailable: {error}"
@@ -139,6 +148,8 @@ class _VisionWorker(QObject):
         self._capture_fps = 0.0
         self._capture_total_frames = 0
         self._last_capture_ts = 0.0
+        self._robot_pose_lock = threading.Lock()
+        self._robot_z_mm: float | None = None
         self._capture_thread: threading.Thread | None = None
         self._capture_stop_event = threading.Event()
         self._frame_lock = threading.Lock()
@@ -502,7 +513,11 @@ class _VisionWorker(QObject):
                 grasp_history_len=int(self.config.vision_grasp_history_frames),
                 grasp_stability_tolerance_px=float(self.config.vision_grasp_stability_tolerance_px),
                 grasp_history_reset_px=float(self.config.vision_grasp_history_reset_px),
+                grasp_angle_stability_tolerance_deg=float(
+                    self.config.vision_grasp_angle_stability_tolerance_deg
+                ),
             )
+            calibration_stage, calibration_z_mm = self._current_calibration_stage()
             annotate_slots_with_cylindrical(
                 self._slots,
                 calibration=self._calibration,
@@ -520,11 +535,18 @@ class _VisionWorker(QObject):
                 center_tolerance_px=float(self.config.vision_servo_center_tolerance_px),
                 action_center_tolerance_px=float(self.config.vision_servo_action_tolerance_px),
                 alignment_target_pixel=alignment_target_pixel,
+                alignment_target_required=str(self.config.pick_tool_offset_source).strip().lower() == "target_pixel",
+                calibration_stage=calibration_stage,
+                calibration_z_mm=calibration_z_mm,
                 grasp_quality_threshold=float(self.config.vision_grasp_quality_threshold),
                 required_stable_frames=int(self.config.vision_grasp_stable_frames),
+                grasp_angle_stability_tolerance_deg=float(
+                    self.config.vision_grasp_angle_stability_tolerance_deg
+                ),
             )
             calibration_ready = self._calibration is not None or (
-                self._calibration_profile is not None and self._calibration_profile.has_pixel_to_delta_model
+                self._calibration_profile is not None
+                and (self._calibration_profile.has_pixel_to_delta_model or self._calibration_profile.has_stage_models)
             )
             calibration_ready = calibration_ready and (
                 not bool(self.config.vision_calibration_profile_required) or self._calibration_profile is not None
@@ -538,12 +560,16 @@ class _VisionWorker(QObject):
                 capture_fps=self._capture_fps,
                 infer_ms=infer_ms,
                 queue_age_ms=max(0.0, (time.perf_counter() - capture_ts) * 1000.0),
+                capture_ts=float(capture_ts),
+                stream_age_ms=max(0.0, (time.perf_counter() - capture_ts) * 1000.0),
                 detected_count=detected_count,
                 calibration_ready=calibration_ready,
                 mapping_mode=str(self.config.vision_mapping_mode),
                 calibration_profile_id="" if self._calibration_profile is None else self._calibration_profile.profile_id,
                 calibration_profile_required=bool(self.config.vision_calibration_profile_required),
                 alignment_target_pixel=alignment_target_pixel,
+                calibration_stage=calibration_stage,
+                calibration_z_mm=calibration_z_mm,
             )
             packet["infer_interval_ms"] = float(self._infer_interval_dynamic_ms)
             total_infer_frames = max(1, int(self._infer_total_frames))
@@ -591,7 +617,7 @@ class _VisionWorker(QObject):
         frame_w: int,
         frame_h: int,
         roi_center: tuple[int, int],
-    ) -> tuple[float, float]:
+    ) -> tuple[float, float] | None:
         configured = self._coerce_frame_pixel(self.config.vision_pick_target_pixel, frame_w, frame_h)
         if configured is not None:
             return configured
@@ -599,6 +625,8 @@ class _VisionWorker(QObject):
             profile_target = self._coerce_frame_pixel(self._calibration_profile.target_pixel, frame_w, frame_h)
             if profile_target is not None:
                 return profile_target
+        if str(self.config.pick_tool_offset_source).strip().lower() == "target_pixel":
+            return None
         return (float(roi_center[0]), float(roi_center[1]))
 
     def _reload_calibration_profile_if_needed(self) -> None:
@@ -625,6 +653,27 @@ class _VisionWorker(QObject):
         for slot in self._slots:
             slot.clear()
         self.status_changed.emit("Vision tracking reset after robot motion.")
+
+    @pyqtSlot(float)
+    def set_robot_z(self, z_mm: float) -> None:
+        with self._robot_pose_lock:
+            self._robot_z_mm = float(z_mm)
+
+    def _current_calibration_stage(self) -> tuple[str, float]:
+        with self._robot_pose_lock:
+            robot_z = self._robot_z_mm
+        search_z = float(getattr(self.config, "vision_pick_search_z_mm", self.config.robot_carry_z))
+        confirm_z = float(getattr(self.config, "vision_pick_confirm_z_mm", self.config.robot_approach_z))
+        pick_z = float(getattr(self.config, "robot_pick_z", confirm_z))
+        tolerance = max(0.5, float(getattr(self.config, "vision_pick_z_tolerance_mm", 4.0)))
+        if robot_z is None:
+            return ("search", search_z)
+        z_value = float(robot_z)
+        if abs(z_value - pick_z) <= tolerance:
+            return ("pick", pick_z)
+        if abs(z_value - confirm_z) <= tolerance:
+            return ("confirm", confirm_z)
+        return ("search", search_z)
 
 
 class VisionRuntime:
@@ -703,6 +752,19 @@ class VisionRuntime:
                 QMetaObject.invokeMethod(worker, "reset_tracking", Qt.QueuedConnection)
             else:
                 worker.reset_tracking()
+        except RuntimeError:
+            pass
+
+    def set_robot_z(self, z_mm: float) -> None:
+        worker = self.worker
+        thread = self.thread
+        if worker is None:
+            return
+        try:
+            if thread is not None and thread.isRunning():
+                QMetaObject.invokeMethod(worker, "set_robot_z", Qt.QueuedConnection, Q_ARG(float, float(z_mm)))
+            else:
+                worker.set_robot_z(float(z_mm))
         except RuntimeError:
             pass
 

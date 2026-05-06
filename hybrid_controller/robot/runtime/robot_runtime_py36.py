@@ -1235,6 +1235,12 @@ class RobotGateway(object):
             if command == "SET_SUCKER_ROTATION":
                 duration = None if len(args) < 2 else float(args[1])
                 return self.executor.set_sucker_rotation(float(args[0]), duration)
+            if command == "SET_PICK_TUNING":
+                payload = json.loads(args[0])
+                if not isinstance(payload, dict):
+                    return format_error_line(ERR_INVALID_STATE, "SET_PICK_TUNING payload must be a JSON object")
+                tuning = self.executor.set_pick_tuning(payload)
+                return "ACK PICK_TUNING {0}".format(json.dumps(tuning, separators=(",", ":")))
             if command == "MOVE":
                 return self.executor.legacy_kernel.start_move(sender, float(args[0]), float(args[1]))
             if command == "MOVE_CYL":

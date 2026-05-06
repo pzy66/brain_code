@@ -85,6 +85,7 @@ def build_ui_snapshot(
 ) -> AppSnapshot:
     return ui_coordinator.build_snapshot(
         controller_snapshot=controller_snapshot,
+        input_profile=str(runtime_info.get("input_profile", getattr(config, "input_profile", "operator_keyboard"))),
         move_source=str(config.move_source),
         decision_source=str(config.decision_source),
         robot_mode=str(config.robot_mode),

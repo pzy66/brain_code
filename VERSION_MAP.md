@@ -14,15 +14,19 @@
 ## 2. SSVEP
 
 - 当前主线：
-  `02_SSVEP/2026-03_realtime_ui_and_online_decoder`
+  `02_SSVEP`
+- 主要结构：
+  `02_SSVEP/apps`
+  `02_SSVEP/entrypoints`
+  `02_SSVEP/ssvep_core`
+  `02_SSVEP/tools`
+  `02_SSVEP/tests`
 - 历史补充：
-  `02_SSVEP/2026-02_realtime_stimulus_and_classifier_core`
-  `02_SSVEP/2026-02_algorithms_and_data_tools`
-  `02_SSVEP/2026-02_stimulus_variants`
-  `02_SSVEP/2026-02_custom_dataset_scripts`
+  `02_SSVEP/_archive`
 - 备注：
-  `2026-03` 更偏实时刺激与在线识别；
-  `2026-02` 保留了更早期的 FBCCA、刺激变体和数据处理脚本。
+  当前 SSVEP 主线已经收敛为 `apps / entrypoints / ssvep_core` 结构。
+  新开发应围绕数据采集、实时在线解码、训练评测、local-opt、profile/profile_v2
+  和 async-first 指标推进，不应继续从旧月份目录 import 活跃代码。
 
 ## 3. 机械臂控制
 
@@ -36,8 +40,10 @@
 - 主要目录：
   `04_Communication_And_Integration/2026-02_socket_and_pick_command`
   `04_Communication_And_Integration/2026-03_signal_monitoring_and_debug`
+  `04_Communication_And_Integration/2026-05_vision_grasp_flow_debug`
 - 备注：
   这里主要保留 socket 通信、抓取指令联调和实时调试脚本，不是单独的一套完整主线项目。
+  识别并抓取全过程调试应放在这里，验证稳定后再复制最小必要代码进 `hybrid_controller`。
 
 ## 5. 视觉与木块识别
 
@@ -50,6 +56,11 @@
   `2026-02` 更偏模板匹配、颜色处理和相机辅助脚本。
 
 ## 6. 文档
+
+- 数据采集辅助：
+  `06_Data_Collection/2026-04_jetmax_block_dataset_collection`
+- 仿真实验：
+  `07_Simulation_Lab/hybrid_controller_sim`
 
 - 系统分析报告：
   `docs/系统现状与开发建议报告_2026-04-06.md`

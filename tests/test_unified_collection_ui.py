@@ -3,8 +3,10 @@ from __future__ import annotations
 import numpy as np
 
 from brain_workspace.bootstrap import configure_qt_offscreen
+from brain_workspace.paths import ensure_runtime_import_paths
 
 configure_qt_offscreen()
+ensure_runtime_import_paths()
 
 from PyQt5.QtWidgets import QApplication  # noqa: E402
 

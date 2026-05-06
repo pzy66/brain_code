@@ -17,8 +17,7 @@ from typing import Callable
 
 from hybrid_controller.adapters.control_sim_slots import ControlSimSlotCatalog
 from hybrid_controller.adapters.input_orchestrator import InputOrchestrator
-from hybrid_controller.adapters.input_provider import InputHealth
-from hybrid_controller.adapters.mi_input import MiInputProvider
+from hybrid_controller.adapters.input_provider import InputHealth, InputProvider
 from hybrid_controller.adapters.remote_snapshot_poller import RemoteSnapshotPoller
 from hybrid_controller.adapters.rosbridge_client import RosServiceResult, RosbridgeClient
 from hybrid_controller.adapters.robot_client import RobotClient, fetch_robot_status
@@ -49,7 +48,8 @@ from hybrid_controller.runtime_state import (
     RuntimeInfoCompat,
     RuntimeStore,
 )
-from hybrid_controller.ssvep.runtime import SSVEPRuntime
+from hybrid_controller.vision.pose_buffer import RobotPoseBuffer
+from hybrid_controller.vision.servo_controller import VisionServoController
 
 try:
     from PyQt5.QtCore import QObject, Qt, QTimer, pyqtSignal
@@ -83,10 +83,7 @@ class HybridControllerApplication:
             ssvep_keyboard_debug_enabled=config.ssvep_keyboard_debug_enabled,
         )
         self.ssvep_adapter = SSVEPAdapter(config.ssvep_freqs)
-        self.mi_provider = MiInputProvider(
-            backend=str(config.mi_backend),
-            poll_interval_ms=int(config.mi_poll_interval_ms),
-        )
+        self.mi_provider: InputProvider | None = self._build_mi_provider_if_enabled()
         self.input_orchestrator = InputOrchestrator(
             sim_input=self.sim_input,
             ssvep_adapter=self.ssvep_adapter,
@@ -100,7 +97,7 @@ class HybridControllerApplication:
         self.main_window = MainWindow()
         self.slot_catalog = ControlSimSlotCatalog(config) if config.control_sim_enabled else None
         self.vision_runtime: VisionRuntime | None = None
-        self.ssvep_runtime: SSVEPRuntime | None = None
+        self.ssvep_runtime = None
         self.timers: dict[str, QTimer] = {}
         self._last_logged_world_revision: int | None = None
         self._latest_world_snapshot: dict[str, object] | None = None
@@ -114,6 +111,7 @@ class HybridControllerApplication:
         self._remote_snapshot_cache: dict[str, object] | None = None
         self._remote_snapshot_envelope: RobotSnapshotEnvelope | None = None
         self._remote_snapshot_poller: RemoteSnapshotPoller | None = None
+        self._robot_pose_buffer = RobotPoseBuffer()
         self._latest_vision_packet: dict[str, object] | None = None
         self._latest_vision_frame = None
         self._vision_frame_lock = threading.Lock()
@@ -130,6 +128,7 @@ class HybridControllerApplication:
         self._pick_tuning_local_dirty = False
         self._active_pick_trace: dict[str, object] | None = None
         self._vision_servo_pick: dict[str, object] | None = None
+        self._vision_servo_controller = VisionServoController(config)
         self._last_vision_debug_bundle_error_ts = 0.0
         self._teleop_ros_planner = RosTeleopPublishPlanner(
             keepalive_interval_sec=max(float(self.config.teleop_ros_keepalive_interval_ms) / 1000.0, 0.02)
@@ -178,6 +177,7 @@ class HybridControllerApplication:
             "simulation_enabled": config.simulation_enabled,
             "timing_profile": config.timing_profile,
             "scenario_name": config.scenario_name,
+            "input_profile": config.input_profile,
             "move_source": config.move_source,
             "decision_source": config.decision_source,
             "mi_backend": config.mi_backend,
@@ -196,6 +196,7 @@ class HybridControllerApplication:
             "vision_mapping_mode": config.vision_mapping_mode,
             "vision_invalid_reason": "--",
             "vision_snapshot_age_ms": float("inf"),
+            "vision_frame_pose_age_ms": float("inf"),
             "state_age_ms": float("inf"),
             "vision_last_resolved_base_xy": None,
             "vision_last_resolved_cyl": None,
@@ -212,7 +213,12 @@ class HybridControllerApplication:
             "limits_cyl": None,
             "auto_z_current": None,
             "control_kernel": "cylindrical_kernel",
-            "ssvep_runtime_status": "stopped",
+            "ssvep_runtime_enabled": self._ssvep_runtime_enabled(),
+            "ssvep_runtime_status": (
+                "idle (click Connect Device)"
+                if self._ssvep_runtime_enabled()
+                else "disabled: keyboard operator mode"
+            ),
             "ssvep_running": False,
             "ssvep_stim_enabled": False,
             "ssvep_busy": False,
@@ -221,13 +227,17 @@ class HybridControllerApplication:
             "ssvep_pretrain_active": False,
             "ssvep_online_active": False,
             "ssvep_profile_path": str(config.ssvep_current_profile_path),
-            "ssvep_profile_source": "fallback",
+            "ssvep_profile_source": "uninitialized" if not self._ssvep_runtime_enabled() else "fallback",
             "ssvep_last_pretrain_time": "--",
             "ssvep_latest_profile_path": "--",
             "ssvep_profile_count": 0,
             "ssvep_available_profiles": (),
             "ssvep_allow_fallback_profile": config.ssvep_allow_fallback_profile,
-            "ssvep_status_hint": "当前没有已训练 Profile，可先预训练，或直接用默认 fallback 启动。",
+            "ssvep_status_hint": (
+                "Keyboard operator mode is active. SSVEP is disabled in the main program; use 02_SSVEP for standalone debugging."
+                if not self._ssvep_runtime_enabled()
+                else "当前没有已训练 Profile，可先预训练，或直接用默认 fallback 启动。"
+            ),
             "ssvep_mode": "idle",
             "ssvep_last_state": "--",
             "ssvep_last_selected_freq": "--",
@@ -301,6 +311,20 @@ class HybridControllerApplication:
         self._update_ssvep_mode()
         self._capture_world_snapshot(reason="startup", force=True)
         self._refresh_view()
+
+    def _ssvep_runtime_enabled(self) -> bool:
+        return bool(self.config.ssvep_runtime_enabled) or str(self.config.decision_source).strip().lower() == "ssvep"
+
+    def _build_mi_provider_if_enabled(self) -> InputProvider | None:
+        move_source = str(self.config.move_source or "sim").strip().lower()
+        if move_source != "mi" or not bool(self.config.mi_enabled):
+            return None
+        from hybrid_controller.adapters.mi_input import MiInputProvider
+
+        return MiInputProvider(
+            backend=str(self.config.mi_backend),
+            poll_interval_ms=int(self.config.mi_poll_interval_ms),
+        )
 
     def shutdown(self) -> None:
         if self._shutdown_started:
@@ -1011,6 +1035,41 @@ class HybridControllerApplication:
             self._rt_set("vision_health", "starting")
 
     def _setup_brain_sources(self) -> None:
+        self.input_orchestrator.set_sources(
+            move_source=str(self.config.move_source),
+            decision_source=str(self.config.decision_source),
+            ssvep_keyboard_debug_enabled=bool(self.config.ssvep_keyboard_debug_enabled),
+            mi_enabled=bool(self.config.mi_enabled),
+        )
+        if not self._ssvep_runtime_enabled():
+            self.ssvep_runtime = None
+            self.ssvep_coordinator.bind_runtime(None)
+            self._rt_update(
+                {
+                    "ssvep_runtime_enabled": False,
+                    "ssvep_running": False,
+                    "ssvep_stim_enabled": False,
+                    "ssvep_busy": False,
+                    "ssvep_connected": False,
+                    "ssvep_connect_active": False,
+                    "ssvep_pretrain_active": False,
+                    "ssvep_online_active": False,
+                    "ssvep_profile_source": "uninitialized",
+                    "ssvep_runtime_status": "disabled: keyboard operator mode",
+                    "ssvep_status_hint": (
+                        "Keyboard operator mode is active. SSVEP is disabled in the main program; "
+                        "use 02_SSVEP for standalone debugging."
+                    ),
+                    "last_ssvep_raw": "--",
+                    "target_frequency_map": [],
+                }
+            )
+            initial_mi_health = self.input_orchestrator.initialize()
+            self._update_mi_runtime_state(initial_mi_health, emit_runtime_status=True)
+            return
+
+        from hybrid_controller.ssvep.runtime import SSVEPRuntime
+
         self.ssvep_runtime = SSVEPRuntime(
             self.config,
             command_callback=self.dispatch_ssvep_command,
@@ -1037,14 +1096,9 @@ class HybridControllerApplication:
                 "ssvep_profile_count": len(initial_profiles),
                 "ssvep_latest_profile_path": str(latest_profile.path) if latest_profile is not None else "--",
                 "ssvep_status_hint": self.ssvep_runtime.status_hint(initial_profiles),
+                "ssvep_runtime_enabled": True,
                 "ssvep_runtime_status": "idle (click Connect Device)",
             }
-        )
-        self.input_orchestrator.set_sources(
-            move_source=str(self.config.move_source),
-            decision_source=str(self.config.decision_source),
-            ssvep_keyboard_debug_enabled=bool(self.config.ssvep_keyboard_debug_enabled),
-            mi_enabled=bool(self.config.mi_enabled),
         )
         initial_mi_health = self.input_orchestrator.initialize()
         self._update_mi_runtime_state(initial_mi_health, emit_runtime_status=True)
@@ -1201,6 +1255,7 @@ class HybridControllerApplication:
             "original_command": original_text,
             "command": str(command),
             "pick_bias_applied": original_text.strip() != str(command).strip(),
+            "pick_tool_offset_source": str(getattr(self.config, "pick_tool_offset_source", "target_pixel")),
             "pick_cyl_radius_bias_mm": float(getattr(self, "_pick_cyl_radius_bias_mm", 0.0)),
             "pick_cyl_tangent_bias_mm": float(getattr(self, "_pick_cyl_tangent_bias_mm", 0.0)),
             "pick_cyl_theta_bias_deg": float(getattr(self, "_pick_cyl_theta_bias_deg", 0.0)),
@@ -1284,6 +1339,7 @@ class HybridControllerApplication:
             "last_robot_error",
         )
         snapshot = {key: self._rt_get(key) for key in keys}
+        snapshot["pick_tool_offset_source"] = str(getattr(self.config, "pick_tool_offset_source", "target_pixel"))
         snapshot["pick_cyl_radius_bias_mm"] = float(getattr(self, "_pick_cyl_radius_bias_mm", 0.0))
         snapshot["pick_cyl_tangent_bias_mm"] = float(getattr(self, "_pick_cyl_tangent_bias_mm", 0.0))
         snapshot["pick_cyl_theta_bias_deg"] = float(getattr(self, "_pick_cyl_theta_bias_deg", 0.0))
@@ -1504,6 +1560,9 @@ class HybridControllerApplication:
                     )
 
         header = str(trace_payload.get("command") or trace_payload.get("original_command") or "")
+        offset_source = trace_payload.get("pick_tool_offset_source")
+        if offset_source is not None:
+            header = f"{header} offset={offset_source}"
         delta = trace_payload.get("command_vs_resolved_delta_mm")
         if delta is not None:
             try:
@@ -1640,6 +1699,8 @@ class HybridControllerApplication:
         self._clear_pending_command()
 
     def _rewrite_outgoing_robot_command(self, command: str) -> str:
+        if str(getattr(self.config, "pick_tool_offset_source", "target_pixel")).strip().lower() != "command_bias":
+            return str(command or "")
         return rewrite_pick_command_with_bias(
             str(command or ""),
             theta_bias_deg=float(self._pick_cyl_theta_bias_deg),
@@ -2038,6 +2099,13 @@ class HybridControllerApplication:
             getattr(self.config, "vision_mapping_mode", "")
         ).strip().lower() == "delta_servo"
 
+    def _vision_servo_controller_instance(self) -> VisionServoController:
+        controller = getattr(self, "_vision_servo_controller", None)
+        if not isinstance(controller, VisionServoController):
+            controller = VisionServoController(self.config)
+            self._vision_servo_controller = controller
+        return controller
+
     def _current_robot_cyl_pose(self) -> tuple[float, float, float] | None:
         snapshot = self._fetch_remote_robot_snapshot()
         if not isinstance(snapshot, dict):
@@ -2105,6 +2173,51 @@ class HybridControllerApplication:
             return False
         return self._send_vision_low_confirm_move(int(slot_id), attempts=int(attempts))
 
+    def _apply_vision_servo_decision(self, decision) -> bool:
+        action = str(getattr(decision, "action", "")).upper()
+        pending_dict = getattr(decision, "pending_dict", None)
+        if action == "WAIT":
+            if pending_dict is not None:
+                self._vision_servo_pick = pending_dict
+            return True
+        if action == "WAIT_STABLE":
+            self._vision_servo_pick = pending_dict
+            self._rt_set("vision_servo_status", str(decision.status))
+            message = str(getattr(decision, "message", "") or "")
+            if message:
+                self._handle_runtime_status("vision", message)
+            return True
+        if action == "MOVE":
+            command = str(getattr(decision, "command", "") or "")
+            if not command:
+                return False
+            self._vision_servo_pick = pending_dict
+            self._rt_set("vision_servo_status", str(decision.status))
+            message = str(getattr(decision, "message", "") or "")
+            if message:
+                self._handle_runtime_status("vision", message)
+            self._send_robot_text_command(command)
+            return True
+        if action == "PICK":
+            command = str(getattr(decision, "command", "") or "")
+            if not command:
+                return False
+            self._vision_servo_pick = None
+            self._rt_set("vision_servo_status", str(decision.status))
+            message = str(getattr(decision, "message", "") or "")
+            if message:
+                self._handle_runtime_status("vision", message)
+            self._send_robot_text_command(command)
+            return True
+        if action == "CANCEL":
+            self._vision_servo_pick = None
+            self._rt_set("vision_servo_status", str(decision.status))
+            message = str(getattr(decision, "message", "") or "")
+            if message:
+                self._handle_runtime_status("vision", message)
+            return False
+        return False
+
     def _mark_vision_servo_move_acknowledged(self) -> None:
         pending = self._vision_servo_pick
         if not isinstance(pending, dict):
@@ -2121,8 +2234,15 @@ class HybridControllerApplication:
             current_frame_id = int(packet.get("frame_id", 0))
         except (TypeError, ValueError):
             current_frame_id = 0
-        pending["min_frame_id"] = current_frame_id + 1
-        self._vision_servo_pick = pending
+        acknowledged = self._vision_servo_controller_instance().acknowledge_move(
+            pending,
+            current_frame_id=current_frame_id,
+        )
+        if acknowledged is None:
+            pending["waiting_for_ack"] = False
+            pending["min_frame_id"] = current_frame_id + 1
+            acknowledged = pending
+        self._vision_servo_pick = acknowledged
         self._rt_set("vision_servo_status", f"waiting_fresh_frame slot={pending.get('slot_id')}")
 
     def _pump_pending_vision_servo_pick(self, packet: dict[str, object]) -> None:
@@ -2138,131 +2258,30 @@ class HybridControllerApplication:
         if frame_id < min_frame_id:
             return
         slot = self._vision_slot_payload(slot_id, packet=packet)
-        if slot is None or not bool(slot.get("valid", False)):
-            self._vision_servo_pick = None
-            self._rt_set("vision_servo_status", f"lost_target slot={slot_id}")
-            self._handle_runtime_status("vision", f"Vision servo lost slot {slot_id}; pick cancelled.")
-            return
-        slot_for_command = dict(slot)
-        slot_for_command["grasp_angle_quality_threshold"] = float(self.config.sucker_rotation_angle_quality_threshold)
-        command = build_pick_command_from_slot_payload(slot_for_command)
-        if command is not None:
-            try:
-                attempts = int(pending.get("attempts", 0))
-            except (TypeError, ValueError):
-                attempts = 0
-            if self._maybe_send_low_confirm_before_pick(slot_id, attempts=attempts):
-                return
-            self._vision_servo_pick = None
-            self._rt_set("vision_servo_status", f"centered slot={slot_id}; picking")
-            self._handle_runtime_status("vision", f"Vision servo centered slot {slot_id}; sending PICK.")
-            self._send_robot_text_command(command)
-            return
-        reason = str(slot.get("invalid_reason") or "not_actionable")
-        if reason == "grasp_unstable":
-            wait_frames = int(pending.get("stability_wait_frames", 0)) + 1
-            max_wait = max(1, int(self.config.vision_grasp_stability_wait_frames))
-            pending["stability_wait_frames"] = wait_frames
-            self._vision_servo_pick = pending
-            self._rt_set("vision_servo_status", f"stabilizing {wait_frames}/{max_wait} slot={slot_id}")
-            if wait_frames <= max_wait:
-                return
-            self._vision_servo_pick = None
-            self._rt_set("vision_servo_status", f"cancelled slot={slot_id} reason=grasp_unstable")
-            self._handle_runtime_status(
-                "vision",
-                f"Vision servo cancelled slot {slot_id}: grasp point did not stabilize in {max_wait} fresh frames.",
-            )
-            return
-        if self._send_vision_servo_pick_move(slot_id, slot):
-            return
-        self._vision_servo_pick = None
-        self._rt_set("vision_servo_status", f"cancelled slot={slot_id} reason={reason}")
-        self._handle_runtime_status("vision", f"Vision servo cancelled slot {slot_id}: {reason}.")
+        decision = self._vision_servo_controller_instance().decide(
+            slot_id=slot_id,
+            slot_payload=slot,
+            packet=packet,
+            pending=pending,
+            current_cyl_pose=self._current_robot_cyl_pose(),
+            at_confirm_z=self._is_at_vision_pick_confirm_z(),
+            eye_in_hand_enabled=self._vision_eye_in_hand_pick_flow_enabled(),
+        )
+        self._apply_vision_servo_decision(decision)
 
     def _send_vision_servo_pick_move(self, slot_id: int, slot_payload: dict[str, object]) -> bool:
-        reason = str(slot_payload.get("invalid_reason") or "").strip()
-        if reason == "grasp_unstable":
-            packet = self._latest_vision_packet if isinstance(self._latest_vision_packet, dict) else {}
-            try:
-                frame_id = int(packet.get("frame_id", 0))
-            except (TypeError, ValueError):
-                frame_id = 0
-            pending = self._vision_servo_pick if isinstance(self._vision_servo_pick, dict) else {}
-            try:
-                attempts = int(pending.get("attempts", 0))
-            except (TypeError, ValueError):
-                attempts = 0
-            stage = str(pending.get("stage", "search")) if isinstance(pending, dict) else "search"
-            self._vision_servo_pick = {
-                "slot_id": int(slot_id),
-                "attempts": int(max(0, attempts)),
-                "waiting_for_ack": False,
-                "min_frame_id": int(frame_id) + 1,
-                "stability_wait_frames": 0,
-                "command": "WAIT_STABLE",
-                "stage": stage,
-            }
-            self._rt_set("vision_servo_status", f"stabilizing 0/{self.config.vision_grasp_stability_wait_frames} slot={slot_id}")
-            self._handle_runtime_status("vision", f"Vision grasp for slot {slot_id} is near center; waiting for stable frames.")
-            return True
-        if reason != "vision_servo_required":
-            return False
-        point = slot_payload.get("servo_command_point")
-        mode = str(slot_payload.get("servo_command_mode", "cyl")).strip().lower()
-        if mode != "cyl" or not isinstance(point, (tuple, list)) or len(point) < 2:
-            return False
-        pending = self._vision_servo_pick if isinstance(self._vision_servo_pick, dict) else None
-        attempts = 0
-        stage = "search"
-        if pending is not None:
-            try:
-                if int(pending.get("slot_id", -1)) == int(slot_id):
-                    attempts = int(pending.get("attempts", 0))
-                    stage = str(pending.get("stage", "search") or "search")
-            except (TypeError, ValueError):
-                attempts = 0
-        max_attempts = max(1, int(self.config.vision_servo_max_attempts))
-        if attempts >= max_attempts:
-            self._rt_set("vision_servo_status", f"max_attempts slot={slot_id}")
-            self._handle_runtime_status("vision", f"Vision servo reached {max_attempts} attempts for slot {slot_id}.")
-            return False
-        try:
-            theta_deg = float(point[0])
-            radius_mm = float(point[1])
-        except (TypeError, ValueError):
-            return False
-        if self._vision_eye_in_hand_pick_flow_enabled():
-            if stage == "low_confirm":
-                target_z = float(getattr(self.config, "vision_pick_confirm_z_mm", self.config.robot_approach_z))
-            else:
-                target_z = float(getattr(self.config, "vision_pick_search_z_mm", self.config.robot_carry_z))
-                stage = "search"
-            command = f"MOVE_CYL {theta_deg:.2f} {radius_mm:.2f} {target_z:.2f}"
-        else:
-            command = f"MOVE_CYL_AUTO {theta_deg:.2f} {radius_mm:.2f}"
         packet = self._latest_vision_packet if isinstance(self._latest_vision_packet, dict) else {}
-        try:
-            frame_id = int(packet.get("frame_id", 0))
-        except (TypeError, ValueError):
-            frame_id = 0
-        next_attempts = attempts + 1
-        self._vision_servo_pick = {
-            "slot_id": int(slot_id),
-            "attempts": int(next_attempts),
-            "waiting_for_ack": True,
-            "min_frame_id": int(frame_id) + 1,
-            "stability_wait_frames": 0,
-            "command": command,
-            "stage": stage,
-        }
-        self._rt_set("vision_servo_status", f"move {next_attempts}/{max_attempts} slot={slot_id}")
-        self._handle_runtime_status(
-            "vision",
-            f"Vision servo move {next_attempts}/{max_attempts} for slot {slot_id}: {command}",
+        pending = self._vision_servo_pick if isinstance(self._vision_servo_pick, dict) else None
+        decision = self._vision_servo_controller_instance().decide(
+            slot_id=int(slot_id),
+            slot_payload=slot_payload,
+            packet=packet,
+            pending=pending,
+            current_cyl_pose=self._current_robot_cyl_pose(),
+            at_confirm_z=self._is_at_vision_pick_confirm_z(),
+            eye_in_hand_enabled=self._vision_eye_in_hand_pick_flow_enabled(),
         )
-        self._send_robot_text_command(command)
-        return True
+        return self._apply_vision_servo_decision(decision)
 
     def _on_manual_place_requested(self) -> None:
         self._send_robot_text_command("PLACE")
@@ -2475,12 +2494,20 @@ class HybridControllerApplication:
 
         snapshot = self._fetch_remote_robot_snapshot()
         snapshot_age_ms = float(self._compute_remote_snapshot_age_ms())
+        frame_pose_age_ms: float | None = None
+        pose_buffer = getattr(self, "_robot_pose_buffer", None)
+        nearest = pose_buffer.nearest(packet.get("capture_ts")) if isinstance(pose_buffer, RobotPoseBuffer) else None
+        if nearest is not None:
+            snapshot = dict(nearest.sample.snapshot)
+            frame_pose_age_ms = float(nearest.age_ms)
+        self._rt_set("vision_frame_pose_age_ms", float("inf") if frame_pose_age_ms is None else frame_pose_age_ms)
         self._rt_set("vision_snapshot_age_ms", snapshot_age_ms)
         resolution = resolve_vision_packet(
             packet,
             config=self.config,
             snapshot=snapshot,
             snapshot_age_ms=snapshot_age_ms,
+            frame_pose_age_ms=frame_pose_age_ms,
         )
         self._rt_update(
             {
@@ -3237,6 +3264,10 @@ class HybridControllerApplication:
 
     def _on_ssvep_connect_requested(self) -> None:
         if self.ssvep_runtime is None:
+            self._handle_runtime_status(
+                "ssvep",
+                "SSVEP runtime is disabled in keyboard operator mode. Use 02_SSVEP standalone or start with --enable-ssvep-runtime.",
+            )
             return
         if not self._apply_ssvep_runtime_config_from_ui(announce=True):
             return
@@ -3244,6 +3275,11 @@ class HybridControllerApplication:
 
     def _apply_ssvep_runtime_config_from_ui(self, *, announce: bool) -> bool:
         if self.ssvep_runtime is None:
+            if announce:
+                self._handle_runtime_status(
+                    "ssvep",
+                    "SSVEP config ignored because keyboard operator mode disables the SSVEP runtime.",
+                )
             return False
         try:
             runtime_config = self.main_window.ssvep_runtime_config()
@@ -3283,6 +3319,10 @@ class HybridControllerApplication:
 
     def _on_ssvep_pretrain_requested(self) -> None:
         if self.ssvep_runtime is None:
+            self._handle_runtime_status(
+                "ssvep",
+                "SSVEP pretrain is disabled in keyboard operator mode. Debug SSVEP inside 02_SSVEP first.",
+            )
             return
         if not self._apply_ssvep_runtime_config_from_ui(announce=True):
             return
@@ -3290,6 +3330,10 @@ class HybridControllerApplication:
 
     def _on_ssvep_load_profile_requested(self) -> None:
         if self.ssvep_runtime is None:
+            self._handle_runtime_status(
+                "ssvep",
+                "SSVEP profile loading is disabled in keyboard operator mode.",
+            )
             return
         if self.main_window.is_ssvep_profile_auto_selected():
             self.ssvep_coordinator.clear_session_profile()
@@ -3320,6 +3364,10 @@ class HybridControllerApplication:
 
     def _on_ssvep_start_requested(self) -> None:
         if self.ssvep_runtime is None:
+            self._handle_runtime_status(
+                "ssvep",
+                "SSVEP recognition is disabled in keyboard operator mode. Keyboard decisions are active.",
+            )
             return
         if not self._apply_ssvep_runtime_config_from_ui(announce=True):
             return
@@ -3327,6 +3375,7 @@ class HybridControllerApplication:
 
     def _on_ssvep_stop_requested(self) -> None:
         if self.ssvep_runtime is None:
+            self._handle_runtime_status("ssvep", "SSVEP runtime is already disabled.")
             return
         self._rt_update(
             {
@@ -3416,6 +3465,14 @@ class HybridControllerApplication:
             self._remote_snapshot_envelope = envelope
             if payload is not None:
                 self._remote_snapshot_cache = dict(payload)
+                pose_buffer = getattr(self, "_robot_pose_buffer", None)
+                if isinstance(pose_buffer, RobotPoseBuffer):
+                    pose_buffer.add_snapshot(
+                        payload,
+                        received_wall_ts=float(envelope.ts),
+                        received_perf_ts=float(time.perf_counter()),
+                    )
+                self._update_vision_runtime_robot_z(payload)
         state_age_ms = self._compute_envelope_age_ms(envelope)
         self._rt_set("state_age_ms", float(state_age_ms))
         self._rt_set("remote_snapshot_age_ms", float(state_age_ms))
@@ -3431,6 +3488,19 @@ class HybridControllerApplication:
             return
         if envelope.error:
             self._rt_set("robot_health", f"snapshot_error:{envelope.error}")
+
+    def _update_vision_runtime_robot_z(self, snapshot: dict[str, object]) -> None:
+        z_value: object | None = snapshot.get("robot_z")
+        cyl = snapshot.get("robot_cyl")
+        if isinstance(cyl, dict) and cyl.get("z_mm") is not None:
+            z_value = cyl.get("z_mm")
+        try:
+            z_mm = float(z_value)
+        except (TypeError, ValueError):
+            return
+        setter = getattr(getattr(self, "vision_runtime", None), "set_robot_z", None)
+        if callable(setter):
+            setter(z_mm)
 
     def _reset_control_scene_state(self) -> None:
         if self.slot_catalog is None:
@@ -3611,6 +3681,12 @@ class HybridControllerApplication:
 
 
 def build_config_from_args(args: argparse.Namespace) -> AppConfig:
+    input_profile = str(getattr(args, "input_profile", AppConfig.input_profile) or AppConfig.input_profile).strip().lower()
+    move_source = str(args.move_source or AppConfig.move_source).strip().lower()
+    decision_source = str(args.decision_source or AppConfig.decision_source).strip().lower()
+    ssvep_runtime_enabled = bool(getattr(args, "ssvep_runtime_enabled", AppConfig.ssvep_runtime_enabled))
+    if decision_source == "ssvep":
+        ssvep_runtime_enabled = True
     config = AppConfig(
         control_sim_enabled=True,
         sim_process_mode="external_lab",
@@ -3618,12 +3694,13 @@ def build_config_from_args(args: argparse.Namespace) -> AppConfig:
         simulation_enabled=False,
         timing_profile=args.timing_profile,
         scenario_name=args.scenario_name,
+        input_profile=input_profile,
         robot_mode=args.robot_mode,
         vision_mode=args.vision_mode,
-        move_source=args.move_source,
-        decision_source=args.decision_source,
+        move_source=move_source,
+        decision_source=decision_source,
         mi_backend=str(getattr(args, "mi_backend", AppConfig.mi_backend)),
-        mi_enabled=bool(getattr(args, "mi_enabled", AppConfig.mi_enabled)),
+        mi_enabled=bool(getattr(args, "mi_enabled", AppConfig.mi_enabled)) and move_source == "mi",
         mi_poll_interval_ms=int(getattr(args, "mi_poll_interval_ms", AppConfig.mi_poll_interval_ms)),
         mi_command_cooldown_ms=int(
             getattr(args, "mi_command_cooldown_ms", AppConfig.mi_command_cooldown_ms)
@@ -3706,6 +3783,13 @@ def build_config_from_args(args: argparse.Namespace) -> AppConfig:
         vision_grasp_stability_tolerance_px=float(
             getattr(args, "vision_grasp_stability_tolerance_px", AppConfig.vision_grasp_stability_tolerance_px)
         ),
+        vision_grasp_angle_stability_tolerance_deg=float(
+            getattr(
+                args,
+                "vision_grasp_angle_stability_tolerance_deg",
+                AppConfig.vision_grasp_angle_stability_tolerance_deg,
+            )
+        ),
         vision_grasp_history_reset_px=float(
             getattr(args, "vision_grasp_history_reset_px", AppConfig.vision_grasp_history_reset_px)
         ),
@@ -3745,6 +3829,11 @@ def build_config_from_args(args: argparse.Namespace) -> AppConfig:
             getattr(args, "vision_debug_bundle_enabled", AppConfig.vision_debug_bundle_enabled)
         ),
         vision_debug_bundle_dir=Path(getattr(args, "vision_debug_bundle_dir", AppConfig.vision_debug_bundle_dir)),
+        pick_tool_offset_source=str(getattr(args, "pick_tool_offset_source", AppConfig.pick_tool_offset_source)),
+        vision_residual_model=str(getattr(args, "vision_residual_model", AppConfig.vision_residual_model)),
+        vision_calibration_grid_size=int(
+            getattr(args, "vision_calibration_grid_size", AppConfig.vision_calibration_grid_size)
+        ),
         pick_cyl_radius_bias_mm=float(
             getattr(args, "pick_cyl_radius_bias_mm", AppConfig.pick_cyl_radius_bias_mm)
         ),
@@ -3771,6 +3860,7 @@ def build_config_from_args(args: argparse.Namespace) -> AppConfig:
                 AppConfig.sucker_rotation_angle_quality_threshold,
             )
         ),
+        ssvep_runtime_enabled=ssvep_runtime_enabled,
     )
     stage_motion_sec = getattr(args, "stage_motion_sec", None)
     continue_motion_sec = getattr(args, "continue_motion_sec", None)
@@ -3783,7 +3873,8 @@ def build_config_from_args(args: argparse.Namespace) -> AppConfig:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Hybrid Controller v1")
-    parser.add_argument("--robot-mode", choices=("real",), default="real")
+    parser.add_argument("--input-profile", choices=("operator_keyboard", "bci_experimental"), default=AppConfig.input_profile)
+    parser.add_argument("--robot-mode", choices=("real", "fake"), default="real")
     parser.add_argument("--robot-transport", choices=("tcp", "ros"), default=AppConfig.robot_transport)
     parser.add_argument(
         "--vision-mode",
@@ -3792,6 +3883,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--move-source", choices=("sim", "mi"), default="sim")
     parser.add_argument("--decision-source", choices=("sim", "ssvep"), default="sim")
+    parser.add_argument("--enable-ssvep-runtime", action="store_true", dest="ssvep_runtime_enabled", default=False)
+    parser.add_argument("--disable-ssvep-runtime", action="store_false", dest="ssvep_runtime_enabled")
     parser.add_argument("--mi-backend", choices=("brainflow",), default=AppConfig.mi_backend)
     parser.add_argument("--mi-enabled", action="store_true", default=AppConfig.mi_enabled)
     parser.add_argument("--mi-disabled", action="store_false", dest="mi_enabled")
@@ -3936,6 +4029,11 @@ def main(argv: list[str] | None = None) -> int:
         default=AppConfig.vision_grasp_stability_tolerance_px,
     )
     parser.add_argument(
+        "--vision-grasp-angle-stability-tolerance-deg",
+        type=float,
+        default=AppConfig.vision_grasp_angle_stability_tolerance_deg,
+    )
+    parser.add_argument(
         "--vision-grasp-history-reset-px",
         type=float,
         default=AppConfig.vision_grasp_history_reset_px,
@@ -3997,6 +4095,17 @@ def main(argv: list[str] | None = None) -> int:
         dest="vision_debug_bundle_enabled",
     )
     parser.add_argument("--vision-debug-bundle-dir", type=Path, default=AppConfig.vision_debug_bundle_dir)
+    parser.add_argument(
+        "--pick-tool-offset-source",
+        choices=("target_pixel", "command_bias"),
+        default=AppConfig.pick_tool_offset_source,
+    )
+    parser.add_argument(
+        "--vision-residual-model",
+        choices=("grid", "idw", "none"),
+        default=AppConfig.vision_residual_model,
+    )
+    parser.add_argument("--vision-calibration-grid-size", type=int, default=AppConfig.vision_calibration_grid_size)
     parser.add_argument("--pick-cyl-radius-bias-mm", type=float, default=AppConfig.pick_cyl_radius_bias_mm)
     parser.add_argument("--pick-cyl-tangent-bias-mm", type=float, default=AppConfig.pick_cyl_tangent_bias_mm)
     parser.add_argument("--pick-cyl-theta-bias-deg", type=float, default=AppConfig.pick_cyl_theta_bias_deg)

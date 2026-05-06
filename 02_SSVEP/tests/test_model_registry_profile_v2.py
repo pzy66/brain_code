@@ -66,3 +66,18 @@ def test_build_profile_v2_payload_has_required_sections() -> None:
     assert payload["decoder"]["name"] == "tdca"
     assert payload["gate"]["type"] == "frequency_specific_logreg"
     assert is_profile_v2_payload(payload)
+
+
+def test_build_profile_v2_can_mark_threshold_only_global_gate() -> None:
+    profile = _DummyProfile(model_params={"Nh": 3}, metadata={"source": "unit-test"})
+    v2 = build_profile_v2(
+        base_profile=profile,
+        per_freq_gate={
+            "8": {"coef": [0.0, 0.0, 0.0, 0.0, 0.0], "intercept": 0.0, "enter_logit_th": 0.3, "exit_logit_th": 0.1}
+        },
+        metrics={"idle_fp_per_min": 0.0},
+        gate_type="threshold_only_global_gate",
+    )
+    payload = v2.to_payload()
+    assert payload["gate"]["type"] == "threshold_only_global_gate"
+    assert is_profile_v2_payload(payload)

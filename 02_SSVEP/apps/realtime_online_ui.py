@@ -37,7 +37,7 @@ if str(PROJECT_DIR.parent) not in sys.path:
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
-from brain_workspace.paths import HYBRID_SSVEP_PROFILE_DIR, SSVEP_PROFILE_DIR
+from brain_workspace.paths import DATASETS_ROOT, HYBRID_SSVEP_PROFILE_DIR, SSVEP_PROFILE_DIR
 from ssvep_core.async_fbcca_idle_standalone import (
     AsyncDecisionGate,
     DEFAULT_BENCHMARK_MODELS,
@@ -76,6 +76,7 @@ from ssvep_core.async_fbcca_idle_standalone import (
     save_profile,
     validate_calibration_plan,
 )
+from ssvep_core.dataset import save_collection_dataset_bundle
 from ssvep_core.fast_fbcca_pretrain import (
     DEFAULT_FAST_FBCCA_ACTIVE_SEC,
     DEFAULT_FAST_FBCCA_IDLE_REPEATS,
@@ -93,6 +94,11 @@ from ssvep_core.fast_fbcca_pretrain import (
     save_fast_fbcca_profile_bundle,
 )
 from ssvep_core.runtime_shadow import build_shadow_runtime_chain
+from ssvep_core.stimulus_profiles import (
+    DEFAULT_STIMULUS_PROFILE_ID,
+    get_stimulus_profile,
+    select_stimulus_mode_for_profile,
+)
 from apps.async_fbcca_validation_ui import (
     FourArrowStimWidget,
     PHASE_CAL_ACTIVE,
@@ -102,6 +108,7 @@ from apps.async_fbcca_validation_ui import (
     PHASE_IDLE,
     PHASE_STOPPED,
     PHASE_VALIDATION,
+    validate_stimulus_mode,
     direction_label,
 )
 
@@ -180,10 +187,14 @@ def save_no_train_fbcca_profile(
 
 DEFAULT_REALTIME_PROFILE_PATH = resolve_default_realtime_profile_path()
 MODEL_OPTIONS = (DEFAULT_MODEL_NAME,) + tuple(item for item in DEFAULT_BENCHMARK_MODELS if item != DEFAULT_MODEL_NAME)
-DEFAULT_STIM_REFRESH_RATE_HZ = 60.0
-DEFAULT_STIM_MEAN = 0.5
-DEFAULT_STIM_AMP = 0.5
-DEFAULT_STIM_PHI = 0.0
+_DEFAULT_REALTIME_STIMULUS_PROFILE = get_stimulus_profile(DEFAULT_STIMULUS_PROFILE_ID)
+DEFAULT_REALTIME_STIMULUS_PROFILE_ID = DEFAULT_STIMULUS_PROFILE_ID
+DEFAULT_STIM_REFRESH_RATE_HZ = float(_DEFAULT_REALTIME_STIMULUS_PROFILE.refresh_rate_hz)
+DEFAULT_STIM_MEAN = float(_DEFAULT_REALTIME_STIMULUS_PROFILE.mean)
+DEFAULT_STIM_AMP = float(_DEFAULT_REALTIME_STIMULUS_PROFILE.amp)
+DEFAULT_STIM_PHI = float(_DEFAULT_REALTIME_STIMULUS_PROFILE.phi)
+DEFAULT_STIM_RAMP_SEC = float(_DEFAULT_REALTIME_STIMULUS_PROFILE.ramp_sec)
+DEFAULT_FAST_CONTROL_PRETRAIN_DATASET_DIR = DATASETS_ROOT
 DEFAULT_PRETRAIN_PREPARE_SEC = DEFAULT_FAST_FBCCA_PREPARE_SEC
 DEFAULT_PRETRAIN_ACTIVE_SEC = DEFAULT_FAST_FBCCA_ACTIVE_SEC
 DEFAULT_PRETRAIN_REST_SEC = DEFAULT_FAST_FBCCA_REST_SEC
@@ -219,6 +230,9 @@ class RealtimeConfig:
     gpu_warmup: bool
     gpu_cache_policy: str
     shadow_mode: bool = True
+    stimulus_profile_id: str = DEFAULT_REALTIME_STIMULUS_PROFILE_ID
+    stimulus_mode: str = ""
+    stim_refresh_rate_hz: float = DEFAULT_STIM_REFRESH_RATE_HZ
 
 
 @dataclass(frozen=True)
@@ -245,6 +259,9 @@ class RealtimePretrainConfig:
     mode: str = "fast"
     template_weight: float = DEFAULT_FAST_FBCCA_TEMPLATE_WEIGHT
     template_win_sec: float = DEFAULT_FAST_FBCCA_TEMPLATE_WIN_SEC
+    stimulus_profile_id: str = DEFAULT_REALTIME_STIMULUS_PROFILE_ID
+    stim_refresh_rate_hz: float = DEFAULT_STIM_REFRESH_RATE_HZ
+    dataset_dir: Path = DEFAULT_FAST_CONTROL_PRETRAIN_DATASET_DIR
 
 
 def pretrain_trial_count(config: RealtimePretrainConfig) -> int:
@@ -254,6 +271,10 @@ def pretrain_trial_count(config: RealtimePretrainConfig) -> int:
 def pretrain_estimated_seconds(config: RealtimePretrainConfig) -> float:
     trial_sec = float(config.prepare_sec) + float(config.active_sec) + float(config.rest_sec)
     return float(pretrain_trial_count(config)) * trial_sec
+
+
+def build_realtime_pretrain_dataset_session_id(*, timestamp: float | None = None) -> str:
+    return f"fast_control_pretrain_{_now_stamp(timestamp=timestamp)}"
 
 
 def build_pretrain_profile_path(*, timestamp: float | None = None) -> Path:
@@ -268,6 +289,58 @@ def resolve_realtime_model_choice(selected_model: str, profile_model: str) -> tu
     selected = normalize_model_name(selected_model)
     profile = normalize_model_name(profile_model)
     return profile, selected != profile
+
+
+def resolve_realtime_stimulus_mode(*, stimulus_profile_id: str, refresh_rate_hz: float) -> tuple[str, str]:
+    mode, reason = select_stimulus_mode_for_profile(
+        stimulus_profile_id,
+        refresh_rate_hz=float(refresh_rate_hz),
+        requested_mode="auto",
+    )
+    return validate_stimulus_mode(mode), str(reason)
+
+
+def realtime_pretrain_protocol_config(config: RealtimePretrainConfig, *, saved_trial_count: int) -> dict[str, Any]:
+    profile = get_stimulus_profile(config.stimulus_profile_id)
+    stim_mode, mode_reason = resolve_realtime_stimulus_mode(
+        stimulus_profile_id=config.stimulus_profile_id,
+        refresh_rate_hz=float(config.stim_refresh_rate_hz),
+    )
+    lum_min = max(0.0, float(profile.mean) - abs(float(profile.amp)))
+    lum_max = min(1.0, float(profile.mean) + abs(float(profile.amp)))
+    denom = lum_min + lum_max
+    return {
+        "collection_aborted": False,
+        "requested_session_id": build_realtime_pretrain_dataset_session_id(),
+        "protocol_name": "fast-control-pretrain-v1",
+        "planned_total_trials": int(pretrain_trial_count(config)),
+        "saved_trial_count": int(saved_trial_count),
+        "prepare_sec": float(config.prepare_sec),
+        "active_sec": float(config.active_sec),
+        "rest_sec": float(config.rest_sec),
+        "long_idle_sec": 0.0,
+        "target_repeats": int(config.target_repeats),
+        "idle_repeats": int(config.idle_repeats),
+        "switch_trials": 0,
+        "stimulus_profile_id": str(profile.profile_id),
+        "stimulus_mode": str(stim_mode),
+        "stimulus_mode_selection_reason": str(mode_reason),
+        "stimulus_backend": "pyqt_embedded_realtime",
+        "stim_refresh_rate_hz": float(config.stim_refresh_rate_hz),
+        "stim_mean": float(profile.mean),
+        "stim_amp": float(profile.amp),
+        "stim_phi": float(profile.phi),
+        "stim_luminance_min": float(lum_min),
+        "stim_luminance_max": float(lum_max),
+        "stim_michelson_contrast": float((lum_max - lum_min) / denom) if denom > 1e-12 else 0.0,
+        "ramp_sec": float(profile.ramp_sec),
+        "ramp_included_in_saved_window": bool(float(profile.ramp_sec) > 0.0),
+        "frame_interval_stats": {},
+        "comfort_rating": None,
+        "screen_brightness_note": str(profile.screen_brightness_note),
+        "sync_stimulus_phase": True,
+        "active_saved_window": "last_active_sec_after_first_frame_ack",
+    }
 
 
 def validate_fbcca_demo_profile_path(source: Path | str, *, expected_freqs: Sequence[float] = DEMO_EXPECTED_FREQS) -> dict[str, Any]:
@@ -643,6 +716,7 @@ class RealtimePretrainWorker(QObject):
                 seed=DEFAULT_CALIBRATION_SEED,
             )
             segments: list[tuple[TrialSpec, np.ndarray]] = []
+            quality_rows: list[dict[str, Any]] = []
             total = len(trials)
             for index, trial in enumerate(trials, start=1):
                 prompt = (
@@ -657,6 +731,8 @@ class RealtimePretrainWorker(QObject):
                         "detail": f"{prompt} | 准备",
                         "flicker": False,
                         "cue_freq": trial.expected_freq,
+                        "active_sec": float(self.config.active_sec),
+                        "stimulus_profile_id": str(self.config.stimulus_profile_id),
                     },
                     float(self.config.prepare_sec),
                 ):
@@ -670,6 +746,8 @@ class RealtimePretrainWorker(QObject):
                     "detail": f"{prompt} | 采集",
                     "flicker": True,
                     "cue_freq": trial.expected_freq,
+                    "active_sec": float(self.config.active_sec),
+                    "stimulus_profile_id": str(self.config.stimulus_profile_id),
                 }
                 self._stimulus_phase_applied_event.clear()
                 self._last_stimulus_phase_payload = {}
@@ -691,6 +769,7 @@ class RealtimePretrainWorker(QObject):
                         f"frame={payload.get('frame_index', 'unknown')} | "
                         f"t={payload.get('presented_t_sec', 'unknown')}"
                     )
+                ack_payload = dict(self._last_stimulus_phase_payload)
                 if not self._wait_phase(active_payload, float(self.config.active_sec)):
                     self._emit_stopped_phase()
                     return
@@ -702,6 +781,23 @@ class RealtimePretrainWorker(QObject):
                     minimum_samples=min_samples,
                 )
                 segments.append((trial, segment))
+                quality_rows.append(
+                    {
+                        "order_index": int(index - 1),
+                        "target_samples": int(active_samples),
+                        "used_samples": int(np.asarray(segment).shape[0]),
+                        "active_sec": float(self.config.active_sec),
+                        "sample_ratio": float(np.asarray(segment).shape[0] / max(active_samples, 1)),
+                        "shortfall_ratio": float(max(active_samples - int(np.asarray(segment).shape[0]), 0) / max(active_samples, 1)),
+                        "retry_count": 0,
+                        "stimulus_first_frame_presented_t_sec": ack_payload.get("presented_t_sec"),
+                        "stimulus_first_frame_frame_index": ack_payload.get("frame_index"),
+                        "stimulus_first_frame_mode": str(ack_payload.get("mode", "")),
+                        "stimulus_first_frame_ack_timed_out": False,
+                        "stimulus_profile_id": str(self.config.stimulus_profile_id),
+                        "stimulus_frame_interval_stats": dict(ack_payload.get("frame_interval_stats", {}) or {}),
+                    }
+                )
                 self.log.emit(f"trial {index}/{total} done: {trial.label}")
 
                 if not self._wait_phase(
@@ -716,7 +812,31 @@ class RealtimePretrainWorker(QObject):
                 ):
                     self._emit_stopped_phase()
                     return
-                board.get_board_data()
+            board.get_board_data()
+
+            dataset_payload: dict[str, Any] = {}
+            dataset_save_valid = False
+            dataset_save_error = ""
+            try:
+                protocol_config = realtime_pretrain_protocol_config(self.config, saved_trial_count=len(segments))
+                dataset_payload = save_collection_dataset_bundle(
+                    dataset_root=Path(self.config.dataset_dir),
+                    session_id=str(protocol_config["requested_session_id"]),
+                    subject_id="realtime_pretrain",
+                    serial_port=active_serial,
+                    board_id=int(self.config.board_id),
+                    sampling_rate=int(fs),
+                    freqs=self.config.freqs,
+                    board_eeg_channels=eeg_channels,
+                    protocol_config=protocol_config,
+                    trial_segments=segments,
+                    quality_rows=quality_rows,
+                )
+                dataset_save_valid = True
+                self.log.emit(f"pretrain dataset saved | {dataset_payload.get('dataset_manifest', '')}")
+            except Exception as exc:
+                dataset_save_error = str(exc)
+                self.log.emit(f"warning: pretrain dataset save failed; profile will be marked dataset_save_valid=0: {exc}")
 
             try:
                 if str(self.config.mode or "fast").strip().lower() == "full":
@@ -787,6 +907,9 @@ class RealtimePretrainWorker(QObject):
                     ),
                     "profile_optimizer_source": optimizer_source,
                     "trial_count": int(total),
+                    "dataset_manifest": str(dataset_payload.get("dataset_manifest", "")),
+                    "dataset_save_valid": bool(dataset_save_valid),
+                    "dataset_save_error": str(dataset_save_error),
                     "pretrain_estimated_sec": pretrain_estimated_seconds(self.config),
                     "compute_backend_requested": str(self.config.compute_backend),
                 }
@@ -827,6 +950,8 @@ class RealtimePretrainWorker(QObject):
                         source=str(fast_result.get("source_profile", "")),
                     )
                 )
+            if not dataset_save_valid:
+                summary_text = f"{summary_text} | dataset_save_valid=0"
             self.profile_ready.emit(
                 {
                     "profile_path": str(self.config.output_profile_path),
@@ -840,6 +965,9 @@ class RealtimePretrainWorker(QObject):
                     "template_enabled": bool(fast_result.get("template_enabled", False)),
                     "gate_calibration_enabled": bool(fast_result.get("gate_calibration_enabled", False)),
                     "source_profile": str(fast_result.get("source_profile", "")),
+                    "dataset_manifest": str(dataset_payload.get("dataset_manifest", "")),
+                    "dataset_save_valid": bool(dataset_save_valid),
+                    "dataset_save_error": str(dataset_save_error),
                 }
             )
             self.phase_changed.emit(
@@ -1036,6 +1164,8 @@ class RealtimeWorker(QObject):
                     "detail": "注视目标方块会输出结果；看中心点时不输出。",
                     "flicker": True,
                     "cue_freq": None,
+                    "active_sec": None,
+                    "stimulus_profile_id": str(config.stimulus_profile_id),
                 }
             )
             stimulus_ready = self._wait_for_stimulus_phase_presented()
@@ -1158,6 +1288,11 @@ class RealtimeOnlineWindow(QMainWindow):
         self.board_id_default = int(board_id)
         self.freqs = DEMO_EXPECTED_FREQS if self.demo_mode else tuple(float(freq) for freq in freqs)
         self._stim_refresh_rate_hz = _suggest_refresh_rate_hz()
+        self._stimulus_profile_id = DEFAULT_REALTIME_STIMULUS_PROFILE_ID
+        self._stimulus_mode, self._stimulus_mode_reason = resolve_realtime_stimulus_mode(
+            stimulus_profile_id=self._stimulus_profile_id,
+            refresh_rate_hz=self._stim_refresh_rate_hz,
+        )
 
         self.worker_thread: Optional[QThread] = None
         self.worker: Optional[RealtimeWorker] = None
@@ -1288,12 +1423,16 @@ class RealtimeOnlineWindow(QMainWindow):
         right = QWidget(root)
         right.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         right_layout = QVBoxLayout(right)
+        stimulus_profile = get_stimulus_profile(self._stimulus_profile_id)
         self.stim = FourArrowStimWidget(
             freqs=self.freqs,
             refresh_rate_hz=self._stim_refresh_rate_hz,
-            mean=DEFAULT_STIM_MEAN,
-            amp=DEFAULT_STIM_AMP,
-            phi=DEFAULT_STIM_PHI,
+            mean=float(stimulus_profile.mean),
+            amp=float(stimulus_profile.amp),
+            phi=float(stimulus_profile.phi),
+            stimulus_mode=self._stimulus_mode,
+            stimulus_profile_id=str(stimulus_profile.profile_id),
+            ramp_sec=float(stimulus_profile.ramp_sec),
         )
         self.stim.selected_border_color = REALTIME_SELECTED_BORDER_COLOR
         self.stim.setMinimumSize(REALTIME_STIM_MIN_WIDTH, REALTIME_STIM_MIN_HEIGHT)
@@ -1441,6 +1580,11 @@ class RealtimeOnlineWindow(QMainWindow):
             self.freqs_edit.setText(",".join(f"{freq:g}" for freq in DEMO_EXPECTED_FREQS))
             self.model_combo.setCurrentText(DEFAULT_MODEL_NAME)
         profile_path = self._current_profile_path()
+        stim_refresh_rate_hz = float(self._stim_refresh_rate_hz)
+        stimulus_mode, _stim_reason = resolve_realtime_stimulus_mode(
+            stimulus_profile_id=self._stimulus_profile_id,
+            refresh_rate_hz=stim_refresh_rate_hz,
+        )
         return RealtimeConfig(
             serial_port=serial_port,
             board_id=board_id,
@@ -1453,6 +1597,9 @@ class RealtimeOnlineWindow(QMainWindow):
             gpu_warmup=bool(int(self.gpu_warmup_edit.text().strip() or "1")),
             gpu_cache_policy=parse_gpu_cache_policy(self.gpu_cache_combo.currentText().strip()),
             shadow_mode=bool(self.shadow_mode_check.isChecked()),
+            stimulus_profile_id=str(self._stimulus_profile_id),
+            stimulus_mode=stimulus_mode,
+            stim_refresh_rate_hz=stim_refresh_rate_hz,
         )
 
     def _read_pretrain_config(self, *, mode: str = "fast") -> RealtimePretrainConfig:
@@ -1481,6 +1628,8 @@ class RealtimeOnlineWindow(QMainWindow):
             win_sec=DEFAULT_FULL_PRETRAIN_WIN_SEC if is_full else DEFAULT_PRETRAIN_WIN_SEC,
             step_sec=DEFAULT_FULL_PRETRAIN_STEP_SEC if is_full else DEFAULT_PRETRAIN_STEP_SEC,
             mode="full" if is_full else "fast",
+            stimulus_profile_id=realtime_cfg.stimulus_profile_id,
+            stim_refresh_rate_hz=float(realtime_cfg.stim_refresh_rate_hz),
         )
 
     def _connect_device(self) -> None:
@@ -1542,6 +1691,19 @@ class RealtimeOnlineWindow(QMainWindow):
         worker = RealtimePretrainWorker(cfg)
         thread = QThread(self)
         worker.moveToThread(thread)
+        stimulus_profile = get_stimulus_profile(cfg.stimulus_profile_id)
+        stimulus_mode, _stim_reason = resolve_realtime_stimulus_mode(
+            stimulus_profile_id=cfg.stimulus_profile_id,
+            refresh_rate_hz=float(self._stim_refresh_rate_hz),
+        )
+        self.stim.freqs = tuple(float(freq) for freq in cfg.freqs)
+        self.stim.refresh_rate_hz = float(self._stim_refresh_rate_hz)
+        self.stim.stimulus_mode = str(stimulus_mode)
+        self.stim.stimulus_profile_id = str(stimulus_profile.profile_id)
+        self.stim.mean = float(stimulus_profile.mean)
+        self.stim.amp = float(stimulus_profile.amp)
+        self.stim.phi = float(stimulus_profile.phi)
+        self.stim.ramp_sec = float(stimulus_profile.ramp_sec)
         worker.log.connect(self._log)
         worker.profile_ready.connect(self._on_pretrain_profile_ready)
         worker.error.connect(self._on_pretrain_error)
@@ -1615,6 +1777,15 @@ class RealtimeOnlineWindow(QMainWindow):
         worker = RealtimeWorker(cfg)
         thread = QThread(self)
         worker.moveToThread(thread)
+        stimulus_profile = get_stimulus_profile(cfg.stimulus_profile_id)
+        self.stim.freqs = tuple(float(freq) for freq in cfg.freqs)
+        self.stim.refresh_rate_hz = float(cfg.stim_refresh_rate_hz)
+        self.stim.stimulus_mode = str(cfg.stimulus_mode)
+        self.stim.stimulus_profile_id = str(stimulus_profile.profile_id)
+        self.stim.mean = float(stimulus_profile.mean)
+        self.stim.amp = float(stimulus_profile.amp)
+        self.stim.phi = float(stimulus_profile.phi)
+        self.stim.ramp_sec = float(stimulus_profile.ramp_sec)
         worker.log.connect(self._log)
         worker.result.connect(self._on_result)
         worker.profile_info.connect(self._on_profile_info)
@@ -1661,6 +1832,8 @@ class RealtimeOnlineWindow(QMainWindow):
         fast_status = str(payload.get("fast_pretrain_status", "")).strip() or "n/a"
         template_enabled = int(bool(payload.get("template_enabled", False)))
         gate_enabled = int(bool(payload.get("gate_calibration_enabled", False)))
+        dataset_save_valid = bool(payload.get("dataset_save_valid", True))
+        dataset_manifest = str(payload.get("dataset_manifest", "")).strip()
         self.profile_meta_label.setText(
             "Profile：{path}\n模型：{model} | 预训练通道：{channels}".format(
                 path=payload.get("profile_path", ""),
@@ -1673,9 +1846,15 @@ class RealtimeOnlineWindow(QMainWindow):
             self.profile_meta_label.text()
             + f"\nfast_pretrain={fast_status} | template={template_enabled} | gate={gate_enabled}"
         )
+        self.profile_meta_label.setText(
+            self.profile_meta_label.text()
+            + f"\ndataset_save_valid={int(dataset_save_valid)} | dataset={dataset_manifest or 'n/a'}"
+        )
         history_path = str(payload.get("history_profile_path", "")).strip()
         if history_path:
             self._log(f"预训练历史 profile：{history_path}")
+        if not dataset_save_valid:
+            self._log(f"warning: pretrain dataset was not saved: {payload.get('dataset_save_error', '')}")
         if summary_text:
             self._log(summary_text)
         self._pretrain_profile_ready_for_auto_start = True

@@ -11,10 +11,9 @@ from typing import Sequence
 
 
 CODE_ROOT = Path(__file__).resolve().parents[2]
-BRAIN_ROOT = CODE_ROOT.parent
-DEFAULT_DATASET_ROOT = BRAIN_ROOT / "dataset" / "camara" / "yolo_seg"
-DEFAULT_PROJECT_ROOT = BRAIN_ROOT / "dataset" / "camara" / "runs"
-DEFAULT_DEPLOY_WEIGHTS = CODE_ROOT / "hybrid_controller" / "models" / "vision" / "best.pt"
+DEFAULT_DATASET_ROOT = CODE_ROOT / "datasets" / "vision" / "yolo_seg"
+DEFAULT_PROJECT_ROOT = CODE_ROOT / "artifacts" / "vision" / "runs"
+DEFAULT_DEPLOY_WEIGHTS = CODE_ROOT / "datasets" / "vision" / "models" / "best.pt"
 DEFAULT_BASE_MODEL = str(DEFAULT_DEPLOY_WEIGHTS) if DEFAULT_DEPLOY_WEIGHTS.exists() else "yolov8n-seg.pt"
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 

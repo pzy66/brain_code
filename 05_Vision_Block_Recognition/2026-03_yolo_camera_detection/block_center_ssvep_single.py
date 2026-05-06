@@ -124,10 +124,8 @@ def parse_source(raw: str) -> Union[int, str]:
 def resolve_default_weights() -> Path:
     script_path = Path(__file__).resolve()
     code_root = script_path.parents[2]
-    brain_root = code_root.parent
     candidates = [
-        code_root / "hybrid_controller" / "models" / "vision" / "best.pt",
-        brain_root / "dataset" / "camara" / "best.pt",
+        code_root / "datasets" / "vision" / "models" / "best.pt",
     ]
     for candidate in candidates:
         if candidate.exists():

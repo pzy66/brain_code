@@ -21,3 +21,5 @@
 
 - 视觉目录只放识别和图像处理相关代码
 - 通信发送和机械臂执行代码已经拆分到其他分类目录
+- 默认视觉权重路径是 `datasets/vision/models/best.pt`，也可以用 `BRAIN_VISION_WEIGHTS` 指向其它本地权重
+- 稳定识别输出应对齐 `vision_detection_schema.py` 中的 `VisionDetectionFrame` / `VisionDetection` 字段

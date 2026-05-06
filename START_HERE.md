@@ -1,5 +1,7 @@
 # Start Here
 
+Main-program default: use `hybrid_controller/run_real.py` for real robot work. It is now keyboard/operator controlled (`operator_keyboard`) while robot, ROS, camera vision, MOVE/PICK/PLACE, tuning, logs, and safety gates remain active. Use `01_MI` and `02_SSVEP` as standalone modules for now.
+
 `brain_code` 是正式代码仓库。请在这个目录里开发、测试、提交和推送。
 
 ## 第一次运行
