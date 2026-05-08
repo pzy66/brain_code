@@ -53,7 +53,6 @@ $excludedRoots = @(
     (Join-Path $brainCodeRoot "02_SSVEP\artifacts\datasets"),
     (Join-Path $brainCodeRoot "02_SSVEP\artifacts\deployed_profiles"),
     (Join-Path $brainCodeRoot "02_SSVEP\artifacts\runs"),
-    (Join-Path $brainCodeRoot "hybrid_controller\dataset"),
     (Join-Path $brainCodeRoot "hybrid_controller\models")
 ) | Where-Object { Test-Path -LiteralPath $_ } | ForEach-Object { (Resolve-Path -LiteralPath $_).Path }
 

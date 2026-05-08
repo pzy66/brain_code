@@ -1208,9 +1208,13 @@ class HybridControllerApplication:
         command = str(effect.payload["command"])
         self._send_robot_text_command(command)
 
-    def _send_robot_text_command(self, command: str) -> None:
+    def _send_robot_text_command(self, command: str, *, apply_pick_command_bias: bool = True) -> None:
         original_command = str(command)
-        outgoing_command = self._rewrite_outgoing_robot_command(original_command)
+        outgoing_command = (
+            self._rewrite_outgoing_robot_command(original_command)
+            if bool(apply_pick_command_bias)
+            else original_command
+        )
         opcode = self._extract_command_opcode(outgoing_command)
         if opcode in {"PICK", "PICK_WORLD", "PICK_CYL"}:
             self._begin_pick_trace(command=outgoing_command, original_command=original_command)
@@ -1638,7 +1642,39 @@ class HybridControllerApplication:
             return "RESET"
         return None
 
-    def _register_pending_command(self, *, opcode: str, command: str) -> None:
+    @staticmethod
+    def _snapshot_int(snapshot: dict[str, object], key: str) -> int | None:
+        if key not in snapshot:
+            return None
+        value = snapshot.get(key)
+        if value is None or value == "":
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _latest_ack_baseline(self) -> dict[str, object]:
+        snapshot = self._fetch_remote_robot_snapshot()
+        if not isinstance(snapshot, dict):
+            return {}
+        baseline: dict[str, object] = {}
+        last_ack = str(snapshot.get("last_ack", "") or "").strip().upper()
+        if last_ack:
+            baseline["ack_baseline_last_ack"] = last_ack
+        for key in ("last_ack_seq", "state_seq", "revision"):
+            value = self._snapshot_int(snapshot, key)
+            if value is not None:
+                baseline[f"ack_baseline_{key}"] = int(value)
+        return baseline
+
+    def _register_pending_command(
+        self,
+        *,
+        opcode: str,
+        command: str,
+        ack_baseline: dict[str, object] | None = None,
+    ) -> None:
         expected_ack = self._pending_expected_ack_for_opcode(opcode)
         if expected_ack is None:
             return
@@ -1654,6 +1690,8 @@ class HybridControllerApplication:
             "sent_ts": now,
             "deadline_ts": now + timeout_sec,
         }
+        if isinstance(ack_baseline, dict):
+            self._pending_command.update(ack_baseline)
         self._rt_update(
             {
                 "pending_command": str(command),
@@ -1688,6 +1726,39 @@ class HybridControllerApplication:
         current_ack = str(event.value or "").strip().upper()
         if expected_ack and current_ack == expected_ack:
             self._clear_pending_command()
+
+    def _state_ack_is_new_for_pending(self, pending: dict[str, object], snapshot: dict[str, object]) -> bool:
+        current_ack = str(snapshot.get("last_ack", "") or "").strip().upper()
+        baseline_ack = str(pending.get("ack_baseline_last_ack", "") or "").strip().upper()
+        current_ack_seq = self._snapshot_int(snapshot, "last_ack_seq")
+        baseline_ack_seq = self._snapshot_int(pending, "ack_baseline_last_ack_seq")
+        if current_ack_seq is not None and baseline_ack_seq is not None:
+            return current_ack_seq > baseline_ack_seq
+        current_state_seq = self._snapshot_int(snapshot, "state_seq")
+        baseline_state_seq = self._snapshot_int(pending, "ack_baseline_state_seq")
+        if current_state_seq is not None and baseline_state_seq is not None:
+            return current_state_seq > baseline_state_seq
+        current_revision = self._snapshot_int(snapshot, "revision")
+        baseline_revision = self._snapshot_int(pending, "ack_baseline_revision")
+        if current_revision is not None and baseline_revision is not None:
+            return current_revision > baseline_revision
+        if baseline_ack and current_ack == baseline_ack:
+            return False
+        return True
+
+    def _dispatch_robot_ack_from_state_if_pending(self, snapshot: dict[str, object]) -> None:
+        pending = self._pending_command
+        if not isinstance(pending, dict):
+            return
+        if bool(snapshot.get("busy", False)):
+            return
+        expected_ack = str(pending.get("expected_ack", "")).strip().upper()
+        current_ack = str(snapshot.get("last_ack", "") or "").strip().upper()
+        if not expected_ack or current_ack != expected_ack:
+            return
+        if not self._state_ack_is_new_for_pending(pending, snapshot):
+            return
+        self.dispatch_event(Event(source="robot", type="robot_ack", value=current_ack))
 
     def _check_pending_command_timeout(self) -> None:
         pending = self._pending_command
@@ -1726,10 +1797,14 @@ class HybridControllerApplication:
         if not parts:
             return False
         op = parts[0].upper()
+        ack_baseline = self._latest_ack_baseline()
 
         def callback(result: RosServiceResult, *, issued_command: str = command, opcode: str = op) -> None:
             if result.ok:
-                self._register_pending_command(opcode=opcode, command=issued_command)
+                self._register_pending_command(opcode=opcode, command=issued_command, ack_baseline=ack_baseline)
+                latest_snapshot = self._fetch_remote_robot_snapshot()
+                if isinstance(latest_snapshot, dict):
+                    self._dispatch_robot_ack_from_state_if_pending(latest_snapshot)
                 response_message = str(result.message or "").strip()
                 if response_message:
                     self._queue_runtime_status("robot", "ROS accepted: {0} -> {1}".format(opcode, response_message))
@@ -1850,14 +1925,15 @@ class HybridControllerApplication:
 
     def _update_runtime_health(self) -> None:
         if self._uses_ros_transport():
-            connected = self.ros_client.is_connected() if self.ros_client is not None else False
-            self._rt_set("robot_connected", connected)
+            rosbridge_connected = self.ros_client.is_connected() if self.ros_client is not None else False
             state_age_ms = float(self._rt_get("state_age_ms", self._compute_remote_snapshot_age_ms()))
             stale_threshold_ms = float(getattr(self.config, "robot_state_stale_threshold_ms", 700.0))
+            control_state_fresh = bool(rosbridge_connected and state_age_ms <= stale_threshold_ms)
+            self._rt_set("robot_connected", control_state_fresh)
             sticky_errors = {"connect_failed", "send_failed", "start_failed"}
             current_health = str(self._rt_get("robot_health", "unknown"))
             if current_health not in sticky_errors:
-                if not connected:
+                if not rosbridge_connected:
                     self._rt_set("robot_health", "disconnected")
                     self._ros_connected_since_ts = 0.0
                 elif state_age_ms > stale_threshold_ms:
@@ -2205,7 +2281,11 @@ class HybridControllerApplication:
             message = str(getattr(decision, "message", "") or "")
             if message:
                 self._handle_runtime_status("vision", message)
-            self._send_robot_text_command(command)
+            # VisionServoController has already produced the final pick command.
+            # In command_bias mode that command is current radius + the configured
+            # eye-in-hand forward offset, so do not run the legacy app-layer pick
+            # bias rewrite again.
+            self._send_robot_text_command(command, apply_pick_command_bias=False)
             return True
         if action == "CANCEL":
             self._vision_servo_pick = None
@@ -3021,6 +3101,7 @@ class HybridControllerApplication:
         last_ack = str(snapshot.get("last_ack", "")).strip()
         if last_ack:
             self._rt_set("last_robot_ack", last_ack)
+            self._dispatch_robot_ack_from_state_if_pending(snapshot)
         if isinstance(snapshot.get("pick_tuning"), dict) and not bool(self._pick_tuning_local_dirty):
             self._pick_tuning_state = self._sanitize_pick_tuning(snapshot.get("pick_tuning"))
             self._rt_set("pick_tuning", dict(self._pick_tuning_state))
@@ -3478,8 +3559,9 @@ class HybridControllerApplication:
             last_ack = str(payload.get("last_ack", "")).strip()
             if last_ack:
                 self._rt_set("last_robot_ack", last_ack)
+                self._dispatch_robot_ack_from_state_if_pending(payload)
         connected = self.ros_client.is_connected() if self._uses_ros_transport() and self.ros_client is not None else self.robot_client.is_connected()
-        self._rt_set("robot_connected", connected)
+        self._rt_set("robot_connected", bool(connected and payload is not None))
         if envelope.ok and payload is not None:
             self._ros_stale_detection_count = 0
             self._rt_set("robot_health", "ok")

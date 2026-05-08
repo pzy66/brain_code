@@ -57,7 +57,11 @@ python -m brain diagnose
 示例位置：
 
 - MI 数据：`datasets/MI/`
+- MI 外部参考数据迁移存档：`datasets/MI/external/bci_iv_2a/`
 - SSVEP 数据：`datasets/SSVEP/`
+- 旧外层 SSVEP 数据迁移存档：`datasets/SSVEP/legacy_migrated/`
+- 旧外层视觉数据迁移存档：`datasets/vision/legacy_camara/`
+- 旧视觉训练集迁移存档：`datasets/vision/legacy_migrated/`
 - 默认视觉模型：`datasets/vision/models/best.pt`，随仓库提供，可用 `BRAIN_VISION_WEIGHTS` 指向其它本地权重。
 - SSVEP profile：`datasets/profiles/SSVEP/current_fbcca_profile.json`
 - Hybrid Controller 使用的 SSVEP profile：`datasets/profiles/hybrid_controller/ssvep_profiles/current_fbcca_profile.json`

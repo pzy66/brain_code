@@ -12,6 +12,15 @@ Expected layout:
 - `vision/`: camera calibration files, YOLO datasets, and local vision models.
 - `profiles/`: deployed MI, SSVEP, and hybrid-controller runtime profiles.
 
+Migrated legacy material is kept under ignored subfolders such as:
+
+- `MI/external/bci_iv_2a/`
+- `MI/cache/`
+- `MI/legacy_migrated/`
+- `SSVEP/legacy_migrated/`
+- `vision/legacy_camara/`
+- `vision/legacy_migrated/`
+
 The default vision model lives at:
 
 ```text

@@ -61,6 +61,10 @@ runtime/**
 !datasets/profiles/SSVEP/default_profile.json
 !datasets/vision/models/best.pt
 
+!backups/
+!backups/robot/
+!backups/robot/**
+
 02_SSVEP/_archive/
 05_Vision_Block_Recognition/dataset/
 01_MI/mi_classifier_latest/datasets/

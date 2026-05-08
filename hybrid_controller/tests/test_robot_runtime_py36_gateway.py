@@ -19,6 +19,7 @@ class _DummyExecutor:
             start_pick=lambda sender, theta, radius, angle=None: "ACK PICK_STARTED",
         )
         self.sucker_rotation_calls = []
+        self.sucker_freeze_calls = []
 
     def snapshot(self) -> dict[str, object]:
         return {
@@ -44,6 +45,10 @@ class _DummyExecutor:
 
     def request_sucker_off(self) -> str:
         return self.force_sucker_off()
+
+    def set_sucker_freeze(self, enabled: bool) -> str:
+        self.sucker_freeze_calls.append(bool(enabled))
+        return "ACK SUCKER_FREEZE_ON" if enabled else "ACK SUCKER_FREEZE_OFF"
 
     def set_sucker_rotation(self, angle_deg, duration_sec=None) -> str:  # noqa: ANN001
         self.sucker_rotation_calls.append((float(angle_deg), duration_sec))
@@ -87,6 +92,16 @@ def test_gateway_allows_sucker_off_in_error_state() -> None:
 
     assert response == "ACK SUCKER_OFF"
     assert executor._state == "IDLE"
+
+
+def test_gateway_allows_sucker_freeze_in_error_state() -> None:
+    executor = _DummyExecutor(state="ERROR")
+    gateway = RobotGateway(executor)
+
+    response = gateway.handle("SUCKER_FREEZE true", sender=None)
+
+    assert response == "ACK SUCKER_FREEZE_ON"
+    assert executor.sucker_freeze_calls == [True]
 
 
 def test_gateway_routes_set_sucker_rotation() -> None:

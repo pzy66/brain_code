@@ -7,11 +7,10 @@ from brain_workspace.paths import HYBRID_SSVEP_PROFILE_DIR, PROFILE_DATASET_DIR,
 from hybrid_controller.cylindrical import cartesian_to_cylindrical, cylindrical_to_cartesian
 
 
-PACKAGE_ROOT = Path(__file__).resolve().parent
 DATASET_ROOT = PROFILE_DATASET_DIR / "hybrid_controller"
 MODELS_ROOT = VISION_DATASET_DIR / "models"
+PACKAGE_ROOT = Path(__file__).resolve().parent
 LOGS_ROOT = PACKAGE_ROOT / "logs"
-LEGACY_DATASET_ROOT = PACKAGE_ROOT / "dataset"
 # Locked JetMax/Hiwonder camera contract.
 #
 # Robot side owns the USB camera and publishes the official chain:
@@ -38,56 +37,16 @@ def build_hiwonder_camera_stream_url(host: str) -> str:
     )
 
 
-def _prefer_existing_file(canonical_path: Path, legacy_path: Path) -> Path:
-    if canonical_path.exists():
-        return canonical_path
-    if legacy_path.exists():
-        return legacy_path
-    return canonical_path
-
-
-def _directory_has_expected_files(path: Path, *, expected_names: tuple[str, ...]) -> bool:
-    if not path.exists() or not path.is_dir():
-        return False
-    try:
-        if expected_names:
-            return any((path / name).exists() for name in expected_names)
-        return any(child.is_file() for child in path.iterdir())
-    except OSError:
-        return False
-
-
-def _prefer_dataset_dir(
-    canonical_dir: Path,
-    legacy_dir: Path,
-    *,
-    expected_names: tuple[str, ...] = (),
-) -> Path:
-    if _directory_has_expected_files(canonical_dir, expected_names=expected_names):
-        return canonical_dir
-    if _directory_has_expected_files(legacy_dir, expected_names=expected_names):
-        return legacy_dir
-    return canonical_dir
-
-
 def _default_vision_calibration_profile_path() -> Path:
-    canonical = VISION_DATASET_DIR / "calibration" / "current_profile.json"
-    legacy = LEGACY_DATASET_ROOT / "vision_calibration" / "current_profile.json"
-    return _prefer_existing_file(canonical, legacy)
+    return VISION_DATASET_DIR / "calibration" / "current_profile.json"
 
 
 def _default_pick_tuning_profile_path() -> Path:
-    canonical = DATASET_ROOT / "robot_pick_tuning" / "current_pick_tuning.json"
-    legacy = LEGACY_DATASET_ROOT / "robot_pick_tuning" / "current_pick_tuning.json"
-    return _prefer_existing_file(canonical, legacy)
+    return DATASET_ROOT / "robot_pick_tuning" / "current_pick_tuning.json"
 
 
 def _default_ssvep_profile_dir() -> Path:
-    return _prefer_dataset_dir(
-        HYBRID_SSVEP_PROFILE_DIR,
-        LEGACY_DATASET_ROOT / "ssvep_profiles",
-        expected_names=("current_fbcca_profile.json", "default_fbcca_profile.json"),
-    )
+    return HYBRID_SSVEP_PROFILE_DIR
 
 
 DEFAULT_SSVEP_PROFILE_DIR = _default_ssvep_profile_dir()

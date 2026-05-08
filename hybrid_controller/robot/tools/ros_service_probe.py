@@ -103,6 +103,7 @@ def build_parser() -> argparse.ArgumentParser:
             "move_cyl_auto",
             "pick_world",
             "pick_cyl",
+            "sucker_freeze",
             "set_sucker_rotation",
             "place",
             "abort",
@@ -116,6 +117,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--x", type=float, default=0.0)
     parser.add_argument("--y", type=float, default=-120.0)
     parser.add_argument("--sucker-rotation-deg", type=float, default=None)
+    parser.add_argument("--enabled", action="store_true", help="Enable boolean actions such as sucker_freeze.")
+    parser.add_argument("--disabled", action="store_true", help="Disable boolean actions such as sucker_freeze.")
     parser.add_argument("--duration-sec", type=float, default=0.0)
     return parser
 
@@ -180,6 +183,16 @@ def main(argv: list[str] | None = None) -> int:
                     "angle_deg": 0.0 if args.sucker_rotation_deg is None else float(args.sucker_rotation_deg),
                     "duration_sec": float(args.duration_sec),
                 },
+                timeout_sec=args.timeout_sec,
+            )
+        elif action == "sucker_freeze":
+            if bool(args.enabled) and bool(args.disabled):
+                raise RuntimeError("Use only one of --enabled or --disabled.")
+            response = _call_service(
+                ros,
+                "/hybrid_controller/sucker_freeze",
+                "std_srvs/SetBool",
+                {"data": bool(args.enabled) and not bool(args.disabled)},
                 timeout_sec=args.timeout_sec,
             )
         elif action == "place":

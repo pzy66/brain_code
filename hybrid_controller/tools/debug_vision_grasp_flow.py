@@ -626,10 +626,12 @@ def _process_frame_batch(
     calibration_profile: VisionCalibrationProfile | None,
     snapshot_for_stage: Mapping[str, object] | None,
     frame_id_start: int,
+    slots: list[SlotState] | None = None,
     device: str | None,
     half: bool,
-) -> tuple[dict[str, object], object, int]:
-    slots = [SlotState(slot=index + 1, freq_hz=config.ssvep_freqs[index]) for index in range(config.vision_max_targets)]
+) -> tuple[dict[str, object], object, int, list[SlotState]]:
+    if slots is None:
+        slots = [SlotState(slot=index + 1, freq_hz=config.ssvep_freqs[index]) for index in range(config.vision_max_targets)]
     packet: dict[str, object] | None = None
     last_frame = frames[-1][0]
     frame_id = int(frame_id_start)
@@ -743,7 +745,7 @@ def _process_frame_batch(
         last_frame = frame
     if packet is None:
         raise RuntimeError("No packet was generated from captured frames.")
-    return packet, last_frame, frame_id
+    return packet, last_frame, frame_id, slots
 
 
 def _packet_frame_pose_age_ms(packet: Mapping[str, object]) -> float | None:
@@ -825,6 +827,7 @@ def _decision_for_packet(
     config: AppConfig,
     snapshot: Mapping[str, object] | None,
     selected_slot: Mapping[str, object] | None,
+    pending: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     if selected_slot is None:
         return {
@@ -841,7 +844,7 @@ def _decision_for_packet(
         slot_id=slot_id,
         slot_payload=selected_slot,
         packet=packet,
-        pending=None,
+        pending=pending,
         current_cyl_pose=pose,
         at_confirm_z=_is_at_confirm_z(config, pose),
         eye_in_hand_enabled=bool(config.vision_eye_in_hand_pick_flow_enabled),
@@ -1248,6 +1251,9 @@ def main(argv: list[str] | None = None) -> int:
     }
     frame_id = 0
     exit_code = 0
+    debug_slots: list[SlotState] | None = None
+    locked_slot_id: int | None = int(args.slot_id) if args.slot_id is not None else None
+    servo_pending: dict[str, object] | None = None
     persistent_reader: _PersistentCaptureReader | None = None
     if bool(args.persistent_camera):
         persistent_reader = _PersistentCaptureReader(
@@ -1277,13 +1283,14 @@ def main(argv: list[str] | None = None) -> int:
                 )
             process_frames = _select_latest_frames(frames, int(args.process_latest_frames))
             report["stream_url"] = stream_url
-            packet, last_frame, frame_id = _process_frame_batch(
+            packet, last_frame, frame_id, debug_slots = _process_frame_batch(
                 frames=process_frames,
                 model=model,
                 config=config,
                 calibration_profile=calibration_profile,
                 snapshot_for_stage=initial_snapshot,
                 frame_id_start=frame_id,
+                slots=debug_slots,
                 device=device,
                 half=half,
             )
@@ -1309,14 +1316,18 @@ def main(argv: list[str] | None = None) -> int:
             )
             resolved_packet["camera_frames_captured"] = int(len(frames))
             resolved_packet["camera_frames_processed"] = int(len(process_frames))
-            selected_slot = _select_slot(resolved_packet, args.slot_id)
+            selected_slot = _select_slot(resolved_packet, locked_slot_id)
             selected_slot_id = None if selected_slot is None else int(selected_slot.get("slot_id", selected_slot.get("slot", 0)))
+            if locked_slot_id is None and selected_slot_id is not None:
+                locked_slot_id = int(selected_slot_id)
             decision = _decision_for_packet(
                 packet=resolved_packet,
                 config=config,
                 snapshot=resolve_snapshot,
                 selected_slot=selected_slot,
+                pending=servo_pending,
             )
+            servo_pending = decision.get("pending") if isinstance(decision.get("pending"), dict) else None
 
             step_dir = output_dir / f"step_{step_index + 1:02d}"
             raw_path = step_dir / "raw.jpg"
@@ -1406,6 +1417,9 @@ def main(argv: list[str] | None = None) -> int:
                         step_report["post_execution_snapshot"] = settled
                         time.sleep(max(0.0, float(args.settle_sec)))
                         initial_snapshot = settled if settled is not None else resolve_snapshot
+                        if servo_pending is not None:
+                            servo_pending["waiting_for_ack"] = False
+                            servo_pending["min_frame_id"] = int(frame_id) + 1
                     if str(decision.get("action")) == "PICK" or not bool(execution.get("executed", False)):
                         report["steps"].append(step_report)
                         if str(decision.get("action")) == "WAIT_STABLE" and str(execution.get("reason")) == "command_unavailable":

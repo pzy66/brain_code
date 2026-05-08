@@ -36,9 +36,9 @@ from PyQt5.QtWidgets import (
 )
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SOURCE = "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80"
-DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "dataset" / "camara" / "captures"
+DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "datasets" / "vision" / "captures"
 DEFAULT_WINDOW_SIZE = (1440, 900)
 SPLIT_OPTIONS = [
     ("训练集 train", "train"),

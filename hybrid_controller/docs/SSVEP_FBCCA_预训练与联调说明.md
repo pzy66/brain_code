@@ -32,7 +32,7 @@
 
 统一目录：
 
-- [dataset/ssvep_profiles](<repo>\hybrid_controller\dataset\ssvep_profiles)
+- [datasets/profiles/hybrid_controller/ssvep_profiles](<repo>\datasets\profiles\hybrid_controller\ssvep_profiles)
 
 文件约定：
 

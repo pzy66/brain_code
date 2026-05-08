@@ -114,4 +114,4 @@ http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&widt
 完成后点击：
 
 - `应用到机器人`（立即生效）
-- `保存配置`（落盘到 `dataset/robot_pick_tuning/current_pick_tuning.json`）
+- `保存配置`（落盘到 `datasets/profiles/hybrid_controller/robot_pick_tuning/current_pick_tuning.json`）

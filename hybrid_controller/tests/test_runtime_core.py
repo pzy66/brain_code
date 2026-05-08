@@ -16,6 +16,7 @@ def test_parse_command_text_accepts_optional_sucker_rotation_args() -> None:
     assert parse_command_text("PICK_CYL 5 130 -15")[1] == ["5", "130", "-15"]
     assert parse_command_text("SET_SUCKER_ROTATION 30 0.2")[1] == ["30", "0.2"]
     assert parse_command_text('SET_PICK_TUNING {"pick_lift_sec":1.2}')[1] == ['{"pick_lift_sec":1.2}']
+    assert parse_command_text("SUCKER_FREEZE true") == ("SUCKER_FREEZE", ["true"])
 
 
 def test_parse_command_text_rejects_bad_arity() -> None:

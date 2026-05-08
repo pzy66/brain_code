@@ -28,7 +28,7 @@
 
 主程序默认使用：
 
-- [dataset/ssvep_profiles](../dataset/ssvep_profiles)
+- [datasets/profiles/hybrid_controller/ssvep_profiles](../../datasets/profiles/hybrid_controller/ssvep_profiles)
 
 其中：
 - 历史 profile：`ssvep_fbcca_profile_YYYYMMDD_HHMMSS.json`

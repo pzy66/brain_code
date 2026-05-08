@@ -12,7 +12,7 @@
 
 默认保存根目录：
 
-- `<workspace>\dataset\camara\captures`
+- `<repo>\datasets\vision\captures`
 
 ## 这个程序能做什么
 
@@ -64,12 +64,12 @@
 
 默认所有采集数据都会保存到：
 
-`<workspace>\dataset\camara\captures`
+`<repo>\datasets\vision\captures`
 
 每次创建新 session 后，会生成一个独立目录，例如：
 
 ```text
-<workspace>\dataset\camara\captures\
+<repo>\datasets\vision\captures\
   block_collect_20260407_163955\
     session_meta.json
     manifest.jsonl
@@ -177,7 +177,7 @@
 & "%BRAIN_PYTHON_EXE%" `
   "<repo>\06_Data_Collection\2026-04_jetmax_block_dataset_collection\block_dataset_collector.py" `
   --source "0" `
-  --output-root "<workspace>\dataset\camara\captures" `
+  --output-root "<repo>\datasets\vision\captures" `
   --session-prefix "block_collect" `
   --image-ext "jpg" `
   --jpeg-quality 95 `
@@ -220,4 +220,4 @@
 
 示例 session 目录：
 
-- `<workspace>\dataset\camara\captures\block_collect_20260407_163955`
+- `<repo>\datasets\vision\captures\block_collect_20260407_163955`

@@ -8,7 +8,7 @@ import math
 from collections import deque
 
 import rospy
-from std_srvs.srv import Trigger, TriggerResponse
+from std_srvs.srv import SetBool, SetBoolResponse, Trigger, TriggerResponse
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.environ.get("HYBRID_CONTROLLER_REPO_ROOT") or os.path.abspath(
@@ -266,6 +266,7 @@ class HybridControllerRuntimeNode(object):
         rospy.Service("/hybrid_controller/reset", Trigger, self._handle_reset)
         rospy.Service("/hybrid_controller/abort", Trigger, self._handle_abort)
         rospy.Service("/hybrid_controller/sucker_off", Trigger, self._handle_sucker_off)
+        rospy.Service("/hybrid_controller/sucker_freeze", SetBool, self._handle_sucker_freeze)
         rospy.Service("/hybrid_controller/place", Trigger, self._handle_place)
         rospy.Service("/hybrid_controller/move_cyl", MoveCyl, self._handle_move_cyl)
         rospy.Service("/hybrid_controller/move_cyl_auto", MoveCylAuto, self._handle_move_cyl_auto)
@@ -471,6 +472,11 @@ class HybridControllerRuntimeNode(object):
         ok = str(response).strip().upper().startswith("ACK")
         return TriggerResponse(success=ok, message=str(response))
 
+    def _handle_sucker_freeze(self, request):
+        response = self.executor.set_sucker_freeze(bool(request.data))
+        ok = str(response).strip().upper().startswith("ACK")
+        return SetBoolResponse(success=ok, message=str(response))
+
     def _handle_reset(self, _request):
         self._stop_teleop()
         self._clear_action_queue()
@@ -596,7 +602,7 @@ class HybridControllerRuntimeNode(object):
 
 
 def main():
-    rospy.init_node("hybrid_controller_runtime_node", anonymous=True, disable_signals=True)
+    rospy.init_node("hybrid_controller_runtime_node", anonymous=False, disable_signals=True)
     HybridControllerRuntimeNode()
     rospy.spin()
     return 0

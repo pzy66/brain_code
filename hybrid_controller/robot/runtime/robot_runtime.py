@@ -136,6 +136,15 @@ class PickTuning:
         }
 
 
+def parse_bool_token(value: object) -> bool:
+    token = str(value).strip().lower()
+    if token in {"1", "true", "on", "yes", "y"}:
+        return True
+    if token in {"0", "false", "off", "no", "n"}:
+        return False
+    raise ValueError(f"Expected boolean token, got {value!r}.")
+
+
 @dataclass
 class RobotActionRecord:
     action_id: int
@@ -508,6 +517,9 @@ class RobotExecutor:
         self._revision = 0
         self._last_error_code: str | None = None
         self._last_error_message: str | None = None
+        self._last_ack = ""
+        self._last_ack_seq = 0
+        self._sucker_frozen = False
         self._control_kernel = CylindricalKernel.name
         self._home_pose = tuple(float(value) for value in self.actuator.get_position())
         self._home_cyl = cartesian_to_cylindrical(*self._home_pose)
@@ -598,6 +610,9 @@ class RobotExecutor:
                 "last_error_code": self._last_error_code,
                 "last_error": self._last_error_message,
                 "last_error_message": self._last_error_message,
+                "last_ack": self._last_ack,
+                "last_ack_seq": int(self._last_ack_seq),
+                "sucker_frozen": bool(self._sucker_frozen),
                 "calibration_ready": self.calibration.is_ready(),
                 "pick_slots": [],
                 "place_slots": [],
@@ -979,7 +994,7 @@ class RobotExecutor:
         with self._lock:
             self._set_state(RobotExecutorState.PICK_SUCTION_ON)
         self._raise_if_abort_requested()
-        self.actuator.set_sucker(True)
+        suction_enabled = self._set_sucker_for_pick(True)
         self._sleep_with_abort(tuning.pick_pre_suction_sec)
 
         with self._lock:
@@ -996,13 +1011,17 @@ class RobotExecutor:
         self._sleep_with_abort(tuning.pick_lift_sec)
 
         with self._lock:
-            self._carrying = True
+            self._carrying = bool(suction_enabled)
             self._last_post_pick_settle_z = float(settle_z)
-            self._set_state(RobotExecutorState.CARRY_READY)
+            self._last_release_mode_effective = "" if self._carrying else "sucker_frozen"
+            self._set_state(RobotExecutorState.CARRY_READY if self._carrying else RobotExecutorState.IDLE)
             self._clear_last_error()
             self._finish_action_unlocked(
                 "ok",
-                feedback={"final_xyz": [float(target_x), float(target_y), float(settle_z)]},
+                feedback={
+                    "final_xyz": [float(target_x), float(target_y), float(settle_z)],
+                    "sucker_enabled": bool(suction_enabled),
+                },
             )
 
     def begin_place(self) -> PlacePlan:
@@ -1115,6 +1134,32 @@ class RobotExecutor:
                     "Cannot turn sucker off while carrying a target; use PLACE to release at the table or ABORT for emergency stop.",
                 )
         self.force_sucker_off()
+
+    def set_sucker_freeze(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        if enabled:
+            self.actuator.set_sucker(False)
+        with self._lock:
+            self._sucker_frozen = enabled
+            if enabled:
+                self._carrying = False
+                self._last_release_mode_effective = "sucker_frozen"
+                if self._state == RobotExecutorState.CARRY_READY:
+                    self._set_state(RobotExecutorState.IDLE)
+            self._revision += 1
+
+    def _set_sucker_for_pick(self, enabled: bool) -> bool:
+        enabled = bool(enabled)
+        with self._lock:
+            frozen = bool(self._sucker_frozen)
+        if enabled and frozen:
+            self.actuator.set_sucker(False)
+            with self._lock:
+                self._last_release_mode_effective = "sucker_frozen"
+                self._revision += 1
+            return False
+        self.actuator.set_sucker(enabled)
+        return enabled
 
     def reset_error(self) -> None:
         with self._lock:
@@ -1629,6 +1674,12 @@ class RobotExecutor:
                 self._control_kernel = str(kernel_name)
                 self._revision += 1
 
+    def record_ack(self, ack: str) -> None:
+        with self._lock:
+            self._last_ack = str(ack)
+            self._last_ack_seq += 1
+            self._revision += 1
+
     @staticmethod
     def _clamp(value: float, lower: float, upper: float) -> float:
         return max(lower, min(upper, value))
@@ -1669,6 +1720,11 @@ class RobotTcpGateway:
         self._send_line = send_line
         self._log = log
 
+    def _send_ack(self, stream, ack: str) -> None:
+        ack_text = str(ack).strip().upper()
+        self.executor.record_ack(ack_text)
+        self._send_line(stream, f"ACK {ack_text}")
+
     def dispatch_command(self, line: str, stream) -> None:
         self._log(f"RX <= {line}")
         try:
@@ -1683,18 +1739,25 @@ class RobotTcpGateway:
 
             if command == "ABORT":
                 self.executor.abort()
-                self._send_line(stream, "ACK ABORT")
+                self._send_ack(stream, "ABORT")
                 return
 
             if command == "SUCKER_OFF":
                 self.executor.request_sucker_off()
-                self._send_line(stream, "ACK SUCKER_OFF")
+                self._send_ack(stream, "SUCKER_OFF")
+                return
+
+            if command == "SUCKER_FREEZE":
+                enabled = parse_bool_token(args[0])
+                self.executor.set_sucker_freeze(enabled)
+                self._send_ack(stream, "SUCKER_FREEZE_ON" if enabled else "SUCKER_FREEZE_OFF")
                 return
 
             if command == "SET_SUCKER_ROTATION":
                 duration = None if len(args) < 2 else float(args[1])
                 result = self.executor.set_sucker_rotation(float(args[0]), duration_sec=duration)
                 if bool(result.get("supported", False)):
+                    self.executor.record_ack("SET_SUCKER_ROTATION")
                     self._send_line(
                         stream,
                         "ACK SET_SUCKER_ROTATION {0:.2f} {1:.2f}".format(
@@ -1703,6 +1766,7 @@ class RobotTcpGateway:
                         ),
                     )
                 else:
+                    self.executor.record_ack("SET_SUCKER_ROTATION_UNSUPPORTED")
                     self._send_line(stream, "ACK SET_SUCKER_ROTATION_UNSUPPORTED")
                 return
 
@@ -1711,27 +1775,28 @@ class RobotTcpGateway:
                 if not isinstance(payload, dict):
                     raise ValueError("SET_PICK_TUNING payload must be a JSON object")
                 tuning = self.executor.set_pick_tuning(payload)
+                self.executor.record_ack("PICK_TUNING")
                 self._send_line(stream, "ACK PICK_TUNING {0}".format(json.dumps(tuning, separators=(",", ":"))))
                 return
 
             if command == "RESET":
                 self.executor.reset_error()
-                self._send_line(stream, "ACK RESET")
+                self._send_ack(stream, "RESET")
                 return
 
             if command == "MOVE":
                 self.executor.legacy_kernel.move_xy(float(args[0]), float(args[1]))
-                self._send_line(stream, "ACK MOVE")
+                self._send_ack(stream, "MOVE")
                 return
 
             if command == "MOVE_CYL":
                 self.executor.cylindrical_kernel.move_cyl(float(args[0]), float(args[1]), float(args[2]))
-                self._send_line(stream, "ACK MOVE")
+                self._send_ack(stream, "MOVE")
                 return
 
             if command == "MOVE_CYL_AUTO":
                 self.executor.cylindrical_kernel.move_cyl_auto(float(args[0]), float(args[1]))
-                self._send_line(stream, "ACK MOVE")
+                self._send_ack(stream, "MOVE")
                 return
 
             if command == "PICK":
@@ -1810,7 +1875,7 @@ class RobotTcpGateway:
     def _pick_worker(self, plan: PickPlan | WorldPickPlan | CylindricalPickPlan, stream) -> None:
         try:
             self.executor.complete_pick(plan)
-            self._send_line(stream, "ACK PICK_DONE")
+            self._send_ack(stream, "PICK_DONE")
             self._log("PICK completed.")
         except Exception as error:
             failure = self.executor.handle_pick_failure(error)
@@ -1823,7 +1888,7 @@ class RobotTcpGateway:
     def _place_worker(self, plan: PlacePlan, stream) -> None:
         try:
             self.executor.complete_place(plan)
-            self._send_line(stream, "ACK PLACE_DONE")
+            self._send_ack(stream, "PLACE_DONE")
             self._log("PLACE completed.")
         except Exception as error:
             failure = self.executor.handle_place_failure(error)

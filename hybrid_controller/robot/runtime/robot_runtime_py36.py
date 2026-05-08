@@ -71,6 +71,15 @@ def format_error_line(code, message):
     return "ERR {0}: {1}".format(str(code), str(message))
 
 
+def parse_bool_token(value):
+    token = str(value).strip().lower()
+    if token in ("1", "true", "on", "yes", "y"):
+        return True
+    if token in ("0", "false", "off", "no", "n"):
+        return False
+    raise ValueError("Expected boolean token, got {0!r}.".format(value))
+
+
 def cylindrical_to_cartesian(theta_deg, radius_mm, z_mm):
     theta_rad = math.radians(float(theta_deg))
     radius = float(radius_mm)
@@ -346,6 +355,8 @@ class JetMaxExecutor(object):
         self._last_error_code = ""
         self._last_error = ""
         self._last_ack = ""
+        self._last_ack_seq = 0
+        self._sucker_frozen = False
         self._commanded_pose = (
             float(self.home_pose[0]),
             float(self.home_pose[1]),
@@ -356,6 +367,7 @@ class JetMaxExecutor(object):
         )
         self._reference_forearm_pitch_deg = None
         self._reference_pulses = self._build_reference_pulses()
+        self._auto_z_fast_profile_enabled = bool(limits.get("auto_z_fast_profile_enabled", True))
         self._auto_z_profile = self._build_auto_z_profile()
         self._last_post_pick_settle_z = float(self.z_carry_floor_mm)
         self._last_release_mode_effective = "off"
@@ -416,6 +428,8 @@ class JetMaxExecutor(object):
                 "last_error_code": self._last_error_code,
                 "last_error": self._last_error,
                 "last_ack": self._last_ack,
+                "last_ack_seq": int(self._last_ack_seq),
+                "sucker_frozen": bool(self._sucker_frozen),
                 "calibration_ready": self._has_calibration(),
                 "pick_tuning": self.get_pick_tuning(),
                 "post_pick_settle_z": float(self._last_post_pick_settle_z),
@@ -489,6 +503,7 @@ class JetMaxExecutor(object):
             self.sucker_rotation_duration_sec if duration_sec is None else float(duration_sec),
             True,
         )
+        self._record_ack("SET_SUCKER_ROTATION" if result.get("supported") else "SET_SUCKER_ROTATION_UNSUPPORTED")
         if result.get("supported"):
             return "ACK SET_SUCKER_ROTATION {0:.2f} {1:.2f}".format(
                 float(result.get("logical_angle_deg", 0.0)),
@@ -646,8 +661,7 @@ class JetMaxExecutor(object):
             action_thread.join(timeout=6.0)
         else:
             self._recover_after_abort()
-        with self._lock:
-            self._last_ack = "ABORT"
+        self._record_ack("ABORT")
         return "ACK ABORT"
 
     def reset(self):
@@ -669,6 +683,7 @@ class JetMaxExecutor(object):
             self._last_error_code = ""
             self._last_error = ""
             self._last_ack = "RESET"
+            self._last_ack_seq += 1
         return "ACK RESET"
 
     def force_sucker_off(self):
@@ -683,7 +698,39 @@ class JetMaxExecutor(object):
             if not self._busy and self._state == STATE_CARRY_READY:
                 self._state = STATE_IDLE
             self._last_ack = "SUCKER_OFF"
+            self._last_ack_seq += 1
         return "ACK SUCKER_OFF"
+
+    def set_sucker_freeze(self, enabled):
+        enabled = bool(enabled)
+        if enabled:
+            try:
+                self.actuator.set_sucker(False)
+            except Exception as error:
+                self._set_error(ERR_HARDWARE_FAILURE, "SUCKER_FREEZE failed: {0}".format(error))
+                return format_error_line(ERR_HARDWARE_FAILURE, "SUCKER_FREEZE failed: {0}".format(error))
+        with self._lock:
+            self._sucker_frozen = enabled
+            if enabled:
+                self._carrying = False
+                self._last_release_mode_effective = "sucker_frozen"
+                if not self._busy and self._state == STATE_CARRY_READY:
+                    self._state = STATE_IDLE
+            self._last_ack = "SUCKER_FREEZE_ON" if enabled else "SUCKER_FREEZE_OFF"
+            self._last_ack_seq += 1
+        return "ACK {0}".format(self._last_ack)
+
+    def _set_sucker_for_pick(self, enabled):
+        enabled = bool(enabled)
+        with self._lock:
+            frozen = bool(self._sucker_frozen)
+        if enabled and frozen:
+            self.actuator.set_sucker(False)
+            with self._lock:
+                self._last_release_mode_effective = "sucker_frozen"
+            return False
+        self.actuator.set_sucker(enabled)
+        return enabled
 
     def request_sucker_off(self):
         with self._lock:
@@ -780,6 +827,7 @@ class JetMaxExecutor(object):
                 self._busy = False
                 self._busy_action = ""
                 self._last_ack = "MOVE"
+                self._last_ack_seq += 1
             sender.send_line("ACK MOVE")
         except AbortRequested:
             self._recover_after_abort()
@@ -806,6 +854,7 @@ class JetMaxExecutor(object):
                 self._busy = False
                 self._busy_action = ""
                 self._last_ack = "MOVE"
+                self._last_ack_seq += 1
             sender.send_line("ACK MOVE")
         except AbortRequested:
             self._recover_after_abort()
@@ -832,6 +881,7 @@ class JetMaxExecutor(object):
                 self._busy = False
                 self._busy_action = ""
                 self._last_ack = "MOVE"
+                self._last_ack_seq += 1
             sender.send_line("ACK MOVE")
         except AbortRequested:
             self._recover_after_abort()
@@ -851,7 +901,7 @@ class JetMaxExecutor(object):
                 self._apply_sucker_rotation(sucker_rotation_deg, self.sucker_rotation_duration_sec, True)
                 self._sleep_with_abort(float(self.sucker_rotation_settle_sec))
             self._set_state(STATE_PICK_SUCTION_ON, True, "pick")
-            self.actuator.set_sucker(True)
+            suction_enabled = self._set_sucker_for_pick(True)
             self._sleep_with_abort(float(self.pick_pre_suction_sec))
             self._set_state(STATE_PICK_DESCEND, True, "pick")
             self._move_to(target_x, target_y, self.pick_descend_z_mm, 0.6, True)
@@ -859,13 +909,15 @@ class JetMaxExecutor(object):
             self._set_state(STATE_PICK_LIFT, True, "pick")
             self._move_to(target_x, target_y, settle_z, self.pick_lift_sec, True)
             with self._lock:
-                self._carrying = True
+                self._carrying = bool(suction_enabled)
                 self._last_post_pick_settle_z = float(settle_z)
-                self._state = STATE_CARRY_READY
+                self._state = STATE_CARRY_READY if self._carrying else STATE_IDLE
                 self._busy = False
                 self._busy_action = ""
-                self._last_ack = "PICK_DONE"
-            sender.send_line("ACK PICK_DONE")
+                self._last_release_mode_effective = "" if self._carrying else "sucker_frozen"
+                self._last_ack = "PICK_DONE" if self._carrying else "PICK_DRY_RUN_DONE"
+                self._last_ack_seq += 1
+            sender.send_line("ACK PICK_DONE" if suction_enabled else "ACK PICK_DRY_RUN_DONE")
         except AbortRequested:
             self._recover_after_abort()
         except Exception as error:
@@ -891,6 +943,7 @@ class JetMaxExecutor(object):
                 self._busy = False
                 self._busy_action = ""
                 self._last_ack = "PLACE_DONE"
+                self._last_ack_seq += 1
                 self._last_release_mode_effective = str(release_mode)
             sender.send_line("ACK PLACE_DONE")
         except AbortRequested:
@@ -973,6 +1026,11 @@ class JetMaxExecutor(object):
             return None
 
     def _build_auto_z_profile(self):
+        if bool(getattr(self, "_auto_z_fast_profile_enabled", True)):
+            return tuple(
+                (float(radius), self._clamp(self._auto_z_target(float(radius)), self.z_limits[0], self.z_limits[1]))
+                for radius in sample_range(self.radius_limits[0], self.radius_limits[1], self.auto_z_radius_step)
+            )
         candidate_map = {}
         radii = sample_range(self.radius_limits[0], self.radius_limits[1], self.auto_z_radius_step)
         z_candidates = sample_range(self.z_limits[0], self.z_limits[1], self.auto_z_height_step)
@@ -1150,6 +1208,11 @@ class JetMaxExecutor(object):
         with self._lock:
             self._control_kernel = str(kernel_name or self._control_kernel)
 
+    def _record_ack(self, ack):
+        with self._lock:
+            self._last_ack = str(ack)
+            self._last_ack_seq += 1
+
     def _set_error(self, code, message):
         with self._lock:
             self._state = STATE_ERROR
@@ -1217,7 +1280,7 @@ class RobotGateway(object):
             command, args = parse_command_text(text)
             snapshot = self.executor.snapshot()
             state = str(snapshot.get("state", ""))
-            if state == STATE_ERROR and command not in {"PING", "STATUS", "ABORT", "RESET", "SUCKER_OFF"}:
+            if state == STATE_ERROR and command not in {"PING", "STATUS", "ABORT", "RESET", "SUCKER_OFF", "SUCKER_FREEZE"}:
                 return format_error_line(
                     ERR_INVALID_STATE,
                     "Robot is in ERROR state; only ABORT/RESET/SUCKER_OFF/STATUS/PING are allowed.",
@@ -1232,6 +1295,8 @@ class RobotGateway(object):
                 return self.executor.abort()
             if command == "SUCKER_OFF":
                 return self.executor.request_sucker_off()
+            if command == "SUCKER_FREEZE":
+                return self.executor.set_sucker_freeze(parse_bool_token(args[0]))
             if command == "SET_SUCKER_ROTATION":
                 duration = None if len(args) < 2 else float(args[1])
                 return self.executor.set_sucker_rotation(float(args[0]), duration)
@@ -1240,6 +1305,9 @@ class RobotGateway(object):
                 if not isinstance(payload, dict):
                     return format_error_line(ERR_INVALID_STATE, "SET_PICK_TUNING payload must be a JSON object")
                 tuning = self.executor.set_pick_tuning(payload)
+                record_ack = getattr(self.executor, "_record_ack", None)
+                if callable(record_ack):
+                    record_ack("PICK_TUNING")
                 return "ACK PICK_TUNING {0}".format(json.dumps(tuning, separators=(",", ":")))
             if command == "MOVE":
                 return self.executor.legacy_kernel.start_move(sender, float(args[0]), float(args[1]))

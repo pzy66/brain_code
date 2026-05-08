@@ -57,9 +57,9 @@ hybrid_controller/
     vision_calibration_profile.py      # 生成视觉标定 profile/热力图
 
   dataset/
-    vision_calibration/current_profile.json
-    robot_pick_tuning/current_pick_tuning.json
-    ssvep_profiles/current_fbcca_profile.json
+    profiles/hybrid_controller/ssvep_profiles/current_fbcca_profile.json
+    profiles/hybrid_controller/robot_pick_tuning/current_pick_tuning.json
+    vision/calibration/current_profile.json
 
   tests/
 ```
@@ -332,7 +332,7 @@ PICKING / PLACING / ERROR 期间移动输入会被门控。
 `run_real_ssvep.py` 使用 SSVEP 作为决策源。SSVEP 相关 profile 默认在：
 
 ```text
-dataset/ssvep_profiles/current_fbcca_profile.json
+datasets/profiles/hybrid_controller/ssvep_profiles/current_fbcca_profile.json
 ```
 
 GUI 中有两个独立开关：
@@ -499,7 +499,7 @@ pick_tool_offset_source = target_pixel
 默认 profile：
 
 ```text
-dataset/vision_calibration/current_profile.json
+datasets/vision/calibration/current_profile.json
 ```
 
 profile 主要字段：
@@ -718,7 +718,7 @@ sucker_rotation_min_deg / max_deg
 ```powershell
 & $env:BRAIN_PYTHON_EXE .\hybrid_controller\tools\calibrate_suction_target_pixel.py `
   --host 192.168.149.1 `
-  --profile .\hybrid_controller\dataset\vision_calibration\current_profile.json
+  --profile .\datasets\vision\calibration\current_profile.json
 ```
 
 如果自动检测不准，可以手动给像素：
@@ -726,7 +726,7 @@ sucker_rotation_min_deg / max_deg
 ```powershell
 & $env:BRAIN_PYTHON_EXE .\hybrid_controller\tools\calibrate_suction_target_pixel.py `
   --manual-pixel 352,238 `
-  --profile .\hybrid_controller\dataset\vision_calibration\current_profile.json
+  --profile .\datasets\vision\calibration\current_profile.json
 ```
 
 ### 12.2 生成全视野标定 profile
@@ -744,8 +744,8 @@ pixel_x,pixel_y,delta_x_mm,delta_y_mm
 
 ```powershell
 & $env:BRAIN_PYTHON_EXE .\hybrid_controller\tools\vision_calibration_profile.py `
-  --samples-csv .\hybrid_controller\dataset\vision_calibration\samples.csv `
-  --output .\hybrid_controller\dataset\vision_calibration\current_profile.json `
+  --samples-csv .\datasets\vision\calibration\samples.csv `
+  --output .\datasets\vision\calibration\current_profile.json `
   --profile-id eye-in-hand-current `
   --model homography `
   --residual-model grid `
@@ -930,7 +930,7 @@ SUCKER_OFF
 如果再次出现空中掉落，优先检查：
 
 ```text
-robot_pick_tuning/current_pick_tuning.json
+datasets/profiles/hybrid_controller/robot_pick_tuning/current_pick_tuning.json
 place_descend_z_mm
 place_release_mode
 place_release_sec
@@ -986,7 +986,7 @@ sucker_rotation_angle_quality_threshold = 0.20
 抓取高度和时序：
 
 ```text
-dataset/robot_pick_tuning/current_pick_tuning.json
+datasets/profiles/hybrid_controller/robot_pick_tuning/current_pick_tuning.json
 ```
 
 ---

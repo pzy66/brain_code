@@ -9,9 +9,7 @@
 - `logs/**` 硬件和 GUI 日志。
 - `runtime/**` 本地运行状态。
 - `02_SSVEP/artifacts/**`
-- `05_Vision_Block_Recognition/dataset/**`
 - `hybrid_controller/models/**`
-- `hybrid_controller/dataset/**`
 
 ## Local Copy Targets
 
@@ -21,6 +19,8 @@
 - 视觉标定：`datasets/vision/calibration/current_profile.json`
 - SSVEP profile：`datasets/profiles/SSVEP/`
 - Hybrid Controller SSVEP profile：`datasets/profiles/hybrid_controller/ssvep_profiles/`
+- Hybrid Controller 抓取调参：`datasets/profiles/hybrid_controller/robot_pick_tuning/`
+- 旧模块内数据迁移存档：`datasets/MI/external/`、`datasets/vision/legacy_migrated/`
 
 ## Diagnostics
 

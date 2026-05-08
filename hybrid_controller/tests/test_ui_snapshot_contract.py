@@ -40,7 +40,7 @@ def test_ui_coordinator_builds_typed_snapshot() -> None:
         connected=True,
         mode="target_selection",
         runtime_status="running",
-        profile_path=str(Path("dataset/ssvep_profiles/current_fbcca_profile.json")),
+        profile_path=str(Path("datasets/profiles/hybrid_controller/ssvep_profiles/current_fbcca_profile.json")),
         profile_source="current",
     )
 

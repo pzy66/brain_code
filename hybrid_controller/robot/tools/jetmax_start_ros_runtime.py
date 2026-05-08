@@ -63,7 +63,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ready-timeout-sec", type=float, default=90.0)
     parser.add_argument("--rosbridge-port", type=int, default=DEFAULT_ROSBRIDGE_PORT)
     parser.add_argument("--web-video-port", type=int, default=DEFAULT_WEB_VIDEO_PORT)
-    parser.add_argument("--disable-autostart-rosbridge", action="store_true", default=True)
+    parser.add_argument(
+        "--disable-autostart-rosbridge",
+        action="store_true",
+        default=False,
+        help="Explicitly stop/disable JetMax rosbridge.service before starting the hybrid runtime.",
+    )
     parser.add_argument("--keep-autostart-rosbridge", action="store_false", dest="disable_autostart_rosbridge")
     parser.add_argument("--no-sync", action="store_true")
     parser.add_argument(
@@ -178,6 +183,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Require legacy TCP runtime port 8888 to be reachable before reporting success.",
     )
     parser.add_argument("--skip-tcp-check", action="store_true")
+    parser.add_argument(
+        "--force-catkin-rebuild",
+        action="store_true",
+        help="Force rebuilding the hybrid_controller_ros catkin package on the JetMax.",
+    )
     return parser
 
 
@@ -232,9 +242,15 @@ def main(argv: list[str] | None = None) -> int:
             remove_uvcvideo_override_file(ssh, args=args, sudo=sudo)
         run_remote_command(
             ssh,
+            "source /opt/ros/melodic/setup.bash >/dev/null 2>&1; "
+            "source ~/catkin_ws/devel/setup.bash >/dev/null 2>&1 || true; "
+            "rosnode kill /hybrid_controller_runtime_node >/dev/null 2>&1 || true",
+        )
+        time.sleep(1.0)
+        run_remote_command(
+            ssh,
             "pkill -f hybrid_controller_runtime_node.py >/dev/null 2>&1 || true; "
             "pkill -f run_hybrid_controller_ros_runtime.sh >/dev/null 2>&1 || true; "
-            "pkill -f rosbridge_websocket >/dev/null 2>&1 || true; "
             "pkill -f robot_runtime_py36.py >/dev/null 2>&1 || true",
         )
         run_remote_command(ssh, f"rm -f {remote_log}")
@@ -242,6 +258,8 @@ def main(argv: list[str] | None = None) -> int:
             ssh,
             f"cd {remote_robot_dir}; "
             f"ROSBRIDGE_PORT={int(args.rosbridge_port)} "
+            "HYBRID_FORCE_RESTART_ROSBRIDGE=0 "
+            f"HYBRID_FORCE_CATKIN_REBUILD={1 if bool(args.force_catkin_rebuild) else 0} "
             f"nohup bash run_hybrid_controller_ros_runtime.sh > {remote_log} 2>&1 < /dev/null &",
         )
         time.sleep(2.0)
@@ -753,6 +771,7 @@ def verify_runtime_services(*, host: str, user: str, password: str, timeout_sec:
             "/hybrid_controller/reset",
             "/hybrid_controller/abort",
             "/hybrid_controller/sucker_off",
+            "/hybrid_controller/sucker_freeze",
         }
         listed = run_remote_command(
             ssh,
@@ -765,6 +784,15 @@ def verify_runtime_services(*, host: str, user: str, password: str, timeout_sec:
         missing = sorted(required - available)
         if missing:
             raise RuntimeError("Missing ROS services: {0}".format(", ".join(missing)))
+        state_payload = run_remote_command(
+            ssh,
+            "source /opt/ros/melodic/setup.bash; "
+            "source ~/catkin_ws/devel/setup.bash; "
+            "timeout 8 rostopic echo -n 1 --noarr /hybrid_controller/state 2>/dev/null || true",
+            capture=True,
+        )
+        if "state:" not in state_payload or "busy:" not in state_payload or "robot_ts:" not in state_payload:
+            raise RuntimeError("/hybrid_controller/state did not publish a complete runtime state sample.")
     finally:
         ssh.close()
 

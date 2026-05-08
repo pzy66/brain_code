@@ -9,6 +9,7 @@ from itertools import combinations, product
 import json
 from pathlib import Path
 import random
+import re
 import sys
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
@@ -57,6 +58,10 @@ DEFAULT_DATASETS = ("wang2016", "beta")
 DEFAULT_METHODS = ("zero_shot_default", "fast_fbcca", "threshold_pretrain", "fbcca_lda5", "fbcca_ridge5")
 SUPPORTED_SHORT_PRETRAIN_METHODS = ("itcca5", "ecca5", "trca5", "trca_r5", "tdca5")
 SUPPORTED_METHODS = DEFAULT_METHODS + SUPPORTED_SHORT_PRETRAIN_METHODS
+METHOD_ALIASES = {
+    "fbcca_lda5_fullbank": "fbcca_lda5",
+    "fbcca_ridge5_fullbank": "fbcca_ridge5",
+}
 DEFAULT_CALIBRATION_BLOCKS = (1, 2, 3)
 DEFAULT_IDLE_MULTIPLIERS = (1.0, 2.0)
 DEFAULT_FAST_WIN_SEC_CANDIDATES = (1.5, 2.0, 2.5)
@@ -71,6 +76,18 @@ DEFAULT_CLASSIFIER_MIN_ENTER_CANDIDATES = (1, 2)
 DEFAULT_CLASSIFIER_MAX_GAP_CANDIDATES = (0,)
 DEFAULT_CLASSIFIER_THRESHOLD_POLICY = "balanced"
 CLASSIFIER_THRESHOLD_POLICIES = ("balanced", "balanced_recall_guard")
+DEFAULT_SCORE_BANK_MODE = "command_only"
+SCORE_BANK_MODES = ("command_only", "full_reference_bank")
+DEFAULT_FREQ_SEARCH_MODE = "none"
+FREQ_SEARCH_MODES = ("none", "shared_fixed4", "personalized_upper_bound", "both")
+DEFAULT_FREQ_CANDIDATE_SOURCE = "frame_locked_240"
+FREQ_CANDIDATE_SOURCES = ("frame_locked_240", "beta_all40", "wang_all40")
+DEFAULT_IDLE_EVAL_MODE = "hard_noncommand"
+IDLE_EVAL_MODES = ("hard_noncommand", "clean_idle_proxy", "both")
+DEFAULT_PRETRAIN_BUDGET_SEC = 120.0
+DEFAULT_PERSONALIZED_CANDIDATE_COUNT = (8, 12, 40)
+DEFAULT_FRAME_LOCKED_240_FREQS = (8.0, 9.6, 10.0, 12.0, 15.0)
+WEAK_SUBJECT_AUDIT_SUBJECTS = ("S2", "S11", "S65", "S33", "S44", "S55", "S59", "S6")
 DEFAULT_CLASSIFIER_THRESHOLD_MIN_CONTROL_RECALL = 0.80
 DEFAULT_CLASSIFIER_IDLE_FP_BUDGET_PER_MIN = 1.0
 DEFAULT_CLASSIFIER_IDLE_SELECTED_WINDOWS_BUDGET_PER_MIN = 6.0
@@ -84,6 +101,14 @@ CLASSIFIER_DERIVED_FEATURE_NAMES = (
     "ratio",
     "normalized_top1",
     "score_entropy",
+)
+FULL_REFERENCE_BANK_FEATURE_NAMES = (
+    "top_command_score",
+    "top_all_score",
+    "command_rank_in_all",
+    "top_command_to_top_all_ratio",
+    "nearest_noncommand_margin",
+    "all_bank_entropy",
 )
 
 
@@ -184,6 +209,18 @@ class ScoredTrial:
     score_matrix: np.ndarray
     feature_matrix: np.ndarray
     duration_sec: float
+    all_score_matrix: Optional[np.ndarray] = None
+    all_freqs: tuple[float, ...] = ()
+
+
+@dataclass(frozen=True)
+class FrequencyEvalCase:
+    mode: str
+    frequency_set_id: str
+    freqs: tuple[float, float, float, float]
+    candidate_freqs: tuple[float, ...] = ()
+    personalized_candidate_count: int = 0
+    selected_by_calibration: bool = False
 
 
 @dataclass(frozen=True)
@@ -217,9 +254,21 @@ def _write_json(path: Path, payload: Any) -> None:
 
 def _safe_float(value: Any, default: float = float("nan")) -> float:
     try:
-        return float(value)
+        result = float(value)
+        if not np.isfinite(result):
+            return float(default)
+        return result
     except Exception:
         return float(default)
+
+
+def _parse_choice(raw: str | None, *, default: str, choices: Sequence[str], label: str) -> str:
+    value = str(raw or default).strip().lower()
+    if not value:
+        value = str(default)
+    if value not in set(str(choice) for choice in choices):
+        raise ValueError(f"{label} must be one of {','.join(choices)}; got {raw}")
+    return value
 
 
 def _classifier_quality_score(metrics: Mapping[str, Any]) -> float:
@@ -358,7 +407,11 @@ def _csv_dataset_tuple(raw: str | None) -> tuple[str, ...]:
 
 
 def _csv_method_tuple(raw: str | None) -> tuple[str, ...]:
-    values = tuple(str(item).strip().lower() for item in str(raw or "").split(",") if str(item).strip())
+    values = tuple(
+        METHOD_ALIASES.get(str(item).strip().lower(), str(item).strip().lower())
+        for item in str(raw or "").split(",")
+        if str(item).strip()
+    )
     if not values:
         return DEFAULT_METHODS
     invalid = [value for value in values if value not in SUPPORTED_METHODS]
@@ -372,15 +425,33 @@ def _csv_method_tuple(raw: str | None) -> tuple[str, ...]:
 
 
 def _parse_classifier_threshold_policy(raw: str | None) -> str:
-    policy = str(raw or DEFAULT_CLASSIFIER_THRESHOLD_POLICY).strip().lower()
-    if not policy:
-        policy = DEFAULT_CLASSIFIER_THRESHOLD_POLICY
-    if policy not in CLASSIFIER_THRESHOLD_POLICIES:
-        raise ValueError(
-            "classifier threshold policy must be one of "
-            f"{','.join(CLASSIFIER_THRESHOLD_POLICIES)}; got {raw}"
-        )
-    return policy
+    return _parse_choice(
+        raw,
+        default=DEFAULT_CLASSIFIER_THRESHOLD_POLICY,
+        choices=CLASSIFIER_THRESHOLD_POLICIES,
+        label="classifier threshold policy",
+    )
+
+
+def _parse_score_bank_mode(raw: str | None) -> str:
+    return _parse_choice(raw, default=DEFAULT_SCORE_BANK_MODE, choices=SCORE_BANK_MODES, label="score bank mode")
+
+
+def _parse_freq_search_mode(raw: str | None) -> str:
+    return _parse_choice(raw, default=DEFAULT_FREQ_SEARCH_MODE, choices=FREQ_SEARCH_MODES, label="freq search mode")
+
+
+def _parse_freq_candidate_source(raw: str | None) -> str:
+    return _parse_choice(
+        raw,
+        default=DEFAULT_FREQ_CANDIDATE_SOURCE,
+        choices=FREQ_CANDIDATE_SOURCES,
+        label="freq candidate source",
+    )
+
+
+def _parse_idle_eval_mode(raw: str | None) -> str:
+    return _parse_choice(raw, default=DEFAULT_IDLE_EVAL_MODE, choices=IDLE_EVAL_MODES, label="idle eval mode")
 
 
 def _score_method_spec(method_name: str) -> ScoreMethodSpec:
@@ -517,6 +588,559 @@ def _subject_allowed(
     return False
 
 
+def _dataset_all_target_freqs(dataset: str) -> tuple[float, ...]:
+    normalized = str(dataset).strip().lower()
+    if normalized == "beta":
+        return tuple(round(8.0 + 0.2 * index, 10) for index in range(40))
+    if normalized == "wang2016":
+        from ssvep_core.external_wang2016_dataset import WANG2016_TARGET_FREQUENCIES
+
+        return tuple(float(freq) for freq in WANG2016_TARGET_FREQUENCIES)
+    return tuple(float(freq) for freq in DEFAULT_FRAME_LOCKED_240_FREQS)
+
+
+def _available_freqs_for_subject(spec: ExternalSubjectSpec, source_metadata: Mapping[str, Any]) -> tuple[float, ...]:
+    values = list(source_metadata.get("all_target_frequencies", []) or [])
+    if values:
+        return tuple(float(freq) for freq in values)
+    if str(spec.dataset).strip().lower() == "beta":
+        try:
+            subject = load_beta_subject(spec.mat_path)
+            return tuple(float(freq) for freq in subject.target_frequencies)
+        except Exception:
+            return _dataset_all_target_freqs("beta")
+    return _dataset_all_target_freqs(str(spec.dataset))
+
+
+def _freq_lookup_key(freq: float) -> float:
+    return round(float(freq), 10)
+
+
+def _freqs_available(freqs: Sequence[float], available_freqs: Sequence[float]) -> bool:
+    available = {_freq_lookup_key(freq) for freq in available_freqs}
+    return all(_freq_lookup_key(freq) in available for freq in freqs)
+
+
+def _canonical_freq_tuple(freqs: Sequence[float]) -> tuple[float, float, float, float]:
+    values = tuple(float(freq) for freq in freqs)
+    if len(values) != 4:
+        raise ValueError(f"frequency set must contain exactly 4 values; got {len(values)}")
+    if len({_freq_lookup_key(freq) for freq in values}) != 4:
+        raise ValueError(f"frequency set must contain 4 unique values; got {values}")
+    return values  # type: ignore[return-value]
+
+
+def _parse_freq_from_label(label: str) -> Optional[float]:
+    match = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*Hz", str(label))
+    if not match:
+        return None
+    try:
+        return float(match.group(1))
+    except Exception:
+        return None
+
+
+def _segment_source_freq(item: tuple[TrialSpec, np.ndarray]) -> Optional[float]:
+    trial, _segment = item
+    if trial.expected_freq is not None:
+        return float(trial.expected_freq)
+    return _parse_freq_from_label(str(trial.label))
+
+
+def _relabel_segments_for_command_freqs(
+    segments: Sequence[tuple[TrialSpec, np.ndarray]],
+    *,
+    command_freqs: Sequence[float],
+) -> list[tuple[TrialSpec, np.ndarray]]:
+    command_map = {_freq_lookup_key(freq): float(freq) for freq in command_freqs}
+    relabeled: list[tuple[TrialSpec, np.ndarray]] = []
+    for trial, segment in segments:
+        source_freq = _segment_source_freq((trial, segment))
+        expected_freq = None
+        label = str(trial.label)
+        if source_freq is not None:
+            matched = command_map.get(_freq_lookup_key(source_freq))
+            if matched is not None:
+                expected_freq = float(matched)
+                label = f"{float(matched):g}Hz"
+            else:
+                label = f"hard_idle_{float(source_freq):g}Hz"
+        relabeled.append(
+            (
+                TrialSpec(
+                    label=label,
+                    expected_freq=expected_freq,
+                    trial_id=int(trial.trial_id),
+                    block_index=int(trial.block_index),
+                ),
+                segment,
+            )
+        )
+    return relabeled
+
+
+def _filter_segments_by_freqs(
+    segments: Sequence[tuple[TrialSpec, np.ndarray]],
+    *,
+    freqs: Sequence[float],
+) -> list[tuple[TrialSpec, np.ndarray]]:
+    allowed = {_freq_lookup_key(freq) for freq in freqs}
+    return [
+        item
+        for item in segments
+        if (source_freq := _segment_source_freq(item)) is not None and _freq_lookup_key(source_freq) in allowed
+    ]
+
+
+def _control_segments_for_freqs(
+    all_target_segments: Sequence[tuple[TrialSpec, np.ndarray]],
+    *,
+    freqs: Sequence[float],
+) -> list[tuple[TrialSpec, np.ndarray]]:
+    return _relabel_segments_for_command_freqs(
+        _filter_segments_by_freqs(all_target_segments, freqs=freqs),
+        command_freqs=freqs,
+    )
+
+
+def _build_all_target_segments_for_spec(
+    spec: ExternalSubjectSpec,
+    *,
+    available_freqs: Sequence[float],
+) -> list[tuple[TrialSpec, np.ndarray]]:
+    candidate = tuple(float(freq) for freq in available_freqs)
+    if len(candidate) < 4:
+        raise ValueError(f"need at least 4 available frequencies for {spec.dataset}:{spec.subject}")
+    command_seed = candidate[:4]
+    if str(spec.dataset).strip().lower() == "beta":
+        subject = load_beta_subject(spec.mat_path)
+        return _relabel_segments_for_command_freqs(
+            build_beta_segments(
+                subject,
+                freqs=command_seed,
+                include_hard_idle=True,
+                include_pre_stim_idle=False,
+            ),
+            command_freqs=candidate,
+        )
+    if str(spec.dataset).strip().lower() == "wang2016":
+        if spec.channel_loc_path is None:
+            raise ValueError("wang2016 requires channel_loc_path")
+        subject = load_wang2016_subject(spec.mat_path, spec.channel_loc_path)
+        return _relabel_segments_for_command_freqs(
+            build_wang2016_segments(
+                subject,
+                freqs=command_seed,
+                include_hard_idle=True,
+                include_pre_stim_idle=False,
+            ),
+            command_freqs=candidate,
+        )
+    raise ValueError(f"unsupported dataset: {spec.dataset}")
+
+
+def _build_clean_idle_segments_for_spec(
+    spec: ExternalSubjectSpec,
+    *,
+    command_freqs: Sequence[float],
+) -> list[tuple[TrialSpec, np.ndarray]]:
+    if str(spec.dataset).strip().lower() == "beta":
+        subject = load_beta_subject(spec.mat_path)
+        return [
+            item for item in build_beta_segments(
+                subject,
+                freqs=command_freqs,
+                include_hard_idle=False,
+                include_pre_stim_idle=True,
+            )
+            if item[0].expected_freq is None
+        ]
+    if str(spec.dataset).strip().lower() == "wang2016":
+        if spec.channel_loc_path is None:
+            raise ValueError("wang2016 requires channel_loc_path")
+        subject = load_wang2016_subject(spec.mat_path, spec.channel_loc_path)
+        return [
+            item for item in build_wang2016_segments(
+                subject,
+                freqs=command_freqs,
+                include_hard_idle=False,
+                include_pre_stim_idle=True,
+            )
+            if item[0].expected_freq is None
+        ]
+    raise ValueError(f"unsupported dataset: {spec.dataset}")
+
+
+def _clean_idle_proxy_support_payload(
+    *,
+    clean_idle_segments: Sequence[tuple[TrialSpec, np.ndarray]],
+    sampling_rate: int,
+    win_sec: float,
+) -> dict[str, Any]:
+    durations = [
+        float(np.asarray(segment).shape[0]) / float(max(int(sampling_rate), 1))
+        for _trial, segment in clean_idle_segments
+        if np.asarray(segment).ndim == 2
+    ]
+    max_duration = max(durations, default=0.0)
+    return {
+        "available": bool(clean_idle_segments),
+        "supported": bool(clean_idle_segments and max_duration + 1e-9 >= float(win_sec)),
+        "segment_count": int(len(clean_idle_segments)),
+        "max_segment_duration_sec": float(max_duration),
+        "requested_win_sec": float(win_sec),
+        "note": (
+            "Clean idle proxy uses pre-stimulus baseline segments when they are long enough for the classifier window; "
+            "otherwise it is marked unsupported and must not be interpreted as real no-target evidence."
+        ),
+    }
+
+
+def _evaluate_clean_idle_proxy_from_cache(
+    model: FBCCALDA5Model | FBCCARidge5Model,
+    scored_trials: Sequence[ScoredTrial],
+    *,
+    win_sec: float,
+    step_sec: float,
+    min_enter_windows: int,
+    max_gap_windows: int,
+) -> dict[str, Any]:
+    if not scored_trials:
+        return {
+            "supported": False,
+            "reason": "no clean idle windows were long enough for this classifier window",
+            "idle_fp_per_min": None,
+            "idle_trial_fp_rate": None,
+            "idle_trials": 0,
+        }
+    bundle = _evaluate_fbcca_lda5_model(
+        model,
+        scored_trials,
+        win_sec=float(win_sec),
+        step_sec=float(step_sec),
+        min_enter_windows=max(1, int(min_enter_windows)),
+        max_gap_windows=max(0, int(max_gap_windows)),
+    )
+    metrics = dict(bundle.get("async_metrics", {}) or {})
+    return {
+        "supported": True,
+        "idle_fp_per_min": _safe_float(metrics.get("idle_fp_per_min"), 0.0),
+        "idle_selected_windows_per_min": _safe_float(metrics.get("idle_selected_windows_per_min"), 0.0),
+        "idle_trial_fp_rate": _safe_float(metrics.get("idle_trial_fp_rate"), 0.0),
+        "idle_trials": int(_safe_float(metrics.get("idle_trials"), 0.0)),
+        "idle_fp_trials": int(_safe_float(metrics.get("idle_fp_trials"), 0.0)),
+    }
+
+
+def _candidate_freqs_for_source(*, source: str, datasets: Sequence[str]) -> tuple[float, ...]:
+    normalized = _parse_freq_candidate_source(source)
+    if normalized == "frame_locked_240":
+        return tuple(float(freq) for freq in DEFAULT_FRAME_LOCKED_240_FREQS)
+    if normalized == "beta_all40":
+        return _dataset_all_target_freqs("beta")
+    if normalized == "wang_all40":
+        return _dataset_all_target_freqs("wang2016")
+    return _dataset_all_target_freqs(str(next(iter(datasets), "beta")))
+
+
+def _full_bank_freqs_for_dataset(*, dataset: str, score_bank_mode: str, fallback_freqs: Sequence[float]) -> tuple[float, ...]:
+    if _parse_score_bank_mode(score_bank_mode) != "full_reference_bank":
+        return tuple(float(freq) for freq in fallback_freqs)
+    return _dataset_all_target_freqs(dataset)
+
+
+def _frequency_search_plan(*, mode: str, candidate_source: str, datasets: Sequence[str]) -> dict[str, Any]:
+    search_mode = _parse_freq_search_mode(mode)
+    source = _parse_freq_candidate_source(candidate_source)
+    candidate_freqs = _candidate_freqs_for_source(source=source, datasets=datasets)
+    shared_sets: list[list[float]] = []
+    if search_mode in {"shared_fixed4", "both"}:
+        shared_sets = [[float(freq) for freq in combo] for combo in combinations(candidate_freqs, 4)]
+    return {
+        "frequency_selection_mode": search_mode,
+        "freq_candidate_source": source,
+        "candidate_freqs": [float(freq) for freq in candidate_freqs],
+        "shared_candidate_set_count": int(len(shared_sets)),
+        "shared_candidate_sets_preview": shared_sets[:20],
+        "personalized_upper_bound_enabled": bool(search_mode in {"personalized_upper_bound", "both"}),
+    }
+
+
+def _shared_frequency_sets_for_plan(freq_plan: Mapping[str, Any], *, fallback_freqs: Sequence[float]) -> tuple[tuple[float, float, float, float], ...]:
+    mode = _parse_freq_search_mode(str(freq_plan.get("frequency_selection_mode", DEFAULT_FREQ_SEARCH_MODE)))
+    if mode not in {"shared_fixed4", "both"}:
+        return (_canonical_freq_tuple(fallback_freqs),)
+    raw_sets = list(freq_plan.get("shared_candidate_sets_preview", []) or [])
+    if int(freq_plan.get("shared_candidate_set_count", 0) or 0) > len(raw_sets):
+        candidate_freqs = tuple(float(freq) for freq in freq_plan.get("candidate_freqs", []) or [])
+        raw_sets = [list(combo) for combo in combinations(candidate_freqs, 4)]
+    if not raw_sets:
+        raw_sets = [list(fallback_freqs)]
+    return tuple(_canonical_freq_tuple(freq_set) for freq_set in raw_sets)
+
+
+def _frequency_set_id(mode: str, freqs: Sequence[float]) -> str:
+    return f"{str(mode).strip().lower()}_{_freq_token(freqs)}"
+
+
+def _frequency_case_payload(case: FrequencyEvalCase) -> dict[str, Any]:
+    return {
+        "frequency_selection_mode": str(case.mode),
+        "frequency_set_id": str(case.frequency_set_id),
+        "selected_freqs": [float(freq) for freq in case.freqs],
+        "candidate_freqs": [float(freq) for freq in case.candidate_freqs],
+        "personalized_candidate_count": int(case.personalized_candidate_count),
+        "selected_by_calibration": bool(case.selected_by_calibration),
+    }
+
+
+def _candidate_freqs_for_subject(
+    *,
+    candidate_freqs: Sequence[float],
+    available_freqs: Sequence[float],
+    count: int,
+) -> tuple[float, ...]:
+    available_by_key = {_freq_lookup_key(freq): float(freq) for freq in available_freqs}
+    selected: list[float] = []
+    for freq in candidate_freqs:
+        key = _freq_lookup_key(freq)
+        if key not in available_by_key:
+            continue
+        if key in {_freq_lookup_key(item) for item in selected}:
+            continue
+        selected.append(float(available_by_key[key]))
+        if int(count) > 0 and len(selected) >= int(count):
+            break
+    if len(selected) < max(4, int(count or 0)):
+        for freq in available_freqs:
+            key = _freq_lookup_key(freq)
+            if key in {_freq_lookup_key(item) for item in selected}:
+                continue
+            selected.append(float(freq))
+            if int(count) > 0 and len(selected) >= int(count):
+                break
+    return tuple(float(freq) for freq in selected)
+
+
+def _score_personalized_frequency_candidates(
+    *,
+    all_target_segments: Sequence[tuple[TrialSpec, np.ndarray]],
+    candidate_freqs: Sequence[float],
+    calibration_blocks: Sequence[int],
+    sampling_rate: int,
+    win_sec: float,
+    max_supported_win_sec: float,
+    step_sec: float,
+    compute_backend: str,
+    gpu_device: int,
+    gpu_precision: str,
+) -> tuple[tuple[float, float, float, float], dict[str, Any]]:
+    candidate_tuple = tuple(float(freq) for freq in candidate_freqs)
+    if len(candidate_tuple) < 4:
+        raise ValueError("personalized frequency selection needs at least 4 candidate frequencies")
+    calibration_block_set = {int(block) for block in calibration_blocks}
+    calibration_segments = [
+        item for item in all_target_segments if int(item[0].block_index) in calibration_block_set
+    ]
+    filtered = _filter_segments_by_freqs(calibration_segments, freqs=candidate_tuple)
+    if not filtered:
+        raise ValueError("personalized frequency selection found no calibration candidate segments")
+    selection_win_sec = min(float(win_sec), float(max_supported_win_sec))
+    if selection_win_sec <= 0.0:
+        raise ValueError("personalized frequency selection needs a positive supported window")
+    decoder = _build_fbcca_decoder_for_scoring(
+        freqs=candidate_tuple,
+        sampling_rate=int(sampling_rate),
+        win_sec=float(selection_win_sec),
+        step_sec=float(step_sec),
+        compute_backend=str(compute_backend),
+        gpu_device=int(gpu_device),
+        gpu_precision=str(gpu_precision),
+    )
+
+    def score_windows(windows: np.ndarray) -> np.ndarray:
+        if hasattr(decoder, "score_windows_batch"):
+            return np.asarray(decoder.score_windows_batch(windows), dtype=np.float64)
+        if hasattr(decoder, "analyze_windows_batch"):
+            payloads = decoder.analyze_windows_batch(windows)
+            return np.vstack(
+                [np.asarray(dict(item)["scores"], dtype=np.float64).reshape(1, -1) for item in payloads]
+            )
+        rows: list[np.ndarray] = []
+        for window in windows:
+            if hasattr(decoder, "score_window"):
+                row = np.asarray(decoder.score_window(window), dtype=np.float64)
+            elif hasattr(decoder, "analyze_window"):
+                row = np.asarray(dict(decoder.analyze_window(window))["scores"], dtype=np.float64)
+            else:
+                raise TypeError("decoder does not expose a supported scoring API")
+            rows.append(row.reshape(1, -1))
+        return np.vstack(rows)
+
+    rows: dict[float, list[dict[str, float]]] = {float(freq): [] for freq in candidate_tuple}
+    for trial, segment in filtered:
+        source_freq = _segment_source_freq((trial, segment))
+        if source_freq is None:
+            continue
+        canonical = None
+        for freq in candidate_tuple:
+            if _freq_lookup_key(freq) == _freq_lookup_key(source_freq):
+                canonical = float(freq)
+                break
+        if canonical is None:
+            continue
+        matrix = np.ascontiguousarray(np.asarray(segment, dtype=np.float64))
+        if matrix.ndim != 2 or matrix.shape[0] < int(decoder.win_samples):
+            continue
+        windows = extract_window_batch(
+            matrix,
+            win_samples=int(decoder.win_samples),
+            step_samples=int(decoder.step_samples),
+        )
+        scores = score_windows(windows)
+        freq_index = int([_freq_lookup_key(freq) for freq in candidate_tuple].index(_freq_lookup_key(canonical)))
+        own_scores = scores[:, freq_index]
+        other_scores = np.delete(scores, freq_index, axis=1)
+        top_other = np.max(other_scores, axis=1) if other_scores.size else np.zeros_like(own_scores)
+        pred = np.argmax(scores, axis=1)
+        rows[canonical].append(
+            {
+                "self_score_median": float(np.median(own_scores)),
+                "margin_median": float(np.median(own_scores - top_other)),
+                "top1_rate": float(np.mean(pred == freq_index)),
+                "window_count": float(scores.shape[0]),
+            }
+        )
+    summaries: list[dict[str, Any]] = []
+    for freq in candidate_tuple:
+        stats = rows.get(float(freq), [])
+        if not stats:
+            summaries.append(
+                {
+                    "freq": float(freq),
+                    "self_score_median": 0.0,
+                    "margin_median": -float("inf"),
+                    "top1_rate": 0.0,
+                    "trial_count": 0,
+                }
+            )
+            continue
+        summaries.append(
+            {
+                "freq": float(freq),
+                "self_score_median": float(np.mean([item["self_score_median"] for item in stats])),
+                "margin_median": float(np.mean([item["margin_median"] for item in stats])),
+                "top1_rate": float(np.mean([item["top1_rate"] for item in stats])),
+                "trial_count": int(len(stats)),
+            }
+        )
+    ranked = sorted(
+        summaries,
+        key=lambda row: (
+            -_safe_float(row.get("top1_rate"), 0.0),
+            -_safe_float(row.get("margin_median"), -float("inf")),
+            -_safe_float(row.get("self_score_median"), 0.0),
+            _safe_float(row.get("freq"), 99.0),
+        ),
+    )
+    selected = tuple(float(row["freq"]) for row in ranked[:4])
+    return _canonical_freq_tuple(selected), {
+        "selection_policy": "calibration_only_fbcca_self_top1_margin",
+        "selection_win_sec": float(selection_win_sec),
+        "candidate_freqs": [float(freq) for freq in candidate_tuple],
+        "selected_freqs": [float(freq) for freq in selected],
+        "ranked_candidates": ranked,
+    }
+
+
+def _row_with_frequency_case(row: dict[str, Any], case: FrequencyEvalCase) -> dict[str, Any]:
+    payload = dict(row)
+    freq_payload = _frequency_case_payload(case)
+    payload["selected_freqs"] = [float(freq) for freq in case.freqs]
+    payload["frequency_selection_mode"] = str(case.mode)
+    payload["frequency_set_id"] = str(case.frequency_set_id)
+    payload["frequency_case"] = freq_payload
+    split_summary = dict(payload.get("split_summary", {}) or {})
+    split_summary["selected_freqs"] = [float(freq) for freq in case.freqs]
+    split_summary["frequency_selection_mode"] = str(case.mode)
+    split_summary["frequency_set_id"] = str(case.frequency_set_id)
+    payload["split_summary"] = split_summary
+    return payload
+
+
+def _estimate_pretrain_duration_sec(
+    *,
+    freq_selection_mode: str,
+    command_freq_count: int = 4,
+    command_repeats: int = 3,
+    command_trial_sec: float = 6.0,
+    clean_idle_sec: float = 30.0,
+    personalized_candidate_count: int = 0,
+    personalized_screen_trial_sec: float = 4.0,
+) -> float:
+    mode = _parse_freq_search_mode(freq_selection_mode)
+    base = float(command_freq_count) * float(command_repeats) * float(command_trial_sec) + float(clean_idle_sec)
+    if mode in {"personalized_upper_bound", "both"}:
+        base += float(max(0, personalized_candidate_count)) * float(personalized_screen_trial_sec)
+    return float(base)
+
+
+def _budget_payload(*, freq_selection_mode: str, pretrain_budget_sec: float, personalized_candidate_count: int) -> dict[str, Any]:
+    estimated = _estimate_pretrain_duration_sec(
+        freq_selection_mode=freq_selection_mode,
+        personalized_candidate_count=int(personalized_candidate_count),
+    )
+    return {
+        "pretrain_budget_sec": float(pretrain_budget_sec),
+        "estimated_pretrain_duration_sec": float(estimated),
+        "pretrain_budget_pass": bool(float(estimated) <= float(pretrain_budget_sec) + 1e-9),
+        "duration_model": "4 commands * 3 repeats * 6s + 30s clean idle; personalized adds candidate_count * 4s",
+    }
+
+
+def _weak_subject_audit(summary: Mapping[str, Any], *, weak_subjects: Sequence[str] = WEAK_SUBJECT_AUDIT_SUBJECTS) -> dict[str, Any]:
+    rows = list(summary.get("subjects", []) or []) if isinstance(summary, Mapping) else []
+    weak_set = {str(item).upper() for item in weak_subjects}
+    compact = []
+    for row in rows:
+        subject = str(row.get("subject", "")).upper()
+        if subject not in weak_set:
+            continue
+        compact.append(
+            {
+                "dataset": row.get("dataset"),
+                "subject": row.get("subject"),
+                "mean_control_recall": row.get("mean_control_recall"),
+                "mean_idle_fp_per_min": row.get("mean_idle_fp_per_min"),
+                "mean_async_macro_f1_5class": row.get("mean_async_macro_f1_5class"),
+                "mean_detection_latency_s": row.get("mean_detection_latency_s"),
+            }
+        )
+    base_rows = [
+        {
+            "dataset": row.get("dataset"),
+            "subject": row.get("subject"),
+            "mean_control_recall": row.get("mean_control_recall"),
+            "mean_idle_fp_per_min": row.get("mean_idle_fp_per_min"),
+            "mean_async_macro_f1_5class": row.get("mean_async_macro_f1_5class"),
+            "mean_detection_latency_s": row.get("mean_detection_latency_s"),
+        }
+        for row in rows
+    ]
+    return {
+        "tracked_weak_subjects": compact,
+        "weakest_recall_subjects": sorted(
+            base_rows,
+            key=lambda row: _safe_float(row.get("mean_control_recall"), 0.0),
+        )[:10],
+        "highest_idle_fp_subjects": sorted(
+            base_rows,
+            key=lambda row: _safe_float(row.get("mean_idle_fp_per_min"), 0.0),
+            reverse=True,
+        )[:10],
+    }
+
+
 def _freq_token(freqs: Sequence[float]) -> str:
     return "_".join(f"{float(freq):g}".replace(".", "p") for freq in freqs)
 
@@ -640,6 +1264,7 @@ def load_external_subject_segments(spec: ExternalSubjectSpec) -> tuple[int, list
             "selected_channel_names": list(subject.selected_channel_names),
             "selected_channel_indices_zero_based": list(subject.selected_channel_indices),
             "target_index_by_freq": {f"{float(freq):g}": int(index) for freq, index in target_index.items()},
+            "all_target_frequencies": [float(freq) for freq in WANG2016_TARGET_FREQUENCIES],
             "idle_proxy_note": (
                 "Idle/no-control is proxied with non-command target stimulus trials from the external benchmark."
             ),
@@ -663,6 +1288,7 @@ def load_external_subject_segments(spec: ExternalSubjectSpec) -> tuple[int, list
             "selected_channel_names": list(subject.selected_channel_names),
             "selected_channel_indices_zero_based": list(subject.selected_channel_indices),
             "target_index_by_freq": {f"{float(freq):g}": int(index) for freq, index in target_index.items()},
+            "all_target_frequencies": [float(freq) for freq in subject.target_frequencies],
             "idle_proxy_note": (
                 "Idle/no-control is proxied with non-command target stimulus trials from the external benchmark."
             ),
@@ -859,9 +1485,105 @@ def _score_matrix_to_features(score_matrix: np.ndarray) -> np.ndarray:
     ).astype(np.float64, copy=False)
 
 
-def _classifier_feature_names(freqs: Sequence[float], *, score_source_name: str = "fbcca") -> list[str]:
+def _full_reference_bank_features(
+    *,
+    command_score_matrix: np.ndarray,
+    all_score_matrix: np.ndarray,
+    command_freqs: Sequence[float],
+    all_freqs: Sequence[float],
+) -> np.ndarray:
+    command_scores = np.asarray(command_score_matrix, dtype=np.float64)
+    all_scores = np.asarray(all_score_matrix, dtype=np.float64)
+    if command_scores.ndim != 2 or all_scores.ndim != 2:
+        raise ValueError("command and full-bank score matrices must be 2D")
+    if command_scores.shape[0] != all_scores.shape[0]:
+        raise ValueError("command and full-bank score matrices must have the same window count")
+    command_freq_tuple = tuple(round(float(freq), 10) for freq in command_freqs)
+    all_freq_tuple = tuple(round(float(freq), 10) for freq in all_freqs)
+    if len(command_freq_tuple) != command_scores.shape[1]:
+        raise ValueError("command frequency count does not match command score matrix")
+    if len(all_freq_tuple) != all_scores.shape[1]:
+        raise ValueError("full-bank frequency count does not match full-bank score matrix")
+    all_index_by_freq = {freq: index for index, freq in enumerate(all_freq_tuple)}
+    command_indices: list[int] = []
+    for freq in command_freq_tuple:
+        if freq not in all_index_by_freq:
+            raise ValueError(f"command frequency {freq:g} is missing from full reference bank")
+        command_indices.append(int(all_index_by_freq[freq]))
+
+    command_from_all = all_scores[:, np.asarray(command_indices, dtype=int)]
+    top_command = np.max(command_from_all, axis=1)
+    top_all = np.max(all_scores, axis=1)
+    sorted_all = np.argsort(all_scores, axis=1)[:, ::-1]
+    command_index_set = set(command_indices)
+    command_rank_rows: list[int] = []
+    top_noncommand_rows: list[float] = []
+    for row_index, order in enumerate(sorted_all):
+        rank = 1
+        best_command_rank: Optional[int] = None
+        top_noncommand: Optional[float] = None
+        for column in order:
+            col = int(column)
+            if col in command_index_set:
+                if best_command_rank is None:
+                    best_command_rank = int(rank)
+            elif top_noncommand is None:
+                top_noncommand = float(all_scores[row_index, col])
+            if best_command_rank is not None and top_noncommand is not None:
+                break
+            rank += 1
+        command_rank_rows.append(int(best_command_rank or len(all_freq_tuple)))
+        top_noncommand_rows.append(float(top_noncommand if top_noncommand is not None else 0.0))
+    score_sum = np.sum(np.clip(all_scores, 0.0, None), axis=1)
+    safe_sum = np.maximum(score_sum, 1e-12)
+    probs = np.clip(np.clip(all_scores, 0.0, None) / safe_sum[:, None], 1e-12, None)
+    probs = probs / np.maximum(np.sum(probs, axis=1, keepdims=True), 1e-12)
+    entropy = -np.sum(probs * np.log(probs), axis=1) / np.log(float(max(all_scores.shape[1], 2)))
+    return np.column_stack(
+        [
+            top_command,
+            top_all,
+            np.asarray(command_rank_rows, dtype=np.float64),
+            top_command / np.maximum(top_all, 1e-12),
+            top_command - np.asarray(top_noncommand_rows, dtype=np.float64),
+            entropy,
+        ]
+    ).astype(np.float64, copy=False)
+
+
+def _score_matrices_to_features(
+    *,
+    command_score_matrix: np.ndarray,
+    command_freqs: Sequence[float],
+    score_bank_mode: str = DEFAULT_SCORE_BANK_MODE,
+    all_score_matrix: Optional[np.ndarray] = None,
+    all_freqs: Sequence[float] = (),
+) -> np.ndarray:
+    command_features = _score_matrix_to_features(command_score_matrix)
+    mode = _parse_score_bank_mode(score_bank_mode)
+    if mode == "command_only":
+        return command_features
+    if all_score_matrix is None:
+        raise ValueError("full_reference_bank mode requires all_score_matrix")
+    full_features = _full_reference_bank_features(
+        command_score_matrix=command_score_matrix,
+        all_score_matrix=all_score_matrix,
+        command_freqs=command_freqs,
+        all_freqs=all_freqs,
+    )
+    return np.column_stack([command_features, full_features]).astype(np.float64, copy=False)
+
+
+def _classifier_feature_names(
+    freqs: Sequence[float],
+    *,
+    score_source_name: str = "fbcca",
+    score_bank_mode: str = DEFAULT_SCORE_BANK_MODE,
+) -> list[str]:
     names = [f"{str(score_source_name).strip().lower()}_score_{_freq_label(freq)}" for freq in freqs]
     names.extend(CLASSIFIER_DERIVED_FEATURE_NAMES)
+    if _parse_score_bank_mode(score_bank_mode) == "full_reference_bank":
+        names.extend(FULL_REFERENCE_BANK_FEATURE_NAMES)
     return names
 
 
@@ -891,7 +1613,12 @@ def _score_trials_for_classifier(
     *,
     trial_segments: Sequence[tuple[TrialSpec, np.ndarray]],
     decoder: Any,
+    freqs: Sequence[float] = DEFAULT_FREQS,
+    score_bank_mode: str = DEFAULT_SCORE_BANK_MODE,
+    full_bank_decoder: Any = None,
+    full_bank_freqs: Sequence[float] = (),
 ) -> list[ScoredTrial]:
+    mode = _parse_score_bank_mode(score_bank_mode)
     scored: list[ScoredTrial] = []
     for trial, segment in trial_segments:
         matrix = np.ascontiguousarray(np.asarray(segment, dtype=np.float64))
@@ -920,12 +1647,38 @@ def _score_trials_for_classifier(
                     raise TypeError("decoder does not expose a supported scoring API")
                 rows.append(row.reshape(1, -1))
             score_matrix = np.vstack(rows)
+        all_score_matrix: Optional[np.ndarray] = None
+        if mode == "full_reference_bank":
+            if full_bank_decoder is None:
+                raise ValueError("full_reference_bank scoring requires full_bank_decoder")
+            if hasattr(full_bank_decoder, "score_windows_batch"):
+                all_score_matrix = np.asarray(full_bank_decoder.score_windows_batch(windows), dtype=np.float64)
+            else:
+                rows = []
+                for window in windows:
+                    if hasattr(full_bank_decoder, "score_window"):
+                        row = np.asarray(full_bank_decoder.score_window(window), dtype=np.float64)
+                    elif hasattr(full_bank_decoder, "analyze_window"):
+                        row = np.asarray(dict(full_bank_decoder.analyze_window(window))["scores"], dtype=np.float64)
+                    else:
+                        raise TypeError("full-bank decoder does not expose a supported scoring API")
+                    rows.append(row.reshape(1, -1))
+                all_score_matrix = np.vstack(rows)
+        feature_matrix = _score_matrices_to_features(
+            command_score_matrix=score_matrix,
+            command_freqs=freqs,
+            score_bank_mode=mode,
+            all_score_matrix=all_score_matrix,
+            all_freqs=tuple(float(freq) for freq in full_bank_freqs),
+        )
         scored.append(
             ScoredTrial(
                 trial=trial,
                 score_matrix=score_matrix,
-                feature_matrix=_score_matrix_to_features(score_matrix),
+                feature_matrix=feature_matrix,
                 duration_sec=float(matrix.shape[0]) / float(max(int(decoder.fs), 1)),
+                all_score_matrix=all_score_matrix,
+                all_freqs=tuple(float(freq) for freq in full_bank_freqs),
             )
         )
     return scored
@@ -975,11 +1728,15 @@ def _score_segment_subset_cached(
     gpu_device: int,
     gpu_precision: str,
     win_sec: float,
+    score_bank_mode: str = DEFAULT_SCORE_BANK_MODE,
+    full_bank_freqs: Sequence[float] = (),
     segments: Sequence[tuple[TrialSpec, np.ndarray]],
     context: str,
     decoder_cache: dict[tuple[Any, ...], Any],
     scored_cache: dict[tuple[Any, ...], dict[tuple[Any, ...], ScoredTrial]],
 ) -> list[ScoredTrial]:
+    mode = _parse_score_bank_mode(score_bank_mode)
+    full_freqs = tuple(float(freq) for freq in full_bank_freqs)
     runtime_key = _scoring_cache_key(
         freqs=freqs,
         sampling_rate=int(sampling_rate),
@@ -988,7 +1745,7 @@ def _score_segment_subset_cached(
         compute_backend=str(compute_backend),
         gpu_device=int(gpu_device),
         gpu_precision=str(gpu_precision),
-    )
+    ) + (mode, tuple(round(float(freq), 10) for freq in full_freqs))
     segment_keys = [_trial_segment_cache_key(item) for item in segments]
     if len(set(segment_keys)) != len(segment_keys):
         raise ValueError(f"{context} contains duplicate trial segment cache keys")
@@ -1010,9 +1767,28 @@ def _score_segment_subset_cached(
                 gpu_precision=str(gpu_precision),
             )
             decoder_cache[runtime_key] = decoder
+        full_bank_decoder = None
+        if mode == "full_reference_bank":
+            full_bank_key = runtime_key + ("full_reference_bank_decoder",)
+            full_bank_decoder = decoder_cache.get(full_bank_key)
+            if full_bank_decoder is None:
+                full_bank_decoder = _build_fbcca_decoder_for_scoring(
+                    freqs=full_freqs,
+                    sampling_rate=int(sampling_rate),
+                    win_sec=float(win_sec),
+                    step_sec=float(step_sec),
+                    compute_backend=str(compute_backend),
+                    gpu_device=int(gpu_device),
+                    gpu_precision=str(gpu_precision),
+                )
+                decoder_cache[full_bank_key] = full_bank_decoder
         scored_missing = _score_trials_for_classifier(
             trial_segments=missing_segments,
             decoder=decoder,
+            freqs=freqs,
+            score_bank_mode=mode,
+            full_bank_decoder=full_bank_decoder,
+            full_bank_freqs=full_freqs,
         )
         if len(scored_missing) != len(missing_segments):
             raise RuntimeError(
@@ -1173,8 +1949,9 @@ def _validate_scored_trial_coverage(
     *,
     freqs: Sequence[float],
     context: str,
+    require_control: bool = True,
 ) -> None:
-    expected_labels = set(_classifier_labels(freqs))
+    expected_labels = set(_classifier_labels(freqs) if require_control else ("idle",))
     present_labels = {_trial_true_label(item.trial) for item in scored_trials}
     missing = sorted(label for label in expected_labels if label not in present_labels)
     if missing:
@@ -1193,7 +1970,11 @@ def _score_split_once(
     holdout_segments: Sequence[tuple[TrialSpec, np.ndarray]],
     win_sec: float,
     context: str,
+    score_bank_mode: str = DEFAULT_SCORE_BANK_MODE,
+    full_bank_freqs: Sequence[float] = (),
+    validate_holdout_control: bool = True,
 ) -> tuple[list[ScoredTrial], list[ScoredTrial]]:
+    mode = _parse_score_bank_mode(score_bank_mode)
     decoder = _build_fbcca_decoder_for_scoring(
         freqs=freqs,
         sampling_rate=int(sampling_rate),
@@ -1203,13 +1984,33 @@ def _score_split_once(
         gpu_device=int(gpu_device),
         gpu_precision=str(gpu_precision),
     )
+    full_bank_decoder = None
+    full_freqs = tuple(float(freq) for freq in full_bank_freqs)
+    if mode == "full_reference_bank":
+        full_bank_decoder = _build_fbcca_decoder_for_scoring(
+            freqs=full_freqs,
+            sampling_rate=int(sampling_rate),
+            win_sec=float(win_sec),
+            step_sec=float(step_sec),
+            compute_backend=str(compute_backend),
+            gpu_device=int(gpu_device),
+            gpu_precision=str(gpu_precision),
+        )
     calibration_scored = _score_trials_for_classifier(
         trial_segments=calibration_segments,
         decoder=decoder,
+        freqs=freqs,
+        score_bank_mode=mode,
+        full_bank_decoder=full_bank_decoder,
+        full_bank_freqs=full_freqs,
     )
     holdout_scored = _score_trials_for_classifier(
         trial_segments=holdout_segments,
         decoder=decoder,
+        freqs=freqs,
+        score_bank_mode=mode,
+        full_bank_decoder=full_bank_decoder,
+        full_bank_freqs=full_freqs,
     )
     _validate_scored_trial_coverage(
         calibration_scored,
@@ -1220,6 +2021,7 @@ def _score_split_once(
         holdout_scored,
         freqs=freqs,
         context=f"{context} holdout",
+        require_control=bool(validate_holdout_control),
     )
     return calibration_scored, holdout_scored
 
@@ -1237,6 +2039,9 @@ def _score_split_once_for_method(
     holdout_segments: Sequence[tuple[TrialSpec, np.ndarray]],
     win_sec: float,
     context: str,
+    score_bank_mode: str = DEFAULT_SCORE_BANK_MODE,
+    full_bank_freqs: Sequence[float] = (),
+    validate_holdout_control: bool = True,
 ) -> tuple[list[ScoredTrial], list[ScoredTrial]]:
     spec = _score_method_spec(method_name)
     if not spec.fit_decoder:
@@ -1251,6 +2056,9 @@ def _score_split_once_for_method(
             holdout_segments=holdout_segments,
             win_sec=float(win_sec),
             context=context,
+            score_bank_mode=score_bank_mode,
+            full_bank_freqs=full_bank_freqs,
+            validate_holdout_control=bool(validate_holdout_control),
         )
     decoder = _build_score_method_decoder(
         method_name=method_name,
@@ -1267,10 +2075,14 @@ def _score_split_once_for_method(
     calibration_scored = _score_trials_for_classifier(
         trial_segments=calibration_segments,
         decoder=decoder,
+        freqs=freqs,
+        score_bank_mode=DEFAULT_SCORE_BANK_MODE,
     )
     holdout_scored = _score_trials_for_classifier(
         trial_segments=holdout_segments,
         decoder=decoder,
+        freqs=freqs,
+        score_bank_mode=DEFAULT_SCORE_BANK_MODE,
     )
     _validate_scored_trial_coverage(
         calibration_scored,
@@ -1281,6 +2093,7 @@ def _score_split_once_for_method(
         holdout_scored,
         freqs=freqs,
         context=f"{context} holdout",
+        require_control=bool(validate_holdout_control),
     )
     return calibration_scored, holdout_scored
 
@@ -1867,6 +2680,7 @@ def _evaluation_payload(bundle: dict[str, Any]) -> dict[str, Any]:
             "fixed_window_metrics_4class": dict(bundle.get("fixed_window_metrics_4class") or {}),
             "async_lens_metrics_4class": dict(bundle.get("async_lens_metrics_4class") or {}),
             "async_metrics": dict(bundle.get("async_metrics") or {}),
+            "clean_idle_proxy_metrics": dict(bundle.get("clean_idle_proxy_metrics") or {}),
         }
     return {
         "metric_scope": str(bundle.get("metric_scope", "")),
@@ -1875,6 +2689,7 @@ def _evaluation_payload(bundle: dict[str, Any]) -> dict[str, Any]:
         "fixed_window_metrics_4class": dict(bundle.get("metrics_4class") or {}),
         "async_lens_metrics_4class": dict(bundle.get("async_lens_metrics_4class") or {}),
         "async_metrics": dict(bundle.get("async_metrics") or {}),
+        "clean_idle_proxy_metrics": dict(bundle.get("clean_idle_proxy_metrics") or {}),
     }
 
 
@@ -1932,11 +2747,16 @@ def _classifier_candidate_artifact(
     min_enter_windows: int,
     eval_payload: Mapping[str, Any],
     score_source_name: str = "fbcca",
+    score_bank_mode: str = DEFAULT_SCORE_BANK_MODE,
     decoder_name: Optional[str] = None,
     decoder_model_params: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
     normalized_source_name = str(score_source_name).strip().lower()
-    feature_names = _classifier_feature_names(freqs, score_source_name=normalized_source_name)
+    feature_names = _classifier_feature_names(
+        freqs,
+        score_source_name=normalized_source_name,
+        score_bank_mode=score_bank_mode,
+    )
     return {
         "artifact_schema_version": "external_fbcca_classifier_candidate_v1",
         "status": "candidate_only",
@@ -1949,11 +2769,17 @@ def _classifier_candidate_artifact(
         "model_family": f"{normalized_source_name}_score_classifier_5class",
         "feature_contract": {
             "feature_source": f"{normalized_source_name}_score_matrix",
-            "feature_builder": "_score_matrix_to_features",
+            "feature_builder": "_score_matrices_to_features",
+            "score_bank_mode": _parse_score_bank_mode(score_bank_mode),
             "feature_names": feature_names,
             "feature_count": int(len(feature_names)),
             "command_score_count": int(len(freqs)),
             "derived_feature_names": list(CLASSIFIER_DERIVED_FEATURE_NAMES),
+            "full_reference_bank_feature_names": (
+                list(FULL_REFERENCE_BANK_FEATURE_NAMES)
+                if _parse_score_bank_mode(score_bank_mode) == "full_reference_bank"
+                else []
+            ),
         },
         "windowing": {
             "win_sec": float(win_sec),
@@ -2006,6 +2832,7 @@ def _extract_row_metrics(eval_payload: dict[str, Any]) -> dict[str, float]:
     async_4 = dict(eval_payload.get("async_lens_metrics_4class") or {})
     async_5 = dict(eval_payload.get("async_lens_metrics_5class") or {})
     async_metrics = dict(eval_payload.get("async_metrics") or {})
+    clean_idle = dict(eval_payload.get("clean_idle_proxy_metrics") or {})
     return {
         "fixed_acc_4class": _safe_float(fixed_4.get("acc"), 0.0),
         "fixed_macro_f1_4class": _safe_float(fixed_4.get("macro_f1"), 0.0),
@@ -2031,6 +2858,8 @@ def _extract_row_metrics(eval_payload: dict[str, Any]) -> dict[str, float]:
         "release_latency_supported": float(1.0 if bool(async_metrics.get("release_latency_supported", True)) else 0.0),
         "switch_latency_s": _safe_float(async_metrics.get("switch_latency_s"), float("inf")),
         "release_latency_s": _safe_float(async_metrics.get("release_latency_s"), float("inf")),
+        "clean_idle_proxy_supported": float(1.0 if bool(clean_idle.get("supported", False)) else 0.0),
+        "clean_idle_proxy_fp_per_min": _safe_float(clean_idle.get("idle_fp_per_min"), float("nan")),
     }
 
 
@@ -2100,6 +2929,7 @@ def run_zero_shot_default(
         "split_index": int(split_plan.split_index),
         "calibration_blocks": [int(block) for block in split_plan.calibration_blocks],
         "holdout_blocks": [int(block) for block in split_plan.holdout_blocks],
+        "selected_freqs": [float(freq) for freq in freqs],
         "split_summary": dict(split_summary),
         "calibration_profile": {
             "status": "not_applicable",
@@ -2171,6 +3001,7 @@ def run_fast_fbcca_method(
         "split_index": int(split_plan.split_index),
         "calibration_blocks": [int(block) for block in split_plan.calibration_blocks],
         "holdout_blocks": [int(block) for block in split_plan.holdout_blocks],
+        "selected_freqs": [float(freq) for freq in freqs],
         "split_summary": dict(split_summary),
         "calibration_profile": {
             "status": str(payload.get("status", "")),
@@ -2209,9 +3040,12 @@ def run_fbcca_lda5_method(
     min_enter_windows: int,
     max_gap_windows: int = 0,
     threshold_policy: str = DEFAULT_CLASSIFIER_THRESHOLD_POLICY,
+    score_bank_mode: str = DEFAULT_SCORE_BANK_MODE,
     calibration_scored: Optional[Sequence[ScoredTrial]] = None,
     holdout_scored: Optional[Sequence[ScoredTrial]] = None,
     base_model: Optional[FBCCALDA5Model] = None,
+    clean_idle_scored: Optional[Sequence[ScoredTrial]] = None,
+    clean_idle_support: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
     recipe_id = _classifier_recipe_id(
         win_sec=float(win_sec),
@@ -2219,6 +3053,11 @@ def run_fbcca_lda5_method(
         max_gap_windows=max(0, int(max_gap_windows)),
     )
     if calibration_scored is None or holdout_scored is None:
+        full_bank_freqs = _full_bank_freqs_for_dataset(
+            dataset=spec.dataset,
+            score_bank_mode=score_bank_mode,
+            fallback_freqs=freqs,
+        )
         calibration_scored, holdout_scored = _score_split_once(
             freqs=freqs,
             sampling_rate=int(sampling_rate),
@@ -2230,6 +3069,8 @@ def run_fbcca_lda5_method(
             holdout_segments=holdout_segments,
             win_sec=float(win_sec),
             context=f"fbcca_lda5 dataset={spec.dataset} subject={spec.subject}",
+            score_bank_mode=score_bank_mode,
+            full_bank_freqs=full_bank_freqs,
         )
     else:
         calibration_scored = list(calibration_scored)
@@ -2253,6 +3094,23 @@ def run_fbcca_lda5_method(
         max_gap_windows=max(0, int(max_gap_windows)),
     )
     eval_payload = _evaluation_payload(bundle)
+    if clean_idle_support is not None:
+        support_payload = dict(clean_idle_support)
+        if support_payload.get("supported") and clean_idle_scored is not None:
+            eval_payload["clean_idle_proxy_metrics"] = _evaluate_clean_idle_proxy_from_cache(
+                model,
+                list(clean_idle_scored),
+                win_sec=float(win_sec),
+                step_sec=float(step_sec),
+                min_enter_windows=max(1, int(min_enter_windows)),
+                max_gap_windows=max(0, int(max_gap_windows)),
+            )
+        else:
+            eval_payload["clean_idle_proxy_metrics"] = {
+                **support_payload,
+                "idle_fp_per_min": None,
+                "idle_trial_fp_rate": None,
+            }
     candidate_artifact = _classifier_candidate_artifact(
         model=model,
         spec=spec,
@@ -2265,6 +3123,7 @@ def run_fbcca_lda5_method(
         min_enter_windows=int(min_enter_windows),
         eval_payload=eval_payload,
         score_source_name="fbcca",
+        score_bank_mode=score_bank_mode,
         decoder_name="fbcca",
         decoder_model_params={"Nh": 5, "subband_weight_mode": "chen_fixed"},
     )
@@ -2281,6 +3140,7 @@ def run_fbcca_lda5_method(
         "split_index": int(split_plan.split_index),
         "calibration_blocks": [int(block) for block in split_plan.calibration_blocks],
         "holdout_blocks": [int(block) for block in split_plan.holdout_blocks],
+        "selected_freqs": [float(freq) for freq in freqs],
         "split_summary": dict(split_summary),
         "calibration_profile": {
             "status": "ok",
@@ -2291,7 +3151,8 @@ def run_fbcca_lda5_method(
             "max_gap_windows": max(0, int(max_gap_windows)),
             "threshold_policy": _parse_classifier_threshold_policy(threshold_policy),
             "feature_count": int(model.feature_mean.shape[0]),
-            "feature_names": _classifier_feature_names(freqs),
+            "feature_names": _classifier_feature_names(freqs, score_bank_mode=score_bank_mode),
+            "score_bank_mode": _parse_score_bank_mode(score_bank_mode),
             "candidate_artifact": candidate_artifact,
             "candidate_artifact_path": candidate_artifact_path,
         },
@@ -2323,8 +3184,11 @@ def run_fbcca_ridge5_method(
     base_models: Optional[Sequence[FBCCARidge5Model]] = None,
     method_name: str = "fbcca_ridge5",
     score_source_name: str = "fbcca",
+    score_bank_mode: str = DEFAULT_SCORE_BANK_MODE,
     decoder_name: Optional[str] = None,
     decoder_model_params: Optional[Mapping[str, Any]] = None,
+    clean_idle_scored: Optional[Sequence[ScoredTrial]] = None,
+    clean_idle_support: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
     recipe_id = _classifier_recipe_id(
         win_sec=float(win_sec),
@@ -2337,6 +3201,11 @@ def run_fbcca_ridge5_method(
         sampling_rate=int(sampling_rate),
     )
     if calibration_scored is None or holdout_scored is None:
+        full_bank_freqs = _full_bank_freqs_for_dataset(
+            dataset=spec.dataset,
+            score_bank_mode=score_bank_mode,
+            fallback_freqs=freqs,
+        )
         calibration_scored, holdout_scored = _score_split_once_for_method(
             method_name=str(method_name),
             freqs=freqs,
@@ -2349,6 +3218,8 @@ def run_fbcca_ridge5_method(
             holdout_segments=holdout_segments,
             win_sec=float(win_sec),
             context=f"{str(method_name)} dataset={spec.dataset} subject={spec.subject}",
+            score_bank_mode=score_bank_mode,
+            full_bank_freqs=full_bank_freqs,
         )
     else:
         calibration_scored = list(calibration_scored)
@@ -2373,6 +3244,23 @@ def run_fbcca_ridge5_method(
         max_gap_windows=max(0, int(max_gap_windows)),
     )
     eval_payload = _evaluation_payload(bundle)
+    if clean_idle_support is not None:
+        support_payload = dict(clean_idle_support)
+        if support_payload.get("supported") and clean_idle_scored is not None:
+            eval_payload["clean_idle_proxy_metrics"] = _evaluate_clean_idle_proxy_from_cache(
+                model,
+                list(clean_idle_scored),
+                win_sec=float(latency_win_sec),
+                step_sec=float(step_sec),
+                min_enter_windows=max(1, int(min_enter_windows)),
+                max_gap_windows=max(0, int(max_gap_windows)),
+            )
+        else:
+            eval_payload["clean_idle_proxy_metrics"] = {
+                **support_payload,
+                "idle_fp_per_min": None,
+                "idle_trial_fp_rate": None,
+            }
     candidate_artifact = _classifier_candidate_artifact(
         model=model,
         spec=spec,
@@ -2385,6 +3273,7 @@ def run_fbcca_ridge5_method(
         min_enter_windows=int(min_enter_windows),
         eval_payload=eval_payload,
         score_source_name=str(score_source_name),
+        score_bank_mode=score_bank_mode,
         decoder_name=str(decoder_name or _score_method_spec(method_name).decoder_name),
         decoder_model_params=dict(decoder_model_params or _score_method_spec(method_name).decoder_model_params),
     )
@@ -2401,6 +3290,7 @@ def run_fbcca_ridge5_method(
         "split_index": int(split_plan.split_index),
         "calibration_blocks": [int(block) for block in split_plan.calibration_blocks],
         "holdout_blocks": [int(block) for block in split_plan.holdout_blocks],
+        "selected_freqs": [float(freq) for freq in freqs],
         "split_summary": dict(split_summary),
         "calibration_profile": {
             "status": "ok",
@@ -2411,8 +3301,13 @@ def run_fbcca_ridge5_method(
             "max_gap_windows": max(0, int(max_gap_windows)),
             "threshold_policy": _parse_classifier_threshold_policy(threshold_policy),
             "feature_count": int(model.feature_mean.shape[0]),
-            "feature_names": _classifier_feature_names(freqs, score_source_name=score_source_name),
+            "feature_names": _classifier_feature_names(
+                freqs,
+                score_source_name=score_source_name,
+                score_bank_mode=score_bank_mode,
+            ),
             "score_source_name": str(score_source_name).strip().lower(),
+            "score_bank_mode": _parse_score_bank_mode(score_bank_mode),
             "decoder_name": str(decoder_name or _score_method_spec(method_name).decoder_name),
             "decoder_model_params": dict(decoder_model_params or _score_method_spec(method_name).decoder_model_params),
             "l2": float(model.l2),
@@ -2506,6 +3401,7 @@ def run_threshold_pretrain_method(
         "split_index": int(split_plan.split_index),
         "calibration_blocks": [int(block) for block in split_plan.calibration_blocks],
         "holdout_blocks": [int(block) for block in split_plan.holdout_blocks],
+        "selected_freqs": [float(freq) for freq in freqs],
         "split_summary": dict(split_summary),
         "calibration_manifest": str(manifest_path),
         "calibration_profile": {
@@ -2538,15 +3434,22 @@ def aggregate_recipe_rows(
         if expected_subject_count is not None
         else int(len(all_subjects))
     )
-    grouped: dict[tuple[str, str, int, float], list[dict[str, Any]]] = defaultdict(list)
+    grouped: dict[tuple[str, str, int, float, str], list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
         calibration_blocks = tuple(int(item) for item in row.get("calibration_blocks", []))
         aggregate_recipe_id = str(row.get("aggregate_recipe_id") or row.get("recipe_id", ""))
+        selected_freqs = row.get("selected_freqs", None)
+        if selected_freqs is None:
+            selected_freqs = dict(row.get("split_summary", {}) or {}).get("selected_freqs", [])
+        frequency_set_id = str(row.get("frequency_set_id") or "")
+        if not frequency_set_id:
+            frequency_set_id = f"freqs_{_freq_token(selected_freqs)}" if selected_freqs else ""
         key = (
             str(row.get("method", "")),
             aggregate_recipe_id,
             int(len(calibration_blocks)),
             float(dict(row.get("split_summary", {}) or {}).get("idle_multiplier", 0.0)),
+            frequency_set_id,
         )
         grouped[key].append(dict(row))
 
@@ -2620,6 +3523,12 @@ def aggregate_recipe_rows(
                     "mean_release_latency_s": float(
                         np.mean([_safe_float(m.get("release_latency_s"), float("inf")) for m in metrics])
                     ),
+                    "mean_clean_idle_proxy_supported": float(
+                        np.mean([_safe_float(m.get("clean_idle_proxy_supported"), 0.0) for m in metrics])
+                    ),
+                    "mean_clean_idle_proxy_fp_per_min": float(
+                        np.mean([_safe_float(m.get("clean_idle_proxy_fp_per_min"), float("nan")) for m in metrics])
+                    ),
                 }
             )
 
@@ -2629,6 +3538,25 @@ def aggregate_recipe_rows(
         calibration_patterns = sorted(
             {
                 tuple(int(item) for item in row.get("calibration_blocks", []))
+                for row in key_rows
+            }
+        )
+        selected_freq_patterns = sorted(
+            {
+                tuple(float(freq) for freq in (row.get("selected_freqs") or dict(row.get("split_summary", {}) or {}).get("selected_freqs", []) or []))
+                for row in key_rows
+            }
+        )
+        per_subject_selected_freqs: dict[str, list[float]] = {}
+        for row in key_rows:
+            selected_freqs = row.get("selected_freqs") or dict(row.get("split_summary", {}) or {}).get("selected_freqs", [])
+            if not selected_freqs:
+                continue
+            subject_key = f"{str(row.get('dataset', ''))}:{str(row.get('subject', ''))}"
+            per_subject_selected_freqs[subject_key] = [float(freq) for freq in selected_freqs]
+        frequency_modes = sorted(
+            {
+                str(row.get("frequency_selection_mode") or dict(row.get("split_summary", {}) or {}).get("frequency_selection_mode", "") or "")
                 for row in key_rows
             }
         )
@@ -2649,6 +3577,20 @@ def aggregate_recipe_rows(
             "calibration_block_patterns": [[int(item) for item in pattern] for pattern in calibration_patterns],
             "calibration_block_count": int(key[2]),
             "idle_multiplier": float(key[3]),
+            "frequency_set_id": str(key[4]),
+            "selected_freqs": (
+                [float(freq) for freq in selected_freq_patterns[0]]
+                if len(selected_freq_patterns) == 1
+                else []
+            ),
+            "selected_freq_patterns": [[float(freq) for freq in pattern] for pattern in selected_freq_patterns],
+            "per_subject_selected_freqs": per_subject_selected_freqs,
+            "frequency_selection_mode": (
+                str(frequency_modes[0])
+                if len(frequency_modes) == 1
+                else "mixed"
+            ),
+            "frequency_set_coverage_subject_count": int(len(subject_summaries)),
             "subject_count": int(len(subject_summaries)),
             "expected_subject_count": int(resolved_expected_subject_count),
             "coverage_subject_count": int(len(subject_summaries)),
@@ -2680,6 +3622,8 @@ def aggregate_recipe_rows(
             ),
             "mean_switch_latency_s": subject_metric("mean_switch_latency_s"),
             "mean_release_latency_s": subject_metric("mean_release_latency_s"),
+            "mean_clean_idle_proxy_supported": subject_metric("mean_clean_idle_proxy_supported"),
+            "mean_clean_idle_proxy_fp_per_min": subject_metric("mean_clean_idle_proxy_fp_per_min"),
             "selected_recipe_counts": selected_recipe_counts,
             "subjects": subject_summaries,
         }
@@ -2719,6 +3663,11 @@ def render_markdown_summary(
     rows: Sequence[dict[str, Any]],
     summaries: Sequence[dict[str, Any]],
     shared_summaries: Optional[Sequence[dict[str, Any]]] = None,
+    score_bank_mode: str = DEFAULT_SCORE_BANK_MODE,
+    frequency_search_plan: Optional[Mapping[str, Any]] = None,
+    idle_eval_mode: str = DEFAULT_IDLE_EVAL_MODE,
+    budget: Optional[Mapping[str, Any]] = None,
+    weak_subject_audit: Optional[Mapping[str, Any]] = None,
 ) -> str:
     resolved_shared_summaries = (
         [dict(summary) for summary in shared_summaries]
@@ -2734,6 +3683,12 @@ def render_markdown_summary(
         f"- 240hz_all_integer_frames_per_cycle: `{bool(frame_lock_frequency_report(freqs, refresh_rate_hz=240.0).get('all_integer_frames_per_cycle', False))}`",
         f"- subject_count: `{len(subjects)}`",
         f"- row_count: `{len(rows)}`",
+        f"- score_bank_mode: `{score_bank_mode}`",
+        f"- frequency_selection_mode: `{dict(frequency_search_plan or {}).get('frequency_selection_mode', DEFAULT_FREQ_SEARCH_MODE)}`",
+        f"- idle_eval_mode: `{idle_eval_mode}`",
+        f"- pretrain_budget_sec: `{float(dict(budget or {}).get('pretrain_budget_sec', DEFAULT_PRETRAIN_BUDGET_SEC)):.1f}`",
+        f"- estimated_pretrain_duration_sec: `{float(dict(budget or {}).get('estimated_pretrain_duration_sec', 0.0)):.1f}`",
+        f"- pretrain_budget_pass: `{bool(dict(budget or {}).get('pretrain_budget_pass', True))}`",
         "",
         "> Idle/no-control is proxied with non-command target stimulus trials from the public external benchmarks.",
         "",
@@ -2744,12 +3699,12 @@ def render_markdown_summary(
             [
                 f"## {title}",
                 "",
-                "| Rank | Method | Recipe | Coverage | Cal Blocks | Idle Mult | Mean Fixed 5c Acc | Mean Fixed 5c Macro-F1 | Mean Async 5c Acc | Mean Async 5c Macro-F1 | Mean Idle FP/min | Mean Control Recall | Recall <=2.5s | Recall <=3s | Mean Detection Latency s |",
-                "|---:|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+                "| Rank | Method | Recipe | Freqs | Coverage | Cal Blocks | Idle Mult | Mean Fixed 5c Acc | Mean Fixed 5c Macro-F1 | Mean Async 5c Acc | Mean Async 5c Macro-F1 | Mean Idle FP/min | Mean Control Recall | Recall <=2.5s | Recall <=3s | Mean Detection Latency s |",
+                "|---:|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
             ]
         )
         if not table_summaries:
-            lines.append("| - | - | - | 0/0 | - | - | - | - | - | - | - | - | - | - | - |")
+            lines.append("| - | - | - | - | 0/0 | - | - | - | - | - | - | - | - | - | - | - |")
             return
         for index, summary in enumerate(list(table_summaries)[:10], start=1):
             expected_subjects = int(summary.get("expected_subject_count", 0) or 0)
@@ -2761,11 +3716,15 @@ def render_markdown_summary(
                 if expected_subjects > 0
                 else str(covered_subjects)
             )
+            freq_text = ",".join(f"{float(freq):g}" for freq in summary.get("selected_freqs", []) or [])
+            if not freq_text and summary.get("frequency_selection_mode") == "personalized_upper_bound":
+                freq_text = "per-subject"
             lines.append(
-                "| {rank} | {method} | `{recipe}` | {coverage} | {cal_blocks} | {idle_mult:.2f} | {acc:.4f} | {f1:.4f} | {async_acc:.4f} | {async_f1:.4f} | {idle:.4f} | {recall:.4f} | {recall_2p5:.4f} | {recall_3:.4f} | {latency:.4f} |".format(
+                "| {rank} | {method} | `{recipe}` | `{freqs}` | {coverage} | {cal_blocks} | {idle_mult:.2f} | {acc:.4f} | {f1:.4f} | {async_acc:.4f} | {async_f1:.4f} | {idle:.4f} | {recall:.4f} | {recall_2p5:.4f} | {recall_3:.4f} | {latency:.4f} |".format(
                     rank=index,
                     method=str(summary.get("method", "")),
                     recipe=str(summary.get("recipe_id", "")),
+                    freqs=freq_text,
                     coverage=coverage,
                     cal_blocks=int(summary.get("calibration_block_count", 0)),
                     idle_mult=float(summary.get("idle_multiplier", 0.0)),
@@ -2780,10 +3739,31 @@ def render_markdown_summary(
                     latency=float(summary.get("mean_detection_latency_s", float("inf"))),
                 )
             )
+        lines.append("")
 
     append_recipe_table("Top Shared Recipes", resolved_shared_summaries)
     lines.append("")
     append_recipe_table("Top Recipes", summaries)
+    if weak_subject_audit:
+        lines.extend(["", "## Weak Subject Audit", ""])
+        tracked = list(dict(weak_subject_audit).get("tracked_weak_subjects", []) or [])
+        if tracked:
+            lines.extend(
+                [
+                    "| Subject | Control Recall | Idle FP/min | Async 5c Macro-F1 | Detection Latency s |",
+                    "|---|---:|---:|---:|---:|",
+                ]
+            )
+            for row in tracked:
+                lines.append(
+                    "| {subject} | {recall:.4f} | {idle:.4f} | {f1:.4f} | {latency:.4f} |".format(
+                        subject=str(row.get("subject", "")),
+                        recall=_safe_float(row.get("mean_control_recall"), 0.0),
+                        idle=_safe_float(row.get("mean_idle_fp_per_min"), 0.0),
+                        f1=_safe_float(row.get("mean_async_macro_f1_5class"), 0.0),
+                        latency=_safe_float(row.get("mean_detection_latency_s"), float("inf")),
+                    )
+                )
     lines.extend(
         [
             "",
@@ -2858,6 +3838,29 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
         default=DEFAULT_CLASSIFIER_MAX_GAP_CANDIDATES,
     )
     classifier_threshold_policy = _parse_classifier_threshold_policy(args.classifier_threshold_policy)
+    score_bank_mode = _parse_score_bank_mode(getattr(args, "score_bank_mode", DEFAULT_SCORE_BANK_MODE))
+    freq_search_mode = _parse_freq_search_mode(getattr(args, "freq_search_mode", DEFAULT_FREQ_SEARCH_MODE))
+    freq_candidate_source = _parse_freq_candidate_source(
+        getattr(args, "freq_candidate_source", DEFAULT_FREQ_CANDIDATE_SOURCE)
+    )
+    idle_eval_mode = _parse_idle_eval_mode(getattr(args, "idle_eval_mode", DEFAULT_IDLE_EVAL_MODE))
+    personalized_candidate_counts = _csv_int_tuple(
+        getattr(args, "personalized_candidate_count", ""),
+        default=DEFAULT_PERSONALIZED_CANDIDATE_COUNT,
+    )
+    personalized_candidate_count = int(personalized_candidate_counts[0]) if personalized_candidate_counts else 0
+    pretrain_budget_sec = float(getattr(args, "pretrain_budget_sec", DEFAULT_PRETRAIN_BUDGET_SEC))
+    freq_plan = _frequency_search_plan(
+        mode=freq_search_mode,
+        candidate_source=freq_candidate_source,
+        datasets=datasets,
+    )
+    shared_frequency_sets = _shared_frequency_sets_for_plan(freq_plan, fallback_freqs=freqs)
+    budget = _budget_payload(
+        freq_selection_mode=freq_search_mode,
+        pretrain_budget_sec=pretrain_budget_sec,
+        personalized_candidate_count=personalized_candidate_count,
+    )
     subject_whitelist = _parse_subject_whitelist(getattr(args, "subject_whitelist", ""))
 
     subjects = enumerate_external_subjects(
@@ -2920,6 +3923,14 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                 "freqs": [float(freq) for freq in freqs],
                 "datasets": list(datasets),
                 "methods": list(methods),
+                "score_bank_mode": score_bank_mode,
+                "idle_eval_mode": idle_eval_mode,
+                "frequency_selection_mode": freq_search_mode,
+                "frequency_search_plan": freq_plan,
+                "shared_frequency_sets": [[float(freq) for freq in item] for item in shared_frequency_sets],
+                "pretrain_budget": budget,
+                "pretrain_budget_sec": float(pretrain_budget_sec),
+                "estimated_pretrain_duration_sec": float(budget.get("estimated_pretrain_duration_sec", 0.0)),
                 "expected_subject_count": int(len(subjects)),
                 "row_count": int(len(rows)),
                 "completed_recipe_count": int(completed_rows_total),
@@ -2940,6 +3951,18 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
     for subject_index, spec in enumerate(subjects, start=1):
         log(f"load subject dataset={spec.dataset} subject={spec.subject} path={spec.mat_path}")
         sampling_rate, segments, source_metadata = load_external_subject_segments(spec)
+        available_freqs = _available_freqs_for_subject(spec, source_metadata)
+        all_target_segments = _build_all_target_segments_for_spec(spec, available_freqs=available_freqs)
+        subject_shared_frequency_sets = tuple(
+            freq_set for freq_set in shared_frequency_sets if _freqs_available(freq_set, available_freqs)
+        )
+        if freq_search_mode in {"shared_fixed4", "both"} and not subject_shared_frequency_sets:
+            raise RuntimeError(f"no shared frequency set is available for {spec.dataset}:{spec.subject}")
+        personalized_subject_candidates = _candidate_freqs_for_subject(
+            candidate_freqs=tuple(float(freq) for freq in freq_plan.get("candidate_freqs", []) or ()),
+            available_freqs=available_freqs,
+            count=int(personalized_candidate_count),
+        )
         counts = _count_segments(segments, freqs)
         max_supported_win_sec = _max_supported_win_sec(segments, sampling_rate)
         subject_manifest.append(
@@ -2951,6 +3974,9 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                 "sampling_rate": int(sampling_rate),
                 "max_supported_win_sec": float(max_supported_win_sec),
                 "counts": counts,
+                "available_freqs": [float(freq) for freq in available_freqs],
+                "shared_frequency_set_count": int(len(subject_shared_frequency_sets)),
+                "personalized_candidate_freqs": [float(freq) for freq in personalized_subject_candidates],
                 "source_metadata": source_metadata,
             }
         )
@@ -2981,6 +4007,13 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             )
         plans_by_calibration: list[tuple[int, list[SplitPlan]]] = []
         subject_planned_rows = 0
+        frequency_case_multiplier = 1
+        if freq_search_mode == "shared_fixed4":
+            frequency_case_multiplier = int(len(subject_shared_frequency_sets))
+        elif freq_search_mode == "personalized_upper_bound":
+            frequency_case_multiplier = 1
+        elif freq_search_mode == "both":
+            frequency_case_multiplier = int(len(subject_shared_frequency_sets)) + 1
         rows_per_split = 0
         if "zero_shot_default" in methods:
             rows_per_split += 1
@@ -3000,12 +4033,31 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                 seed=int(args.seed),
             )
             plans_by_calibration.append((int(calibration_block_count), plans))
-            subject_planned_rows += int(len(plans) * len(idle_multipliers) * rows_per_split)
+            subject_planned_rows += int(
+                len(plans) * len(idle_multipliers) * rows_per_split * max(1, frequency_case_multiplier)
+            )
         subject_completed_rows = 0
 
         def append_row(row_payload: dict[str, Any], *, method_name: str, detail: str) -> None:
             nonlocal completed_rows_total, subject_completed_rows
-            rows.append(row_payload)
+            row = dict(row_payload)
+            split_payload = dict(row.get("split_summary", {}) or {})
+            selected_freqs = split_payload.get("selected_freqs", row.get("selected_freqs", []))
+            if selected_freqs:
+                row["selected_freqs"] = [float(freq) for freq in selected_freqs]
+                row["frequency_selection_mode"] = str(
+                    split_payload.get("frequency_selection_mode", row.get("frequency_selection_mode", ""))
+                )
+                row["frequency_set_id"] = str(split_payload.get("frequency_set_id", row.get("frequency_set_id", "")))
+                row["frequency_case"] = {
+                    "frequency_selection_mode": row["frequency_selection_mode"],
+                    "frequency_set_id": row["frequency_set_id"],
+                    "selected_freqs": row["selected_freqs"],
+                    "candidate_freqs": [float(freq) for freq in split_payload.get("candidate_freqs", []) or []],
+                    "personalized_candidate_count": int(split_payload.get("personalized_candidate_count", 0) or 0),
+                    "selected_by_calibration": bool(split_payload.get("selected_by_calibration", False)),
+                }
+            rows.append(row)
             completed_rows_total += 1
             subject_completed_rows += 1
             subject_fraction = float(subject_completed_rows) / float(max(subject_planned_rows, 1))
@@ -3038,331 +4090,464 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                 continue
             for plan in plans:
                 for idle_multiplier in idle_multipliers:
-                    calibration_segments, holdout_segments, split_summary = select_split_segments(
-                        segments,
-                        freqs=freqs,
-                        calibration_blocks=plan.calibration_blocks,
-                        holdout_blocks=plan.holdout_blocks,
-                        idle_multiplier=float(idle_multiplier),
-                        seed=int(plan.seed),
-                    )
-                    split_summary["calibration_duration_sec"] = _collection_duration_sec(
-                        calibration_segments,
-                        sampling_rate,
-                    )
-                    split_summary["holdout_duration_sec"] = _collection_duration_sec(holdout_segments, sampling_rate)
-                    method_root = report_root / spec.dataset / spec.subject / (
-                        f"cb{int(calibration_block_count)}_idle{float(idle_multiplier):g}_split{int(plan.split_index):02d}"
-                    )
-                    score_bundle_cache: dict[tuple[str, float], tuple[list[ScoredTrial], list[ScoredTrial]]] = {}
-                    lda_base_cache: dict[tuple[str, float], FBCCALDA5Model] = {}
-                    ridge_base_cache: dict[tuple[str, float], list[FBCCARidge5Model]] = {}
-
-                    def _method_cache_key(method_name: str, win_sec: float) -> tuple[str, float]:
-                        namespace = _score_method_cache_namespace(method_name)
-                        return (namespace, round(float(win_sec), 9))
-
-                    def scored_for_method_win(method_name: str, win_sec: float) -> tuple[list[ScoredTrial], list[ScoredTrial]]:
-                        cache_key = _method_cache_key(method_name, float(win_sec))
-                        if cache_key not in score_bundle_cache:
-                            score_bundle_cache[cache_key] = _score_split_once_for_method(
-                                method_name=str(method_name),
-                                freqs=freqs,
-                                sampling_rate=sampling_rate,
-                                step_sec=float(args.step_sec),
-                                compute_backend=str(args.compute_backend),
-                                gpu_device=int(args.gpu_device),
-                                gpu_precision=str(args.gpu_precision),
-                                calibration_segments=calibration_segments,
-                                holdout_segments=holdout_segments,
-                                win_sec=float(win_sec),
-                                context=(
-                                    f"{str(method_name)} dataset={spec.dataset} subject={spec.subject} "
-                                    f"split={int(plan.split_index)} win={float(win_sec):g}"
-                                ),
+                    frequency_cases: list[FrequencyEvalCase] = []
+                    if freq_search_mode in {"none", "shared_fixed4", "both"}:
+                        shared_mode_name = "none" if freq_search_mode == "none" else "shared_fixed4"
+                        for shared_freqs in (
+                            (_canonical_freq_tuple(freqs),)
+                            if freq_search_mode == "none"
+                            else subject_shared_frequency_sets
+                        ):
+                            frequency_cases.append(
+                                FrequencyEvalCase(
+                                    mode=shared_mode_name,
+                                    frequency_set_id=_frequency_set_id(shared_mode_name, shared_freqs),
+                                    freqs=_canonical_freq_tuple(shared_freqs),
+                                    candidate_freqs=tuple(float(freq) for freq in freq_plan.get("candidate_freqs", []) or ()),
+                                    personalized_candidate_count=0,
+                                    selected_by_calibration=False,
+                                )
                             )
-                        return score_bundle_cache[cache_key]
+                    if freq_search_mode in {"personalized_upper_bound", "both"}:
+                        selected_personalized_freqs, selection_summary = _score_personalized_frequency_candidates(
+                            all_target_segments=all_target_segments,
+                            candidate_freqs=personalized_subject_candidates,
+                            calibration_blocks=plan.calibration_blocks,
+                            sampling_rate=int(sampling_rate),
+                            win_sec=float(classifier_win_sec_candidates[0] if classifier_win_sec_candidates else 1.25),
+                            max_supported_win_sec=float(max_supported_win_sec),
+                            step_sec=float(args.step_sec),
+                            compute_backend=str(args.compute_backend),
+                            gpu_device=int(args.gpu_device),
+                            gpu_precision=str(args.gpu_precision),
+                        )
+                        frequency_cases.append(
+                            FrequencyEvalCase(
+                                mode="personalized_upper_bound",
+                                frequency_set_id=(
+                                    f"personalized_upper_bound_calibration_only_c"
+                                    f"{int(len(personalized_subject_candidates))}"
+                                ),
+                                freqs=selected_personalized_freqs,
+                                candidate_freqs=personalized_subject_candidates,
+                                personalized_candidate_count=int(len(personalized_subject_candidates)),
+                                selected_by_calibration=True,
+                            )
+                        )
+                    else:
+                        selection_summary = {}
+                    for frequency_case in frequency_cases:
+                        case_freqs = frequency_case.freqs
+                        case_segments = _relabel_segments_for_command_freqs(
+                            all_target_segments,
+                            command_freqs=case_freqs,
+                        )
+                        clean_idle_segments = (
+                            _build_clean_idle_segments_for_spec(spec, command_freqs=case_freqs)
+                            if idle_eval_mode in {"clean_idle_proxy", "both"}
+                            else []
+                        )
+                        calibration_segments, holdout_segments, split_summary = select_split_segments(
+                            case_segments,
+                            freqs=case_freqs,
+                            calibration_blocks=plan.calibration_blocks,
+                            holdout_blocks=plan.holdout_blocks,
+                            idle_multiplier=float(idle_multiplier),
+                            seed=int(plan.seed),
+                        )
+                        split_summary["calibration_duration_sec"] = _collection_duration_sec(
+                            calibration_segments,
+                            sampling_rate,
+                        )
+                        split_summary["holdout_duration_sec"] = _collection_duration_sec(holdout_segments, sampling_rate)
+                        split_summary.update(_frequency_case_payload(frequency_case))
+                        if frequency_case.mode == "personalized_upper_bound":
+                            split_summary["frequency_selection_summary"] = selection_summary
+                        method_root = report_root / spec.dataset / spec.subject / (
+                            f"cb{int(calibration_block_count)}_idle{float(idle_multiplier):g}_"
+                            f"split{int(plan.split_index):02d}_{frequency_case.frequency_set_id}"
+                        )
+                        score_bundle_cache: dict[tuple[str, float, str], tuple[list[ScoredTrial], list[ScoredTrial]]] = {}
+                        clean_idle_score_cache: dict[tuple[str, float, str], list[ScoredTrial]] = {}
+                        lda_base_cache: dict[tuple[str, float], FBCCALDA5Model] = {}
+                        ridge_base_cache: dict[tuple[str, float], list[FBCCARidge5Model]] = {}
 
-                    def lda_base_for_win(method_name: str, win_sec: float) -> FBCCALDA5Model:
-                        cache_key = _method_cache_key(method_name, float(win_sec))
-                        if cache_key not in lda_base_cache:
-                            calibration_scored, _holdout_scored = scored_for_method_win(method_name, float(win_sec))
-                            try:
-                                lda_base_cache[cache_key] = _fit_fbcca_lda5_base_model(
-                                    calibration_scored,
-                                    freqs=freqs,
-                                    score_source_name=_score_method_spec(method_name).score_source_name,
-                                )
-                            except TypeError as exc:
-                                if "score_source_name" not in str(exc):
-                                    raise
-                                lda_base_cache[cache_key] = _fit_fbcca_lda5_base_model(
-                                    calibration_scored,
-                                    freqs=freqs,
-                                )
-                        return lda_base_cache[cache_key]
+                        def _method_cache_key(method_name: str, win_sec: float) -> tuple[str, float, str]:
+                            namespace = _score_method_cache_namespace(method_name)
+                            return (namespace, round(float(win_sec), 9), score_bank_mode)
 
-                    def ridge_bases_for_win(method_name: str, win_sec: float) -> list[FBCCARidge5Model]:
-                        cache_key = _method_cache_key(method_name, float(win_sec))
-                        if cache_key not in ridge_base_cache:
-                            calibration_scored, _holdout_scored = scored_for_method_win(method_name, float(win_sec))
-                            ridge_base_models: list[FBCCARidge5Model] = []
-                            for l2 in DEFAULT_RIDGE_L2_CANDIDATES:
+                        def scored_for_method_win(method_name: str, win_sec: float) -> tuple[list[ScoredTrial], list[ScoredTrial]]:
+                            cache_key = _method_cache_key(method_name, float(win_sec))
+                            if cache_key not in score_bundle_cache:
+                                full_bank_freqs = _full_bank_freqs_for_dataset(
+                                    dataset=spec.dataset,
+                                    score_bank_mode=score_bank_mode,
+                                    fallback_freqs=case_freqs,
+                                )
+                                score_bundle_cache[cache_key] = _score_split_once_for_method(
+                                    method_name=str(method_name),
+                                    freqs=case_freqs,
+                                    sampling_rate=sampling_rate,
+                                    step_sec=float(args.step_sec),
+                                    compute_backend=str(args.compute_backend),
+                                    gpu_device=int(args.gpu_device),
+                                    gpu_precision=str(args.gpu_precision),
+                                    calibration_segments=calibration_segments,
+                                    holdout_segments=holdout_segments,
+                                    win_sec=float(win_sec),
+                                    context=(
+                                        f"{str(method_name)} dataset={spec.dataset} subject={spec.subject} "
+                                        f"split={int(plan.split_index)} win={float(win_sec):g}"
+                                    ),
+                                    score_bank_mode=score_bank_mode,
+                                    full_bank_freqs=full_bank_freqs,
+                                )
+                            return score_bundle_cache[cache_key]
+
+                        def clean_idle_for_method_win(method_name: str, win_sec: float) -> tuple[list[ScoredTrial], dict[str, Any]]:
+                            support = _clean_idle_proxy_support_payload(
+                                clean_idle_segments=clean_idle_segments,
+                                sampling_rate=int(sampling_rate),
+                                win_sec=float(win_sec),
+                            )
+                            if not support.get("supported"):
+                                return [], support
+                            cache_key = _method_cache_key(method_name, float(win_sec))
+                            if cache_key not in clean_idle_score_cache:
+                                full_bank_freqs = _full_bank_freqs_for_dataset(
+                                    dataset=spec.dataset,
+                                    score_bank_mode=score_bank_mode,
+                                    fallback_freqs=case_freqs,
+                                )
+                                _unused_cal, clean_scored = _score_split_once_for_method(
+                                    method_name=str(method_name),
+                                    freqs=case_freqs,
+                                    sampling_rate=sampling_rate,
+                                    step_sec=float(args.step_sec),
+                                    compute_backend=str(args.compute_backend),
+                                    gpu_device=int(args.gpu_device),
+                                    gpu_precision=str(args.gpu_precision),
+                                    calibration_segments=calibration_segments,
+                                    holdout_segments=clean_idle_segments,
+                                    win_sec=float(win_sec),
+                                    context=(
+                                        f"{str(method_name)} clean-idle dataset={spec.dataset} subject={spec.subject} "
+                                        f"split={int(plan.split_index)} win={float(win_sec):g}"
+                                    ),
+                                    score_bank_mode=score_bank_mode,
+                                    full_bank_freqs=full_bank_freqs,
+                                    validate_holdout_control=False,
+                                )
+                                clean_idle_score_cache[cache_key] = clean_scored
+                            return clean_idle_score_cache[cache_key], support
+
+                        def clean_idle_payload_for(method_name: str, win_sec: float) -> tuple[Optional[list[ScoredTrial]], Optional[dict[str, Any]]]:
+                            if idle_eval_mode not in {"clean_idle_proxy", "both"}:
+                                return None, None
+                            clean_scored, support = clean_idle_for_method_win(method_name, float(win_sec))
+                            return clean_scored, support
+
+                        def lda_base_for_win(method_name: str, win_sec: float) -> FBCCALDA5Model:
+                            cache_key = _method_cache_key(method_name, float(win_sec))
+                            if cache_key not in lda_base_cache:
+                                calibration_scored, _holdout_scored = scored_for_method_win(method_name, float(win_sec))
                                 try:
-                                    base_model = _fit_fbcca_ridge5_base_model(
+                                    lda_base_cache[cache_key] = _fit_fbcca_lda5_base_model(
                                         calibration_scored,
-                                        freqs=freqs,
-                                        l2=float(l2),
+                                        freqs=case_freqs,
                                         score_source_name=_score_method_spec(method_name).score_source_name,
                                     )
                                 except TypeError as exc:
                                     if "score_source_name" not in str(exc):
                                         raise
-                                    base_model = _fit_fbcca_ridge5_base_model(
+                                    lda_base_cache[cache_key] = _fit_fbcca_lda5_base_model(
                                         calibration_scored,
-                                        freqs=freqs,
-                                        l2=float(l2),
+                                        freqs=case_freqs,
                                     )
-                                ridge_base_models.append(base_model)
-                            ridge_base_cache[cache_key] = ridge_base_models
-                        return ridge_base_cache[cache_key]
+                            return lda_base_cache[cache_key]
 
-                    if "zero_shot_default" in methods:
-                        detail = (
-                            "zero_shot_default "
-                            f"dataset={spec.dataset} subject={spec.subject} split={int(plan.split_index)} "
-                            f"cal_blocks={len(plan.calibration_blocks)} idle_mult={float(idle_multiplier):g}"
-                        )
-                        log(detail)
-                        append_row(
-                            run_zero_shot_default(
-                                spec=spec,
-                                split_plan=plan,
-                                split_summary=split_summary,
-                                sampling_rate=sampling_rate,
-                                freqs=freqs,
-                                holdout_segments=holdout_segments,
-                                compute_backend=str(args.compute_backend),
-                                gpu_device=int(args.gpu_device),
-                                gpu_precision=str(args.gpu_precision),
-                            ),
-                            method_name="zero_shot_default",
-                            detail=detail,
-                        )
-                    if "fast_fbcca" in methods:
-                        if not fast_candidates:
-                            log(
-                                f"skip fast_fbcca dataset={spec.dataset} subject={spec.subject} "
-                                f"because no win candidate fits max_supported_win_sec={float(max_supported_win_sec):g}s"
-                            )
-                        for win_sec, template_weight in fast_candidates:
+                        def ridge_bases_for_win(method_name: str, win_sec: float) -> list[FBCCARidge5Model]:
+                            cache_key = _method_cache_key(method_name, float(win_sec))
+                            if cache_key not in ridge_base_cache:
+                                calibration_scored, _holdout_scored = scored_for_method_win(method_name, float(win_sec))
+                                ridge_base_models: list[FBCCARidge5Model] = []
+                                for l2 in DEFAULT_RIDGE_L2_CANDIDATES:
+                                    try:
+                                        base_model = _fit_fbcca_ridge5_base_model(
+                                            calibration_scored,
+                                            freqs=case_freqs,
+                                            l2=float(l2),
+                                            score_source_name=_score_method_spec(method_name).score_source_name,
+                                        )
+                                    except TypeError as exc:
+                                        if "score_source_name" not in str(exc):
+                                            raise
+                                        base_model = _fit_fbcca_ridge5_base_model(
+                                            calibration_scored,
+                                            freqs=case_freqs,
+                                            l2=float(l2),
+                                        )
+                                    ridge_base_models.append(base_model)
+                                ridge_base_cache[cache_key] = ridge_base_models
+                            return ridge_base_cache[cache_key]
+
+                        if "zero_shot_default" in methods:
                             detail = (
-                                "fast_fbcca "
+                                "zero_shot_default "
                                 f"dataset={spec.dataset} subject={spec.subject} split={int(plan.split_index)} "
-                                f"cal_blocks={len(plan.calibration_blocks)} idle_mult={float(idle_multiplier):g} "
-                                f"win={float(win_sec):g} tw={float(template_weight):g}"
+                                f"cal_blocks={len(plan.calibration_blocks)} idle_mult={float(idle_multiplier):g}"
                             )
                             log(detail)
                             append_row(
-                                run_fast_fbcca_method(
-                                    method_dir=method_root / "fast_fbcca",
+                                run_zero_shot_default(
                                     spec=spec,
                                     split_plan=plan,
                                     split_summary=split_summary,
                                     sampling_rate=sampling_rate,
-                                    freqs=freqs,
+                                    freqs=case_freqs,
+                                    holdout_segments=holdout_segments,
+                                    compute_backend=str(args.compute_backend),
+                                    gpu_device=int(args.gpu_device),
+                                    gpu_precision=str(args.gpu_precision),
+                                ),
+                                method_name="zero_shot_default",
+                                detail=detail,
+                            )
+                        if "fast_fbcca" in methods:
+                            if not fast_candidates:
+                                log(
+                                    f"skip fast_fbcca dataset={spec.dataset} subject={spec.subject} "
+                                    f"because no win candidate fits max_supported_win_sec={float(max_supported_win_sec):g}s"
+                                )
+                            for win_sec, template_weight in fast_candidates:
+                                detail = (
+                                    "fast_fbcca "
+                                    f"dataset={spec.dataset} subject={spec.subject} split={int(plan.split_index)} "
+                                    f"cal_blocks={len(plan.calibration_blocks)} idle_mult={float(idle_multiplier):g} "
+                                    f"win={float(win_sec):g} tw={float(template_weight):g}"
+                                )
+                                log(detail)
+                                append_row(
+                                    run_fast_fbcca_method(
+                                        method_dir=method_root / "fast_fbcca",
+                                        spec=spec,
+                                        split_plan=plan,
+                                        split_summary=split_summary,
+                                        sampling_rate=sampling_rate,
+                                        freqs=case_freqs,
+                                        calibration_segments=calibration_segments,
+                                        holdout_segments=holdout_segments,
+                                        compute_backend=str(args.compute_backend),
+                                        gpu_device=int(args.gpu_device),
+                                        gpu_precision=str(args.gpu_precision),
+                                        step_sec=float(args.step_sec),
+                                        win_sec=float(win_sec),
+                                        template_weight=float(template_weight),
+                                    ),
+                                    method_name="fast_fbcca",
+                                    detail=detail,
+                                )
+                        if "fbcca_lda5" in methods:
+                            lda_candidates = score_method_candidate_pairs_by_method.get("fbcca_lda5", [])
+                            if not lda_candidates:
+                                log(
+                                    f"skip fbcca_lda5 dataset={spec.dataset} subject={spec.subject} "
+                                    f"because no win candidate fits max_supported_win_sec={float(max_supported_win_sec):g}s"
+                                )
+                            for win_sec, min_enter in lda_candidates:
+                                calibration_scored, holdout_scored = scored_for_method_win("fbcca_lda5", float(win_sec))
+                                lda_base_model = lda_base_for_win("fbcca_lda5", float(win_sec))
+                                clean_idle_scored, clean_idle_support = clean_idle_payload_for("fbcca_lda5", float(win_sec))
+                                for max_gap in classifier_max_gap_candidates:
+                                    detail = (
+                                        "fbcca_lda5 "
+                                        f"dataset={spec.dataset} subject={spec.subject} split={int(plan.split_index)} "
+                                        f"cal_blocks={len(plan.calibration_blocks)} idle_mult={float(idle_multiplier):g} "
+                                        f"win={float(win_sec):g} min_enter={int(min_enter)} max_gap={int(max_gap)} "
+                                        f"threshold_policy={classifier_threshold_policy}"
+                                    )
+                                    log(detail)
+                                    append_row(
+                                        run_fbcca_lda5_method(
+                                            artifact_dir=method_root / "fbcca_lda5",
+                                            spec=spec,
+                                            split_plan=plan,
+                                            split_summary=split_summary,
+                                            sampling_rate=sampling_rate,
+                                            freqs=case_freqs,
+                                            calibration_segments=calibration_segments,
+                                            holdout_segments=holdout_segments,
+                                            compute_backend=str(args.compute_backend),
+                                            gpu_device=int(args.gpu_device),
+                                            gpu_precision=str(args.gpu_precision),
+                                            step_sec=float(args.step_sec),
+                                            win_sec=float(win_sec),
+                                            min_enter_windows=int(min_enter),
+                                            max_gap_windows=int(max_gap),
+                                            threshold_policy=classifier_threshold_policy,
+                                            score_bank_mode=score_bank_mode,
+                                            calibration_scored=calibration_scored,
+                                            holdout_scored=holdout_scored,
+                                            base_model=lda_base_model,
+                                            clean_idle_scored=clean_idle_scored,
+                                            clean_idle_support=clean_idle_support,
+                                        ),
+                                        method_name="fbcca_lda5",
+                                        detail=detail,
+                                    )
+                        if "fbcca_ridge5" in methods:
+                            ridge_candidates = score_method_candidate_pairs_by_method.get("fbcca_ridge5", [])
+                            if not ridge_candidates:
+                                log(
+                                    f"skip fbcca_ridge5 dataset={spec.dataset} subject={spec.subject} "
+                                    f"because no win candidate fits max_supported_win_sec={float(max_supported_win_sec):g}s"
+                                )
+                            for win_sec, min_enter in ridge_candidates:
+                                calibration_scored, holdout_scored = scored_for_method_win("fbcca_ridge5", float(win_sec))
+                                ridge_base_models = ridge_bases_for_win("fbcca_ridge5", float(win_sec))
+                                clean_idle_scored, clean_idle_support = clean_idle_payload_for("fbcca_ridge5", float(win_sec))
+                                for max_gap in classifier_max_gap_candidates:
+                                    detail = (
+                                        "fbcca_ridge5 "
+                                        f"dataset={spec.dataset} subject={spec.subject} split={int(plan.split_index)} "
+                                        f"cal_blocks={len(plan.calibration_blocks)} idle_mult={float(idle_multiplier):g} "
+                                        f"win={float(win_sec):g} min_enter={int(min_enter)} max_gap={int(max_gap)} "
+                                        f"threshold_policy={classifier_threshold_policy}"
+                                    )
+                                    log(detail)
+                                    append_row(
+                                        run_fbcca_ridge5_method(
+                                            artifact_dir=method_root / "fbcca_ridge5",
+                                            spec=spec,
+                                            split_plan=plan,
+                                            split_summary=split_summary,
+                                            sampling_rate=sampling_rate,
+                                            freqs=case_freqs,
+                                            calibration_segments=calibration_segments,
+                                            holdout_segments=holdout_segments,
+                                            compute_backend=str(args.compute_backend),
+                                            gpu_device=int(args.gpu_device),
+                                            gpu_precision=str(args.gpu_precision),
+                                            step_sec=float(args.step_sec),
+                                            win_sec=float(win_sec),
+                                            min_enter_windows=int(min_enter),
+                                            max_gap_windows=int(max_gap),
+                                            threshold_policy=classifier_threshold_policy,
+                                            score_bank_mode=score_bank_mode,
+                                            calibration_scored=calibration_scored,
+                                            holdout_scored=holdout_scored,
+                                            base_models=ridge_base_models,
+                                            clean_idle_scored=clean_idle_scored,
+                                            clean_idle_support=clean_idle_support,
+                                        ),
+                                        method_name="fbcca_ridge5",
+                                        detail=detail,
+                                    )
+                        for method_name in SUPPORTED_SHORT_PRETRAIN_METHODS:
+                            if method_name not in methods or method_name in {"fbcca_lda5", "fbcca_ridge5"}:
+                                continue
+                            method_candidates = score_method_candidate_pairs_by_method.get(method_name, [])
+                            if not method_candidates:
+                                log(
+                                    f"skip {method_name} dataset={spec.dataset} subject={spec.subject} "
+                                    f"because no win candidate fits max_supported_win_sec={float(max_supported_win_sec):g}s"
+                                )
+                                continue
+                            method_spec = _score_method_spec(method_name)
+                            for win_sec, min_enter in method_candidates:
+                                calibration_scored, holdout_scored = scored_for_method_win(method_name, float(win_sec))
+                                ridge_base_models = ridge_bases_for_win(method_name, float(win_sec))
+                                clean_idle_scored, clean_idle_support = clean_idle_payload_for(method_name, float(win_sec))
+                                for max_gap in classifier_max_gap_candidates:
+                                    detail = (
+                                        f"{method_name} "
+                                        f"dataset={spec.dataset} subject={spec.subject} split={int(plan.split_index)} "
+                                        f"cal_blocks={len(plan.calibration_blocks)} idle_mult={float(idle_multiplier):g} "
+                                        f"win={float(win_sec):g} min_enter={int(min_enter)} max_gap={int(max_gap)} "
+                                        f"threshold_policy={classifier_threshold_policy}"
+                                    )
+                                    log(detail)
+                                    append_row(
+                                        run_fbcca_ridge5_method(
+                                            artifact_dir=method_root / method_name,
+                                            spec=spec,
+                                            split_plan=plan,
+                                            split_summary=split_summary,
+                                            sampling_rate=sampling_rate,
+                                            freqs=case_freqs,
+                                            calibration_segments=calibration_segments,
+                                            holdout_segments=holdout_segments,
+                                            compute_backend=str(args.compute_backend),
+                                            gpu_device=int(args.gpu_device),
+                                            gpu_precision=str(args.gpu_precision),
+                                            step_sec=float(args.step_sec),
+                                            win_sec=float(win_sec),
+                                            min_enter_windows=int(min_enter),
+                                            max_gap_windows=int(max_gap),
+                                            threshold_policy=classifier_threshold_policy,
+                                            calibration_scored=calibration_scored,
+                                            holdout_scored=holdout_scored,
+                                            base_models=ridge_base_models,
+                                            method_name=str(method_name),
+                                            score_source_name=str(method_spec.score_source_name),
+                                            score_bank_mode=score_bank_mode,
+                                            decoder_name=str(method_spec.decoder_name),
+                                            decoder_model_params=dict(method_spec.decoder_model_params),
+                                            clean_idle_scored=clean_idle_scored,
+                                            clean_idle_support=clean_idle_support,
+                                        ),
+                                        method_name=str(method_name),
+                                        detail=detail,
+                                    )
+                        if "threshold_pretrain" in methods:
+                            if not threshold_supported_wins:
+                                log(
+                                    f"skip threshold_pretrain dataset={spec.dataset} subject={spec.subject} "
+                                    f"because no win candidate fits max_supported_win_sec={float(max_supported_win_sec):g}s"
+                                )
+                                continue
+                            detail = (
+                                "threshold_pretrain "
+                                f"dataset={spec.dataset} subject={spec.subject} split={int(plan.split_index)} "
+                                f"cal_blocks={len(plan.calibration_blocks)} idle_mult={float(idle_multiplier):g}"
+                            )
+                            log(detail)
+                            append_row(
+                                run_threshold_pretrain_method(
+                                    method_dir=method_root / "threshold_pretrain",
+                                    dataset_root=dataset_root / "threshold_pretrain",
+                                    spec=spec,
+                                    split_plan=plan,
+                                    split_summary=split_summary,
+                                    sampling_rate=sampling_rate,
+                                    freqs=case_freqs,
                                     calibration_segments=calibration_segments,
                                     holdout_segments=holdout_segments,
                                     compute_backend=str(args.compute_backend),
                                     gpu_device=int(args.gpu_device),
                                     gpu_precision=str(args.gpu_precision),
                                     step_sec=float(args.step_sec),
-                                    win_sec=float(win_sec),
-                                    template_weight=float(template_weight),
+                                    win_sec_candidates=threshold_supported_wins,
+                                    gate_policies=threshold_gate_policies,
+                                    min_enter_candidates=threshold_min_enter_candidates,
+                                    min_exit_candidates=threshold_min_exit_candidates,
+                                    control_state_modes=threshold_control_state_modes,
                                 ),
-                                method_name="fast_fbcca",
+                                method_name="threshold_pretrain",
                                 detail=detail,
                             )
-                    if "fbcca_lda5" in methods:
-                        lda_candidates = score_method_candidate_pairs_by_method.get("fbcca_lda5", [])
-                        if not lda_candidates:
-                            log(
-                                f"skip fbcca_lda5 dataset={spec.dataset} subject={spec.subject} "
-                                f"because no win candidate fits max_supported_win_sec={float(max_supported_win_sec):g}s"
-                            )
-                        for win_sec, min_enter in lda_candidates:
-                            calibration_scored, holdout_scored = scored_for_method_win("fbcca_lda5", float(win_sec))
-                            lda_base_model = lda_base_for_win("fbcca_lda5", float(win_sec))
-                            for max_gap in classifier_max_gap_candidates:
-                                detail = (
-                                    "fbcca_lda5 "
-                                    f"dataset={spec.dataset} subject={spec.subject} split={int(plan.split_index)} "
-                                    f"cal_blocks={len(plan.calibration_blocks)} idle_mult={float(idle_multiplier):g} "
-                                    f"win={float(win_sec):g} min_enter={int(min_enter)} max_gap={int(max_gap)} "
-                                    f"threshold_policy={classifier_threshold_policy}"
-                                )
-                                log(detail)
-                                append_row(
-                                    run_fbcca_lda5_method(
-                                        artifact_dir=method_root / "fbcca_lda5",
-                                        spec=spec,
-                                        split_plan=plan,
-                                        split_summary=split_summary,
-                                        sampling_rate=sampling_rate,
-                                        freqs=freqs,
-                                        calibration_segments=calibration_segments,
-                                        holdout_segments=holdout_segments,
-                                        compute_backend=str(args.compute_backend),
-                                        gpu_device=int(args.gpu_device),
-                                        gpu_precision=str(args.gpu_precision),
-                                        step_sec=float(args.step_sec),
-                                        win_sec=float(win_sec),
-                                        min_enter_windows=int(min_enter),
-                                        max_gap_windows=int(max_gap),
-                                        threshold_policy=classifier_threshold_policy,
-                                        calibration_scored=calibration_scored,
-                                        holdout_scored=holdout_scored,
-                                        base_model=lda_base_model,
-                                    ),
-                                    method_name="fbcca_lda5",
-                                    detail=detail,
-                                )
-                    if "fbcca_ridge5" in methods:
-                        ridge_candidates = score_method_candidate_pairs_by_method.get("fbcca_ridge5", [])
-                        if not ridge_candidates:
-                            log(
-                                f"skip fbcca_ridge5 dataset={spec.dataset} subject={spec.subject} "
-                                f"because no win candidate fits max_supported_win_sec={float(max_supported_win_sec):g}s"
-                            )
-                        for win_sec, min_enter in ridge_candidates:
-                            calibration_scored, holdout_scored = scored_for_method_win("fbcca_ridge5", float(win_sec))
-                            ridge_base_models = ridge_bases_for_win("fbcca_ridge5", float(win_sec))
-                            for max_gap in classifier_max_gap_candidates:
-                                detail = (
-                                    "fbcca_ridge5 "
-                                    f"dataset={spec.dataset} subject={spec.subject} split={int(plan.split_index)} "
-                                    f"cal_blocks={len(plan.calibration_blocks)} idle_mult={float(idle_multiplier):g} "
-                                    f"win={float(win_sec):g} min_enter={int(min_enter)} max_gap={int(max_gap)} "
-                                    f"threshold_policy={classifier_threshold_policy}"
-                                )
-                                log(detail)
-                                append_row(
-                                    run_fbcca_ridge5_method(
-                                        artifact_dir=method_root / "fbcca_ridge5",
-                                        spec=spec,
-                                        split_plan=plan,
-                                        split_summary=split_summary,
-                                        sampling_rate=sampling_rate,
-                                        freqs=freqs,
-                                        calibration_segments=calibration_segments,
-                                        holdout_segments=holdout_segments,
-                                        compute_backend=str(args.compute_backend),
-                                        gpu_device=int(args.gpu_device),
-                                        gpu_precision=str(args.gpu_precision),
-                                        step_sec=float(args.step_sec),
-                                        win_sec=float(win_sec),
-                                        min_enter_windows=int(min_enter),
-                                        max_gap_windows=int(max_gap),
-                                        threshold_policy=classifier_threshold_policy,
-                                        calibration_scored=calibration_scored,
-                                        holdout_scored=holdout_scored,
-                                        base_models=ridge_base_models,
-                                    ),
-                                    method_name="fbcca_ridge5",
-                                    detail=detail,
-                                )
-                    for method_name in SUPPORTED_SHORT_PRETRAIN_METHODS:
-                        if method_name not in methods or method_name in {"fbcca_lda5", "fbcca_ridge5"}:
-                            continue
-                        method_candidates = score_method_candidate_pairs_by_method.get(method_name, [])
-                        if not method_candidates:
-                            log(
-                                f"skip {method_name} dataset={spec.dataset} subject={spec.subject} "
-                                f"because no win candidate fits max_supported_win_sec={float(max_supported_win_sec):g}s"
-                            )
-                            continue
-                        method_spec = _score_method_spec(method_name)
-                        for win_sec, min_enter in method_candidates:
-                            calibration_scored, holdout_scored = scored_for_method_win(method_name, float(win_sec))
-                            ridge_base_models = ridge_bases_for_win(method_name, float(win_sec))
-                            for max_gap in classifier_max_gap_candidates:
-                                detail = (
-                                    f"{method_name} "
-                                    f"dataset={spec.dataset} subject={spec.subject} split={int(plan.split_index)} "
-                                    f"cal_blocks={len(plan.calibration_blocks)} idle_mult={float(idle_multiplier):g} "
-                                    f"win={float(win_sec):g} min_enter={int(min_enter)} max_gap={int(max_gap)} "
-                                    f"threshold_policy={classifier_threshold_policy}"
-                                )
-                                log(detail)
-                                append_row(
-                                    run_fbcca_ridge5_method(
-                                        artifact_dir=method_root / method_name,
-                                        spec=spec,
-                                        split_plan=plan,
-                                        split_summary=split_summary,
-                                        sampling_rate=sampling_rate,
-                                        freqs=freqs,
-                                        calibration_segments=calibration_segments,
-                                        holdout_segments=holdout_segments,
-                                        compute_backend=str(args.compute_backend),
-                                        gpu_device=int(args.gpu_device),
-                                        gpu_precision=str(args.gpu_precision),
-                                        step_sec=float(args.step_sec),
-                                        win_sec=float(win_sec),
-                                        min_enter_windows=int(min_enter),
-                                        max_gap_windows=int(max_gap),
-                                        threshold_policy=classifier_threshold_policy,
-                                        calibration_scored=calibration_scored,
-                                        holdout_scored=holdout_scored,
-                                        base_models=ridge_base_models,
-                                        method_name=str(method_name),
-                                        score_source_name=str(method_spec.score_source_name),
-                                        decoder_name=str(method_spec.decoder_name),
-                                        decoder_model_params=dict(method_spec.decoder_model_params),
-                                    ),
-                                    method_name=str(method_name),
-                                    detail=detail,
-                                )
-                    if "threshold_pretrain" in methods:
-                        if not threshold_supported_wins:
-                            log(
-                                f"skip threshold_pretrain dataset={spec.dataset} subject={spec.subject} "
-                                f"because no win candidate fits max_supported_win_sec={float(max_supported_win_sec):g}s"
-                            )
-                            continue
-                        detail = (
-                            "threshold_pretrain "
-                            f"dataset={spec.dataset} subject={spec.subject} split={int(plan.split_index)} "
-                            f"cal_blocks={len(plan.calibration_blocks)} idle_mult={float(idle_multiplier):g}"
-                        )
-                        log(detail)
-                        append_row(
-                            run_threshold_pretrain_method(
-                                method_dir=method_root / "threshold_pretrain",
-                                dataset_root=dataset_root / "threshold_pretrain",
-                                spec=spec,
-                                split_plan=plan,
-                                split_summary=split_summary,
-                                sampling_rate=sampling_rate,
-                                freqs=freqs,
-                                calibration_segments=calibration_segments,
-                                holdout_segments=holdout_segments,
-                                compute_backend=str(args.compute_backend),
-                                gpu_device=int(args.gpu_device),
-                                gpu_precision=str(args.gpu_precision),
-                                step_sec=float(args.step_sec),
-                                win_sec_candidates=threshold_supported_wins,
-                                gate_policies=threshold_gate_policies,
-                                min_enter_candidates=threshold_min_enter_candidates,
-                                min_exit_candidates=threshold_min_exit_candidates,
-                                control_state_modes=threshold_control_state_modes,
-                            ),
-                            method_name="threshold_pretrain",
-                            detail=detail,
-                        )
 
     summaries = aggregate_recipe_rows(rows, expected_subject_count=len(subjects))
     shared_summaries = _shared_recipe_summaries(summaries)
+    best_recipe = dict(summaries[0]) if summaries else {}
+    best_shared_recipe = dict(shared_summaries[0]) if shared_summaries else {}
+    weak_audit = _weak_subject_audit(best_shared_recipe or best_recipe)
+    frequency_set_coverage_subject_count = int(
+        (best_shared_recipe or best_recipe).get("coverage_subject_count", 0)
+        if (best_shared_recipe or best_recipe)
+        else 0
+    )
+    per_subject_selected_freqs = dict((best_shared_recipe or best_recipe).get("per_subject_selected_freqs", {}) or {})
     summary = {
         "task": "external-short-pretrain-benchmark",
         "status": "ok",
@@ -3370,6 +4555,18 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
         "run_id": run_id,
         "config": json_safe(vars(args)),
         "freqs": [float(freq) for freq in freqs],
+        "selected_freqs": [float(freq) for freq in freqs],
+        "per_subject_selected_freqs": per_subject_selected_freqs,
+        "frequency_selection_mode": freq_search_mode,
+        "frequency_search_plan": freq_plan,
+        "shared_frequency_sets": [[float(freq) for freq in item] for item in shared_frequency_sets],
+        "frequency_set_coverage_subject_count": int(frequency_set_coverage_subject_count),
+        "score_bank_mode": score_bank_mode,
+        "idle_eval_mode": idle_eval_mode,
+        "pretrain_budget_sec": float(pretrain_budget_sec),
+        "estimated_pretrain_duration_sec": float(budget.get("estimated_pretrain_duration_sec", 0.0)),
+        "pretrain_budget": budget,
+        "weak_subject_audit": weak_audit,
         "datasets": list(datasets),
         "methods": list(methods),
         "subject_whitelist": [[dataset, subject] for dataset, subject in subject_whitelist],
@@ -3379,8 +4576,8 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
         "rows": rows,
         "recipe_summaries": summaries,
         "shared_recipe_summaries": shared_summaries,
-        "best_recipe": dict(summaries[0]) if summaries else {},
-        "best_shared_recipe": dict(shared_summaries[0]) if shared_summaries else {},
+        "best_recipe": best_recipe,
+        "best_shared_recipe": best_shared_recipe,
         "idle_proxy_note": "Idle/no-control is proxied with non-command target stimulus trials from external benchmarks.",
     }
     _write_json(report_root / "summary.json", summary)
@@ -3393,6 +4590,11 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             rows=rows,
             summaries=summaries,
             shared_summaries=shared_summaries,
+            score_bank_mode=score_bank_mode,
+            frequency_search_plan=freq_plan,
+            idle_eval_mode=idle_eval_mode,
+            budget=budget,
+            weak_subject_audit=weak_audit,
         ),
         encoding="utf-8",
     )
@@ -3436,6 +4638,21 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default=DEFAULT_CLASSIFIER_THRESHOLD_POLICY,
         choices=CLASSIFIER_THRESHOLD_POLICIES,
+    )
+    parser.add_argument("--score-bank-mode", type=str, default=DEFAULT_SCORE_BANK_MODE, choices=SCORE_BANK_MODES)
+    parser.add_argument("--freq-search-mode", type=str, default=DEFAULT_FREQ_SEARCH_MODE, choices=FREQ_SEARCH_MODES)
+    parser.add_argument(
+        "--freq-candidate-source",
+        type=str,
+        default=DEFAULT_FREQ_CANDIDATE_SOURCE,
+        choices=FREQ_CANDIDATE_SOURCES,
+    )
+    parser.add_argument("--idle-eval-mode", type=str, default=DEFAULT_IDLE_EVAL_MODE, choices=IDLE_EVAL_MODES)
+    parser.add_argument("--pretrain-budget-sec", type=float, default=DEFAULT_PRETRAIN_BUDGET_SEC)
+    parser.add_argument(
+        "--personalized-candidate-count",
+        type=str,
+        default=",".join(str(item) for item in DEFAULT_PERSONALIZED_CANDIDATE_COUNT),
     )
     parser.add_argument("--threshold-win-sec-candidates", type=str, default="1.5,2.0,2.5,3.0")
     parser.add_argument("--threshold-gate-policies", type=str, default="balanced,speed")

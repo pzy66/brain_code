@@ -73,7 +73,6 @@ $artifactPatterns = [ordered]@{
     "ssvep_deployed_profiles" = "^02_SSVEP/artifacts/deployed_profiles/"
     "root_artifacts" = "^artifacts/"
     "hybrid_models" = "^hybrid_controller/models/"
-    "hybrid_dataset" = "^hybrid_controller/dataset/"
     "logs" = "^logs/"
 }
 

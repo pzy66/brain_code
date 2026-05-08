@@ -419,6 +419,26 @@ def test_pick_cyl_sends_started_and_done(monkeypatch) -> None:
     assert runtime.healthcheck()["carrying"] is True
 
 
+def test_sucker_freeze_turns_pick_into_dry_run(monkeypatch) -> None:
+    _patch_executor_sleep(monkeypatch)
+    runtime = _runtime()
+    stream = FakeStream()
+
+    runtime.dispatch_command("SUCKER_FREEZE true", stream)
+    runtime.dispatch_command("PICK_CYL 10 130", stream)
+
+    assert wait_for(lambda: "ACK PICK_DONE" in stream.lines())
+    status = runtime.healthcheck()
+    assert stream.lines()[0] == "ACK SUCKER_FREEZE_ON"
+    assert stream.lines()[1] == "ACK PICK_STARTED"
+    assert runtime._hardware.sucker_states
+    assert True not in runtime._hardware.sucker_states
+    assert status["sucker_frozen"] is True
+    assert status["carrying"] is False
+    assert status["state"] == RobotExecutorState.IDLE.value
+    assert status["last_action"]["feedback"]["sucker_enabled"] is False
+
+
 def test_set_sucker_rotation_command_maps_logical_angle() -> None:
     hardware = FakeHardwareWithRotation()
     runtime = _runtime(hardware=hardware)

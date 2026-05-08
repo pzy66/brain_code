@@ -202,6 +202,44 @@ def test_jetmax_runtime_default_start_does_not_check_camera_stream() -> None:
     assert [check.name for check in checks] == ["rosbridge"]
 
 
+def test_jetmax_runtime_start_keeps_existing_rosbridge_connection() -> None:
+    args = jetmax_start_ros_runtime.build_parser().parse_args([])
+    source = Path(jetmax_start_ros_runtime.__file__).read_text(encoding="utf-8")
+    run_script = Path(jetmax_start_ros_runtime.__file__).parents[1] / "run_hybrid_controller_ros_runtime.sh"
+    run_source = run_script.read_text(encoding="utf-8")
+
+    assert args.disable_autostart_rosbridge is False
+    assert "pkill -f rosbridge_websocket" not in source
+    assert 'HYBRID_FORCE_RESTART_ROSBRIDGE="${HYBRID_FORCE_RESTART_ROSBRIDGE:-0}"' in run_source
+    assert "HYBRID_FORCE_RESTART_ROSBRIDGE=0" in source
+
+
+def test_jetmax_runtime_start_uses_safe_control_restart_and_ready_checks() -> None:
+    source = Path(jetmax_start_ros_runtime.__file__).read_text(encoding="utf-8")
+    run_script = Path(jetmax_start_ros_runtime.__file__).parents[1] / "run_hybrid_controller_ros_runtime.sh"
+    run_source = run_script.read_text(encoding="utf-8")
+    runtime_node = (
+        Path(jetmax_start_ros_runtime.__file__).parents[1]
+        / "ros_pkg"
+        / "hybrid_controller_ros"
+        / "scripts"
+        / "hybrid_controller_runtime_node.py"
+    )
+    runtime_source = runtime_node.read_text(encoding="utf-8")
+
+    assert 'rosnode kill /hybrid_controller_runtime_node' in source
+    assert '--force-catkin-rebuild' in source
+    assert 'HYBRID_FORCE_CATKIN_REBUILD={1 if bool(args.force_catkin_rebuild) else 0}' in source
+    assert 'timeout 8 rostopic echo -n 1 --noarr /hybrid_controller/state' in source
+    assert '"/hybrid_controller/state did not publish a complete runtime state sample."' in source
+    assert 'rospy.init_node("hybrid_controller_runtime_node", anonymous=False' in runtime_source
+    assert 'HYBRID_FORCE_CATKIN_REBUILD="${HYBRID_FORCE_CATKIN_REBUILD:-0}"' in run_source
+    assert "catkin_make --force-cmake" not in run_source
+    assert "rsync -a --delete" in run_source
+    assert "hybrid_controller_ros catkin build is current; skipping rebuild." in run_source
+    assert ".hybrid_interface.sha256" in run_source
+
+
 def test_build_config_from_args_applies_modes() -> None:
     args = Namespace(
         timing_profile="fast",

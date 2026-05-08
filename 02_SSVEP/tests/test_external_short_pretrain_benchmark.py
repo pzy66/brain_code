@@ -118,6 +118,200 @@ def test_classifier_threshold_policy_parser_supports_recall_guard() -> None:
     assert bench._parse_classifier_threshold_policy(" balanced_recall_guard ") == "balanced_recall_guard"
 
 
+def test_full_reference_bank_features_add_command_vs_noncommand_evidence() -> None:
+    command_scores = np.asarray(
+        [
+            [0.8, 0.3, 0.2, 0.1],
+            [0.4, 0.9, 0.2, 0.1],
+        ],
+        dtype=np.float64,
+    )
+    all_scores = np.asarray(
+        [
+            [0.1, 0.8, 0.3, 0.2, 0.7, 0.1],
+            [0.95, 0.4, 0.9, 0.2, 0.1, 0.05],
+        ],
+        dtype=np.float64,
+    )
+    command_freqs = (8.0, 10.0, 12.0, 15.0)
+    all_freqs = (7.8, 8.0, 10.0, 12.0, 14.0, 15.0)
+
+    features = bench._score_matrices_to_features(
+        command_score_matrix=command_scores,
+        command_freqs=command_freqs,
+        score_bank_mode="full_reference_bank",
+        all_score_matrix=all_scores,
+        all_freqs=all_freqs,
+    )
+
+    assert features.shape == (2, len(command_freqs) + len(bench.CLASSIFIER_DERIVED_FEATURE_NAMES) + len(bench.FULL_REFERENCE_BANK_FEATURE_NAMES))
+    full = features[:, -len(bench.FULL_REFERENCE_BANK_FEATURE_NAMES) :]
+    assert abs(float(full[0, 0]) - 0.8) < 1e-9
+    assert abs(float(full[0, 1]) - 0.8) < 1e-9
+    assert int(full[0, 2]) == 1
+    assert abs(float(full[0, 4]) - 0.1) < 1e-9
+    assert abs(float(full[1, 0]) - 0.9) < 1e-9
+    assert abs(float(full[1, 1]) - 0.95) < 1e-9
+    assert int(full[1, 2]) == 2
+    assert float(full[1, 4]) < 0.0
+
+
+def test_full_reference_bank_feature_names_extend_contract() -> None:
+    names = bench._classifier_feature_names(
+        (8.0, 10.0, 12.0, 15.0),
+        score_bank_mode="full_reference_bank",
+    )
+
+    assert names[-6:] == list(bench.FULL_REFERENCE_BANK_FEATURE_NAMES)
+
+
+def test_pretrain_budget_estimate_flags_over_budget_personalized_search() -> None:
+    shared = bench._budget_payload(
+        freq_selection_mode="shared_fixed4",
+        pretrain_budget_sec=120.0,
+        personalized_candidate_count=0,
+    )
+    personalized = bench._budget_payload(
+        freq_selection_mode="personalized_upper_bound",
+        pretrain_budget_sec=120.0,
+        personalized_candidate_count=12,
+    )
+
+    assert shared["pretrain_budget_pass"] is True
+    assert abs(float(shared["estimated_pretrain_duration_sec"]) - 102.0) < 1e-9
+    assert personalized["pretrain_budget_pass"] is False
+    assert abs(float(personalized["estimated_pretrain_duration_sec"]) - 150.0) < 1e-9
+
+
+def test_frequency_search_plan_lists_frame_locked_shared_sets() -> None:
+    plan = bench._frequency_search_plan(
+        mode="shared_fixed4",
+        candidate_source="frame_locked_240",
+        datasets=("beta",),
+    )
+
+    assert plan["frequency_selection_mode"] == "shared_fixed4"
+    assert plan["shared_candidate_set_count"] == 5
+    assert plan["shared_candidate_sets_preview"][0] == [8.0, 9.6, 10.0, 12.0]
+
+
+def test_shared_frequency_sets_expand_all_frame_locked_combinations() -> None:
+    plan = bench._frequency_search_plan(
+        mode="shared_fixed4",
+        candidate_source="frame_locked_240",
+        datasets=("beta",),
+    )
+
+    sets = bench._shared_frequency_sets_for_plan(plan, fallback_freqs=(9.8, 12.0, 14.8, 15.8))
+
+    assert len(sets) == 5
+    assert sets[0] == (8.0, 9.6, 10.0, 12.0)
+    assert sets[-1] == (9.6, 10.0, 12.0, 15.0)
+
+
+def test_relabel_segments_for_command_freqs_turns_noncommands_into_hard_idle() -> None:
+    segments = [
+        (
+            TrialSpec(label="8Hz", expected_freq=8.0, trial_id=1, block_index=0),
+            np.zeros((10, 2), dtype=np.float64),
+        ),
+        (
+            TrialSpec(label="hard_idle_beta_target11_10Hz", expected_freq=None, trial_id=2, block_index=0),
+            np.zeros((10, 2), dtype=np.float64),
+        ),
+        (
+            TrialSpec(label="12Hz", expected_freq=12.0, trial_id=3, block_index=0),
+            np.zeros((10, 2), dtype=np.float64),
+        ),
+    ]
+
+    relabeled = bench._relabel_segments_for_command_freqs(
+        segments,
+        command_freqs=(8.0, 9.6, 10.0, 12.0),
+    )
+
+    assert [item[0].expected_freq for item in relabeled] == [8.0, 10.0, 12.0]
+    relabeled = bench._relabel_segments_for_command_freqs(
+        segments,
+        command_freqs=(8.0, 9.6, 11.0, 12.0),
+    )
+    assert [item[0].expected_freq for item in relabeled] == [8.0, None, 12.0]
+    assert relabeled[1][0].label == "hard_idle_10Hz"
+
+
+def test_personalized_frequency_selection_uses_calibration_blocks_only(monkeypatch) -> None:
+    candidate_freqs = (8.0, 10.0, 12.0, 15.0, 20.0)
+    segments = []
+    trial_id = 0
+    for freq in (8.0, 10.0, 12.0, 15.0):
+        segments.append(
+            (
+                TrialSpec(label=f"{freq:g}Hz", expected_freq=freq, trial_id=trial_id, block_index=0),
+                np.full((2, 1), freq, dtype=np.float64),
+            )
+        )
+        trial_id += 1
+    segments.append(
+        (
+            TrialSpec(label="20Hz", expected_freq=20.0, trial_id=trial_id, block_index=1),
+            np.full((2, 1), 20.0, dtype=np.float64),
+        )
+    )
+
+    class FakeDecoder:
+        win_samples = 1
+        step_samples = 1
+        fs = 250
+
+        def score_windows_batch(self, windows):
+            values = np.asarray(windows, dtype=np.float64)[:, 0, 0]
+            scores = np.zeros((len(values), len(candidate_freqs)), dtype=np.float64)
+            for row_index, value in enumerate(values):
+                for col_index, freq in enumerate(candidate_freqs):
+                    if abs(float(value) - float(freq)) < 1e-9:
+                        scores[row_index, col_index] = 10.0
+            return scores
+
+    monkeypatch.setattr(bench, "_build_fbcca_decoder_for_scoring", lambda **_kwargs: FakeDecoder())
+
+    selected, summary = bench._score_personalized_frequency_candidates(
+        all_target_segments=segments,
+        candidate_freqs=candidate_freqs,
+        calibration_blocks=(0,),
+        sampling_rate=250,
+        win_sec=1.0,
+        max_supported_win_sec=1.0,
+        step_sec=0.25,
+        compute_backend="cpu",
+        gpu_device=0,
+        gpu_precision="float32",
+    )
+
+    assert 20.0 not in selected
+    assert set(selected) == {8.0, 10.0, 12.0, 15.0}
+    ranked = {float(row["freq"]): row for row in summary["ranked_candidates"]}
+    assert ranked[20.0]["trial_count"] == 0
+
+
+def test_clean_idle_proxy_reports_unsupported_when_prestim_is_shorter_than_window() -> None:
+    segments = [
+        (
+            TrialSpec(label="pre_stim_idle_8Hz", expected_freq=None, trial_id=1, block_index=0),
+            np.zeros((125, 8), dtype=np.float64),
+        )
+    ]
+
+    payload = bench._clean_idle_proxy_support_payload(
+        clean_idle_segments=segments,
+        sampling_rate=250,
+        win_sec=1.25,
+    )
+
+    assert payload["available"] is True
+    assert payload["supported"] is False
+    assert payload["max_segment_duration_sec"] == 0.5
+
+
 def test_tdca_candidate_windows_require_effective_raw_latency_buffer() -> None:
     pairs = bench._score_method_candidate_pairs(
         method_name="tdca5",
@@ -589,6 +783,27 @@ def test_balanced_recall_guard_prefers_recall_inside_idle_budget() -> None:
             policy="balanced_recall_guard",
             tie_breaker=0.9,
         )
+    )
+
+
+def test_safe_float_treats_inf_latency_as_missing_for_ranking() -> None:
+    good = {
+        "idle_fp_per_min": 0.5,
+        "idle_selected_windows_per_min": 1.0,
+        "control_recall": 0.8,
+        "control_recall_at_2.5s": 0.8,
+        "control_recall_at_3s": 0.8,
+        "async_macro_f1_5class": 0.7,
+        "detection_latency_s": 2.0,
+    }
+    inf_latency = {**good, "detection_latency_s": float("inf")}
+
+    assert bench._classifier_threshold_rank_key(
+        good,
+        policy="balanced_recall_guard",
+    ) < bench._classifier_threshold_rank_key(
+        inf_latency,
+        policy="balanced_recall_guard",
     )
 
 
@@ -1119,7 +1334,7 @@ def test_score_segment_subset_cached_reuses_overlap_and_preserves_order(monkeypa
 
     monkeypatch.setattr(bench, "_build_fbcca_decoder_for_scoring", lambda **_kwargs: FakeDecoder())
 
-    def fake_score_trials(*, trial_segments, decoder):
+    def fake_score_trials(*, trial_segments, decoder, **_kwargs):
         assert isinstance(decoder, FakeDecoder)
         score_call_sizes.append(len(trial_segments))
         scored = []
@@ -1316,6 +1531,89 @@ def test_aggregate_recipe_rows_tracks_shared_coverage() -> None:
     assert [summary["recipe_id"] for summary in shared_summaries] == ["win2_me1"]
 
 
+def test_aggregate_recipe_rows_keeps_frequency_sets_separate() -> None:
+    rows = [
+        {
+            **_aggregate_test_row(
+                subject="S1",
+                recipe_id="win1p5_me2",
+                async_macro_f1_5class=0.8,
+                async_acc_5class=0.9,
+                idle_fp_per_min=0.5,
+                control_recall=0.85,
+                detection_latency_s=1.5,
+            ),
+            "selected_freqs": [8.0, 9.6, 10.0, 12.0],
+            "frequency_set_id": "shared_fixed4_8_9p6_10_12",
+            "frequency_selection_mode": "shared_fixed4",
+        },
+        {
+            **_aggregate_test_row(
+                subject="S1",
+                recipe_id="win1p5_me2",
+                async_macro_f1_5class=0.7,
+                async_acc_5class=0.88,
+                idle_fp_per_min=0.4,
+                control_recall=0.75,
+                detection_latency_s=1.7,
+            ),
+            "selected_freqs": [8.0, 10.0, 12.0, 15.0],
+            "frequency_set_id": "shared_fixed4_8_10_12_15",
+            "frequency_selection_mode": "shared_fixed4",
+        },
+    ]
+
+    summaries = bench.aggregate_recipe_rows(rows, expected_subject_count=1)
+
+    assert len(summaries) == 2
+    assert {tuple(summary["selected_freqs"]) for summary in summaries} == {
+        (8.0, 9.6, 10.0, 12.0),
+        (8.0, 10.0, 12.0, 15.0),
+    }
+    assert all(summary["shared_eligible"] for summary in summaries)
+
+
+def test_personalized_frequency_policy_can_be_shared_eligible_with_per_subject_freqs() -> None:
+    rows = [
+        {
+            **_aggregate_test_row(
+                subject="S1",
+                recipe_id="win1p5_me2",
+                async_macro_f1_5class=0.8,
+                async_acc_5class=0.9,
+                idle_fp_per_min=0.5,
+                control_recall=0.85,
+                detection_latency_s=1.5,
+            ),
+            "selected_freqs": [8.0, 9.6, 10.0, 12.0],
+            "frequency_set_id": "personalized_upper_bound_calibration_only_c8",
+            "frequency_selection_mode": "personalized_upper_bound",
+        },
+        {
+            **_aggregate_test_row(
+                subject="S16",
+                recipe_id="win1p5_me2",
+                async_macro_f1_5class=0.82,
+                async_acc_5class=0.91,
+                idle_fp_per_min=0.6,
+                control_recall=0.86,
+                detection_latency_s=1.6,
+            ),
+            "selected_freqs": [8.2, 9.8, 12.0, 15.0],
+            "frequency_set_id": "personalized_upper_bound_calibration_only_c8",
+            "frequency_selection_mode": "personalized_upper_bound",
+        },
+    ]
+
+    summary = bench.aggregate_recipe_rows(rows, expected_subject_count=2)[0]
+
+    assert summary["shared_eligible"] is True
+    assert summary["coverage_subject_count"] == 2
+    assert summary["selected_freqs"] == []
+    assert summary["per_subject_selected_freqs"]["beta:S1"] == [8.0, 9.6, 10.0, 12.0]
+    assert summary["per_subject_selected_freqs"]["beta:S16"] == [8.2, 9.8, 12.0, 15.0]
+
+
 def test_render_markdown_summary_lists_shared_recipes_with_coverage() -> None:
     rows = [
         _aggregate_test_row(
@@ -1371,8 +1669,8 @@ def test_render_markdown_summary_lists_shared_recipes_with_coverage() -> None:
     )
 
     assert markdown.index("## Top Shared Recipes") < markdown.index("## Top Recipes")
-    assert "| Rank | Method | Recipe | Coverage |" in markdown
-    assert "| 1 | fbcca_ridge5 | `win2_me1` | 2/2 |" in markdown
+    assert "| Rank | Method | Recipe | Freqs | Coverage |" in markdown
+    assert "| 1 | fbcca_ridge5 | `win2_me1` | `` | 2/2 |" in markdown
 
 
 def test_aggregate_recipe_rows_uses_aggregate_recipe_id_when_present() -> None:

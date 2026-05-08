@@ -1,0 +1,5 @@
+float32 angle_deg
+float32 duration_sec
+---
+bool ok
+string message

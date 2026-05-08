@@ -138,10 +138,14 @@ block_collect_YYYYMMDD_HHMMSS\
 
 ## 当前数据现状
 
-历史机器上曾经使用过这些位置，后续只作为迁移参考，不作为默认路径：
+历史机器上曾经使用过这些位置，现已迁移到 `datasets/vision/legacy_camara/workspace_dataset_camara/`，后续只作为迁移参考，不作为默认路径：
 
-- `C:\Users\P1233\Desktop\brain\dataset\camara\row\images` 约 101 张原始图片
-- `C:\Users\P1233\Desktop\brain\dataset\camara\row\cylinder` 约 100 张原始图片
-- `C:\Users\P1233\Desktop\brain\dataset\camara\captures` 下有若干 session，但目前基本只有 `session_meta.json`
+- `datasets/vision/legacy_camara/workspace_dataset_camara/row/images` 约 101 张原始图片
+- `datasets/vision/legacy_camara/workspace_dataset_camara/row/cylinder` 约 100 张原始图片
+- `datasets/vision/legacy_camara/workspace_dataset_camara/captures` 下有若干 session，但目前基本只有 `session_meta.json`
 
 这些 `row` 图片更像早期原始/分类照片，不是完整 YOLO segmentation 训练集；若要继续训练当前模型，需要补齐 `labels/train`、`labels/val` 的多边形标注。
+
+旧 `05_Vision_Block_Recognition/dataset` Roboflow 导出已迁移到：
+
+- `datasets/vision/legacy_migrated/05_Vision_Block_Recognition_dataset`
