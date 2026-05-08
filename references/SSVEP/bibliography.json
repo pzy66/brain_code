@@ -61,7 +61,8 @@
                                              },
                              "local":  [
                                            "01_core_method_papers/2015_nakanishi_cca_comparison_plosone.pdf",
-                                           "03_metadata/crossref_nakanishi_2015_cca_comparison_10.1371_journal.pone.0140703.json"
+                                           "03_metadata/crossref_nakanishi_2015_cca_comparison_10.1371_journal.pone.0140703.json",
+                                           "03_metadata/unpaywall/unpaywall_10.1371_journal.pone.0140703.json"
                                        ],
                              "used_for":  [
                                               "IT-CCA/eCCA/template-assisted CCA",
@@ -112,7 +113,9 @@
                                                  "pmid":  "34543200"
                                              },
                              "local":  [
+                                           "01_core_method_papers/2021_liu_tdca_tnsre_author_copy.pdf",
                                            "03_metadata/crossref_liu_2021_tdca_10.1109_TNSRE.2021.3114340.json",
+                                           "03_metadata/unpaywall/unpaywall_10.1109_TNSRE.2021.3114340.json",
                                            "04_source_pages/PubMed/pubmed_34543200.html"
                                        ],
                              "used_for":  [
@@ -163,7 +166,9 @@
                                                  "pmid":  "38113535"
                                              },
                              "local":  [
+                                           "01_core_method_papers/2023_carrara_pseudo_online_arxiv.pdf",
                                            "03_metadata/crossref_carrara_2024_pseudo_online_10.1088_1741-2552_ad171a.json",
+                                           "03_metadata/unpaywall/unpaywall_10.1088_1741-2552_ad171a.json",
                                            "04_source_pages/PubMed/pubmed_38113535.html"
                                        ],
                              "used_for":  [

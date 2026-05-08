@@ -13,6 +13,8 @@ This folder is the curated reference set for the current `02_SSVEP` mainline. It
 Openly available PDFs that passed a `%PDF` check and are suitable to share in the repository.
 
 - `2015_nakanishi_cca_comparison_plosone.pdf`: CCA-method comparison, template-assisted CCA family context.
+- `2021_liu_tdca_tnsre_author_copy.pdf`: TDCA method paper from the author/open access source.
+- `2023_carrara_pseudo_online_arxiv.pdf`: arXiv version of the pseudo-online evaluation framework paper.
 
 Some important papers are not stored as PDFs because their publisher PDFs are access-controlled, the public endpoint did not return a valid PDF, or the shareability is unclear for a public GitHub repository. Their PubMed pages and DOI/Crossref metadata are still stored under `03_metadata` and `04_source_pages`.
 
@@ -44,14 +46,15 @@ Evidence notes linking each reference to current code/docs.
 | CCA variants / IT-CCA / eCCA | Nakanishi et al., comparison of CCA-based methods | PDF + metadata |
 | TRCA | Nakanishi et al., TRCA for high-speed SSVEP speller | PubMed/Crossref metadata |
 | TRCA-R / spatial filtering | Wong et al., spatial filtering in SSVEP-based BCIs | PubMed/Crossref metadata |
-| TDCA | Liu et al., task-discriminant component analysis | PubMed/Crossref metadata |
+| TDCA | Liu et al., task-discriminant component analysis | PDF + PubMed/Crossref metadata |
 | Async idle/control state | Zhang et al., idle-state detection for SSVEP BCIs | PubMed/Crossref metadata |
 | Dynamic stopping | Nakanishi et al., dynamic stopping method for SSVEP BCIs | PubMed/Crossref metadata |
-| Pseudo-online evaluation | Carrara and Papadopoulo, pseudo-online framework for BCI evaluation | PubMed/Crossref metadata |
+| Pseudo-online evaluation | Carrara and Papadopoulo, pseudo-online framework for BCI evaluation | PDF + PubMed/Crossref metadata |
 | External dataset | BETA SSVEP database | Figshare metadata + description files |
 | External dataset | Wang2016 SSVEP benchmark | Zenodo metadata + readme/channel docs |
 
 ## Maintenance Rule
 
 For future work, add new SSVEP references here first, then update `bibliography.json` and `05_code_evidence/code_reference_evidence.md`. Avoid storing papers inside `brain_code` unless they are part of a tracked dataset release.
+
 
