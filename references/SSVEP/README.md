@@ -13,6 +13,7 @@ This folder is the curated reference set for the current `02_SSVEP` mainline. It
 Openly available PDFs that passed a `%PDF` check and are suitable to share in the repository.
 
 - `2015_nakanishi_cca_comparison_plosone.pdf`: CCA-method comparison, template-assisted CCA family context.
+- `2018_nakanishi_trca_pmc_author_manuscript.pdf`: TRCA high-speed SSVEP speller paper from the PMC author manuscript PDF.
 - `2021_liu_tdca_tnsre_author_copy.pdf`: TDCA method paper from the author/open access source.
 - `2023_carrara_pseudo_online_arxiv.pdf`: arXiv version of the pseudo-online evaluation framework paper.
 
@@ -44,7 +45,7 @@ Evidence notes linking each reference to current code/docs.
 | CCA baseline | Lin et al., frequency recognition based on CCA for SSVEP BCI; Bin et al., online multi-channel SSVEP BCI using CCA | PubMed/Crossref metadata |
 | FBCCA | Chen et al., filter bank CCA for high-speed SSVEP BCI | PubMed/Crossref metadata |
 | CCA variants / IT-CCA / eCCA | Nakanishi et al., comparison of CCA-based methods | PDF + metadata |
-| TRCA | Nakanishi et al., TRCA for high-speed SSVEP speller | PubMed/Crossref metadata |
+| TRCA | Nakanishi et al., TRCA for high-speed SSVEP speller | PDF + PubMed/Crossref metadata |
 | TRCA-R / spatial filtering | Wong et al., spatial filtering in SSVEP-based BCIs | PubMed/Crossref metadata |
 | TDCA | Liu et al., task-discriminant component analysis | PDF + PubMed/Crossref metadata |
 | Async idle/control state | Zhang et al., idle-state detection for SSVEP BCIs | PubMed/Crossref metadata |

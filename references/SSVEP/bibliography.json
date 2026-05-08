@@ -1,6 +1,6 @@
 ﻿{
     "generated_at":  "2026-05-08T18:20:20",
-    "root":  "C:\\Users\\P1233\\Desktop\\brain\\references\\SSVEP_current_used_references",
+    "root":  "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\references\\SSVEP",
     "purpose":  "Curated references currently used by brain_code/02_SSVEP mainline",
     "bibliography":  [
                          {
@@ -79,7 +79,9 @@
                                                  "pmcid":  "PMC5783827"
                                              },
                              "local":  [
+                                           "01_core_method_papers/2018_nakanishi_trca_pmc_author_manuscript.pdf",
                                            "03_metadata/crossref_nakanishi_2018_trca_10.1109_TBME.2017.2694818.json",
+                                           "03_metadata/unpaywall/unpaywall_10.1109_TBME.2017.2694818.json",
                                            "04_source_pages/PubMed/pubmed_28436836.html"
                                        ],
                              "used_for":  [
