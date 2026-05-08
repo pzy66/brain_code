@@ -1,0 +1,53 @@
+(Excerpt from the BETA description) 
+EEG data after preprocessing are store as a 4-way tensor, with a dimension of channel 
+x time point x block x condition. Each trial comprises 0.5-s data before the event onset 
+and 0.5-s data after the time window of 2 s or 3 s. For S1-S15, the time window is 2 s 
+and the trial length is 3 s, whereas for S16-S70 the time window is 3 s and the trial 
+length is 4 s. Additional details about the channel and condition information can be 
+found in the following supplementary information. 
+Eight supplementary information is comprised of personal information, channel 
+information, frequency and initial phase associated to each condition, SNR and 
+sampling rate. The personal information contains age and gender of the subject. For 
+the channel information, a location matrix (64 x 4) is provided, with the first column 
+indicating channel index, the second column and third column indicating the degree 
+and radius in polar coordinates, and the last column indicating channel name. The 
+SNR information contains the mean narrow-band SNR and wide-band SNR matrix for 
+each subject, calculated in (3) and (4), respectively. The initial phase is in radius. 
+Reference: 
+ 
+Liu B, Huang X, Wang Y, Chen X, Gao X. BETA: A large benchmark database toward 
+SSVEP-BCI application. Frontiers in neuroscience. 2020 Jun 23;14:627. 
+ 
+BibTex 
+@article{liu2020beta, 
+title={BETA: A large benchmark database toward SSVEP-BCI application}, 
+author={Liu, Bingchuan and Huang, Xiaoshan and Wang, Yijun and Chen, Xiaogang and 
+Gao, Xiaorong}, 
+journal={Frontiers in neuroscience}, 
+volume={14}, 
+pages={627}, 
+year={2020}, 
+publisher={Frontiers} 
+} 
+Corrigendum: 
+Date: October 20th, 2021 
+In Eq. (4), "P(k· f)" should be correct to "P(k· f_n)", where f_n is the stimulus frequency, 
+and P(f) denotes the power spectrum (power spectral density) at frequency f. 
+If there is any further issue, please feel free to contact lbc14@tsinghua.org.cn. We are 
+grateful for your support and constructive advice. 
+Associated data: 
+Date: October 20th, 2021 
+We further curated the dataset without any filtering procedure by software. This 
+dataset corresponds to the original BETA dataset and it is under the directory "BETA 
+Database (wof)". The dataset can be found at http://bci.med.tsinghua.edu.cn/  
+Corrigendum: 
+Date: June 15th, 2022 
+An issue reported by swolf. Initial phase information in the data.suppl_info.phases should 
+be [1.5, 0, 0.5, 1, 1.5, 0, 0.5, 1, 1.5, 0, 0.5, 1, 1.5, 0, 0.5, 1, 1.5, 0, 0.5, 1, 1.5, 0, 0.5, 1, 1.5, 
+0, 0.5, 1, 1.5, 0, 0.5, 1, 1.5, 0, 0.5, 1, 1.5, 0, 0.5, 1]*pi, which corresponds to the the ground-
+truth value in the paper. Thank you swolf for your constructive feedback! 
+Related article: 
+Liu, B., Wang, Y., Gao, X. and Chen, X., 2022. eldBETA: a Large Eldercare-oriented Benchmark 
+Database of SSVEP-BCI for the aging Population. Scientific Data, 9(1), pp.1-12. 
+ 
+ 

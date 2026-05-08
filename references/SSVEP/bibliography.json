@@ -1,0 +1,210 @@
+﻿{
+    "generated_at":  "2026-05-08T18:20:20",
+    "root":  "C:\\Users\\P1233\\Desktop\\brain\\references\\SSVEP_current_used_references",
+    "purpose":  "Curated references currently used by brain_code/02_SSVEP mainline",
+    "bibliography":  [
+                         {
+                             "area":  "CCA baseline",
+                             "key":  "lin_2007_cca",
+                             "title":  "Frequency recognition based on canonical correlation analysis for SSVEP-based BCIs",
+                             "identifiers":  {
+                                                 "doi":  "10.1109/TBME.2006.889197",
+                                                 "pmid":  "17549911"
+                                             },
+                             "local":  [
+                                           "03_metadata/crossref_lin_2007_cca_10.1109_TBME.2006.889197.json",
+                                           "04_source_pages/PubMed/pubmed_17549911.html"
+                                       ],
+                             "used_for":  [
+                                              "CCA baseline",
+                                              "method background"
+                                          ]
+                         },
+                         {
+                             "area":  "CCA baseline",
+                             "key":  "bin_2009_cca",
+                             "title":  "An online multi-channel SSVEP-based brain-computer interface using canonical correlation analysis",
+                             "identifiers":  {
+                                                 "doi":  "10.1088/1741-2560/6/4/046002"
+                                             },
+                             "local":  [
+                                           "03_metadata/crossref_bin_2009_cca_10.1088_1741-2560_6_4_046002.json"
+                                       ],
+                             "used_for":  [
+                                              "CCA baseline",
+                                              "report method mapping"
+                                          ]
+                         },
+                         {
+                             "area":  "FBCCA",
+                             "key":  "chen_2015_fbcca",
+                             "title":  "Filter bank canonical correlation analysis for implementing a high-speed SSVEP-based brain-computer interface",
+                             "identifiers":  {
+                                                 "doi":  "10.1088/1741-2560/12/4/046008",
+                                                 "pmid":  "26035476"
+                                             },
+                             "local":  [
+                                           "03_metadata/crossref_chen_2015_fbcca_10.1088_1741-2560_12_4_046008.json",
+                                           "04_source_pages/PubMed/pubmed_26035476.html"
+                                       ],
+                             "used_for":  [
+                                              "FBCCA",
+                                              "Chen-style subband weights"
+                                          ]
+                         },
+                         {
+                             "area":  "CCA variants",
+                             "key":  "nakanishi_2015_cca_comparison",
+                             "title":  "A comparison study of canonical correlation analysis based methods for detecting steady-state visual evoked potentials",
+                             "identifiers":  {
+                                                 "doi":  "10.1371/journal.pone.0140703"
+                                             },
+                             "local":  [
+                                           "01_core_method_papers/2015_nakanishi_cca_comparison_plosone.pdf",
+                                           "03_metadata/crossref_nakanishi_2015_cca_comparison_10.1371_journal.pone.0140703.json"
+                                       ],
+                             "used_for":  [
+                                              "IT-CCA/eCCA/template-assisted CCA",
+                                              "method comparison"
+                                          ]
+                         },
+                         {
+                             "area":  "TRCA",
+                             "key":  "nakanishi_2018_trca",
+                             "title":  "Enhancing Detection of SSVEPs for a High-Speed Brain Speller Using Task-Related Component Analysis",
+                             "identifiers":  {
+                                                 "doi":  "10.1109/TBME.2017.2694818",
+                                                 "pmid":  "28436836",
+                                                 "pmcid":  "PMC5783827"
+                                             },
+                             "local":  [
+                                           "03_metadata/crossref_nakanishi_2018_trca_10.1109_TBME.2017.2694818.json",
+                                           "04_source_pages/PubMed/pubmed_28436836.html"
+                                       ],
+                             "used_for":  [
+                                              "TRCA",
+                                              "TRCA spatial frontend"
+                                          ]
+                         },
+                         {
+                             "area":  "TRCA-R",
+                             "key":  "wong_2020_trca_r",
+                             "title":  "Spatial Filtering in SSVEP-Based BCIs: Unified Framework and New Improvements",
+                             "identifiers":  {
+                                                 "doi":  "10.1109/TBME.2020.2975552",
+                                                 "pmid":  "32091986"
+                                             },
+                             "local":  [
+                                           "03_metadata/crossref_wong_2020_trca_r_10.1109_TBME.2020.2975552.json",
+                                           "04_source_pages/PubMed/pubmed_32091986.html"
+                                       ],
+                             "used_for":  [
+                                              "TRCA-R framework",
+                                              "spatial filtering background"
+                                          ]
+                         },
+                         {
+                             "area":  "TDCA",
+                             "key":  "liu_2021_tdca",
+                             "title":  "Improving the Performance of Individually Calibrated SSVEP-BCI by Task-Discriminant Component Analysis",
+                             "identifiers":  {
+                                                 "doi":  "10.1109/TNSRE.2021.3114340",
+                                                 "pmid":  "34543200"
+                                             },
+                             "local":  [
+                                           "03_metadata/crossref_liu_2021_tdca_10.1109_TNSRE.2021.3114340.json",
+                                           "04_source_pages/PubMed/pubmed_34543200.html"
+                                       ],
+                             "used_for":  [
+                                              "TDCA paper-aligned variant",
+                                              "local TDCA optimization"
+                                          ]
+                         },
+                         {
+                             "area":  "Async idle",
+                             "key":  "zhang_2015_idle_state",
+                             "title":  "Idle-State Detection for SSVEP-Based Brain-Computer Interfaces",
+                             "identifiers":  {
+                                                 "doi":  "10.1142/S0129065715500306",
+                                                 "pmid":  "26246229"
+                                             },
+                             "local":  [
+                                           "03_metadata/crossref_zhang_2015_idle_state_10.1142_S0129065715500306.json",
+                                           "04_source_pages/PubMed/pubmed_26246229.html"
+                                       ],
+                             "used_for":  [
+                                              "idle/no-target detection",
+                                              "async control metrics"
+                                          ]
+                         },
+                         {
+                             "area":  "Dynamic stopping",
+                             "key":  "nakanishi_2015_dynamic_stopping",
+                             "title":  "A dynamic stopping method for improving performance of SSVEP-based BCIs",
+                             "identifiers":  {
+                                                 "doi":  "10.1109/EMBC.2015.7318547",
+                                                 "pmid":  "26736447"
+                                             },
+                             "local":  [
+                                           "03_metadata/crossref_nakanishi_2015_dynamic_stopping_10.1109_EMBC.2015.7318547.json",
+                                           "04_source_pages/PubMed/pubmed_26736447.html"
+                                       ],
+                             "used_for":  [
+                                              "decision latency",
+                                              "stopping/release policy background"
+                                          ]
+                         },
+                         {
+                             "area":  "Pseudo-online evaluation",
+                             "key":  "carrara_2024_pseudo_online",
+                             "title":  "A pseudo-online framework for brain-computer interface evaluation",
+                             "identifiers":  {
+                                                 "doi":  "10.1088/1741-2552/ad171a",
+                                                 "pmid":  "38113535"
+                                             },
+                             "local":  [
+                                           "03_metadata/crossref_carrara_2024_pseudo_online_10.1088_1741-2552_ad171a.json",
+                                           "04_source_pages/PubMed/pubmed_38113535.html"
+                                       ],
+                             "used_for":  [
+                                              "pseudo-online evaluation",
+                                              "replay/report metrics"
+                                          ]
+                         },
+                         {
+                             "area":  "External dataset",
+                             "key":  "beta_ssvep_database",
+                             "title":  "BETA SSVEP database",
+                             "identifiers":  {
+                                                 "doi":  "10.6084/m9.figshare.12264401",
+                                                 "api":  "https://api.figshare.com/v2/articles/12264401"
+                                             },
+                             "local":  [
+                                           "02_dataset_references/BETA/figshare_article_12264401_metadata.json",
+                                           "02_dataset_references/BETA/Description.pdf",
+                                           "02_dataset_references/BETA/Description.txt"
+                                       ],
+                             "used_for":  [
+                                              "external short-pretrain benchmark",
+                                              "BETA sanity/full sweep"
+                                          ]
+                         },
+                         {
+                             "area":  "External dataset",
+                             "key":  "wang2016_ssvep_benchmark",
+                             "title":  "Wang2016 SSVEP benchmark",
+                             "identifiers":  {
+                                                 "zenodo":  "https://zenodo.org/records/14865172"
+                                             },
+                             "local":  [
+                                           "02_dataset_references/Wang2016/zenodo_record_14865172_metadata.json",
+                                           "02_dataset_references/Wang2016/Readme.txt",
+                                           "02_dataset_references/Wang2016/64-channels.loc"
+                                       ],
+                             "used_for":  [
+                                              "external benchmark confirmation",
+                                              "frequency selection"
+                                          ]
+                         }
+                     ]
+}
