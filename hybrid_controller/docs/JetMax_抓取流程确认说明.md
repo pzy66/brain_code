@@ -8,10 +8,26 @@
 
 1. 相机检测到 ROI 内目标
 2. 视觉层输出 `command_mode=world` + `command_point=(x,y)`
-3. 控制层校验 `actionable=true`
-4. 下发 `PICK_WORLD x y`
-5. 执行端按状态机完成抓取
-6. 下发 `PLACE` 放置
+3. `delta_servo` 在当前默认 `command_bias` 模式下使用相机中心 `(320,240)` 做低处闭环对中
+4. 如果目标未对中，先下发 `MOVE_CYL` 并等待新画面
+5. 如果目标已对中但还在搜索高度，从 `vision_pick_search_z_mm` 按 `vision_pick_descent_step_mm` 分步下降到 `vision_pick_confirm_z_mm`，每步重新确认画面
+6. 确认高度上 `actionable=true` 后，下发 `PICK_CYL theta radius`，其中 radius 只比当前半径前伸 `vision_eye_in_hand_pick_radius_bias_mm=40mm`
+7. 执行端按状态机完成抓取
+8. 下发 `PLACE` 放置
+
+注意：视觉主路径只读取 Hiwonder 官方摄像头链路：
+
+```text
+usb_cam.service -> usb_cam_node -> /usb_cam/image_rect_color -> web_video_server:8080
+```
+
+PC 端默认 URL：
+
+```text
+http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80
+```
+
+调试抓取时不得为了“找摄像头”额外启动 JetMax 摄像头节点、扫描多个视频 URL、重启 `usb_cam.service`，否则容易破坏官方默认发送链路。
 
 ## 命令分工
 
@@ -80,6 +96,9 @@
 
 - 先看 UI 里的 `resolved_xy` 与 `resolved_cyl`
 - 再看 `pick_trace`（命令、解析结果、响应）
+- 默认 `pick_tool_offset_source=command_bias`：高处选目标，低处用相机中心对正，最终只通过 `vision_eye_in_hand_pick_radius_bias_mm=40mm` 前伸一次。
+- `pick_cyl_radius_bias_mm` 必须保持 `0.0`，避免 GUI 发命令时再次叠加半径偏置。
+- 不要为当前主线写 `stage_models.confirm.servo.target_pixel`。那是旧的 `target_pixel` 策略，会破坏“相机中心对正 + 前伸 40mm”链路。
 - 若失败，优先区分：
   - 坐标链路问题
   - 状态门控问题

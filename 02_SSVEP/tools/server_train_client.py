@@ -16,6 +16,7 @@ import time
 from typing import Any, Callable, Optional, Sequence
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
+REPO_ROOT = PROJECT_DIR.parent
 if str(PROJECT_DIR.parent) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR.parent))
 if str(PROJECT_DIR) not in sys.path:
@@ -31,6 +32,13 @@ LOCAL_SERVER_RUNS_DIR = LOCAL_ARTIFACT_ROOT / "runs" / "remote"
 LOCAL_SERVER_PROFILES_DIR = SSVEP_PROFILE_DIR
 LOCAL_TASK_RECORD_PATH = LOCAL_SERVER_RUNS_DIR / "server_tasks.json"
 LOCAL_CODE_ROOT = PROJECT_DIR
+LOCAL_REMOTE_SUPPORT_FILES = (
+    REPO_ROOT / "brainflow_compat.py",
+    REPO_ROOT / "brain_workspace" / "__init__.py",
+    REPO_ROOT / "brain_workspace" / "bootstrap.py",
+    REPO_ROOT / "brain_workspace" / "environment.py",
+    REPO_ROOT / "brain_workspace" / "paths.py",
+)
 
 REMOTE_ALLOWED_PREFIX = "/data1/zkx"
 REMOTE_ROOT = "/data1/zkx/brain/ssvep"
@@ -187,6 +195,33 @@ def build_local_code_manifest(local_root: Path = LOCAL_CODE_ROOT) -> dict[str, A
     return {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "local_root": str(root),
+        "tree_hash": tree_digest.hexdigest(),
+        "file_count": len(files_meta),
+        "files": files_meta,
+    }
+
+
+def build_remote_support_manifest() -> dict[str, Any]:
+    files_meta: dict[str, Any] = {}
+    tree_digest = hashlib.sha256()
+    for local_path in LOCAL_REMOTE_SUPPORT_FILES:
+        path = Path(local_path).expanduser().resolve()
+        if not path.is_file():
+            continue
+        rel_path = path.relative_to(REPO_ROOT).as_posix()
+        file_hash = _sha256_file(path)
+        stat_result = path.stat()
+        files_meta[rel_path] = {
+            "sha256": file_hash,
+            "size": int(stat_result.st_size),
+            "mtime_ns": int(stat_result.st_mtime_ns),
+        }
+        tree_digest.update(rel_path.encode("utf-8"))
+        tree_digest.update(b"\0")
+        tree_digest.update(file_hash.encode("ascii"))
+        tree_digest.update(b"\0")
+    return {
+        "local_root": str(REPO_ROOT),
         "tree_hash": tree_digest.hexdigest(),
         "file_count": len(files_meta),
         "files": files_meta,
@@ -423,9 +458,12 @@ def sync_local_code_tree(
 ) -> dict[str, Any]:
     root = Path(local_root).expanduser().resolve()
     manifest = build_local_code_manifest(root)
+    support_manifest = build_remote_support_manifest()
+    support_files = dict(support_manifest.get("files") or {})
     remote_manifest = _load_remote_code_manifest(ssh)
     remote_files = dict(remote_manifest.get("files") or {})
     local_files = dict(manifest.get("files") or {})
+    local_files_with_support = {**local_files, **support_files}
     uploaded: list[str] = []
     removed: list[str] = []
 
@@ -436,16 +474,35 @@ def sync_local_code_tree(
             continue
         ssh.put_file(root / Path(rel_path), posixpath.join(remote_code_dir, rel_path))
         uploaded.append(rel_path)
+    remote_repo_root = posixpath.normpath(posixpath.join(remote_code_dir, ".."))
+    assert_remote_ssvep_path(remote_repo_root)
+    for rel_path, meta in support_files.items():
+        remote_meta = remote_files.get(rel_path)
+        if remote_meta == meta:
+            continue
+        ssh.put_file(REPO_ROOT / Path(rel_path), posixpath.join(remote_repo_root, rel_path))
+        uploaded.append(rel_path)
 
-    for rel_path in sorted(set(remote_files) - set(local_files)):
-        remote_path = posixpath.join(remote_code_dir, rel_path)
+    for rel_path in sorted(set(remote_files) - set(local_files_with_support)):
+        remote_base = (
+            remote_repo_root
+            if rel_path == "brainflow_compat.py" or rel_path.startswith("brain_workspace/")
+            else remote_code_dir
+        )
+        remote_path = posixpath.join(remote_base, rel_path)
         if ssh.exists(remote_path) and not ssh.is_dir(remote_path):
             ssh.remove_file(remote_path)
             removed.append(rel_path)
 
+    manifest_files = dict(manifest.get("files") or {})
+    manifest_files.update(support_files)
     sync_payload = {
         **manifest,
+        "files": manifest_files,
+        "file_count": len(manifest_files),
+        "support": support_manifest,
         "remote_code_dir": assert_remote_ssvep_path(remote_code_dir),
+        "remote_repo_root": assert_remote_ssvep_path(remote_repo_root),
         "uploaded_count": len(uploaded),
         "removed_count": len(removed),
     }
@@ -457,8 +514,10 @@ def sync_local_code_tree(
     return {
         "local_root": str(root),
         "remote_code_dir": str(remote_code_dir),
+        "remote_repo_root": str(remote_repo_root),
         "tree_hash": str(manifest.get("tree_hash", "")),
-        "file_count": int(manifest.get("file_count", 0) or 0),
+        "file_count": len(manifest_files),
+        "support_file_count": len(support_files),
         "uploaded_count": len(uploaded),
         "removed_count": len(removed),
         "uploaded_preview": uploaded[:10],
@@ -752,12 +811,40 @@ def latest_task_record() -> Optional[dict[str, Any]]:
     return dict(records[0]) if records else None
 
 
+def _candidate_remote_report_dirs(record: dict[str, Any]) -> list[str]:
+    base = assert_remote_ssvep_path(str(record.get("report_dir", "")))
+    nested_reports = assert_remote_ssvep_path(posixpath.join(base, "reports"))
+    expected_summary = str(record.get("expected_summary", "")).strip()
+    expected_parent = ""
+    if expected_summary:
+        try:
+            expected_parent = assert_remote_ssvep_path(posixpath.dirname(expected_summary))
+        except Exception:
+            expected_parent = ""
+    candidates: list[str] = []
+    for value in (base, nested_reports, expected_parent):
+        if value and value not in candidates:
+            candidates.append(value)
+    return candidates
+
+
 def read_remote_status(ssh: SSHClient, record: dict[str, Any]) -> dict[str, Any]:
     pid = str(record.get("pid", "")).strip()
     log_path = assert_remote_ssvep_path(str(record.get("log_path", "")))
     report_dir = assert_remote_ssvep_path(str(record.get("report_dir", "")))
-    progress_path = posixpath.join(report_dir, "progress_snapshot.json")
+    report_dir_candidates = _candidate_remote_report_dirs(record)
+    progress_path = ""
     progress: dict[str, Any] = {}
+    active_report_dir = report_dir
+    for candidate_dir in report_dir_candidates:
+        candidate_progress = posixpath.join(candidate_dir, "progress_snapshot.json")
+        if ssh.exists(candidate_progress):
+            progress_path = candidate_progress
+            active_report_dir = candidate_dir
+            break
+    if not progress_path:
+        active_report_dir = report_dir_candidates[-1] if report_dir_candidates else report_dir
+        progress_path = posixpath.join(active_report_dir, "progress_snapshot.json")
     if ssh.exists(progress_path):
         try:
             with ssh.sftp.open(progress_path, "r") as handle:
@@ -770,12 +857,16 @@ def read_remote_status(ssh: SSHClient, record: dict[str, Any]) -> dict[str, Any]
     fuser_command = f"fuser /dev/nvidia{gpu_device} 2>/dev/null || true"
     _code, fuser_out, _err = ssh.exec(fuser_command, check=False)
     artifacts = {
-        "report_json": ssh.exists(posixpath.join(report_dir, "report.json")),
-        "report_md": ssh.exists(posixpath.join(report_dir, "report.md")),
-        "profile_json": ssh.exists(posixpath.join(report_dir, "profile.json")),
-        "profile_v2_json": ssh.exists(posixpath.join(report_dir, "profile_v2.json")),
-        "figures_dir": ssh.exists(posixpath.join(report_dir, "figures")),
+        "report_json": ssh.exists(posixpath.join(active_report_dir, "report.json"))
+        or ssh.exists(posixpath.join(active_report_dir, "summary.json")),
+        "report_md": ssh.exists(posixpath.join(active_report_dir, "report.md"))
+        or ssh.exists(posixpath.join(active_report_dir, "summary.md")),
+        "profile_json": ssh.exists(posixpath.join(active_report_dir, "profile.json")),
+        "profile_v2_json": ssh.exists(posixpath.join(active_report_dir, "profile_v2.json")),
+        "figures_dir": ssh.exists(posixpath.join(active_report_dir, "figures")),
         "progress_snapshot": ssh.exists(progress_path),
+        "partial_summary": ssh.exists(posixpath.join(active_report_dir, "partial_summary.json")),
+        "summary_json": ssh.exists(posixpath.join(active_report_dir, "summary.json")),
     }
     return {
         "run_id": str(record.get("run_id", "")),
@@ -784,6 +875,8 @@ def read_remote_status(ssh: SSHClient, record: dict[str, Any]) -> dict[str, Any]
         "gpu_device_fuser": fuser_out.strip(),
         "log_path": log_path,
         "report_dir": report_dir,
+        "active_report_dir": active_report_dir,
+        "progress_path": progress_path,
         "progress": progress,
         "tail": ssh.tail_file(log_path, lines=50),
         "artifacts": artifacts,

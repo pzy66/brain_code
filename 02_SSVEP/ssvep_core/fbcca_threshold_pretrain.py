@@ -36,6 +36,7 @@ from .async_fbcca_idle_standalone import (
     json_dumps,
     json_safe,
     parse_compute_backend_name,
+    parse_control_state_mode,
     parse_decision_time_mode,
     parse_gate_policy,
     parse_gpu_cache_policy,
@@ -44,6 +45,12 @@ from .async_fbcca_idle_standalone import (
     summarize_profile_quality,
 )
 from .dataset import LoadedDataset, load_collection_dataset
+from .profile_deployment_audit import (
+    DEFAULT_FAST_CONTROL_PRETRAIN_TASK,
+    FAST_CONTROL_RELEASE_THRESHOLDS,
+    fast_control_release_failures,
+    logreg_coefficients_all_zero,
+)
 from .profile_v2 import DEFAULT_GATE_FEATURES, build_profile_v2
 from .run_artifacts import make_run_tag, publish_deployed_profile, resolve_ssvep_run_artifacts
 
@@ -53,17 +60,19 @@ DEFAULT_REPORT_ROOT = PROJECT_DIR / "artifacts" / "runs" / "local"
 DEFAULT_REALTIME_PROFILE_PATH = SSVEP_PROFILE_DIR / "fbcca_profile.json"
 DEFAULT_REALTIME_PROFILE_V2_PATH = SSVEP_PROFILE_DIR / "fbcca_profile_v2.json"
 DEFAULT_FBCCA_THRESHOLD_TASK = "fbcca-threshold-pretrain"
-DEFAULT_FAST_CONTROL_PRETRAIN_TASK = "fast-control-pretrain-v1"
 DEFAULT_FAST_CONTROL_WIN_SEC_CANDIDATES = (1.5, 2.0, 2.5, 3.0)
 DEFAULT_FAST_CONTROL_GATE_POLICY_CANDIDATES = ("balanced", "speed")
 DEFAULT_FAST_CONTROL_MIN_ENTER_CANDIDATES = (1, 2)
 DEFAULT_FAST_CONTROL_MIN_EXIT_CANDIDATES = (1, 2)
-DEFAULT_FAST_CONTROL_RELEASE_IDLE_FP_MAX = 0.0
-DEFAULT_FAST_CONTROL_RELEASE_CONTROL_RECALL_MIN = 0.95
-DEFAULT_FAST_CONTROL_RELEASE_CONTROL_RECALL_AT_3S_MIN = 0.80
-DEFAULT_FAST_CONTROL_RELEASE_SWITCH_DETECT_RATE_MIN = 0.90
-DEFAULT_FAST_CONTROL_RELEASE_RELEASE_LATENCY_MAX_S = 2.0
-DEFAULT_FAST_CONTROL_RELEASE_SWITCH_LATENCY_MAX_S = 2.5
+DEFAULT_FAST_CONTROL_STATE_MODE_CANDIDATES = ("unified", "frequency-specific-threshold")
+DEFAULT_FAST_CONTROL_RELEASE_IDLE_FP_MAX = float(FAST_CONTROL_RELEASE_THRESHOLDS["idle_fp_per_min_max"])
+DEFAULT_FAST_CONTROL_RELEASE_CONTROL_RECALL_MIN = float(FAST_CONTROL_RELEASE_THRESHOLDS["control_recall_min"])
+DEFAULT_FAST_CONTROL_RELEASE_CONTROL_RECALL_AT_3S_MIN = float(
+    FAST_CONTROL_RELEASE_THRESHOLDS["control_recall_at_3s_min"]
+)
+DEFAULT_FAST_CONTROL_RELEASE_SWITCH_DETECT_RATE_MIN = float(FAST_CONTROL_RELEASE_THRESHOLDS["switch_detect_rate_min"])
+DEFAULT_FAST_CONTROL_RELEASE_RELEASE_LATENCY_MAX_S = float(FAST_CONTROL_RELEASE_THRESHOLDS["release_latency_s_max"])
+DEFAULT_FAST_CONTROL_RELEASE_SWITCH_LATENCY_MAX_S = float(FAST_CONTROL_RELEASE_THRESHOLDS["switch_latency_s_max"])
 
 
 @dataclass(frozen=True)
@@ -84,6 +93,7 @@ class FBCCAThresholdPretrainConfig:
     gate_policy_candidates: tuple[str, ...] = DEFAULT_FAST_CONTROL_GATE_POLICY_CANDIDATES
     min_enter_windows_candidates: tuple[int, ...] = DEFAULT_FAST_CONTROL_MIN_ENTER_CANDIDATES
     min_exit_windows_candidates: tuple[int, ...] = DEFAULT_FAST_CONTROL_MIN_EXIT_CANDIDATES
+    control_state_mode_candidates: tuple[str, ...] = DEFAULT_FAST_CONTROL_STATE_MODE_CANDIDATES
     dynamic_stop_enabled: bool = False
     dynamic_stop_alpha: float = DEFAULT_DYNAMIC_STOP_ALPHA
     seed: int = DEFAULT_CALIBRATION_SEED
@@ -198,17 +208,7 @@ def _metric_payload(metrics: dict[str, Any]) -> dict[str, Any]:
 
 
 def _all_zero_logreg_gate(per_freq_gate: dict[str, dict[str, Any]]) -> bool:
-    if not per_freq_gate:
-        return True
-    for payload in per_freq_gate.values():
-        item = dict(payload or {})
-        coef = [float(value) for value in item.get("coef", [])]
-        intercept = float(item.get("intercept", 0.0))
-        if abs(intercept) > 1e-12:
-            return False
-        if any(abs(value) > 1e-12 for value in coef):
-            return False
-    return True
+    return logreg_coefficients_all_zero(per_freq_gate)
 
 
 def _profile_v2_payload(profile: ThresholdProfile, metrics: dict[str, Any]) -> dict[str, Any]:
@@ -217,12 +217,32 @@ def _profile_v2_payload(profile: ThresholdProfile, metrics: dict[str, Any]) -> d
     if isinstance(freq_specific, dict):
         for key, payload in freq_specific.items():
             item = dict(payload or {})
-            per_freq_gate[str(key)] = {
-                "coef": list(item.get("coef", [0.0] * len(DEFAULT_GATE_FEATURES))),
-                "intercept": float(item.get("intercept", 0.0)),
-                "enter_logit_th": float(item.get("enter_logit_th", item.get("enter_log_lr_th", 0.35))),
-                "exit_logit_th": float(item.get("exit_logit_th", item.get("exit_log_lr_th", 0.05))),
-            }
+            if str(getattr(profile, "control_state_mode", "")) == "frequency-specific-threshold":
+                per_freq_gate[str(key)] = {
+                    "enter_score_th": float(item.get("enter_score_th", profile.enter_score_th)),
+                    "enter_ratio_th": float(item.get("enter_ratio_th", profile.enter_ratio_th)),
+                    "enter_margin_th": float(item.get("enter_margin_th", profile.enter_margin_th)),
+                    "exit_score_th": float(item.get("exit_score_th", profile.exit_score_th)),
+                    "exit_ratio_th": float(item.get("exit_ratio_th", profile.exit_ratio_th)),
+                    "switch_enter_score_th": float(
+                        item.get("switch_enter_score_th", profile.switch_enter_score_th or profile.enter_score_th)
+                    ),
+                    "switch_enter_ratio_th": float(
+                        item.get("switch_enter_ratio_th", profile.switch_enter_ratio_th or profile.enter_ratio_th)
+                    ),
+                    "switch_enter_margin_th": float(
+                        item.get("switch_enter_margin_th", profile.switch_enter_margin_th or profile.enter_margin_th)
+                    ),
+                    "enter_log_lr_th": item.get("enter_log_lr_th", profile.enter_log_lr_th),
+                    "exit_log_lr_th": item.get("exit_log_lr_th", profile.exit_log_lr_th),
+                }
+            else:
+                per_freq_gate[str(key)] = {
+                    "coef": list(item.get("coef", [0.0] * len(DEFAULT_GATE_FEATURES))),
+                    "intercept": float(item.get("intercept", 0.0)),
+                    "enter_logit_th": float(item.get("enter_logit_th", item.get("enter_log_lr_th", 0.35))),
+                    "exit_logit_th": float(item.get("exit_logit_th", item.get("exit_log_lr_th", 0.05))),
+                }
     if not per_freq_gate:
         enter_llr = profile.enter_log_lr_th
         exit_llr = profile.exit_log_lr_th
@@ -233,7 +253,10 @@ def _profile_v2_payload(profile: ThresholdProfile, metrics: dict[str, Any]) -> d
                 "enter_logit_th": float(enter_llr if enter_llr is not None else 0.35),
                 "exit_logit_th": float(exit_llr if exit_llr is not None else 0.05),
             }
-    gate_type = "threshold_only_global_gate" if _all_zero_logreg_gate(per_freq_gate) else "frequency_specific_logreg"
+    if str(getattr(profile, "control_state_mode", "")) == "frequency-specific-threshold" and profile.frequency_specific_thresholds:
+        gate_type = "frequency_specific_threshold"
+    else:
+        gate_type = "threshold_only_global_gate" if _all_zero_logreg_gate(per_freq_gate) else "frequency_specific_logreg"
     profile_v2 = build_profile_v2(
         base_profile=profile,
         per_freq_gate=per_freq_gate,
@@ -293,31 +316,7 @@ def _candidate_allowed(candidate: dict[str, Any]) -> bool:
 
 
 def _fast_control_release_failures(metrics: dict[str, Any]) -> list[str]:
-    values = dict(metrics or {})
-    failures: list[str] = []
-    if float(values.get("idle_fp_per_min", float("inf"))) > float(DEFAULT_FAST_CONTROL_RELEASE_IDLE_FP_MAX) + 1e-12:
-        failures.append("idle_fp_per_min must be 0 for fast-control deployment")
-    if float(values.get("control_recall", 0.0)) < float(DEFAULT_FAST_CONTROL_RELEASE_CONTROL_RECALL_MIN):
-        failures.append(
-            f"control_recall must be >= {DEFAULT_FAST_CONTROL_RELEASE_CONTROL_RECALL_MIN:g}"
-        )
-    if float(values.get("control_recall_at_3s", 0.0)) < float(DEFAULT_FAST_CONTROL_RELEASE_CONTROL_RECALL_AT_3S_MIN):
-        failures.append(
-            f"control_recall_at_3s must be >= {DEFAULT_FAST_CONTROL_RELEASE_CONTROL_RECALL_AT_3S_MIN:g}"
-        )
-    if float(values.get("switch_detect_rate", 0.0)) < float(DEFAULT_FAST_CONTROL_RELEASE_SWITCH_DETECT_RATE_MIN):
-        failures.append(
-            f"switch_detect_rate must be >= {DEFAULT_FAST_CONTROL_RELEASE_SWITCH_DETECT_RATE_MIN:g}"
-        )
-    if float(values.get("release_latency_s", float("inf"))) > float(DEFAULT_FAST_CONTROL_RELEASE_RELEASE_LATENCY_MAX_S):
-        failures.append(
-            f"release_latency_s must be <= {DEFAULT_FAST_CONTROL_RELEASE_RELEASE_LATENCY_MAX_S:g}"
-        )
-    if float(values.get("switch_latency_s", float("inf"))) > float(DEFAULT_FAST_CONTROL_RELEASE_SWITCH_LATENCY_MAX_S):
-        failures.append(
-            f"switch_latency_s must be <= {DEFAULT_FAST_CONTROL_RELEASE_SWITCH_LATENCY_MAX_S:g}"
-        )
-    return failures
+    return fast_control_release_failures(metrics)
 
 
 def _candidate_release_valid(candidate: dict[str, Any]) -> bool:
@@ -341,6 +340,15 @@ def _dedup_int_candidates(values: Sequence[int], *, fallback: int) -> tuple[int,
     output: list[int] = []
     for value in tuple(values or ()) + (int(fallback),):
         item = max(1, int(value))
+        if item not in output:
+            output.append(item)
+    return tuple(output)
+
+
+def _dedup_control_state_mode_candidates(values: Sequence[str], *, fallback: str) -> tuple[str, ...]:
+    output: list[str] = []
+    for value in tuple(values or ()) + (str(fallback),):
+        item = parse_control_state_mode(str(value))
         if item not in output:
             output.append(item)
     return tuple(output)
@@ -539,6 +547,14 @@ def run_fbcca_threshold_pretrain(
         config.min_exit_windows_candidates if bool(config.fast_control_grid_search) else (config.min_exit_windows,),
         fallback=config.min_exit_windows,
     )
+    control_state_mode_candidates = _dedup_control_state_mode_candidates(
+        (
+            config.control_state_mode_candidates
+            if bool(config.fast_control_grid_search)
+            else (DEFAULT_FAST_CONTROL_STATE_MODE_CANDIDATES[0],)
+        ),
+        fallback=DEFAULT_FAST_CONTROL_STATE_MODE_CANDIDATES[0],
+    )
     emit("feature_extract", 25.0, f"default FBCCA feature extraction, wins={list(win_candidates)}", force=True)
     candidate_rows: list[dict[str, Any]] = []
     decoder_backend_used = str(compute_backend)
@@ -583,48 +599,60 @@ def run_fbcca_threshold_pretrain(
         for gate_policy in gate_policy_candidates:
             for min_enter in min_enter_candidates:
                 for min_exit in min_exit_candidates:
-                    profile_candidate = fit_threshold_profile(
-                        feature_rows_for_win,
-                        freqs=freqs,
-                        win_sec=float(win_sec),
-                        step_sec=float(config.step_sec),
-                        min_enter_windows=max(1, int(min_enter)),
-                        min_exit_windows=max(1, int(min_exit)),
-                        gate_policy=parse_gate_policy(gate_policy),
-                        evaluation_rows=feature_rows_for_win,
-                        dynamic_stop_enabled=bool(config.dynamic_stop_enabled),
-                        dynamic_stop_alpha=float(config.dynamic_stop_alpha),
-                        control_state_mode="unified",
-                    )
-                    profile_quality_candidate = summarize_profile_quality(feature_rows_for_win, profile_candidate)
-                    async_metrics_candidate = evaluate_profile_on_feature_rows(feature_rows_for_win, profile_candidate)
-                    candidate = {
-                        "win_sec": float(win_sec),
-                        "step_sec": float(config.step_sec),
-                        "gate_policy": parse_gate_policy(gate_policy),
-                        "min_enter_windows": int(min_enter),
-                        "min_exit_windows": int(min_exit),
-                        "feature_rows": int(len(feature_rows_for_win)),
-                        "async_metrics": _metric_payload(async_metrics_candidate),
-                        "profile_quality": _finite_metrics(profile_quality_candidate),
-                        "allowed_for_release": bool(_candidate_allowed(
-                            {
-                                "gate_policy": parse_gate_policy(gate_policy),
-                                "async_metrics": async_metrics_candidate,
-                            }
-                        )),
-                    }
-                    candidate_rows.append(candidate)
-                    comparable = {**candidate, "profile": profile_candidate, "feature_rows_raw": feature_rows_for_win}
-                    if best_payload is None:
-                        best_payload = comparable
-                    else:
-                        best_allowed = _candidate_allowed(best_payload)
-                        new_allowed = _candidate_allowed(comparable)
-                        if (new_allowed and not best_allowed) or (
-                            new_allowed == best_allowed and _candidate_sort_key(comparable) < _candidate_sort_key(best_payload)
-                        ):
+                    for control_state_mode in control_state_mode_candidates:
+                        profile_candidate = fit_threshold_profile(
+                            feature_rows_for_win,
+                            freqs=freqs,
+                            win_sec=float(win_sec),
+                            step_sec=float(config.step_sec),
+                            min_enter_windows=max(1, int(min_enter)),
+                            min_exit_windows=max(1, int(min_exit)),
+                            gate_policy=parse_gate_policy(gate_policy),
+                            evaluation_rows=feature_rows_for_win,
+                            dynamic_stop_enabled=bool(config.dynamic_stop_enabled),
+                            dynamic_stop_alpha=float(config.dynamic_stop_alpha),
+                            control_state_mode=parse_control_state_mode(control_state_mode),
+                        )
+                        profile_quality_candidate = summarize_profile_quality(feature_rows_for_win, profile_candidate)
+                        async_metrics_candidate = evaluate_profile_on_feature_rows(feature_rows_for_win, profile_candidate)
+                        candidate = {
+                            "win_sec": float(win_sec),
+                            "step_sec": float(config.step_sec),
+                            "gate_policy": parse_gate_policy(gate_policy),
+                            "min_enter_windows": int(min_enter),
+                            "min_exit_windows": int(min_exit),
+                            "control_state_mode": parse_control_state_mode(control_state_mode),
+                            "frequency_specific_threshold_count": int(
+                                len(profile_candidate.frequency_specific_thresholds or {})
+                            ),
+                            "feature_rows": int(len(feature_rows_for_win)),
+                            "async_metrics": _metric_payload(async_metrics_candidate),
+                            "profile_quality": _finite_metrics(profile_quality_candidate),
+                            "allowed_for_release": bool(
+                                _candidate_allowed(
+                                    {
+                                        "gate_policy": parse_gate_policy(gate_policy),
+                                        "async_metrics": async_metrics_candidate,
+                                    }
+                                )
+                            ),
+                        }
+                        candidate_rows.append(candidate)
+                        comparable = {
+                            **candidate,
+                            "profile": profile_candidate,
+                            "feature_rows_raw": feature_rows_for_win,
+                        }
+                        if best_payload is None:
                             best_payload = comparable
+                        else:
+                            best_allowed = _candidate_allowed(best_payload)
+                            new_allowed = _candidate_allowed(comparable)
+                            if (new_allowed and not best_allowed) or (
+                                new_allowed == best_allowed
+                                and _candidate_sort_key(comparable) < _candidate_sort_key(best_payload)
+                            ):
+                                best_payload = comparable
     if best_payload is None:
         raise RuntimeError("default FBCCA did not produce any feature rows")
 
@@ -682,6 +710,10 @@ def run_fbcca_threshold_pretrain(
         benchmark_metrics=_finite_metrics(async_metrics),
         eeg_channels=tuple(int(item) for item in base_dataset.board_eeg_channels),
         gate_policy=parse_gate_policy(str(chosen_candidate.get("gate_policy", config.gate_policy))),
+        control_state_mode=parse_control_state_mode(
+            str(chosen_candidate.get("control_state_mode", DEFAULT_FAST_CONTROL_STATE_MODE_CANDIDATES[0]))
+        ),
+        frequency_specific_thresholds=profile.frequency_specific_thresholds,
         dynamic_stop=dict(profile.dynamic_stop or {}),
         channel_weight_mode=None,
         channel_weights=None,

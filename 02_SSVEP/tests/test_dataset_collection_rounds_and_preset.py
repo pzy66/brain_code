@@ -61,10 +61,12 @@ from apps.data_collection_ui import (
     trial_count_for_protocol,
     validate_stimulus_frequency_set,
     build_parser,
+    parse_freqs,
 )
 from ssvep_core.stimulus_profiles import (
     DEFAULT_STIMULUS_PROFILE_ID,
     STIMULUS_PROFILE_COMFORT_FBCCA_V1,
+    frame_lock_frequency_report,
     get_stimulus_profile,
     stimulus_profile_metadata,
 )
@@ -885,13 +887,14 @@ def test_collection_cli_defaults_to_auto_comfort_stimulus_mode() -> None:
     args = parser.parse_args([])
     assert str(args.stimulus_profile_id) == DEFAULT_STIMULUS_PROFILE_ID
     assert str(args.stimulus_mode) == "auto"
+    assert parse_freqs(str(args.freqs)) == get_stimulus_profile(DEFAULT_STIMULUS_PROFILE_ID).freqs
     args = parser.parse_args(["--stimulus-mode", STIMULUS_MODE_FRAME_LOCKED_SINE])
     assert str(args.stimulus_mode) == STIMULUS_MODE_FRAME_LOCKED_SINE
 
 
 def test_comfort_fbcca_profile_uses_lower_contrast_and_ramp() -> None:
     profile = get_stimulus_profile(STIMULUS_PROFILE_COMFORT_FBCCA_V1)
-    assert profile.freqs == (8.0, 10.0, 12.0, 15.0)
+    assert profile.freqs == (9.8, 12.0, 14.8, 15.8)
     assert abs(float(profile.mean) - 0.40) < 1e-12
     assert abs(float(profile.amp) - 0.20) < 1e-12
     assert abs(float(profile.ramp_sec) - 0.30) < 1e-12
@@ -902,7 +905,7 @@ def test_comfort_fbcca_profile_uses_lower_contrast_and_ramp() -> None:
     report = stimulus_frame_qc_report(
         freqs=profile.freqs,
         refresh_rate_hz=240.0,
-        active_sec=3.0,
+        active_sec=5.0,
         stimulus_mode=STIMULUS_MODE_FRAME_LOCKED_SINE,
         mean=float(profile.mean),
         amp=float(profile.amp),
@@ -913,7 +916,25 @@ def test_comfort_fbcca_profile_uses_lower_contrast_and_ramp() -> None:
     assert float(report["luminance_min"]) > 0.0
     assert float(report["luminance_max"]) < 1.0
     peaks = {float(row["target_hz"]): float(row["peak_hz"]) for row in report["rows"]}
-    assert peaks == {8.0: 8.0, 10.0: 10.0, 12.0: 12.0, 15.0: 15.0}
+    assert peaks == {9.8: 9.8, 12.0: 12.0, 14.8: 14.8, 15.8: 15.8}
+
+
+def test_frame_lock_frequency_report_distinguishes_integer_cycle_from_sampled_sine() -> None:
+    report = frame_lock_frequency_report((9.8, 12.0, 14.8, 15.8), refresh_rate_hz=240.0)
+    assert report["all_frame_sequences_repeat_exactly"] is True
+    assert report["all_integer_frames_per_cycle"] is False
+    assert int(report["max_frame_sequence_repeat_frames"]) == 1200
+    assert abs(float(report["max_frame_sequence_repeat_sec"]) - 5.0) < 1e-12
+
+    rows = {float(row["frequency_hz"]): row for row in report["frequencies"]}
+    assert rows[12.0]["integer_frames_per_cycle"] is True
+    assert int(rows[12.0]["frame_sequence_repeat_frames"]) == 20
+    assert rows[9.8]["integer_frames_per_cycle"] is False
+    assert int(rows[9.8]["frame_sequence_repeat_frames"]) == 1200
+
+    exact = frame_lock_frequency_report((8.0, 9.6, 10.0, 12.0), refresh_rate_hz=240.0)
+    assert exact["all_integer_frames_per_cycle"] is True
+    assert int(exact["max_frame_sequence_repeat_frames"]) == 30
 
 
 def test_collection_auto_stimulus_mode_prefers_frame_locked_only_at_stable_240hz() -> None:
@@ -1623,6 +1644,18 @@ def test_protocol_signature_includes_comfort_stimulus_profile_fields() -> None:
         freqs=(8.0, 10.0, 12.0, 15.0),
         board_eeg_channels=(1, 2, 3, 4, 5, 6, 7, 8),
     )
+    changed_frame_lock = build_protocol_signature(
+        sampling_rate=250,
+        protocol_config={
+            **base_config,
+            "frame_lock_frequency_report": frame_lock_frequency_report(
+                (8.0, 9.6, 10.0, 12.0),
+                refresh_rate_hz=240.0,
+            ),
+        },
+        freqs=(8.0, 10.0, 12.0, 15.0),
+        board_eeg_channels=(1, 2, 3, 4, 5, 6, 7, 8),
+    )
     changed_comfort = build_protocol_signature(
         sampling_rate=250,
         protocol_config={**base_config, "comfort_rating": 4},
@@ -1640,6 +1673,7 @@ def test_protocol_signature_includes_comfort_stimulus_profile_fields() -> None:
     assert base != changed_ramp
     assert base != changed_profile
     assert base != changed_frame_stats
+    assert base != changed_frame_lock
     assert base != changed_comfort
     assert base != changed_brightness_note
 

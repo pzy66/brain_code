@@ -6,6 +6,8 @@ from typing import Any, Optional, Sequence
 
 import numpy as np
 
+from ..stimulus_profiles import DEFAULT_COMFORT_FREQS
+
 
 @dataclass(frozen=True)
 class DecoderOutput:
@@ -53,7 +55,7 @@ class BaseDecoder(ABC):
         self.win_sec = float(win_sec)
         self.step_sec = float(step_sec)
         self.fs = 0
-        self.freqs: tuple[float, float, float, float] = (8.0, 10.0, 12.0, 15.0)
+        self.freqs: tuple[float, float, float, float] = DEFAULT_COMFORT_FREQS
         self.channels: tuple[int, ...] = ()
         self.win_samples = 0
         self.step_samples = 0

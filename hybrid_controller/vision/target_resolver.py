@@ -29,7 +29,8 @@ def _to_float_pair(value: object, fallback: tuple[float, float]) -> tuple[float,
 def _resolve_mapping_mode(raw_mode: object, fallback_mode: str) -> str:
     mode = str(raw_mode if raw_mode is not None else fallback_mode).strip().lower()
     if mode not in {"delta_servo", "absolute_base"}:
-        return "delta_servo"
+        fallback = str(fallback_mode or "").strip().lower()
+        return fallback if fallback in {"delta_servo", "absolute_base"} else "delta_servo"
     return mode
 
 

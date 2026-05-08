@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from urllib.parse import parse_qsl, quote, urlparse, urlunparse
+from urllib.request import Request, urlopen
 
 
 def bootstrap_brain_vision_python() -> None:
@@ -119,6 +121,23 @@ def parse_source(raw: str) -> Union[int, str]:
     if text.lstrip("-").isdigit():
         return int(text)
     return text
+
+
+def normalize_web_video_url(source: str) -> str:
+    value = str(source).strip()
+    try:
+        parsed = urlparse(value)
+    except Exception:
+        return value
+    if parsed.scheme not in {"http", "https"} or not parsed.path.endswith("/stream") or not parsed.query:
+        return value
+    query_items = parse_qsl(parsed.query, keep_blank_values=True)
+    if not query_items:
+        return value
+    normalized_query = "&".join(
+        f"{quote(str(key), safe='')}={quote(str(val), safe='/')}" for key, val in query_items
+    )
+    return urlunparse(parsed._replace(query=normalized_query))
 
 
 def resolve_default_weights() -> Path:
@@ -537,21 +556,107 @@ class CameraLoader:
                 "last_frame_age_ms": float(age_ms),
             }
 
-    def _open_capture(self) -> cv2.VideoCapture:
-        backend = cv2.CAP_ANY
-        if isinstance(self.source, str) and hasattr(cv2, "CAP_FFMPEG"):
-            backend = cv2.CAP_FFMPEG
+    class _HttpMjpegCapture:
+        def __init__(self, url: str, *, timeout_sec: float) -> None:
+            self._url = normalize_web_video_url(str(url))
+            self._timeout_sec = max(0.2, float(timeout_sec))
+            self._response = None
+            self._buffer = bytearray()
+            self._open()
+
+        def _open(self) -> None:
+            request = Request(self._url, headers={"User-Agent": "block-center-ssvep"})
+            self._response = urlopen(request, timeout=self._timeout_sec)
+
+        def isOpened(self) -> bool:
+            return self._response is not None
+
+        def read(self):
+            if self._response is None:
+                return False, None
+            deadline = time.perf_counter() + self._timeout_sec
+            while time.perf_counter() < deadline:
+                start = self._buffer.find(b"\xff\xd8")
+                end = self._buffer.find(b"\xff\xd9", start + 2 if start >= 0 else 0)
+                if start >= 0 and end >= 0:
+                    jpg = bytes(self._buffer[start : end + 2])
+                    del self._buffer[: end + 2]
+                    frame = cv2.imdecode(np.frombuffer(jpg, dtype=np.uint8), cv2.IMREAD_COLOR)
+                    if frame is not None:
+                        return True, frame
+                    continue
+                chunk = self._response.read(4096)
+                if not chunk:
+                    return False, None
+                self._buffer.extend(chunk)
+                if len(self._buffer) > 4_000_000:
+                    del self._buffer[:-1_000_000]
+            return False, None
+
+        def release(self) -> None:
+            response = self._response
+            self._response = None
+            if response is not None:
+                try:
+                    response.close()
+                except Exception:
+                    pass
+
+    @staticmethod
+    def _is_web_video_mjpeg_stream(source: object) -> bool:
+        if not isinstance(source, str):
+            return False
         try:
-            capture = cv2.VideoCapture(self.source, backend)
-        except TypeError:
-            capture = cv2.VideoCapture(self.source)
-        if hasattr(cv2, "CAP_PROP_BUFFERSIZE"):
-            capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        if hasattr(cv2, "CAP_PROP_OPEN_TIMEOUT_MSEC"):
-            capture.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 2000)
-        if hasattr(cv2, "CAP_PROP_READ_TIMEOUT_MSEC"):
-            capture.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 2000)
-        return capture
+            parsed = urlparse(source)
+        except Exception:
+            return False
+        if parsed.scheme not in {"http", "https"} or not parsed.path.endswith("/stream"):
+            return False
+        query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+        requested_type = str(query.get("type", "")).strip().lower()
+        return requested_type in {"", "mjpeg"}
+
+    def _open_capture(self):
+        source = normalize_web_video_url(str(self.source)) if isinstance(self.source, str) else self.source
+        if self._is_web_video_mjpeg_stream(self.source):
+            capture = None
+            try:
+                capture = self._HttpMjpegCapture(str(source), timeout_sec=2.0)
+                return capture
+            except Exception:
+                pass
+            if capture is not None:
+                capture.release()
+        backend_candidates = [cv2.CAP_ANY]
+        if isinstance(source, str) and hasattr(cv2, "CAP_FFMPEG"):
+            parsed = urlparse(source)
+            query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+            requested_type = str(query.get("type", "")).strip().lower()
+            if parsed.scheme in {"rtsp", "tcp"}:
+                backend_candidates = [cv2.CAP_FFMPEG, cv2.CAP_ANY]
+            elif parsed.scheme in {"http", "https"} and requested_type not in {"h264", "vp8", "vp9"}:
+                backend_candidates = [cv2.CAP_ANY, cv2.CAP_FFMPEG]
+            else:
+                backend_candidates = [cv2.CAP_FFMPEG, cv2.CAP_ANY]
+        deduped_backends: List[int] = []
+        for backend in backend_candidates:
+            if backend not in deduped_backends:
+                deduped_backends.append(backend)
+        for backend in deduped_backends:
+            try:
+                capture = cv2.VideoCapture(source, backend)
+            except TypeError:
+                capture = cv2.VideoCapture(source)
+            if hasattr(cv2, "CAP_PROP_BUFFERSIZE"):
+                capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            if hasattr(cv2, "CAP_PROP_OPEN_TIMEOUT_MSEC"):
+                capture.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 2000)
+            if hasattr(cv2, "CAP_PROP_READ_TIMEOUT_MSEC"):
+                capture.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 2000)
+            if capture.isOpened():
+                return capture
+            capture.release()
+        return cv2.VideoCapture()
 
     def _set_status(self, status: str) -> None:
         with self._lock:

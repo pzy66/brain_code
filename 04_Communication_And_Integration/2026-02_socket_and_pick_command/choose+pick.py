@@ -6,7 +6,7 @@ import time
 # =========================
 # 1. 配置区
 # =========================
-STREAM_URL = "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color"
+STREAM_URL = "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80"
 
 JETSON_IP = "192.168.149.1"
 JETSON_PORT = 8888

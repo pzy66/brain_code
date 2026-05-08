@@ -76,6 +76,7 @@ from ssvep_core.dataset import (
 )
 from ssvep_core.stimulus_profiles import (
     DEFAULT_STIMULUS_PROFILE_ID,
+    find_matching_stimulus_profile_id,
     STIMULUS_PROFILES,
     STIMULUS_PROFILE_COMFORT_FBCCA_V1,
     get_stimulus_profile,
@@ -125,6 +126,8 @@ STIM_PHI = float(_DEFAULT_STIMULUS_PROFILE.phi)
 STIM_RAMP_SEC = float(_DEFAULT_STIMULUS_PROFILE.ramp_sec)
 DEFAULT_COLLECTION_STIMULUS_PROFILE_ID = DEFAULT_STIMULUS_PROFILE_ID
 DEFAULT_COLLECTION_STIMULUS_MODE = _DEFAULT_STIMULUS_PROFILE.fallback_mode
+DEFAULT_COLLECTION_FREQS = tuple(float(freq) for freq in _DEFAULT_STIMULUS_PROFILE.freqs)
+DEFAULT_COLLECTION_FREQS_CSV = ",".join(f"{freq:g}" for freq in DEFAULT_COLLECTION_FREQS)
 STIM_FRAME_FORMULA = "luminance(frame)=mean+amp*sin(2*pi*freq*frame/refresh_rate_hz+phi)"
 ACTIVE_STIMULUS_ARM_SEC = 1.0 / STIM_REFRESH_RATE_HZ
 STIMULUS_PHASE_APPLY_TIMEOUT_SEC = 1.0
@@ -1093,6 +1096,7 @@ class CollectionWorker(QObject):
                 self.config.stimulus_profile_id,
                 stimulus_mode=str(self.config.stimulus_mode),
                 refresh_rate_hz=float(self.config.stim_refresh_rate_hz),
+                freqs=self.config.freqs,
                 mode_selection_reason=str(self.config.stimulus_mode_selection_reason),
                 comfort_rating=self.config.comfort_rating,
                 screen_brightness_note=str(self.config.screen_brightness_note),
@@ -2156,6 +2160,12 @@ class DatasetCollectionWindow(QMainWindow):
         value = self.stimulus_profile_combo.currentData()
         return validate_stimulus_profile_id(str(value) if value is not None else self.stimulus_profile_combo.currentText())
 
+    def _set_stimulus_profile_selection(self, profile_id: str) -> None:
+        resolved = validate_stimulus_profile_id(profile_id)
+        index = self.stimulus_profile_combo.findData(resolved)
+        if index >= 0 and self.stimulus_profile_combo.currentIndex() != index:
+            self.stimulus_profile_combo.setCurrentIndex(index)
+
     def _apply_preset(self, preset_name: str) -> None:
         key = normalize_preset_name(preset_name)
         preset = COLLECTION_PRESETS.get(key, CUSTOM_PRESET)
@@ -2189,19 +2199,19 @@ class DatasetCollectionWindow(QMainWindow):
         try:
             profile_id = self._current_stimulus_profile_id()
             profile = get_stimulus_profile(profile_id)
+            desired_freqs = tuple(float(freq) for freq in profile.freqs)
+            self.freqs_edit.setText(",".join(f"{freq:g}" for freq in desired_freqs))
             self.stim.mean = float(profile.mean)
             self.stim.amp = float(profile.amp)
             self.stim.phi = float(profile.phi)
             self.stim.ramp_sec = float(profile.ramp_sec)
             self.stim.stimulus_profile_id = str(profile.profile_id)
             self._sync_stim_freqs(
-                parse_freqs(self.freqs_edit.text().strip()),
+                desired_freqs,
                 refresh_rate_hz=self._resolve_stim_refresh_rate_hz(),
                 stimulus_mode=self._current_stimulus_mode(),
                 stimulus_profile_id=profile_id,
             )
-            if not profile_matches_freqs(profile_id, parse_freqs(self.freqs_edit.text().strip())):
-                self._log("warning: selected stimulus profile freqs differ from the UI frequency list")
             self._refresh_estimate_label()
         except Exception as exc:
             self._log(f"stimulus profile error: {exc}")
@@ -2228,6 +2238,12 @@ class DatasetCollectionWindow(QMainWindow):
             )
         except Exception as exc:
             self._log(f"刺激刷新率错误：{exc}")
+
+    def _sync_profile_selection_from_freqs(self, freqs: Sequence[float]) -> None:
+        matched_profile_id = find_matching_stimulus_profile_id(freqs)
+        if matched_profile_id is None:
+            return
+        self._set_stimulus_profile_selection(matched_profile_id)
 
     def _round_index_for_next_run(self) -> int:
         return int(self.session_index_spin.value()) + int(self.rounds_completed)
@@ -2363,6 +2379,7 @@ class DatasetCollectionWindow(QMainWindow):
         serial_port = normalize_serial_port(self.serial_edit.text().strip())
         board_id = int(self.board_edit.text().strip())
         freqs = parse_freqs(self.freqs_edit.text().strip())
+        self._sync_profile_selection_from_freqs(freqs)
         subject_id = sanitize_collection_token(self.subject_edit.text().strip() or "subject001", default="subject001")
         simulation_only = bool(self.simulation_only_check.isChecked())
         rounds_planned = int(self.rounds_planned_spin.value())
@@ -2386,6 +2403,8 @@ class DatasetCollectionWindow(QMainWindow):
         )
         stim_refresh_rate_hz = self._resolve_stim_refresh_rate_hz()
         validate_stimulus_frequency_set(freqs, refresh_rate_hz=stim_refresh_rate_hz)
+        if not profile_matches_freqs(stimulus_profile_id, freqs):
+            self._log("warning: selected stimulus profile freqs differ from the UI frequency list")
         target_repeats = int(self.target_spin.value())
         idle_repeats = int(self.idle_spin.value())
         switch_trials = int(self.switch_spin.value())
@@ -2687,7 +2706,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="SSVEP 数据采集 UI / CLI")
     parser.add_argument("--serial-port", type=str, default="auto")
     parser.add_argument("--board-id", type=int, default=DEFAULT_BOARD_ID)
-    parser.add_argument("--freqs", type=str, default="8,10,12,15")
+    parser.add_argument("--freqs", type=str, default=DEFAULT_COLLECTION_FREQS_CSV)
     parser.add_argument("--dataset-dir", type=Path, default=DEFAULT_DATASET_DIR)
     parser.add_argument("--subject-id", type=str, default="subject001")
     parser.add_argument("--session-id", type=str, default="")

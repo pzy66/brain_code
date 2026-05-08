@@ -50,7 +50,7 @@ def test_resolve_realtime_model_choice_uses_profile_model() -> None:
 
 def test_realtime_window_constructor_smoke() -> None:
     _ = _get_qapp()
-    window = RealtimeOnlineWindow(serial_port="auto", board_id=0, freqs=(8.0, 10.0, 12.0, 15.0))
+    window = RealtimeOnlineWindow(serial_port="auto", board_id=0, freqs=realtime_ui.DEMO_EXPECTED_FREQS)
     try:
         assert window.model_combo.currentText() == "fbcca"
         assert "未加载" in window.profile_meta_label.text()
@@ -59,6 +59,12 @@ def test_realtime_window_constructor_smoke() -> None:
         assert "FBCCA" in window.btn_no_train_start.text()
     finally:
         window.close()
+
+
+def test_realtime_cli_default_freqs_follow_stimulus_profile() -> None:
+    args = realtime_ui.build_parser().parse_args([])
+    assert realtime_ui.parse_freqs(str(args.freqs)) == realtime_ui.DEFAULT_REALTIME_FREQS
+    assert realtime_ui.DEFAULT_REALTIME_FREQS == realtime_ui.DEMO_EXPECTED_FREQS
 
 
 def test_fbcca_demo_window_locks_model_and_freqs() -> None:
@@ -83,11 +89,11 @@ def test_fbcca_demo_window_locks_model_and_freqs() -> None:
 def test_fbcca_demo_profile_validation_rejects_wrong_model_or_freqs(tmp_path: Path) -> None:
     good = tmp_path / "profile.json"
     good.write_text(
-        json.dumps({"model_name": "fbcca", "freqs": [8.0, 10.0, 12.0, 15.0], "model_params": {"fbcca_variant": "fbcca_cw_sw_all8"}}),
+        json.dumps({"model_name": "fbcca", "freqs": list(realtime_ui.DEMO_EXPECTED_FREQS), "model_params": {"fbcca_variant": "fbcca_cw_sw_all8"}}),
         encoding="utf-8",
     )
     wrong_model = tmp_path / "wrong_model.json"
-    wrong_model.write_text(json.dumps({"model_name": "trca", "freqs": [8.0, 10.0, 12.0, 15.0]}), encoding="utf-8")
+    wrong_model.write_text(json.dumps({"model_name": "trca", "freqs": list(realtime_ui.DEMO_EXPECTED_FREQS)}), encoding="utf-8")
     wrong_freqs = tmp_path / "wrong_freqs.json"
     wrong_freqs.write_text(json.dumps({"model_name": "fbcca", "freqs": [8.0, 9.0, 12.0, 15.0]}), encoding="utf-8")
 
@@ -103,8 +109,8 @@ def test_fbcca_demo_profile_validation_rejects_wrong_model_or_freqs(tmp_path: Pa
 def test_fbcca_demo_rejects_invalid_profile_picker(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     _ = _get_qapp()
     invalid = tmp_path / "invalid.json"
-    invalid.write_text(json.dumps({"model_name": "trca", "freqs": [8.0, 10.0, 12.0, 15.0]}), encoding="utf-8")
-    window = RealtimeOnlineWindow(serial_port="auto", board_id=0, freqs=(8.0, 10.0, 12.0, 15.0), demo_mode=True)
+    invalid.write_text(json.dumps({"model_name": "trca", "freqs": list(realtime_ui.DEMO_EXPECTED_FREQS)}), encoding="utf-8")
+    window = RealtimeOnlineWindow(serial_port="auto", board_id=0, freqs=realtime_ui.DEMO_EXPECTED_FREQS, demo_mode=True)
     original_profile = window.profile_edit.text()
     try:
         monkeypatch.setattr(
@@ -124,7 +130,7 @@ def test_fbcca_demo_rejects_invalid_profile_picker(monkeypatch: pytest.MonkeyPat
 def test_publish_fbcca_profile_to_realtime_and_reject_hybrid(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     source = tmp_path / "trained_fbcca_profile.json"
     source.write_text(
-        json.dumps({"model_name": "fbcca", "freqs": [8.0, 10.0, 12.0, 15.0], "model_params": {"fbcca_variant": "fbcca_cw_sw_all8"}}),
+        json.dumps({"model_name": "fbcca", "freqs": list(realtime_ui.DEMO_EXPECTED_FREQS), "model_params": {"fbcca_variant": "fbcca_cw_sw_all8"}}),
         encoding="utf-8",
     )
     source_v2 = tmp_path / "trained_fbcca_profile_v2.json"
@@ -153,7 +159,7 @@ def test_realtime_pretrain_plan_is_about_one_minute(tmp_path: Path) -> None:
     cfg = RealtimePretrainConfig(
         serial_port="auto",
         board_id=0,
-        freqs=(8.0, 10.0, 12.0, 15.0),
+        freqs=realtime_ui.DEMO_EXPECTED_FREQS,
         base_profile_path=tmp_path / "base.json",
         fallback_profile_path=tmp_path / "fallback.json",
         output_profile_path=tmp_path / "profile.json",
@@ -176,7 +182,7 @@ def test_realtime_pretrain_protocol_records_comfort_stimulus_provenance(tmp_path
     cfg = RealtimePretrainConfig(
         serial_port="auto",
         board_id=0,
-        freqs=(8.0, 10.0, 12.0, 15.0),
+        freqs=realtime_ui.DEMO_EXPECTED_FREQS,
         base_profile_path=tmp_path / "base.json",
         fallback_profile_path=tmp_path / "fallback.json",
         output_profile_path=tmp_path / "profile.json",
@@ -201,6 +207,7 @@ def test_realtime_pretrain_protocol_records_comfort_stimulus_provenance(tmp_path
     assert abs(float(payload["stim_luminance_max"]) - 0.60) < 1e-12
     assert abs(float(payload["ramp_sec"]) - 0.30) < 1e-12
     assert abs(float(payload["stim_refresh_rate_hz"]) - 144.0) < 1e-12
+    assert payload["frame_lock_frequency_report"]["refresh_rate_hz"] == 144.0
 
     frame_locked_cfg = RealtimePretrainConfig(
         serial_port=cfg.serial_port,
@@ -224,11 +231,15 @@ def test_realtime_pretrain_protocol_records_comfort_stimulus_provenance(tmp_path
     )
     assert frame_locked_payload["stimulus_mode"] == "frame_locked_sine"
     assert frame_locked_payload["stimulus_mode_selection_reason"] == "stable_240hz_frame_locked"
+    frame_report = frame_locked_payload["frame_lock_frequency_report"]
+    assert frame_report["all_frame_sequences_repeat_exactly"] is True
+    assert frame_report["all_integer_frames_per_cycle"] is False
+    assert int(frame_report["max_frame_sequence_repeat_frames"]) == 1200
 
 
 def test_no_train_fbcca_profile_is_direct_runtime_safe(tmp_path: Path) -> None:
     profile_path = tmp_path / "fbcca_no_train_profile.json"
-    saved_profile, saved_v2 = save_no_train_fbcca_profile(profile_path, freqs=(8.0, 10.0, 12.0, 15.0))
+    saved_profile, saved_v2 = save_no_train_fbcca_profile(profile_path, freqs=realtime_ui.DEMO_EXPECTED_FREQS)
     profile = load_profile(saved_profile, require_exists=True)
     payload_v2 = json.loads(saved_v2.read_text(encoding="utf-8"))
 
@@ -239,7 +250,7 @@ def test_no_train_fbcca_profile_is_direct_runtime_safe(tmp_path: Path) -> None:
     assert "fast_personalization" not in dict(profile.model_params or {})
     assert payload_v2["gate"]["type"] == "global_threshold"
 
-    built = build_no_train_fbcca_profile((8.0, 10.0, 12.0, 15.0))
+    built = build_no_train_fbcca_profile(realtime_ui.DEMO_EXPECTED_FREQS)
     assert built.model_name == "fbcca"
     assert not realtime_ui.profile_is_default_fallback(built)
 
@@ -248,7 +259,7 @@ def test_no_train_button_generates_profile_and_starts(monkeypatch: pytest.Monkey
     _ = _get_qapp()
     no_train_path = tmp_path / "fbcca_no_train_profile.json"
     monkeypatch.setattr(realtime_ui, "SSVEP_NO_TRAIN_FBCCA_PROFILE_PATH", no_train_path)
-    window = RealtimeOnlineWindow(serial_port="auto", board_id=0, freqs=(8.0, 10.0, 12.0, 15.0), demo_mode=True)
+    window = RealtimeOnlineWindow(serial_port="auto", board_id=0, freqs=realtime_ui.DEMO_EXPECTED_FREQS, demo_mode=True)
     calls: list[str] = []
     try:
         window._start_realtime = lambda: calls.append("start")  # type: ignore[method-assign]
@@ -267,7 +278,7 @@ def test_no_train_button_generates_profile_and_starts(monkeypatch: pytest.Monkey
 
 def test_pretrain_profile_ready_defers_autostart_until_cleanup(tmp_path: Path) -> None:
     _ = _get_qapp()
-    window = RealtimeOnlineWindow(serial_port="auto", board_id=0, freqs=(8.0, 10.0, 12.0, 15.0))
+    window = RealtimeOnlineWindow(serial_port="auto", board_id=0, freqs=realtime_ui.DEMO_EXPECTED_FREQS)
     calls: list[str] = []
     profile_path = tmp_path / "profile.json"
     history_path = tmp_path / "history.json"
@@ -296,7 +307,7 @@ def test_pretrain_profile_ready_defers_autostart_until_cleanup(tmp_path: Path) -
 
 def test_pretrain_profile_ready_surfaces_dataset_save_failure(tmp_path: Path) -> None:
     _ = _get_qapp()
-    window = RealtimeOnlineWindow(serial_port="auto", board_id=0, freqs=(8.0, 10.0, 12.0, 15.0))
+    window = RealtimeOnlineWindow(serial_port="auto", board_id=0, freqs=realtime_ui.DEMO_EXPECTED_FREQS)
     profile_path = tmp_path / "profile.json"
     history_path = tmp_path / "history.json"
     try:
@@ -325,7 +336,7 @@ def test_pretrain_worker_wait_requires_first_frame_ack(monkeypatch: pytest.Monke
         RealtimePretrainConfig(
             serial_port="auto",
             board_id=0,
-            freqs=(8.0, 10.0, 12.0, 15.0),
+            freqs=realtime_ui.DEMO_EXPECTED_FREQS,
             base_profile_path=tmp_path / "base.json",
             fallback_profile_path=tmp_path / "fallback.json",
             output_profile_path=tmp_path / "profile.json",
@@ -351,7 +362,7 @@ def test_pretrain_worker_wait_requires_first_frame_ack(monkeypatch: pytest.Monke
 
 def test_realtime_stimulus_area_stays_large_after_runtime_updates() -> None:
     app = _get_qapp()
-    window = RealtimeOnlineWindow(serial_port="auto", board_id=0, freqs=(8.0, 10.0, 12.0, 15.0))
+    window = RealtimeOnlineWindow(serial_port="auto", board_id=0, freqs=realtime_ui.DEMO_EXPECTED_FREQS)
     window.resize(1600, 900)
     window.show()
     app.processEvents()
@@ -394,7 +405,7 @@ def test_realtime_stimulus_area_stays_large_after_runtime_updates() -> None:
 
 def test_realtime_focus_mode_hides_controls_and_keeps_stimulus_fullscreen() -> None:
     app = _get_qapp()
-    window = RealtimeOnlineWindow(serial_port="auto", board_id=0, freqs=(8.0, 10.0, 12.0, 15.0))
+    window = RealtimeOnlineWindow(serial_port="auto", board_id=0, freqs=realtime_ui.DEMO_EXPECTED_FREQS)
     window.resize(1600, 900)
     window.show()
     app.processEvents()
@@ -415,7 +426,7 @@ def test_realtime_focus_mode_hides_controls_and_keeps_stimulus_fullscreen() -> N
 
 def test_realtime_result_updates_stimulus_blue_selection() -> None:
     _ = _get_qapp()
-    window = RealtimeOnlineWindow(serial_port="auto", board_id=0, freqs=(8.0, 10.0, 12.0, 15.0))
+    window = RealtimeOnlineWindow(serial_port="auto", board_id=0, freqs=realtime_ui.DEMO_EXPECTED_FREQS)
     try:
         window._on_result(
             {
@@ -437,7 +448,7 @@ def test_realtime_result_updates_stimulus_blue_selection() -> None:
 
 def test_realtime_result_label_refreshes_gate_metrics_for_repeated_state() -> None:
     _ = _get_qapp()
-    window = RealtimeOnlineWindow(serial_port="auto", board_id=0, freqs=(8.0, 10.0, 12.0, 15.0), demo_mode=True)
+    window = RealtimeOnlineWindow(serial_port="auto", board_id=0, freqs=realtime_ui.DEMO_EXPECTED_FREQS, demo_mode=True)
     try:
         payload = {
             "state": "tracking",
@@ -464,7 +475,7 @@ def test_realtime_result_label_refreshes_gate_metrics_for_repeated_state() -> No
 
 def test_realtime_window_forwards_first_frame_ack_to_worker() -> None:
     _ = _get_qapp()
-    window = RealtimeOnlineWindow(serial_port="auto", board_id=0, freqs=(8.0, 10.0, 12.0, 15.0))
+    window = RealtimeOnlineWindow(serial_port="auto", board_id=0, freqs=realtime_ui.DEMO_EXPECTED_FREQS)
 
     class _Worker:
         def __init__(self) -> None:
@@ -486,7 +497,7 @@ def test_realtime_window_forwards_first_frame_ack_to_worker() -> None:
 
 def test_realtime_window_forwards_calibration_first_frame_ack_to_pretrain_worker() -> None:
     _ = _get_qapp()
-    window = RealtimeOnlineWindow(serial_port="auto", board_id=0, freqs=(8.0, 10.0, 12.0, 15.0))
+    window = RealtimeOnlineWindow(serial_port="auto", board_id=0, freqs=realtime_ui.DEMO_EXPECTED_FREQS)
 
     class _Worker:
         def __init__(self) -> None:
@@ -506,13 +517,43 @@ def test_realtime_window_forwards_calibration_first_frame_ack_to_pretrain_worker
         window.close()
 
 
+def test_realtime_profile_info_surfaces_deployment_audit() -> None:
+    _ = _get_qapp()
+    window = RealtimeOnlineWindow(serial_port="auto", board_id=0, freqs=realtime_ui.DEMO_EXPECTED_FREQS)
+    try:
+        window._on_profile_info(
+            {
+                "loaded_profile_path": str(Path("C:/profiles/fbcca_profile.json")),
+                "loaded_profile_model": "fbcca",
+                "channel_weight_count": 8,
+                "subband_weight_count": 0,
+                "fast_pretrain": {"status": "n/a"},
+                "fast_personalization": {},
+                "selection_summary": {},
+                "shadow_summary": {},
+                "profile_audit": {
+                    "status": "fail",
+                    "run_valid_for_deployment": False,
+                    "warnings": ["release_latency_s must be <= 2"],
+                },
+            }
+        )
+
+        text = window.profile_meta_label.text()
+        assert "profile_audit=fail" in text
+        assert "fast_control=0" in text
+        assert "release_latency_s must be" in text
+    finally:
+        window.close()
+
+
 def test_realtime_worker_wait_requires_first_frame_ack(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(realtime_ui, "REALTIME_STIMULUS_PHASE_APPLY_TIMEOUT_SEC", 0.01)
     worker = RealtimeWorker(
         RealtimeConfig(
             serial_port="auto",
             board_id=0,
-            freqs=(8.0, 10.0, 12.0, 15.0),
+            freqs=realtime_ui.DEMO_EXPECTED_FREQS,
             profile_path=DEFAULT_REALTIME_PROFILE_PATH,
             model_name="fbcca",
             compute_backend="cpu",
@@ -574,7 +615,7 @@ def test_read_probe_window_waits_for_full_profile_window(monkeypatch: pytest.Mon
 
 def test_validate_loaded_profile_raises_on_channel_weight_mismatch() -> None:
     profile = ThresholdProfile(
-        freqs=(8.0, 10.0, 12.0, 15.0),
+        freqs=realtime_ui.DEMO_EXPECTED_FREQS,
         win_sec=1.5,
         step_sec=0.25,
         enter_score_th=0.1,

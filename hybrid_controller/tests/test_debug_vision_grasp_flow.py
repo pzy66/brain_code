@@ -1,0 +1,311 @@
+from __future__ import annotations
+
+import numpy as np
+
+from hybrid_controller.config import AppConfig
+from hybrid_controller.tools.debug_vision_grasp_flow import (
+    _capture_frames_from_candidates,
+    _current_calibration_stage,
+    _decision_for_packet,
+    main,
+    _override_profile_center_tolerance,
+    _packet_frame_pose_age_ms,
+    _PersistentCaptureReader,
+    _resolve_alignment_target_pixel,
+    _resolve_packet,
+    _rewrite_final_pick_command_for_debug,
+    _select_latest_frames,
+)
+from hybrid_controller.vision.calibration_profile import VisionCalibrationProfile
+
+
+class _ClosedCapture:
+    def isOpened(self) -> bool:
+        return False
+
+    def set(self, *_args, **_kwargs) -> bool:
+        return True
+
+    def release(self) -> None:
+        return None
+
+
+class _ReadableCapture:
+    def __init__(self) -> None:
+        self.read_count = 0
+
+    def isOpened(self) -> bool:
+        return True
+
+    def set(self, *_args, **_kwargs) -> bool:
+        return True
+
+    def read(self):
+        self.read_count += 1
+        if self.read_count > 64:
+            return False, None
+        return True, np.zeros((4, 4, 3), dtype=np.uint8)
+
+    def release(self) -> None:
+        return None
+
+
+class _FakeCv2:
+    CAP_ANY = 0
+    CAP_FFMPEG = 1900
+    CAP_PROP_BUFFERSIZE = 38
+    CAP_PROP_OPEN_TIMEOUT_MSEC = 53
+    CAP_PROP_READ_TIMEOUT_MSEC = 54
+
+    seen_sources: list[str] = []
+
+    @classmethod
+    def VideoCapture(cls, source, *_args):
+        cls.seen_sources.append(str(source))
+        if "working" in str(source):
+            return _ReadableCapture()
+        return _ClosedCapture()
+
+
+def test_debug_capture_tries_stream_candidates_until_frames_are_read() -> None:
+    _FakeCv2.seen_sources = []
+
+    selected_url, frames = _capture_frames_from_candidates(
+        cv2_module=_FakeCv2,
+        stream_urls=("http://camera/empty", "http://camera/working"),
+        config=AppConfig().resolved(),
+        frame_count=1,
+        drain_frames=0,
+        timeout_sec=0.5,
+    )
+
+    assert selected_url == "http://camera/working"
+    assert len(frames) == 1
+    assert _FakeCv2.seen_sources == ["http://camera/empty", "http://camera/working"]
+
+
+def test_debug_capture_backend_http_uses_official_mjpeg_reader(monkeypatch) -> None:
+    opened: list[str] = []
+
+    class FakeHttpCapture(_ReadableCapture):
+        def __init__(self, url, *, cv2_module, timeout_sec):
+            super().__init__()
+            opened.append(str(url))
+
+    monkeypatch.setattr(
+        "hybrid_controller.tools.debug_vision_grasp_flow._HttpMjpegCapture",
+        FakeHttpCapture,
+    )
+
+    selected_url, frames = _capture_frames_from_candidates(
+        cv2_module=_FakeCv2,
+        stream_urls=(
+            "http://camera:8080/stream?"
+            "topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+        ),
+        config=AppConfig().resolved(),
+        frame_count=2,
+        drain_frames=0,
+        timeout_sec=0.5,
+        capture_backend="http",
+    )
+
+    assert (
+        selected_url
+        == "http://camera:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80"
+    )
+    assert len(frames) == 2
+    assert opened == [
+        "http://camera:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80"
+    ]
+
+
+def test_persistent_capture_reader_reuses_single_capture() -> None:
+    _FakeCv2.seen_sources = []
+    reader = _PersistentCaptureReader(
+        cv2_module=_FakeCv2,
+        stream_urls=("http://camera/working",),
+        config=AppConfig().resolved(),
+        capture_backend="auto",
+    )
+    try:
+        selected1, frames1 = reader.read(frame_count=2, drain_frames=0, timeout_sec=0.5)
+        selected2, frames2 = reader.read(frame_count=2, drain_frames=0, timeout_sec=0.5)
+    finally:
+        reader.close()
+
+    assert selected1 == "http://camera/working"
+    assert selected2 == "http://camera/working"
+    assert len(frames1) == 2
+    assert len(frames2) == 2
+    assert _FakeCv2.seen_sources == ["http://camera/working"]
+
+
+def test_debug_center_tolerance_override_updates_stage_profiles() -> None:
+    profile = VisionCalibrationProfile.from_dict(
+        {
+            "profile_id": "unit-profile",
+            "image_size": [640, 480],
+            "pixel_to_delta": {"model": "affine", "matrix": [[1, 0, -320], [0, 1, -240]]},
+            "servo": {"center_tolerance_px": 8.0},
+            "stage_models": {
+                "confirm": {
+                    "z_mm": 175.0,
+                    "pixel_to_delta": {"model": "affine", "matrix": [[1, 0, -320], [0, 1, -240]]},
+                    "servo": {"center_tolerance_px": 9.0},
+                }
+            },
+        }
+    )
+
+    overridden = _override_profile_center_tolerance(profile, 6.0)
+
+    assert overridden.center_tolerance_px == 6.0
+    assert profile.center_tolerance_px == 8.0
+    assert overridden.stage_models is not None
+    assert overridden.stage_models["confirm"].center_tolerance_px == 6.0
+
+
+def test_select_latest_frames_keeps_only_newest_frames() -> None:
+    frames = [(f"frame-{index}", float(index)) for index in range(5)]
+
+    assert _select_latest_frames(frames, None) == frames
+    assert _select_latest_frames(frames, 0) == frames
+    assert _select_latest_frames(frames, 2) == frames[-2:]
+    assert _select_latest_frames(frames, 99) == frames
+
+
+def test_debug_packet_frame_pose_age_uses_latest_preprocess_age() -> None:
+    assert _packet_frame_pose_age_ms({"latest_frame_preprocess_age_ms": 42.0, "queue_age_ms": 200.0}) == 42.0
+    assert _packet_frame_pose_age_ms({"latest_frame_preprocess_age_ms": "bad", "stream_age_ms": 55.0}) == 55.0
+
+
+def test_debug_resolve_packet_forwards_frame_pose_age() -> None:
+    packet = {
+        "mapping_mode": "delta_servo",
+        "calibration_ready": True,
+        "calibration_profile_required": False,
+        "slots": [
+            {
+                "slot_id": 1,
+                "valid": True,
+                "camera_to_world_raw": [12.0, -8.0, 0.0],
+                "grasp_quality": 1.0,
+            }
+        ],
+    }
+    resolved = _resolve_packet(
+        packet=packet,
+        config=AppConfig(vision_frame_pose_max_age_ms=10.0),
+        snapshot={"robot_xy": [0.0, -120.0], "limits_cyl": {"theta_deg": [-120.0, 120.0], "radius_mm": [50.0, 280.0]}},
+        snapshot_age_ms=1.0,
+        frame_pose_age_ms=25.0,
+    )
+
+    slot = resolved["slots"][0]
+    assert slot["invalid_reason"] == "robot_pose_stale_for_frame"
+    assert slot["frame_pose_age_ms"] == 25.0
+
+
+def test_debug_execute_loop_requires_explicit_opt_in(capsys) -> None:
+    exit_code = main(["--execute", "--max-steps", "2", "--no-ros", "--detector", "fallback"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "--allow-execute-loop" in captured.err
+
+
+def test_debug_calibration_stage_switches_to_confirm_after_descent_starts() -> None:
+    stage, z_mm = _current_calibration_stage(
+        AppConfig(vision_pick_search_z_mm=190.0, vision_pick_confirm_z_mm=120.0),
+        {"robot_z": 185.0},
+    )
+
+    assert stage == "confirm"
+    assert z_mm == 185.0
+
+
+def test_debug_confirm_stage_uses_low_action_tolerance() -> None:
+    packet = {
+        "mapping_mode": "delta_servo",
+        "calibration_ready": True,
+        "calibration_profile_required": False,
+        "slots": [
+            {
+                "slot_id": 1,
+                "valid": True,
+                "camera_to_world_raw": [0.0, 0.0, 0.0],
+                "grasp_quality": 1.0,
+            }
+        ],
+    }
+
+    resolved = _resolve_packet(
+        packet=packet,
+        config=AppConfig(vision_frame_pose_max_age_ms=1000.0),
+        snapshot={
+            "robot_xy": [0.0, -120.0],
+            "robot_z": 140.0,
+            "limits_cyl": {"theta_deg": [-120.0, 120.0], "radius_mm": [50.0, 280.0]},
+        },
+        snapshot_age_ms=1.0,
+        frame_pose_age_ms=1.0,
+    )
+
+    assert resolved["slots"][0]["actionable"] is True
+
+
+def test_debug_command_bias_alignment_target_uses_camera_center() -> None:
+    profile = VisionCalibrationProfile.from_dict(
+        {
+            "profile_id": "unit-profile",
+            "image_size": [640, 480],
+            "pixel_to_delta": {"model": "affine", "matrix": [[1, 0, 0], [0, 1, 0]]},
+            "servo": {"target_pixel": [320.0, 240.0]},
+            "stage_models": {
+                "confirm": {
+                    "z_mm": 120.0,
+                    "servo": {"target_pixel": [320.0, 223.0]},
+                }
+            },
+        }
+    )
+
+    target = _resolve_alignment_target_pixel(
+        config=AppConfig(pick_tool_offset_source="command_bias"),
+        calibration_profile=profile,
+        frame_w=640,
+        frame_h=480,
+        roi_center=(320, 240),
+        calibration_stage="confirm",
+        calibration_z_mm=120.0,
+    )
+
+    assert target == (320.0, 240.0)
+
+
+def test_debug_command_bias_pick_command_has_single_final_radius_offset() -> None:
+    config = AppConfig(
+        pick_tool_offset_source="command_bias",
+        vision_eye_in_hand_pick_radius_bias_mm=40.0,
+        pick_cyl_radius_bias_mm=0.0,
+    )
+
+    decision = _decision_for_packet(
+        packet={"frame_id": 1},
+        config=config,
+        snapshot={"robot_cyl": {"theta_deg": 7.0, "radius_mm": 160.0, "z_mm": config.vision_pick_confirm_z_mm}},
+        selected_slot={"slot_id": 1, "valid": True, "actionable": True, "command_mode": "world", "command_point": [0.0, -160.0]},
+    )
+
+    assert decision["command"] == "PICK_CYL 7.00 200.00"
+    assert decision["raw_command"] == "PICK_CYL 7.00 200.00"
+
+
+def test_debug_final_pick_rewrite_keeps_default_single_bias_when_app_layer_bias_is_zero() -> None:
+    command = _rewrite_final_pick_command_for_debug(
+        config=AppConfig(),
+        command="PICK_CYL 7.00 200.00",
+    )
+
+    assert command == "PICK_CYL 7.00 200.00"

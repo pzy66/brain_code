@@ -6,6 +6,7 @@ from typing import Any, Optional
 
 from .decision import DecisionEngine, DecisionEngineConfig, EvidenceAccumulatorConfig, StateMachineConfig
 from .gating import GlobalThresholdGate, PerFrequencyLogRegGate, RollingFeatureHistory
+from .profile_deployment_audit import effective_profile_v2_gate_type
 
 
 @dataclass
@@ -84,11 +85,13 @@ def build_shadow_runtime_chain(*, profile: Any, profile_path: Path) -> tuple[Sha
     if payload_v2 is not None:
         gate_payload = dict(payload_v2.get("gate", {}))
         gate_type = str(gate_payload.get("type", "")).strip().lower()
-        if gate_type == "frequency_specific_logreg":
+        effective_gate_type = effective_profile_v2_gate_type(gate_payload)
+        if effective_gate_type == "frequency_specific_logreg":
             gate = PerFrequencyLogRegGate.from_payload(payload=gate_payload)
             mode = "per_frequency_logreg"
         else:
             gate = GlobalThresholdGate.from_profile(profile)
+            mode = "global_gate"
         evidence = dict(payload_v2.get("evidence", {}))
         evidence_cfg = EvidenceAccumulatorConfig(
             lambda_decay=float(evidence.get("lambda", evidence.get("lambda_decay", 0.85))),
@@ -115,4 +118,7 @@ def build_shadow_runtime_chain(*, profile: Any, profile_path: Path) -> tuple[Sha
         "gate_mode": mode,
         "profile_v2_loaded": bool(payload_v2 is not None),
     }
+    if payload_v2 is not None:
+        summary["profile_v2_gate_type"] = gate_type
+        summary["profile_v2_effective_gate_type"] = effective_gate_type
     return chain, summary

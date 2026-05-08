@@ -64,7 +64,7 @@ except Exception:
     serial_list_ports = None
 
 
-DEFAULT_FREQS = (8.0, 10.0, 12.0, 15.0)
+DEFAULT_FREQS = (9.8, 12.0, 14.8, 15.8)
 DEFAULT_WIN_SEC = 3.0
 DEFAULT_STEP_SEC = 0.25
 DEFAULT_SUBBANDS = ((6.0, 50.0), (10.0, 50.0), (14.0, 50.0), (18.0, 50.0), (22.0, 50.0))
@@ -7044,7 +7044,13 @@ def evaluate_decoder_on_trials_v2(
                             win_sec=decoder.win_sec,
                         )
                     )
-                if expected is not None and mode == "first-correct" and first_correct_latency is not None:
+                if expected is None:
+                    candidate_freq = first_any_freq if had_selected else None
+                    if candidate_freq is None:
+                        pred_5 = "idle"
+                    else:
+                        pred_5 = _freq_label(_nearest_freq(float(candidate_freq), decoder.freqs))
+                elif mode == "first-correct" and first_correct_latency is not None:
                     pred_5 = _freq_label(float(expected))
                 else:
                     if mode == "fixed-window":

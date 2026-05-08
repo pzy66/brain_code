@@ -13,7 +13,7 @@ Current default: launch real-robot work with `hybrid_controller/run_real.py`. Th
   -> JetMax 机械臂 + 吸盘 + 末端旋转舵机
 
 机械臂摄像头
-  -> web_video_server 8080
+  -> 官方 usb_cam.service / web_video_server 8080
   -> 电脑端视觉检测
   -> 目标坐标/闭环对中
   -> PICK_WORLD / PICK_CYL
@@ -98,9 +98,32 @@ $env:BRAIN_PYTHON_EXE = "C:\Users\P1233\miniconda3\envs\brain-vision\python.exe"
 
 ```text
 9091  rosbridge，电脑端 GUI 调 ROS service/订阅状态
-8080  web_video_server，电脑端读取摄像头画面
+8080  官方 usb_cam.service 提供的 web_video_server，电脑端读取摄像头画面
 8888  TCP legacy runtime，保留兼容
 ```
+
+摄像头链路必须保持 Hiwonder 官方调用方式：
+
+```text
+usb_cam.service -> usb_cam_node -> /usb_cam/image_rect_color -> web_video_server:8080 -> PC
+```
+
+电脑端默认只读这一个 URL：
+
+```text
+http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80
+```
+
+调试视觉识别和抓取时不要额外启动摄像头、不要轮询多个非官方视频路径、不要默认重启 `usb_cam.service` 或 `web_video_server`。电脑端固定读取完整 MJPEG URL：`192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80`。
+
+启动机械臂 ROS runtime 时也不要拉取视频流：`jetmax_start_ros_runtime.py` 默认只启动/检查控制链路，不连接 `8080`，不订阅 `/usb_cam/image_rect_color`。只有显式使用 `--check-camera-stream` 时才允许做视频读取健康检查。
+
+代码层约束：
+
+- 摄像头 URL 只能从 `AppConfig.resolve_vision_stream_url()` / `resolve_vision_stream_candidates()` 取得。
+- 默认候选源只能有官方 `web_video_server` MJPEG topic，不要添加 `/image_raw`、`/dev/video*`、`stream.mjpg` 等兜底探测。
+- PC 端读取可以优化解码和缓冲，但不能启动、重启、抢占 JetMax 上的 `usb_cam.service`。
+- 启动脚本、部署脚本、自恢复逻辑默认不得改写 `/home/hiwonder/ros/autostart/usb_cam.launch`，不得重载 `uvcvideo`，不得让 hybrid runtime 接管 `web_video_server`。
 
 ---
 
@@ -154,7 +177,7 @@ Windows 防火墙没有拦截 Python 发起连接
 & $env:BRAIN_PYTHON_EXE .\hybrid_controller\robot\tools\jetmax_start_ros_runtime.py `
   --host 192.168.149.1 `
   --user hiwonder `
-  --password hiwonder `
+  --password $env:JETMAX_PASSWORD `
   --remote-root /home/hiwonder/brain_code
 ```
 
@@ -173,7 +196,7 @@ bash run_hybrid_controller_ros_runtime.sh
 ```text
 1. 拷贝/编译 ROS package 到 ~/catkin_ws
 2. 启动 rosbridge websocket，默认 9091
-3. 启动 web_video_server，默认 8080
+3. 复用官方 usb_cam.service 的 web_video_server，默认 8080
 4. 启动 hybrid_controller_runtime_node.py
 ```
 
@@ -373,6 +396,16 @@ vision_mapping_mode = delta_servo
 pick_tool_offset_source = target_pixel
 ```
 
+当前真机主线已经切到低处相机中心对正方案：
+
+```text
+pick_tool_offset_source = command_bias
+vision_eye_in_hand_pick_radius_bias_mm = 40.0
+pick_cyl_radius_bias_mm = 0.0
+```
+
+含义是：高处只利用大视野发现和选择目标；下降后把目标闭环移动到相机中心 `(320,240)`；最终抓取命令按当前圆柱坐标只前伸一次 40 mm。不要再给 `stage_models.confirm.servo.target_pixel` 写低高度偏移，也不要把 `pick_cyl_radius_bias_mm` 改成非零，否则会和 40 mm 前伸重复。
+
 ### 8.1 从摄像头到候选目标
 
 流程由 `vision/runtime.py` 里的 `VisionRuntime` 负责调度，由 `vision/processing.py` 负责检测、几何计算和坐标映射：
@@ -451,7 +484,9 @@ servo.target_pixel
 pick_tool_offset_source = target_pixel
 ```
 
-也就是说，程序默认使用 `servo.target_pixel` 做吸盘偏置补偿，不再叠加 `pick_cyl_radius_bias_mm`。旧的 `r_bias` 调试方式仍保留，但必须显式切换：
+也就是说，程序默认使用 `servo.target_pixel` 做吸盘偏置补偿，最终抓取命令不再叠加 `pick_cyl_radius_bias_mm` 或 `vision_eye_in_hand_pick_radius_bias_mm`。这条规则很重要：如果目标已经被闭环移动到 `servo.target_pixel`，再在 `PICK_CYL` 上加半径偏置会造成重复补偿，抓取点会偏离木块。
+
+旧的 `r_bias` 调试方式仍保留，但必须显式切换：
 
 ```powershell
 --pick-tool-offset-source command_bias
@@ -568,16 +603,19 @@ vision_pick_search_z_mm = 190
 vision_pick_confirm_z_mm = 130
   最终确认高度。
 
+vision_pick_descent_step_mm = 5
+  从搜索高度向确认高度下降时，每次只下降 5 mm 并重新看一帧。
+
 vision_servo_move_gain = 0.8
   粗对中增益。
 
 vision_servo_fine_move_gain = 0.4
   接近目标时的小步增益。
 
-vision_servo_center_tolerance_px = 8
+vision_servo_center_tolerance_px = 6
   profile 建议中心容差。
 
-vision_servo_action_tolerance_px = 8
+vision_servo_action_tolerance_px = 6
   允许最终抓取的动作容差。
 
 vision_servo_max_attempts = 5
@@ -919,16 +957,19 @@ vision_servo_max_attempts = 5
 吸盘偏置：
 
 ```text
-pick_tool_offset_source = target_pixel
+pick_tool_offset_source = command_bias
 vision_pick_target_pixel = None
-pick_cyl_radius_bias_mm = 50.0
+vision_eye_in_hand_pick_radius_bias_mm = 40.0
+pick_cyl_radius_bias_mm = 0.0
 ```
 
 说明：
 
 ```text
-target_pixel 模式下 pick_cyl_radius_bias_mm 不参与命令改写。
-command_bias 模式下才使用 pick_cyl_radius_bias_mm / tangent / theta。
+当前 command_bias 模式下，低处对中目标固定为相机中心。
+vision_eye_in_hand_pick_radius_bias_mm 是最终前伸偏置，默认只加一次 40mm。
+pick_cyl_radius_bias_mm 默认必须为 0，避免发 PICK 前二次重写半径。
+target_pixel 模式只作为备用旧策略；切回时才使用 servo.target_pixel，并且所有半径偏置必须清零。
 ```
 
 吸盘旋转：
@@ -1000,11 +1041,12 @@ git diff --check
 4. MOVE_CYL_AUTO 测试左/中/右移动方向。
 5. SUCKER_OFF，确认吸盘关闭。
 6. SET_SUCKER_ROTATION -30/0/30 确认方向。
-7. 标定 servo.target_pixel。
-8. 采集工作区样本并生成 current_profile.json。
-9. 左/中/右三个位置各做 3 次视觉对中。
-10. 对中稳定后开启抓取测试。
-11. 做 5x5 工作区验收，记录成功率和失败原因。
+7. 确认低处 alignment_target_pixel 是相机中心 `(320,240)`。
+8. 确认 dry-run 最终 `PICK_CYL` 的 radius 只比当前 radius 大 40mm。
+9. 采集工作区样本并生成 current_profile.json。
+10. 左/中/右三个位置各做 3 次视觉对中。
+11. 对中稳定后开启抓取测试。
+12. 做 5x5 工作区验收，记录成功率和失败原因。
 ```
 
 验收目标：

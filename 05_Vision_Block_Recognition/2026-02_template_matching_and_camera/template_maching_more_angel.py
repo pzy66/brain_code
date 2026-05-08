@@ -3,7 +3,7 @@ import numpy as np
 import time
 
 # --- 配置 ---
-VIDEO_URL = "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color"
+VIDEO_URL = "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80"
 TEMPLATE_PATH = 'template.jpg'
 SCALE_FACTOR = 0.5
 ANGLE_STEP = 15

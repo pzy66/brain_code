@@ -28,6 +28,7 @@ def _base_args(**overrides: object) -> Namespace:
         "robot_port": AppConfig.robot_port,
         "rosbridge_port": AppConfig.rosbridge_port,
         "vision_stream_url": "",
+        "vision_auto_start": AppConfig.vision_auto_start,
         "stage_motion_sec": None,
         "continue_motion_sec": None,
     }
@@ -44,6 +45,7 @@ def test_run_real_defaults_to_keyboard_operator_profile() -> None:
     assert args[args.index("--robot-mode") + 1] == "real"
     assert args[args.index("--robot-transport") + 1] == "ros"
     assert args[args.index("--vision-mode") + 1] == "robot_camera_detection"
+    assert "--vision-auto-start" not in args
     assert "--enable-ssvep-runtime" not in args
     assert "--mi-enabled" not in args
 
@@ -56,6 +58,13 @@ def test_build_config_keyboard_operator_defaults_disable_bci_runtime_sources() -
     assert config.decision_source == "sim"
     assert config.mi_enabled is False
     assert config.ssvep_runtime_enabled is False
+    assert config.vision_auto_start is False
+
+
+def test_build_config_allows_explicit_vision_auto_start() -> None:
+    config = build_config_from_args(_base_args(vision_auto_start=True))
+
+    assert config.vision_auto_start is True
 
 
 def test_build_config_allows_explicit_bci_source_override() -> None:

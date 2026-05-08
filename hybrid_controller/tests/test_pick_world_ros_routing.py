@@ -192,7 +192,7 @@ def test_pick_tool_bias_reconstructs_live_suction_center_sample() -> None:
 def test_default_pick_bias_keeps_theta_and_adds_measured_radius_offset() -> None:
     app = _make_ros_app_stub()
     app.config = replace(app.config, pick_tool_offset_source="command_bias")
-    app._pick_cyl_radius_bias_mm = AppConfig.pick_cyl_radius_bias_mm
+    app._pick_cyl_radius_bias_mm = 50.0
     app._pick_cyl_tangent_bias_mm = AppConfig.pick_cyl_tangent_bias_mm
     app._pick_cyl_theta_bias_deg = AppConfig.pick_cyl_theta_bias_deg
 
@@ -203,6 +203,12 @@ def test_default_pick_bias_keeps_theta_and_adds_measured_radius_offset() -> None
     theta_deg, radius_mm, _ = cartesian_to_cylindrical(float(x_text), float(y_text), AppConfig.robot_pick_z)
     assert theta_deg == pytest.approx(0.355, abs=0.02)
     assert radius_mm == pytest.approx(242.564, abs=0.02)
+
+
+def test_default_pick_cyl_radius_bias_is_zero_to_avoid_double_forward_offset() -> None:
+    assert AppConfig.pick_tool_offset_source == "command_bias"
+    assert AppConfig.vision_eye_in_hand_pick_radius_bias_mm == pytest.approx(40.0)
+    assert AppConfig.pick_cyl_radius_bias_mm == pytest.approx(0.0)
 
 
 def test_pick_trace_records_bias_and_command_delta() -> None:

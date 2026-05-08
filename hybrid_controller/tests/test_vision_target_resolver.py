@@ -119,6 +119,19 @@ def test_resolve_absolute_base_uses_world_xyz() -> None:
     assert slot["world_xyz"] == [66.0, -170.0, 0.0]
 
 
+def test_resolve_invalid_mapping_mode_uses_config_fallback() -> None:
+    resolved = resolve_vision_packet(
+        _packet(mapping_mode="legacy", world_xyz=(66.0, -170.0, 0.0)),
+        config=AppConfig(vision_mapping_mode="absolute_base"),
+        snapshot=None,
+        snapshot_age_ms=float("inf"),
+    ).packet
+
+    slot = resolved["slots"][0]
+    assert resolved["mapping_mode"] == "absolute_base"
+    assert slot["command_point"] == [66.0, -170.0]
+
+
 def test_resolve_delta_servo_requires_centering_before_pick() -> None:
     config = AppConfig(vision_servo_move_gain=0.5)
     packet = _packet(

@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from ultralytics import YOLO
 
-STREAM_URL = "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color"
+STREAM_URL = "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_WEIGHTS = REPO_ROOT / "datasets" / "vision" / "models" / "best.pt"
 WEIGHTS = Path(os.environ.get("BRAIN_VISION_WEIGHTS", DEFAULT_WEIGHTS)).expanduser()

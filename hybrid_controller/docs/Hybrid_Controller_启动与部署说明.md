@@ -37,12 +37,21 @@ bash run_hybrid_controller_ros_runtime.sh
 ## 端口约定（当前主线）
 
 - `9091`：ROS bridge（主链必须）
-- `8080`：web_video_server（视觉流主链必须）
+- `8080`：web_video_server（视觉识别阶段使用，启动 runtime 时不拉流）
 - `8888`：TCP 兼容/诊断（可选）
 
-`robot/tools/jetmax_start_ros_runtime.py` 默认只校验 `9091+8080`。  
+`robot/tools/jetmax_start_ros_runtime.py` 默认只校验 `9091`，不连接 `8080`，不订阅 `/usb_cam/image_rect_color`，不拉取 MJPEG/H264 视频流。
 脚本会自动 `stop/disable` JetMax 自带的 `rosbridge.service`，避免旧消息定义冲突。  
 如需强制校验 `8888`，加 `--require-tcp-check`。
+如需单独验证官方视频流，必须显式加 `--check-camera-stream`。
+
+摄像头输出链路定死为 JetMax/Hiwonder 官方默认方式：
+
+```text
+usb_cam.service -> usb_cam_node -> /usb_cam/image_rect_color -> web_video_server:8080 -> PC
+```
+
+默认启动、部署、ROS runtime 自恢复都不得改写 `/home/hiwonder/ros/autostart/usb_cam.launch`，不得停止/重启 `usb_cam.service`，不得重载 `uvcvideo`，不得让 hybrid runtime 接管 `web_video_server`。上位机视觉识别只消费官方端口输出。
 
 ## 路由契约（ROS 模式）
 

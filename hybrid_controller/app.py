@@ -1002,6 +1002,16 @@ class HybridControllerApplication:
         if self.config.vision_mode not in {"real", "robot_camera_detection"}:
             self._rt_set("vision_health", f"disabled:{self.config.vision_mode}")
             return
+        if not bool(getattr(self.config, "vision_auto_start", False)):
+            # Locked camera contract: application startup does not pull the JetMax
+            # MJPEG stream. The user starts vision explicitly after Wi-Fi/control
+            # links are stable, and the robot keeps owning usb_cam.service.
+            self._rt_set("vision_health", "idle:not_started")
+            self._handle_runtime_status(
+                "vision",
+                "Vision runtime idle; startup does not pull the JetMax camera stream. Start vision explicitly when needed.",
+            )
+            return
 
         try:
             from hybrid_controller.vision.runtime import VisionRuntime
@@ -2139,32 +2149,20 @@ class HybridControllerApplication:
         return abs(float(pose[2]) - confirm_z) <= tolerance
 
     def _send_vision_low_confirm_move(self, slot_id: int, *, attempts: int = 0) -> bool:
-        pose = self._current_robot_cyl_pose()
-        if pose is None:
-            self._rt_set("vision_servo_status", f"cancelled slot={int(slot_id)} reason=robot_pose_unavailable")
-            self._handle_runtime_status("vision", "Vision pick low confirm cancelled: robot pose unavailable.")
+        slot_payload = self._vision_slot_payload(int(slot_id))
+        if slot_payload is None:
+            self._rt_set("vision_servo_status", f"cancelled slot={int(slot_id)} reason=slot_unavailable")
+            self._handle_runtime_status("vision", f"Vision pick low confirm cancelled: slot {int(slot_id)} unavailable.")
             return False
-        theta_deg, radius_mm, _ = pose
-        confirm_z = float(getattr(self.config, "vision_pick_confirm_z_mm", self.config.robot_approach_z))
-        command = f"MOVE_CYL {theta_deg:.2f} {radius_mm:.2f} {confirm_z:.2f}"
-        packet = self._latest_vision_packet if isinstance(self._latest_vision_packet, dict) else {}
-        try:
-            frame_id = int(packet.get("frame_id", 0))
-        except (TypeError, ValueError):
-            frame_id = 0
         self._vision_servo_pick = {
             "slot_id": int(slot_id),
             "attempts": int(max(0, attempts)),
-            "waiting_for_ack": True,
-            "min_frame_id": int(frame_id) + 1,
+            "waiting_for_ack": False,
+            "min_frame_id": 0,
             "stability_wait_frames": 0,
-            "command": command,
             "stage": "low_confirm",
         }
-        self._rt_set("vision_servo_status", f"low_confirm slot={int(slot_id)} z={confirm_z:.1f}")
-        self._handle_runtime_status("vision", f"Vision pick lowering for final confirmation: {command}")
-        self._send_robot_text_command(command)
-        return True
+        return self._send_vision_servo_pick_move(int(slot_id), slot_payload)
 
     def _maybe_send_low_confirm_before_pick(self, slot_id: int, *, attempts: int = 0) -> bool:
         if not self._vision_eye_in_hand_pick_flow_enabled():
@@ -3749,6 +3747,7 @@ def build_config_from_args(args: argparse.Namespace) -> AppConfig:
             getattr(args, "robot_state_stale_threshold_ms", AppConfig.robot_state_stale_threshold_ms)
         ),
         vision_stream_url=args.vision_stream_url,
+        vision_auto_start=bool(getattr(args, "vision_auto_start", AppConfig.vision_auto_start)),
         vision_world_scale_xy=float(getattr(args, "vision_world_scale_xy", AppConfig.vision_world_scale_xy)),
         vision_world_offset_xy_mm=(
             float(getattr(args, "vision_world_offset_x_mm", AppConfig.vision_world_offset_xy_mm[0])),
@@ -3818,6 +3817,13 @@ def build_config_from_args(args: argparse.Namespace) -> AppConfig:
                 args,
                 "vision_eye_in_hand_pick_flow_enabled",
                 AppConfig.vision_eye_in_hand_pick_flow_enabled,
+            )
+        ),
+        vision_eye_in_hand_pick_radius_bias_mm=float(
+            getattr(
+                args,
+                "vision_eye_in_hand_pick_radius_bias_mm",
+                AppConfig.vision_eye_in_hand_pick_radius_bias_mm,
             )
         ),
         vision_pick_search_z_mm=float(getattr(args, "vision_pick_search_z_mm", AppConfig.vision_pick_search_z_mm)),
@@ -3977,6 +3983,8 @@ def main(argv: list[str] | None = None) -> int:
         default=AppConfig.robot_state_stale_threshold_ms,
     )
     parser.add_argument("--vision-stream-url", default="")
+    parser.add_argument("--vision-auto-start", action="store_true", default=AppConfig.vision_auto_start)
+    parser.add_argument("--no-vision-auto-start", action="store_false", dest="vision_auto_start")
     parser.add_argument("--vision-world-scale-xy", type=float, default=AppConfig.vision_world_scale_xy)
     parser.add_argument("--vision-world-offset-x-mm", type=float, default=AppConfig.vision_world_offset_xy_mm[0])
     parser.add_argument("--vision-world-offset-y-mm", type=float, default=AppConfig.vision_world_offset_xy_mm[1])
@@ -4080,6 +4088,12 @@ def main(argv: list[str] | None = None) -> int:
         "--no-vision-eye-in-hand-pick-flow",
         action="store_false",
         dest="vision_eye_in_hand_pick_flow_enabled",
+    )
+    parser.add_argument(
+        "--vision-eye-in-hand-pick-radius-bias-mm",
+        type=float,
+        default=AppConfig.vision_eye_in_hand_pick_radius_bias_mm,
+        help="Final radius extension after low camera-center alignment; used only in command_bias mode.",
     )
     parser.add_argument("--vision-pick-search-z-mm", type=float, default=AppConfig.vision_pick_search_z_mm)
     parser.add_argument("--vision-pick-confirm-z-mm", type=float, default=AppConfig.vision_pick_confirm_z_mm)

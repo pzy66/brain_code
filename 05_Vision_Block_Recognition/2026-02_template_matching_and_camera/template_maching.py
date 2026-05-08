@@ -5,7 +5,7 @@ import time
 
 def run_multi_object_matching():
     # --- 配置 ---
-    video_url = "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color"
+    video_url = "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80"
     template_path = 'template.jpg'
 
     # 匹配阈值：大于此分数的会被选出

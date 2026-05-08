@@ -12,6 +12,30 @@ DATASET_ROOT = PROFILE_DATASET_DIR / "hybrid_controller"
 MODELS_ROOT = VISION_DATASET_DIR / "models"
 LOGS_ROOT = PACKAGE_ROOT / "logs"
 LEGACY_DATASET_ROOT = PACKAGE_ROOT / "dataset"
+# Locked JetMax/Hiwonder camera contract.
+#
+# Robot side owns the USB camera and publishes the official chain:
+#   usb_cam.service -> usb_cam_node -> /usb_cam/image_rect_color -> web_video_server:8080
+# PC side must only consume that single MJPEG stream. Do not add fallback URLs, do not
+# probe /dev/video*, and do not start/restart camera sender processes from desktop code.
+HIWONDER_CAMERA_TOPIC = "/usb_cam/image_rect_color"
+HIWONDER_CAMERA_WIDTH = 640
+HIWONDER_CAMERA_HEIGHT = 480
+HIWONDER_CAMERA_QUALITY = 80
+HIWONDER_CAMERA_STREAM_TYPE = "mjpeg"
+
+
+def build_hiwonder_camera_stream_url(host: str) -> str:
+    """Return the only default PC-side camera URL for the JetMax official MJPEG stream."""
+    normalized_host = str(host).strip()
+    return (
+        f"http://{normalized_host}:8080/stream?"
+        f"topic={HIWONDER_CAMERA_TOPIC}"
+        f"&type={HIWONDER_CAMERA_STREAM_TYPE}"
+        f"&width={HIWONDER_CAMERA_WIDTH}"
+        f"&height={HIWONDER_CAMERA_HEIGHT}"
+        f"&quality={HIWONDER_CAMERA_QUALITY}"
+    )
 
 
 def _prefer_existing_file(canonical_path: Path, legacy_path: Path) -> Path:
@@ -202,6 +226,7 @@ class AppConfig:
     sim_place_slots: tuple[ControlSimSlotSpec, ...] = field(default_factory=_default_place_slots)
     hardware_pick_slots: tuple[ControlSimSlotSpec, ...] = field(default_factory=_default_hardware_pick_slots)
     vision_stream_url: str = ""
+    vision_auto_start: bool = False
     vision_weights_path: Path = MODELS_ROOT / "best.pt"
     vision_infer_interval_ms: int = 80
     vision_model_imgsz: int = 512
@@ -241,26 +266,31 @@ class AppConfig:
     vision_grasp_history_frames: int = 5
     vision_grasp_stable_frames: int = 3
     vision_grasp_stability_tolerance_px: float = 6.0
+    vision_center_stability_tolerance_px: float = 6.0
     vision_grasp_angle_stability_tolerance_deg: float = 15.0
     vision_grasp_history_reset_px: float = 22.0
     vision_grasp_stability_wait_frames: int = 10
     vision_frame_fallback_enabled: bool = True
-    vision_servo_center_tolerance_px: float = 8.0
-    vision_servo_action_tolerance_px: float = 8.0
+    vision_servo_center_tolerance_px: float = 6.0
+    vision_servo_action_tolerance_px: float = 6.0
+    vision_servo_low_action_tolerance_px: float = 8.0
+    vision_servo_search_action_tolerance_px: float = 16.0
     vision_servo_move_gain: float = 0.8
     vision_servo_fine_move_gain: float = 0.4
     vision_servo_fine_threshold_px: float = 24.0
     vision_servo_max_attempts: int = 5
     vision_eye_in_hand_pick_flow_enabled: bool = True
+    vision_eye_in_hand_pick_radius_bias_mm: float = 40.0
     vision_pick_search_z_mm: float = 190.0
-    vision_pick_confirm_z_mm: float = 175.0
+    vision_pick_confirm_z_mm: float = 130.0
+    vision_pick_descent_step_mm: float = 5.0
     vision_pick_z_tolerance_mm: float = 4.0
     vision_debug_bundle_enabled: bool = True
     vision_debug_bundle_dir: Path = LOGS_ROOT / "vision_debug"
-    pick_tool_offset_source: str = "target_pixel"
+    pick_tool_offset_source: str = "command_bias"
     vision_residual_model: str = "grid"
     vision_calibration_grid_size: int = 7
-    pick_cyl_radius_bias_mm: float = 50.0
+    pick_cyl_radius_bias_mm: float = 0.0
     pick_cyl_tangent_bias_mm: float = 0.0
     pick_cyl_theta_bias_deg: float = 0.0
     sucker_rotation_enabled: bool = True
@@ -335,28 +365,17 @@ class AppConfig:
     def resolve_vision_stream_url(self) -> str:
         if self.vision_stream_url:
             return self.vision_stream_url
-        host = str(self.robot_host).strip()
-        return (
-            f"http://{host}:8080/stream?"
-            "topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80"
-        )
+        return build_hiwonder_camera_stream_url(str(self.robot_host))
 
     def resolve_vision_stream_candidates(self) -> tuple[str, ...]:
         if self.vision_stream_url:
+            # Explicit override is for manual diagnosis only. Normal operation must use
+            # build_hiwonder_camera_stream_url(robot_host), which targets the official chain.
             return (str(self.vision_stream_url),)
-        host = str(self.robot_host).strip()
+        # Keep this tuple length at one. Multiple candidates caused unsafe endpoint
+        # probing and can disturb the JetMax Wi-Fi/camera path during startup.
         return (
-            (
-                f"http://{host}:8080/stream?"
-                "topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80"
-            ),
-            f"http://{host}:8080/stream?topic=/usb_cam/image_rect_color",
-            f"http://{host}:8080/stream?topic=/usb_cam/image_raw",
-            f"http://{host}:8080/stream?topic=/camera/rgb/image_raw",
-            f"http://{host}:8080/stream?topic=/camera/image_raw",
-            f"http://{host}:8080/?action=stream",
-            f"http://{host}:8080/stream.mjpg",
-            f"http://{host}:8080/video_feed",
+            build_hiwonder_camera_stream_url(str(self.robot_host)),
         )
 
     @property

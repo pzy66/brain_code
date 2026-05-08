@@ -111,15 +111,36 @@ def _parse_manual_pixel(value: str) -> tuple[float, float] | None:
     return (x, y)
 
 
-def _write_profile_target(profile_path: Path, target_pixel: tuple[float, float]) -> None:
+def _write_profile_target(
+    profile_path: Path,
+    target_pixel: tuple[float, float],
+    *,
+    stage: str = "",
+    z_mm: float | None = None,
+) -> None:
     with profile_path.open("r", encoding="utf-8") as fh:
         payload = json.load(fh)
     if not isinstance(payload, dict):
         raise RuntimeError("Calibration profile must contain a JSON object.")
-    servo = payload.get("servo")
+    target_payload = payload
+    stage_key = str(stage or "").strip().lower()
+    if stage_key:
+        stage_models = payload.get("stage_models")
+        if not isinstance(stage_models, dict):
+            stage_models = {}
+            payload["stage_models"] = stage_models
+        stage_payload = stage_models.get(stage_key)
+        if not isinstance(stage_payload, dict):
+            stage_payload = {}
+            stage_models[stage_key] = stage_payload
+        stage_payload["stage"] = stage_key
+        if z_mm is not None:
+            stage_payload["z_mm"] = float(z_mm)
+        target_payload = stage_payload
+    servo = target_payload.get("servo")
     if not isinstance(servo, dict):
         servo = {}
-        payload["servo"] = servo
+        target_payload["servo"] = servo
     servo["target_pixel"] = [float(target_pixel[0]), float(target_pixel[1])]
     servo["target_pixel_method"] = "manual_suction_alignment"
     servo["target_pixel_updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
@@ -171,6 +192,13 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--min-area", type=float, default=500.0)
     parser.add_argument("--detect-mode", choices=("auto", "orange"), default="auto")
     parser.add_argument("--manual-pixel", default="", help="Use an explicit x,y target pixel instead of auto detection.")
+    parser.add_argument(
+        "--stage",
+        choices=("", "search", "confirm", "pick"),
+        default="",
+        help="Write target_pixel to a stage model instead of the profile top-level servo block.",
+    )
+    parser.add_argument("--z-mm", type=float, default=None, help="Optional z_mm to store on the selected stage model.")
     parser.add_argument("--no-write", action="store_true")
     return parser.parse_args()
 
@@ -192,7 +220,7 @@ def main() -> int:
         x, y, area = _find_auto_block_grasp_pixel(frame, min_area=float(args.min_area))
     target_pixel = (float(x), float(y))
     if not bool(args.no_write):
-        _write_profile_target(Path(args.profile), target_pixel)
+        _write_profile_target(Path(args.profile), target_pixel, stage=str(args.stage), z_mm=args.z_mm)
     _save_overlay(frame, target_pixel, Path(args.output), float(area))
     print(
         json.dumps(
@@ -200,6 +228,8 @@ def main() -> int:
                 "target_pixel": [float(target_pixel[0]), float(target_pixel[1])],
                 "area_px": float(area),
                 "method": "manual_pixel" if manual_pixel is not None else str(args.detect_mode),
+                "stage": str(args.stage),
+                "z_mm": None if args.z_mm is None else float(args.z_mm),
                 "profile": str(args.profile),
                 "overlay": str(args.output),
                 "wrote_profile": not bool(args.no_write),

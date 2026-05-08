@@ -18,6 +18,17 @@
 | `tdca` | engineering-approx | TDCA 思路（延迟嵌入+判别投影）近似。 |
 | `oacca` | engineering-approx | 在线自适应 CCA 的模板更新近似。 |
 
+### 2.1 外部短预训练方法映射
+| 任务方法 | 底层 decoder | 实现级别 | 说明 |
+|---|---|---|---|
+| `fbcca_lda5` | `fbcca` | paper-faithful baseline | 只改短预训练下游分类器，保留 FBCCA 频带参考主干。 |
+| `fbcca_ridge5` | `fbcca` | paper-faithful baseline | 同上，但用 ridge 作为下游分类器，便于比较门控稳定性。 |
+| `itcca5` | `itcca` | engineering-approx | individual-template CCA 的短预训练基线，验证模板是否能直接修复 Beta 控制态召回。 |
+| `ecca5` | `ecca_paper` | engineering-approx | 模板 + sine/cos reference 融合的稳健基线。 |
+| `trca5` | `trca` | paper-faithful | 用 class-wise spatial filter + template 的 supervised 短校准基线。 |
+| `trca_r5` | `trca_r` | engineering-approx | TRCA-R / eTRCA 风格的滤波器组集成近似。 |
+| `tdca5` | `tdca` | engineering-approx / near-paper | TDCA 短预训练候选，当前按 `tdca_paper_aligned` 变体处理 raw latency。 |
+
 ## 3. 优化矩阵（问题 -> 证据 -> 改法 -> 风险 -> 验收）
 | 问题 | 证据/文献方向 | 本轮改法 | 主要风险 | 验收阈值 |
 |---|---|---|---|---|

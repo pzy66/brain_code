@@ -22,7 +22,10 @@ from brain_workspace.paths import VISION_DATASET_DIR
 # === 1. 配置区域 ===
 ROBOT_IP = "192.168.149.1"  
 ROBOT_PORT = 8888
-STREAM_URL = f"http://{ROBOT_IP}:8080/stream?topic=/usb_cam/image_rect_color"
+STREAM_URL = (
+    f"http://{ROBOT_IP}:8080/stream?"
+    "topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80"
+)
 
 # YOLO 模型路径 (请修改为你电脑上的实际路径)
 WEIGHTS = str(Path(os.environ.get("BRAIN_VISION_WEIGHTS", VISION_DATASET_DIR / "models" / "best.pt")).expanduser())

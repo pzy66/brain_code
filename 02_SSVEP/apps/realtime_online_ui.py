@@ -93,9 +93,11 @@ from ssvep_core.fast_fbcca_pretrain import (
     run_fast_fbcca_personalization,
     save_fast_fbcca_profile_bundle,
 )
+from ssvep_core.profile_deployment_audit import audit_profile_files, format_profile_audit_summary
 from ssvep_core.runtime_shadow import build_shadow_runtime_chain
 from ssvep_core.stimulus_profiles import (
     DEFAULT_STIMULUS_PROFILE_ID,
+    frame_lock_frequency_report,
     get_stimulus_profile,
     select_stimulus_mode_for_profile,
 )
@@ -114,12 +116,16 @@ from apps.async_fbcca_validation_ui import (
 
 
 THIS_DIR = Path(__file__).resolve().parent
+_DEFAULT_REALTIME_STIMULUS_PROFILE = get_stimulus_profile(DEFAULT_STIMULUS_PROFILE_ID)
+DEFAULT_REALTIME_STIMULUS_PROFILE_ID = DEFAULT_STIMULUS_PROFILE_ID
+DEFAULT_REALTIME_FREQS = tuple(float(freq) for freq in _DEFAULT_REALTIME_STIMULUS_PROFILE.freqs)
+DEFAULT_REALTIME_FREQS_CSV = ",".join(f"{freq:g}" for freq in DEFAULT_REALTIME_FREQS)
+DEMO_EXPECTED_FREQS = DEFAULT_REALTIME_FREQS
 REALTIME_FBCCA_PROFILE_CANDIDATES = (
     SSVEP_PROFILE_DIR / "fbcca_profile.json",
     SSVEP_PROFILE_DIR / "fbcca_base_profile.json",
     SSVEP_PROFILE_DIR / "default_profile.json",
 )
-DEMO_EXPECTED_FREQS = (8.0, 10.0, 12.0, 15.0)
 SSVEP_FBCCA_BASE_PROFILE_PATH = SSVEP_PROFILE_DIR / "fbcca_base_profile.json"
 SSVEP_REALTIME_PROFILE_PATH = SSVEP_PROFILE_DIR / "fbcca_profile.json"
 SSVEP_REALTIME_PROFILE_V2_PATH = SSVEP_PROFILE_DIR / "fbcca_profile_v2.json"
@@ -187,8 +193,6 @@ def save_no_train_fbcca_profile(
 
 DEFAULT_REALTIME_PROFILE_PATH = resolve_default_realtime_profile_path()
 MODEL_OPTIONS = (DEFAULT_MODEL_NAME,) + tuple(item for item in DEFAULT_BENCHMARK_MODELS if item != DEFAULT_MODEL_NAME)
-_DEFAULT_REALTIME_STIMULUS_PROFILE = get_stimulus_profile(DEFAULT_STIMULUS_PROFILE_ID)
-DEFAULT_REALTIME_STIMULUS_PROFILE_ID = DEFAULT_STIMULUS_PROFILE_ID
 DEFAULT_STIM_REFRESH_RATE_HZ = float(_DEFAULT_REALTIME_STIMULUS_PROFILE.refresh_rate_hz)
 DEFAULT_STIM_MEAN = float(_DEFAULT_REALTIME_STIMULUS_PROFILE.mean)
 DEFAULT_STIM_AMP = float(_DEFAULT_REALTIME_STIMULUS_PROFILE.amp)
@@ -336,6 +340,10 @@ def realtime_pretrain_protocol_config(config: RealtimePretrainConfig, *, saved_t
         "ramp_sec": float(profile.ramp_sec),
         "ramp_included_in_saved_window": bool(float(profile.ramp_sec) > 0.0),
         "frame_interval_stats": {},
+        "frame_lock_frequency_report": frame_lock_frequency_report(
+            config.freqs,
+            refresh_rate_hz=float(config.stim_refresh_rate_hz),
+        ),
         "comfort_rating": None,
         "screen_brightness_note": str(profile.screen_brightness_note),
         "sync_stimulus_phase": True,
@@ -540,6 +548,17 @@ def _validate_loaded_profile(
         "channel_weight_count": int(channel_weight_count),
         "subband_weight_count": int(subband_count),
     }
+
+
+def _audit_realtime_profile_path(path: Path) -> dict[str, Any]:
+    try:
+        return audit_profile_files(Path(path))
+    except Exception as exc:
+        return {
+            "status": "error",
+            "run_valid_for_deployment": False,
+            "warnings": [f"profile deployment audit failed: {exc}"],
+        }
 
 
 def _suggest_refresh_rate_hz() -> float:
@@ -1047,6 +1066,10 @@ class RealtimeWorker(QObject):
             profile = load_profile(self.config.profile_path, fallback_freqs=self.config.freqs, require_exists=True)
             if profile_is_default_fallback(profile):
                 raise RuntimeError("当前 profile 是默认回退值，请先完成训练评测并生成有效 profile")
+            profile_audit = _audit_realtime_profile_path(self.config.profile_path)
+            self.log.emit(format_profile_audit_summary(profile_audit))
+            for warning in list(profile_audit.get("warnings", []))[:4]:
+                self.log.emit(f"profile audit warning: {warning}")
             selected_model = normalize_model_name(self.config.model_name)
             original_model = normalize_model_name(profile.model_name)
             resolved_model, mismatch = resolve_realtime_model_choice(selected_model, original_model)
@@ -1143,6 +1166,7 @@ class RealtimeWorker(QObject):
                     "shadow_summary": dict(shadow_summary),
                     "fast_pretrain": fast_pretrain_meta,
                     "fast_personalization": fast_personalization,
+                    "profile_audit": dict(profile_audit),
                 }
             )
             self.log.emit(
@@ -1457,7 +1481,11 @@ class RealtimeOnlineWindow(QMainWindow):
         self.btn_publish_hybrid_profile.clicked.connect(self._publish_current_profile_to_hybrid)
         self.stim.active_phase_frame_presented.connect(self._on_active_phase_frame_presented)
         if self.demo_mode:
-            self._log("FBCCA demo mode: model=fbcca, freqs=8/10/12/15Hz. Non-FBCCA profiles will be rejected.")
+            self._log(
+                "FBCCA demo mode: model=fbcca, freqs="
+                + "/".join(f"{freq:g}" for freq in DEMO_EXPECTED_FREQS)
+                + "Hz. Non-FBCCA profiles will be rejected."
+            )
         self._refresh_task_buttons()
 
     def _log(self, text: str) -> None:
@@ -1536,6 +1564,8 @@ class RealtimeOnlineWindow(QMainWindow):
                     self._log(f"Demo profile rejected: {exc}")
                     return
             self.profile_edit.setText(path)
+            audit = _audit_realtime_profile_path(Path(path))
+            self._log(format_profile_audit_summary(audit))
             self._refresh_task_buttons()
 
     def _current_profile_path(self) -> Path:
@@ -1919,6 +1949,7 @@ class RealtimeOnlineWindow(QMainWindow):
             )
 
     def _on_profile_info(self, payload: dict[str, Any]) -> None:
+        profile_audit = dict(payload.get("profile_audit", {}) or {})
         self.profile_meta_label.setText(
             "Profile：{path}\n模型：{model} | 通道权重：{cw} | 子带权重：{sw}".format(
                 path=payload.get("loaded_profile_path", ""),
@@ -1937,6 +1968,16 @@ class RealtimeOnlineWindow(QMainWindow):
                 gate=int(bool(fast_pretrain.get("gate_calibration_enabled", False))),
             )
         )
+        if profile_audit:
+            audit_warnings = [str(item) for item in profile_audit.get("warnings", [])]
+            audit_line = "\nprofile_audit={status} | fast_control={valid} | warnings={count}".format(
+                status=str(profile_audit.get("status", "unknown")),
+                valid=int(bool(profile_audit.get("run_valid_for_deployment", False))),
+                count=len(audit_warnings),
+            )
+            if audit_warnings:
+                audit_line += "\nprofile_audit_warning: " + audit_warnings[0]
+            self.profile_meta_label.setText(self.profile_meta_label.text() + audit_line)
         selection_summary = dict(payload.get("selection_summary", {}))
         shadow_summary = dict(payload.get("shadow_summary", {}))
         self.backend_meta_label.setText(
@@ -2014,7 +2055,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="SSVEP 实时识别 UI / CLI")
     parser.add_argument("--serial-port", type=str, default="auto")
     parser.add_argument("--board-id", type=int, default=DEFAULT_BOARD_ID)
-    parser.add_argument("--freqs", type=str, default="8,10,12,15")
+    parser.add_argument("--freqs", type=str, default=DEFAULT_REALTIME_FREQS_CSV)
     parser.add_argument("--profile", type=Path, default=DEFAULT_REALTIME_PROFILE_PATH)
     parser.add_argument("--model", type=str, default=DEFAULT_MODEL_NAME)
     parser.add_argument("--compute-backend", type=str, default=DEFAULT_COMPUTE_BACKEND_NAME)

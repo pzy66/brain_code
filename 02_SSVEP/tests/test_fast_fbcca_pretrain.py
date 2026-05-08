@@ -108,6 +108,7 @@ def test_fast_personalization_profile_roundtrip_and_decoder(tmp_path: Path) -> N
             fallback_profile_path=tmp_path / "missing_fbcca_profile.json",
             output_profile_path=output_path,
             history_profile_path=history_path,
+            freqs=(8.0, 10.0, 12.0, 15.0),
             compute_backend="cpu",
             gpu_warmup=False,
         ),
@@ -209,6 +210,7 @@ def test_fast_fallback_strips_old_session_templates(monkeypatch: pytest.MonkeyPa
             fallback_profile_path=fallback_path,
             output_profile_path=output_path,
             history_profile_path=tmp_path / "history.json",
+            freqs=(8.0, 10.0, 12.0, 15.0),
             compute_backend="cpu",
             gpu_warmup=False,
         ),
@@ -220,8 +222,11 @@ def test_fast_fallback_strips_old_session_templates(monkeypatch: pytest.MonkeyPa
 
     assert payload["status"] == "fallback_to_base"
     assert payload["template_enabled"] is False
+    assert abs(float(profile.win_sec) - 2.0) < 1e-9
+    assert tuple(int(item) for item in (profile.eeg_channels or ())) == (0, 1, 2, 3, 4, 5, 6, 7)
     assert "fast_personalization" not in dict(profile.model_params or {})
     loaded = load_profile(output_path, require_exists=True)
+    assert abs(float(loaded.win_sec) - 2.0) < 1e-9
     assert "fast_personalization" not in dict(loaded.model_params or {})
     assert dict(loaded.metadata or {})["fast_pretrain"]["template_enabled"] is False
 
@@ -247,6 +252,7 @@ def test_gate_calibration_uses_template_fused_rows(monkeypatch: pytest.MonkeyPat
             fallback_profile_path=tmp_path / "missing_fbcca_profile.json",
             output_profile_path=tmp_path / "fbcca_profile.json",
             history_profile_path=tmp_path / "history.json",
+            freqs=(8.0, 10.0, 12.0, 15.0),
             compute_backend="cpu",
             gpu_warmup=False,
         ),
@@ -261,3 +267,44 @@ def test_gate_calibration_uses_template_fused_rows(monkeypatch: pytest.MonkeyPat
     assert dict(profile.metadata or {})["fast_pretrain"]["gate_feature_source"] == "fbcca_template_fused"
     assert captured["template_flags"]
     assert all(captured["template_flags"])
+
+
+def test_fast_pretrain_can_keep_low_quality_profile_when_benchmarking(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import ssvep_core.fast_fbcca_pretrain as module
+
+    base_path = tmp_path / "fbcca_base_profile.json"
+    output_path = tmp_path / "fbcca_profile.json"
+    save_profile(_base_profile(), base_path)
+    monkeypatch.setattr(
+        module,
+        "_should_fallback_to_base",
+        lambda **_kwargs: (True, ["forced benchmark warning"]),
+    )
+
+    profile, payload = run_fast_fbcca_personalization(
+        FastFBCCAPretrainConfig(
+            base_profile_path=base_path,
+            fallback_profile_path=tmp_path / "missing_fbcca_profile.json",
+            output_profile_path=output_path,
+            history_profile_path=tmp_path / "history.json",
+            freqs=(8.0, 10.0, 12.0, 15.0),
+            compute_backend="cpu",
+            gpu_warmup=False,
+            fallback_to_base_on_low_quality=False,
+        ),
+        trial_segments=_fast_segments(),
+        sampling_rate=250,
+        available_board_channels=(0, 1, 2, 3, 4, 5, 6, 7),
+        collection_duration_sec=51.0,
+    )
+
+    assert payload["status"] == "ok"
+    assert payload["fallback_reasons"] == []
+    assert payload["release_fallback_candidate"] is True
+    assert payload["release_fallback_reasons"] == ["forced benchmark warning"]
+    assert payload["recommended_for_realtime"] is False
+    assert "fast_personalization" in dict(profile.model_params or {})
+    assert dict(profile.metadata or {})["fast_pretrain"]["release_fallback_candidate"] is True

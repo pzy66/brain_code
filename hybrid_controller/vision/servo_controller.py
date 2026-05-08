@@ -63,6 +63,8 @@ class VisionServoPending:
 
     def to_dict(self) -> dict[str, object]:
         stage = "low_confirm" if self.state == SERVO_LOW_CONFIRM else "search"
+        if self.state == SERVO_FINE_CENTER:
+            stage = "fine_center"
         if self.state == SERVO_WAIT_STABLE:
             stage = "wait_stable"
         return {
@@ -126,6 +128,33 @@ def normalize_state(value: object) -> str:
     return SERVO_SEARCH_HIGH
 
 
+def _biased_pick_cyl_command(
+    *,
+    current_cyl_pose: tuple[float, float, float] | None,
+    radius_bias_mm: float,
+    sucker_rotation_deg: float | None = None,
+) -> str | None:
+    if current_cyl_pose is None or abs(float(radius_bias_mm)) < 1e-6:
+        return None
+    try:
+        theta_deg = float(current_cyl_pose[0])
+        radius_mm = float(current_cyl_pose[1]) + float(radius_bias_mm)
+    except (TypeError, ValueError):
+        return None
+    suffix = "" if sucker_rotation_deg is None else f" {float(sucker_rotation_deg):.2f}"
+    return f"PICK_CYL {theta_deg:.2f} {radius_mm:.2f}{suffix}"
+
+
+def _pick_command_sucker_rotation(command: str | None) -> float | None:
+    parts = str(command or "").strip().split()
+    if len(parts) < 4 or parts[0].strip().upper() not in {"PICK_CYL", "PICK_WORLD"}:
+        return None
+    try:
+        return float(parts[3])
+    except (TypeError, ValueError):
+        return None
+
+
 class VisionServoController:
     """Pure decision layer for eye-in-hand visual pick servoing."""
 
@@ -174,13 +203,32 @@ class VisionServoController:
         )
         command = build_pick_command_from_slot_payload(slot_for_command)
         if command is not None:
-            if bool(eye_in_hand_enabled) and not bool(at_confirm_z):
-                return self._low_confirm_decision(
-                    slot_id=int(slot_id),
-                    frame_id=frame_id,
-                    attempts=current.attempts,
-                    current_cyl_pose=current_cyl_pose,
+            if bool(eye_in_hand_enabled):
+                confirm_z = float(getattr(self.config, "vision_pick_confirm_z_mm", getattr(self.config, "robot_approach_z", 130.0)))
+                pick_z_tolerance = max(0.0, float(getattr(self.config, "vision_pick_z_tolerance_mm", 4.0)))
+                current_z = None if current_cyl_pose is None else float(current_cyl_pose[2])
+                at_confirm_height = bool(at_confirm_z) or (
+                    current_z is not None and abs(float(current_z) - confirm_z) <= pick_z_tolerance
                 )
+                if not at_confirm_height:
+                    return self._descent_confirm_decision(
+                        slot_id=int(slot_id),
+                        frame_id=frame_id,
+                        attempts=current.attempts,
+                        current=current,
+                        current_cyl_pose=current_cyl_pose,
+                    )
+            offset_source = str(getattr(self.config, "pick_tool_offset_source", "target_pixel")).strip().lower()
+            pick_radius_bias_mm = 0.0
+            if offset_source == "command_bias":
+                pick_radius_bias_mm = float(getattr(self.config, "vision_eye_in_hand_pick_radius_bias_mm", 0.0))
+            biased_command = _biased_pick_cyl_command(
+                current_cyl_pose=current_cyl_pose,
+                radius_bias_mm=pick_radius_bias_mm,
+                sucker_rotation_deg=_pick_command_sucker_rotation(command),
+            )
+            if biased_command is not None:
+                command = biased_command
             return VisionServoDecision(
                 action="PICK",
                 state=SERVO_PICK_READY,
@@ -188,7 +236,12 @@ class VisionServoController:
                 message=f"Vision servo centered slot {int(slot_id)}; sending PICK.",
                 command=command,
                 reason="pick_ready",
-                trace={"slot_id": int(slot_id), "frame_id": int(frame_id)},
+                trace={
+                    "slot_id": int(slot_id),
+                    "frame_id": int(frame_id),
+                    "pick_tool_offset_source": offset_source,
+                    "pick_radius_bias_mm": pick_radius_bias_mm,
+                },
             )
 
         reason = str(slot_payload.get("invalid_reason") or "not_actionable")
@@ -201,6 +254,7 @@ class VisionServoController:
                 frame_id=frame_id,
                 current=current,
                 eye_in_hand_enabled=bool(eye_in_hand_enabled),
+                current_cyl_pose=current_cyl_pose,
             )
         return VisionServoDecision(
             action="CANCEL",
@@ -224,12 +278,13 @@ class VisionServoController:
             command=current.command,
         ).to_dict()
 
-    def _low_confirm_decision(
+    def _descent_confirm_decision(
         self,
         *,
         slot_id: int,
         frame_id: int,
         attempts: int,
+        current: VisionServoPending,
         current_cyl_pose: tuple[float, float, float] | None,
     ) -> VisionServoDecision:
         if current_cyl_pose is None:
@@ -240,9 +295,18 @@ class VisionServoController:
                 message="Vision pick low confirm cancelled: robot pose unavailable.",
                 reason="robot_pose_unavailable",
             )
-        theta_deg, radius_mm, _ = current_cyl_pose
+        theta_deg, radius_mm, current_z = current_cyl_pose
+        search_z = float(getattr(self.config, "vision_pick_search_z_mm", getattr(self.config, "robot_carry_z", 190.0)))
         confirm_z = float(getattr(self.config, "vision_pick_confirm_z_mm", getattr(self.config, "robot_approach_z", 130.0)))
-        command = f"MOVE_CYL {float(theta_deg):.2f} {float(radius_mm):.2f} {confirm_z:.2f}"
+        step_mm = max(0.1, float(getattr(self.config, "vision_pick_descent_step_mm", abs(search_z - confirm_z))))
+        current_z = float(current_z)
+        if current_z > confirm_z:
+            next_z = max(confirm_z, current_z - step_mm)
+        elif current_z < confirm_z:
+            next_z = min(confirm_z, current_z + step_mm)
+        else:
+            next_z = confirm_z
+        command = f"MOVE_CYL {float(theta_deg):.2f} {float(radius_mm):.2f} {float(next_z):.2f}"
         pending = VisionServoPending(
             slot_id=int(slot_id),
             state=SERVO_LOW_CONFIRM,
@@ -255,11 +319,19 @@ class VisionServoController:
         return VisionServoDecision(
             action="MOVE",
             state=SERVO_LOW_CONFIRM,
-            status=f"low_confirm slot={int(slot_id)} z={confirm_z:.1f}",
-            message=f"Vision pick lowering for final confirmation: {command}",
+            status=f"descent_confirm slot={int(slot_id)} z={next_z:.1f}/{confirm_z:.1f}",
+            message=f"Vision pick descending with visual confirmation: {command}",
             command=command,
             pending=pending,
-            reason="low_confirm",
+            reason="descent_confirm",
+            trace={
+                "slot_id": int(slot_id),
+                "frame_id": int(frame_id),
+                "current_z_mm": float(current_z),
+                "target_z_mm": float(next_z),
+                "confirm_z_mm": float(confirm_z),
+                "descent_step_mm": float(step_mm),
+            },
         )
 
     def _wait_stable_decision(
@@ -305,6 +377,7 @@ class VisionServoController:
         frame_id: int,
         current: VisionServoPending,
         eye_in_hand_enabled: bool,
+        current_cyl_pose: tuple[float, float, float] | None = None,
     ) -> VisionServoDecision:
         point = slot_payload.get("servo_command_point")
         mode = str(slot_payload.get("servo_command_mode", "cyl")).strip().lower()
@@ -337,12 +410,22 @@ class VisionServoController:
                 reason="servo_command_invalid",
             )
         if bool(eye_in_hand_enabled):
-            if current.state == SERVO_LOW_CONFIRM:
-                target_z = float(getattr(self.config, "vision_pick_confirm_z_mm", getattr(self.config, "robot_approach_z", 130.0)))
+            search_z = float(getattr(self.config, "vision_pick_search_z_mm", getattr(self.config, "robot_carry_z", 190.0)))
+            confirm_z = float(getattr(self.config, "vision_pick_confirm_z_mm", getattr(self.config, "robot_approach_z", 130.0)))
+            pick_z_tolerance = max(0.0, float(getattr(self.config, "vision_pick_z_tolerance_mm", 4.0)))
+            current_z = None if current_cyl_pose is None else float(current_cyl_pose[2])
+            at_confirm_height = current_z is not None and abs(float(current_z) - confirm_z) <= pick_z_tolerance
+            if current.state == SERVO_LOW_CONFIRM or at_confirm_height:
+                target_z = confirm_z if at_confirm_height or current_z is None else current_z
                 next_state = SERVO_FINE_CENTER
             else:
-                target_z = float(getattr(self.config, "vision_pick_search_z_mm", getattr(self.config, "robot_carry_z", 190.0)))
-                next_state = SERVO_COARSE_CENTER
+                started_descent = current_z is not None and float(current_z) < search_z - pick_z_tolerance
+                if started_descent:
+                    target_z = float(current_z)
+                    next_state = SERVO_FINE_CENTER
+                else:
+                    target_z = search_z
+                    next_state = SERVO_COARSE_CENTER
             command = f"MOVE_CYL {theta_deg:.2f} {radius_mm:.2f} {target_z:.2f}"
         else:
             next_state = SERVO_COARSE_CENTER

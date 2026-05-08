@@ -5,7 +5,7 @@ import cv2
 # ==============================
 # 里程碑1：确定的视频流（MJPEG）
 # ==============================
-STREAM_URL = "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color"
+STREAM_URL = "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80"
 
 # ==============================
 # 里程碑2：多颜色检测（LAB阈值）

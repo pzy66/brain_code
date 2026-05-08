@@ -67,6 +67,7 @@ class FastFBCCAPretrainConfig:
     gpu_precision: str = DEFAULT_GPU_PRECISION_NAME
     gpu_warmup: bool = False
     gpu_cache_policy: str = DEFAULT_GPU_CACHE_MODE
+    fallback_to_base_on_low_quality: bool = True
 
 
 def fast_fbcca_trial_count(*, target_repeats: int, idle_repeats: int) -> int:
@@ -99,11 +100,7 @@ def _freq_tuple(values: Sequence[float]) -> tuple[float, float, float, float]:
 
 
 def _validate_demo_freqs(freqs: Sequence[float]) -> tuple[float, float, float, float]:
-    normalized = _freq_tuple(freqs)
-    expected = _freq_tuple(EXPECTED_FBCCA_BASE_FREQS)
-    if normalized != expected:
-        raise ValueError(f"FBCCA fast pretrain only supports freqs={expected}; got {normalized}")
-    return normalized
+    return _freq_tuple(freqs)
 
 
 def load_fast_fbcca_base_profile(config: FastFBCCAPretrainConfig) -> tuple[ThresholdProfile, str, str]:
@@ -117,7 +114,10 @@ def load_fast_fbcca_base_profile(config: FastFBCCAPretrainConfig) -> tuple[Thres
         if not resolved.exists():
             continue
         profile = load_profile(resolved, fallback_freqs=freqs, require_exists=True)
-        _validate_fast_base_profile(profile, source=str(resolved), freqs=freqs)
+        try:
+            _validate_fast_base_profile(profile, source=str(resolved), freqs=freqs)
+        except ValueError:
+            continue
         return profile, str(resolved), label
     profile = default_profile(freqs)
     _validate_fast_base_profile(profile, source="default_fbcca_profile", freqs=freqs)
@@ -467,9 +467,11 @@ def run_fast_fbcca_personalization(
     if not template_enabled and not gate_enabled:
         raise RuntimeError(f"fast pretrain failed to build templates and gate calibration failed: {gate_error}")
 
-    fallback, fallback_reasons = (False, [])
+    fallback_candidate, fallback_reasons = (False, [])
+    fallback = False
     if gate_enabled:
-        fallback, fallback_reasons = _should_fallback_to_base(quality=gate_quality, gate_metrics=gate_metrics)
+        fallback_candidate, fallback_reasons = _should_fallback_to_base(quality=gate_quality, gate_metrics=gate_metrics)
+        fallback = bool(config.fallback_to_base_on_low_quality) and bool(fallback_candidate)
 
     if fallback:
         final_metrics = _finite_metrics(gate_metrics)
@@ -487,12 +489,16 @@ def run_fast_fbcca_personalization(
             "gate_calibration_enabled": False,
             "gate_feature_source": gate_feature_source,
             "fallback_reasons": fallback_reasons,
+            "fallback_to_base_on_low_quality": bool(config.fallback_to_base_on_low_quality),
             "generated_at": datetime.now().isoformat(timespec="seconds"),
         }
         final_profile = replace(
-            base_profile,
+            fast_base,
             model_name=DEFAULT_MODEL_NAME,
             model_params=json_safe(model_params),
+            eeg_channels=selected_channels,
+            calibration_split_seed=int(config.seed),
+            benchmark_metrics=final_metrics,
             metadata=metadata,
         )
     else:
@@ -514,6 +520,9 @@ def run_fast_fbcca_personalization(
             "gate_calibration_enabled": bool(gate_enabled),
             "gate_feature_source": gate_feature_source,
             "gate_calibration_error": gate_error,
+            "fallback_to_base_on_low_quality": bool(config.fallback_to_base_on_low_quality),
+            "release_fallback_candidate": bool(fallback_candidate),
+            "release_fallback_reasons": list(fallback_reasons),
             "generated_at": datetime.now().isoformat(timespec="seconds"),
         }
         final_profile = replace(
@@ -524,7 +533,7 @@ def run_fast_fbcca_personalization(
             calibration_split_seed=int(config.seed),
             benchmark_metrics=_finite_metrics(gate_metrics),
             metadata=metadata,
-            recommended_for_realtime=True,
+            recommended_for_realtime=not bool(fallback_candidate),
         )
         final_metrics = _finite_metrics(gate_metrics)
 
@@ -551,7 +560,11 @@ def run_fast_fbcca_personalization(
         "gate_feature_source": gate_feature_source,
         "quality_metrics": _finite_metrics(gate_metrics),
         "quality_summary": _finite_metrics(gate_quality),
-        "fallback_reasons": fallback_reasons,
+        "fallback_reasons": list(fallback_reasons) if fallback else [],
+        "fallback_to_base_on_low_quality": bool(config.fallback_to_base_on_low_quality),
+        "release_fallback_candidate": bool(fallback_candidate),
+        "release_fallback_reasons": list(fallback_reasons),
+        "recommended_for_realtime": bool(final_profile.recommended_for_realtime),
         "config": asdict(config),
     }
     return final_profile, json_safe(result)

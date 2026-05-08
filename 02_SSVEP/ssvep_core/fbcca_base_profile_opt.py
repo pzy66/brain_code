@@ -7,6 +7,7 @@ from typing import Any, Callable, Optional, Sequence
 from brain_workspace.paths import SSVEP_DATASET_DIR, SSVEP_PROFILE_DIR
 
 from .dataset import load_collection_dataset
+from .stimulus_profiles import DEFAULT_COMFORT_FREQS
 from .fbcca_local_opt import (
     DEFAULT_FBCCA_LOCAL_SEARCH_PRESET,
     FBCCALocalOptConfig,
@@ -18,7 +19,7 @@ PROJECT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_BASE_DATASET_ROOT = SSVEP_DATASET_DIR
 DEFAULT_FBCCA_BASE_PROFILE_PATH = SSVEP_PROFILE_DIR / "fbcca_base_profile.json"
 DEFAULT_FBCCA_BASE_REPORT_PATH = PROJECT_DIR / "artifacts" / "runs" / "local" / "fbcca_base_profile_report.json"
-EXPECTED_FBCCA_BASE_FREQS = (8.0, 10.0, 12.0, 15.0)
+EXPECTED_FBCCA_BASE_FREQS = DEFAULT_COMFORT_FREQS
 DEFAULT_FBCCA_BASE_PROFILE_TASK = "fbcca-base-profile-opt"
 
 

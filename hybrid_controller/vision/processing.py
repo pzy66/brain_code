@@ -443,6 +443,7 @@ class SlotState:
     valid: bool = False
     observed: bool = False
     pixel_center: tuple[int, int] | None = None
+    center_history: list[tuple[int, int]] = field(default_factory=list)
     grasp_pixel: tuple[int, int] | None = None
     grasp_history: list[tuple[int, int]] = field(default_factory=list)
     grasp_angle_history: list[float] = field(default_factory=list)
@@ -472,6 +473,8 @@ class SlotState:
     center_tolerance_px: float | None = None
     action_tolerance_px: float | None = None
     estimated_xy_error_mm: float | None = None
+    center_stable_frames: int = 0
+    center_stability_px: float | None = None
     grasp_stable_frames: int = 0
     grasp_stability_px: float | None = None
     area_stability_ratio: float | None = None
@@ -488,6 +491,7 @@ class SlotState:
         increment_age: bool,
         *,
         grasp_history_len: int = 5,
+        center_stability_tolerance_px: float = 6.0,
         grasp_stability_tolerance_px: float = 6.0,
         grasp_history_reset_px: float = 22.0,
         grasp_angle_stability_tolerance_deg: float = 15.0,
@@ -495,6 +499,21 @@ class SlotState:
         self.valid = True
         self.observed = True
         self.pixel_center = candidate.center
+        history_len = max(1, int(grasp_history_len))
+        self.center_history.append(candidate.center)
+        if len(self.center_history) > history_len:
+            del self.center_history[:-history_len]
+        if self.center_history:
+            center_median = median_point(self.center_history) or candidate.center
+            self.center_stability_px = max(euclidean_distance(point, center_median) for point in self.center_history)
+            self.center_stable_frames = (
+                len(self.center_history)
+                if float(self.center_stability_px) <= float(center_stability_tolerance_px)
+                else 1
+            )
+        else:
+            self.center_stability_px = None
+            self.center_stable_frames = 0
         previous_median = median_point(self.grasp_history)
         if previous_median is not None and euclidean_distance(candidate.grasp_pixel, previous_median) > float(
             grasp_history_reset_px
@@ -503,7 +522,6 @@ class SlotState:
             self.grasp_angle_history = []
             self.area_history = []
         self.grasp_history.append(candidate.grasp_pixel)
-        history_len = max(1, int(grasp_history_len))
         if len(self.grasp_history) > history_len:
             del self.grasp_history[:-history_len]
         median = median_point(self.grasp_history) or candidate.grasp_pixel
@@ -570,6 +588,7 @@ class SlotState:
         self.valid = False
         self.observed = False
         self.pixel_center = None
+        self.center_history = []
         self.grasp_pixel = None
         self.grasp_history = []
         self.grasp_angle_history = []
@@ -598,6 +617,8 @@ class SlotState:
         self.center_tolerance_px = None
         self.action_tolerance_px = None
         self.estimated_xy_error_mm = None
+        self.center_stable_frames = 0
+        self.center_stability_px = None
         self.grasp_stable_frames = 0
         self.grasp_stability_px = None
         self.area_stability_ratio = None
@@ -653,6 +674,8 @@ class SlotState:
             "estimated_xy_error_mm": (
                 None if self.estimated_xy_error_mm is None else float(self.estimated_xy_error_mm)
             ),
+            "center_stable_frames": int(self.center_stable_frames),
+            "center_stability_px": None if self.center_stability_px is None else float(self.center_stability_px),
             "grasp_stable_frames": int(self.grasp_stable_frames),
             "grasp_stability_px": None if self.grasp_stability_px is None else float(self.grasp_stability_px),
             "servo_required": bool(self.servo_required),
@@ -819,6 +842,7 @@ def update_slots(
     match_distance: float,
     lost_ttl: int,
     grasp_history_len: int = 5,
+    center_stability_tolerance_px: float = 6.0,
     grasp_stability_tolerance_px: float = 6.0,
     grasp_history_reset_px: float = 22.0,
     grasp_angle_stability_tolerance_deg: float = 15.0,
@@ -846,6 +870,7 @@ def update_slots(
             candidates[candidate_index],
             increment_age=True,
             grasp_history_len=grasp_history_len,
+            center_stability_tolerance_px=center_stability_tolerance_px,
             grasp_stability_tolerance_px=grasp_stability_tolerance_px,
             grasp_history_reset_px=grasp_history_reset_px,
             grasp_angle_stability_tolerance_deg=grasp_angle_stability_tolerance_deg,
@@ -867,6 +892,7 @@ def update_slots(
             candidate,
             increment_age=False,
             grasp_history_len=grasp_history_len,
+            center_stability_tolerance_px=center_stability_tolerance_px,
             grasp_stability_tolerance_px=grasp_stability_tolerance_px,
             grasp_history_reset_px=grasp_history_reset_px,
             grasp_angle_stability_tolerance_deg=grasp_angle_stability_tolerance_deg,
@@ -900,7 +926,7 @@ def annotate_slots_with_cylindrical(
     offset_y = float(world_offset_xy_mm[1])
     mapping_mode_text = str(mapping_mode or "absolute_base").strip().lower()
     if mapping_mode_text not in {"absolute_base", "delta_servo"}:
-        mapping_mode_text = "absolute_base"
+        mapping_mode_text = "delta_servo"
     for slot in slots:
         slot.command_mode = "world"
         slot.command_point = None
@@ -954,7 +980,7 @@ def annotate_slots_with_cylindrical(
                 slot.invalid_reason = "calibration_unavailable"
             continue
 
-        point_for_mapping = slot.grasp_pixel or slot.pixel_center
+        point_for_mapping = slot.pixel_center
         effective_alignment_target = alignment_target_pixel
         if effective_alignment_target is None and active_profile is not None:
             effective_alignment_target = active_profile.target_pixel
@@ -1014,21 +1040,61 @@ def annotate_slots_with_cylindrical(
                 float(point_for_mapping[0]) - float(effective_alignment_target[0]),
                 float(point_for_mapping[1]) - float(effective_alignment_target[1]),
             )
+            configured_tolerance = float(center_tolerance_px)
             profile_tolerance = (
-                float(active_profile.center_tolerance_px)
+                min(float(active_profile.center_tolerance_px), configured_tolerance)
                 if active_profile is not None
-                else float(center_tolerance_px)
+                else configured_tolerance
             )
             action_tolerance = max(float(profile_tolerance), float(action_center_tolerance_px))
             slot.center_distance_px = float(distance_to_center)
             slot.center_tolerance_px = float(profile_tolerance)
             slot.action_tolerance_px = float(action_tolerance)
+            is_low_confirm_stage = str(calibration_stage or "").strip().lower() in {"confirm", "pick"}
+            center_aligned = distance_to_center <= action_tolerance
+            low_confirm_area_unstable = (
+                is_low_confirm_stage
+                and not center_aligned
+                and slot.area_stability_ratio is not None
+                and float(slot.area_stability_ratio) > 0.15
+            )
+            unstable_for_low_servo = (
+                int(required_stable_frames) > 1
+                and (
+                    int(slot.center_stable_frames) < int(required_stable_frames)
+                    or low_confirm_area_unstable
+                    or (
+                        slot.grasp_angle_stability_deg is not None
+                        and float(slot.grasp_angle_stability_deg) > float(grasp_angle_stability_tolerance_deg)
+                    )
+                )
+            )
+            if mapping_mode_text == "delta_servo" and low_confirm_area_unstable:
+                slot.invalid_reason = "grasp_unstable"
+                continue
+            if (
+                mapping_mode_text == "delta_servo"
+                and distance_to_center > action_tolerance
+                and is_low_confirm_stage
+                and unstable_for_low_servo
+            ):
+                slot.invalid_reason = "grasp_unstable"
+                continue
             if mapping_mode_text == "delta_servo" and distance_to_center > action_tolerance:
                 slot.servo_required = True
             elif (
                 mapping_mode_text == "delta_servo"
                 and int(required_stable_frames) > 1
+                and int(slot.center_stable_frames) < int(required_stable_frames)
+                and not is_low_confirm_stage
+            ):
+                slot.invalid_reason = "grasp_unstable"
+                continue
+            elif (
+                mapping_mode_text == "delta_servo"
+                and int(required_stable_frames) > 1
                 and int(slot.grasp_stable_frames) < int(required_stable_frames)
+                and not is_low_confirm_stage
             ):
                 slot.invalid_reason = "grasp_unstable"
                 continue

@@ -292,6 +292,15 @@ def _merge_stage_payload(parent: dict[str, Any], child: dict[str, Any], stage_na
         "distortion_coefficients",
         "hand_eye",
         "T_camera_to_tool",
+        "pixel_to_delta",
+        "pixel_to_delta_model",
+        "pixel_to_delta_matrix",
+        "model",
+        "residual",
+        "validation",
+        "residual_points",
+        "residual_grid",
+        "valid_workspace",
         "created_at",
     ):
         if key not in merged and key in parent:

@@ -11,6 +11,7 @@ if str(PROJECT_DIR) not in sys.path:
 
 from ssvep_core.dataset import LoadedDataset
 from ssvep_core.fbcca_base_profile_opt import (
+    EXPECTED_FBCCA_BASE_FREQS,
     FBCCABaseProfileOptConfig,
     discover_fbcca_base_dataset_manifests,
     run_fbcca_base_profile_opt,
@@ -49,7 +50,7 @@ def test_base_profile_manifest_discovery_and_run(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(
         module,
         "load_collection_dataset",
-        lambda path: _dataset(Path(path), freqs=(8.0, 10.0, 12.0, 15.0)),
+        lambda path: _dataset(Path(path), freqs=EXPECTED_FBCCA_BASE_FREQS),
     )
     captured: dict[str, object] = {}
 
@@ -103,5 +104,6 @@ def test_base_profile_rejects_frequency_mismatch(monkeypatch: pytest.MonkeyPatch
         lambda path: _dataset(Path(path), freqs=(8.0, 9.0, 12.0, 15.0)),
     )
 
-    with pytest.raises(ValueError, match="expected=\\(8.0, 10.0, 12.0, 15.0\\)"):
+    expected_pattern = r"expected=\(" + ", ".join(str(item) for item in EXPECTED_FBCCA_BASE_FREQS) + r"\)"
+    with pytest.raises(ValueError, match=expected_pattern):
         validate_fbcca_base_dataset_manifests((manifest,))

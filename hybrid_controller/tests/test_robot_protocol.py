@@ -1,10 +1,12 @@
 import math
 from argparse import Namespace
+from pathlib import Path
 
 from hybrid_controller.adapters.control_sim_slots import ControlSimSlotCatalog
 from hybrid_controller.adapters.robot_client import parse_robot_line
 from hybrid_controller.app import build_config_from_args
 from hybrid_controller.config import AppConfig
+from hybrid_controller.robot.tools import jetmax_start_ros_runtime
 from hybrid_controller.controller.events import Event
 from hybrid_controller.controller.state_machine import TaskState
 from hybrid_controller.controller.task_controller import TaskController
@@ -120,6 +122,86 @@ def test_fixed_cyl_slot_selection_emits_pick_cyl_command() -> None:
     commands = [effect.payload["command"] for effect in effects if effect.type == "robot_command"]
     assert commands == [f"PICK_CYL {target.command_point[0]:.2f} {target.command_point[1]:.2f}"]
 
+
+def test_jetmax_camera_repair_defaults_keep_official_sender_settings() -> None:
+    args = jetmax_start_ros_runtime.build_parser().parse_args([])
+
+    assert args.skip_camera_check is True
+    assert args.camera_stream_type == "mjpeg"
+    assert args.camera_framerate == 20
+    assert args.camera_io_method == "mmap"
+    assert args.camera_quality == 80
+    assert args.repair_camera_driver is False
+    assert args.remove_camera_driver_override is False
+    assert args.camera_driver_quirks == 128
+    assert args.camera_driver_nodrop == 1
+    assert args.camera_driver_timeout == 5000
+    assert args.camera_driver_conf_path == "/etc/modprobe.d/hiwonder-uvcvideo.conf"
+    assert args.manage_web_video is False
+    assert args.repair_camera_sender is False
+    assert args.allow_camera_sender_mutation is False
+
+
+def test_jetmax_start_camera_stream_check_requires_explicit_opt_in() -> None:
+    default_args = jetmax_start_ros_runtime.build_parser().parse_args([])
+    check_args = jetmax_start_ros_runtime.build_parser().parse_args(["--check-camera-stream"])
+
+    assert default_args.skip_camera_check is True
+    assert check_args.skip_camera_check is False
+
+
+def test_jetmax_start_camera_sender_mutation_is_guarded() -> None:
+    parser = jetmax_start_ros_runtime.build_parser()
+    repair_args = parser.parse_args(["--repair-camera-sender"])
+    allowed_args = parser.parse_args(["--repair-camera-sender", "--allow-camera-sender-mutation"])
+    manage_args = parser.parse_args(["--manage-web-video", "--allow-camera-sender-mutation"])
+
+    assert jetmax_start_ros_runtime._camera_sender_mutation_requested(repair_args) is True
+    assert jetmax_start_ros_runtime._camera_sender_mutation_requested(manage_args) is False
+    assert repair_args.allow_camera_sender_mutation is False
+    assert allowed_args.allow_camera_sender_mutation is True
+
+
+def test_jetmax_camera_repair_script_clears_stale_rosparams_without_default_driver_reload() -> None:
+    source = Path(jetmax_start_ros_runtime.__file__).read_text(encoding="utf-8")
+
+    assert "rosparam delete /usb_cam" in source
+    assert "remove_uvcvideo_override_file" in source
+    assert "pkill -f web_video_server" not in source
+    assert "uvcvideo quirks={quirks} nodrop={nodrop} timeout={timeout}" in source
+    assert "timeout 6 rostopic hz /usb_cam/image_raw" not in source
+
+
+def test_jetmax_runtime_start_does_not_repair_camera_sender_by_default() -> None:
+    source = Path(jetmax_start_ros_runtime.__file__).read_text(encoding="utf-8")
+
+    assert "if bool(args.repair_camera_sender) and not bool(args.skip_camera_repair):" in source
+    assert "verify_official_camera_sender" in source
+    assert "verify_web_video_mjpeg_stream" in source
+    assert "--check-camera-stream" in source
+    assert "checks.append(PortCheck(name=\"web_video_server\"" in source
+    assert "persist_and_reload_uvcvideo(ssh, args=args, sudo=sudo)" in source
+    assert "elif bool(args.repair_camera_driver) and not bool(args.skip_camera_driver_repair):" in source
+    assert "repair_uvcvideo_driver(ssh, args=args, sudo=sudo)" in source
+    assert "HYBRID_MANAGE_WEB_VIDEO" not in source
+    assert "HYBRID_FORCE_RESTART_WEB_VIDEO" not in source
+    assert "WEB_VIDEO_PORT=" not in source
+    assert jetmax_start_ros_runtime.HIWONDER_CAMERA_TOPIC == "/usb_cam/image_rect_color"
+    assert jetmax_start_ros_runtime.DEFAULT_CAMERA_STREAM_PATH == (
+        "/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80"
+    )
+
+
+def test_jetmax_runtime_default_start_does_not_check_camera_stream() -> None:
+    args = jetmax_start_ros_runtime.build_parser().parse_args([])
+
+    checks = [jetmax_start_ros_runtime.PortCheck(name="rosbridge", port=int(args.rosbridge_port), required=True)]
+    if not bool(args.skip_camera_check):
+        checks.append(jetmax_start_ros_runtime.PortCheck(name="web_video_server", port=int(args.web_video_port), required=True))
+
+    assert [check.name for check in checks] == ["rosbridge"]
+
+
 def test_build_config_from_args_applies_modes() -> None:
     args = Namespace(
         timing_profile="fast",
@@ -132,6 +214,7 @@ def test_build_config_from_args_applies_modes() -> None:
         robot_host="192.168.1.9",
         robot_port=9999,
         vision_stream_url="camera://demo",
+        vision_auto_start=False,
         smoke_test_ms=0,
     )
     config = build_config_from_args(args)
@@ -142,6 +225,7 @@ def test_build_config_from_args_applies_modes() -> None:
     assert config.robot_host == "192.168.1.9"
     assert config.robot_port == 9999
     assert config.vision_stream_url == "camera://demo"
+    assert config.vision_auto_start is False
     assert config.timing_profile == "fast"
     assert config.scenario_name == "sparse_targets"
     assert config.control_sim_enabled is True
@@ -165,6 +249,7 @@ def test_build_config_from_args_supports_mi_placeholder_flags() -> None:
         robot_host="192.168.1.9",
         robot_port=9999,
         vision_stream_url="",
+        vision_auto_start=False,
         smoke_test_ms=0,
     )
     config = build_config_from_args(args)

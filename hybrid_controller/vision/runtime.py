@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import socket
 import threading
 import time
 from pathlib import Path
 from typing import Callable, Optional
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, quote, urlparse, urlunparse
+from urllib.request import Request, urlopen
 
 import numpy as np
 from PyQt5.QtCore import Q_ARG, QMetaObject, QObject, QThread, QTimer, Qt, pyqtSignal, pyqtSlot
@@ -22,6 +22,92 @@ from hybrid_controller.vision.processing import (
     packet_to_targets,
     update_slots,
 )
+
+
+def _normalize_web_video_url(source: str) -> str:
+    value = str(source).strip()
+    try:
+        parsed = urlparse(value)
+    except Exception:
+        return value
+    if parsed.scheme not in {"http", "https"} or not parsed.path.endswith("/stream") or not parsed.query:
+        return value
+    query_items = parse_qsl(parsed.query, keep_blank_values=True)
+    if not query_items:
+        return value
+    normalized_query = "&".join(
+        f"{quote(str(key), safe='')}={quote(str(val), safe='/')}" for key, val in query_items
+    )
+    return urlunparse(parsed._replace(query=normalized_query))
+
+
+class _HttpMjpegCapture:
+    """Small MJPEG reader for the locked JetMax web_video_server URL.
+
+    This reader consumes bytes from the official desktop URL only. It must not be
+    expanded into endpoint discovery, ROS topic scanning, or robot-side camera
+    service management.
+    """
+
+    def __init__(self, url: str, *, cv2_module: object, timeout_sec: float) -> None:
+        self._url = _normalize_web_video_url(str(url))
+        self._cv2 = cv2_module
+        self._timeout_sec = max(0.2, float(timeout_sec))
+        self._response = None
+        self._buffer = bytearray()
+        self._open()
+
+    def _open(self) -> None:
+        request = Request(self._url, headers={"User-Agent": "hybrid-controller/vision"})
+        self._response = urlopen(request, timeout=self._timeout_sec)
+
+    def isOpened(self) -> bool:
+        return self._response is not None
+
+    def read(self):
+        if self._response is None:
+            return False, None
+        deadline = time.perf_counter() + self._timeout_sec
+        while time.perf_counter() < deadline:
+            start = self._buffer.find(b"\xff\xd8")
+            end = self._buffer.find(b"\xff\xd9", start + 2 if start >= 0 else 0)
+            if start >= 0 and end >= 0:
+                jpg = bytes(self._buffer[start : end + 2])
+                del self._buffer[: end + 2]
+                frame = self._cv2.imdecode(np.frombuffer(jpg, dtype=np.uint8), self._cv2.IMREAD_COLOR)
+                if frame is not None:
+                    return True, frame
+                continue
+            chunk = self._response.read(4096)
+            if not chunk:
+                return False, None
+            self._buffer.extend(chunk)
+            if len(self._buffer) > 4_000_000:
+                del self._buffer[:-1_000_000]
+        return False, None
+
+    def release(self) -> None:
+        response = self._response
+        self._response = None
+        if response is not None:
+            try:
+                response.close()
+            except Exception:
+                pass
+
+
+def _is_web_video_mjpeg_stream(source: object) -> bool:
+    if not isinstance(source, str):
+        return False
+    try:
+        parsed = urlparse(source)
+    except Exception:
+        return False
+    if parsed.scheme not in {"http", "https"} or not parsed.path.endswith("/stream"):
+        return False
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    requested_type = str(query.get("type", "")).strip().lower()
+    return requested_type in {"", "mjpeg"}
 
 
 def _resolve_weights_path(config: AppConfig) -> str:
@@ -256,69 +342,74 @@ class _VisionWorker(QObject):
         self.status_changed.emit(f"Vision stream unavailable, retrying... checked=[{checked}]")
         return False
 
-    def _endpoint_reachable(self, stream_url: str) -> bool:
-        value = str(stream_url).strip()
-        if value.isdigit():
-            return True
-        try:
-            parsed = urlparse(value)
-        except Exception:
-            return True
-        if parsed.scheme not in {"http", "https", "rtsp", "tcp"}:
-            return True
-        if not parsed.hostname:
-            return True
-        if parsed.port is not None:
-            port = int(parsed.port)
-        elif parsed.scheme in {"https"}:
-            port = 443
-        elif parsed.scheme in {"rtsp"}:
-            port = 554
-        else:
-            port = 80
-        timeout_sec = max(0.05, float(self.config.vision_endpoint_probe_timeout_ms) / 1000.0)
-        try:
-            with socket.create_connection((str(parsed.hostname), int(port)), timeout=timeout_sec):
-                return True
-        except OSError:
-            return False
-
     def _try_open_capture(self, stream_url: str):
-        if not self._endpoint_reachable(stream_url):
-            return None
+        stream_url = _normalize_web_video_url(str(stream_url))
         source = int(stream_url) if stream_url.isdigit() else stream_url
-        backend = getattr(self._cv2, "CAP_ANY", 0)
+        if _is_web_video_mjpeg_stream(source):
+            # Prefer direct multipart MJPEG parsing for the Hiwonder official stream.
+            # This stays on the PC side and never starts/restarts JetMax camera nodes.
+            timeout_sec = max(0.2, float(self.config.vision_open_timeout_ms) / 1000.0)
+            capture = None
+            try:
+                capture = _HttpMjpegCapture(str(source), cv2_module=self._cv2, timeout_sec=timeout_sec)
+                ok, frame = capture.read()
+                if ok and frame is not None:
+                    return capture
+            except Exception:
+                pass
+            if capture is not None:
+                capture.release()
+        backend_candidates = [getattr(self._cv2, "CAP_ANY", 0)]
         if isinstance(source, str) and hasattr(self._cv2, "CAP_FFMPEG"):
-            backend = getattr(self._cv2, "CAP_FFMPEG")
-        try:
-            capture = self._cv2.VideoCapture(source, backend)
-        except TypeError:
-            capture = self._cv2.VideoCapture(source)
-        if hasattr(self._cv2, "CAP_PROP_BUFFERSIZE"):
-            capture.set(self._cv2.CAP_PROP_BUFFERSIZE, 1)
-        if hasattr(self._cv2, "CAP_PROP_OPEN_TIMEOUT_MSEC"):
-            capture.set(self._cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, float(self.config.vision_open_timeout_ms))
-        if hasattr(self._cv2, "CAP_PROP_READ_TIMEOUT_MSEC"):
-            capture.set(self._cv2.CAP_PROP_READ_TIMEOUT_MSEC, float(self.config.vision_read_timeout_ms))
-        if not capture.isOpened():
+            parsed = urlparse(source)
+            query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+            requested_type = str(query.get("type", "")).strip().lower()
+            ffmpeg_backend = getattr(self._cv2, "CAP_FFMPEG")
+            if parsed.scheme in {"rtsp", "tcp"}:
+                backend_candidates = [ffmpeg_backend, getattr(self._cv2, "CAP_ANY", 0)]
+            elif parsed.scheme in {"http", "https"} and requested_type not in {"h264", "vp8", "vp9"}:
+                # JetMax official web_video_server MJPEG streams are more reliable with OpenCV's default backend.
+                backend_candidates = [getattr(self._cv2, "CAP_ANY", 0), ffmpeg_backend]
+            else:
+                backend_candidates = [ffmpeg_backend, getattr(self._cv2, "CAP_ANY", 0)]
+        deduped_backends: list[int] = []
+        for backend in backend_candidates:
+            if backend not in deduped_backends:
+                deduped_backends.append(backend)
+
+        probe_reads = max(1, int(self.config.vision_probe_reads))
+        probe_sleep = max(0.0, float(self.config.vision_probe_sleep_ms) / 1000.0)
+        for backend in deduped_backends:
+            try:
+                capture = self._cv2.VideoCapture(source, backend)
+            except TypeError:
+                capture = self._cv2.VideoCapture(source)
+            if hasattr(self._cv2, "CAP_PROP_BUFFERSIZE"):
+                capture.set(self._cv2.CAP_PROP_BUFFERSIZE, 1)
+            if hasattr(self._cv2, "CAP_PROP_OPEN_TIMEOUT_MSEC"):
+                capture.set(self._cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, float(self.config.vision_open_timeout_ms))
+            if hasattr(self._cv2, "CAP_PROP_READ_TIMEOUT_MSEC"):
+                capture.set(self._cv2.CAP_PROP_READ_TIMEOUT_MSEC, float(self.config.vision_read_timeout_ms))
+            if not capture.isOpened():
+                try:
+                    capture.release()
+                except Exception:
+                    pass
+                continue
+
+            try:
+                for _ in range(probe_reads):
+                    ok, frame = capture.read()
+                    if ok and frame is not None:
+                        return capture
+                    if probe_sleep > 0.0:
+                        time.sleep(probe_sleep)
+            except Exception:
+                pass
             try:
                 capture.release()
             except Exception:
                 pass
-            return None
-
-        probe_reads = max(1, int(self.config.vision_probe_reads))
-        probe_sleep = max(0.0, float(self.config.vision_probe_sleep_ms) / 1000.0)
-        for _ in range(probe_reads):
-            ok, frame = capture.read()
-            if ok and frame is not None:
-                return capture
-            if probe_sleep > 0.0:
-                time.sleep(probe_sleep)
-        try:
-            capture.release()
-        except Exception:
-            pass
         return None
 
     def _start_capture_pump(self, capture) -> None:
@@ -482,7 +573,25 @@ class _VisionWorker(QObject):
             self._reload_calibration_profile_if_needed()
             roi_center = self._resolve_roi_center(frame_w, frame_h)
             roi_radius = self._resolve_roi_radius(frame_w, frame_h)
-            alignment_target_pixel = self._resolve_alignment_target_pixel(frame_w, frame_h, roi_center)
+            calibration_stage, calibration_z_mm = self._current_calibration_stage()
+            alignment_target_pixel = self._resolve_alignment_target_pixel(
+                frame_w,
+                frame_h,
+                roi_center,
+                calibration_stage=calibration_stage,
+                calibration_z_mm=calibration_z_mm,
+            )
+            action_center_tolerance_px = float(self.config.vision_servo_action_tolerance_px)
+            if str(calibration_stage or "").strip().lower() == "search":
+                action_center_tolerance_px = max(
+                    action_center_tolerance_px,
+                    float(getattr(self.config, "vision_servo_search_action_tolerance_px", action_center_tolerance_px)),
+                )
+            elif str(calibration_stage or "").strip().lower() in {"confirm", "pick"}:
+                action_center_tolerance_px = max(
+                    action_center_tolerance_px,
+                    float(getattr(self.config, "vision_servo_low_action_tolerance_px", action_center_tolerance_px)),
+                )
 
             infer_start = time.perf_counter()
             try:
@@ -511,13 +620,13 @@ class _VisionWorker(QObject):
                 match_distance=120.0,
                 lost_ttl=6,
                 grasp_history_len=int(self.config.vision_grasp_history_frames),
+                center_stability_tolerance_px=float(self.config.vision_center_stability_tolerance_px),
                 grasp_stability_tolerance_px=float(self.config.vision_grasp_stability_tolerance_px),
                 grasp_history_reset_px=float(self.config.vision_grasp_history_reset_px),
                 grasp_angle_stability_tolerance_deg=float(
                     self.config.vision_grasp_angle_stability_tolerance_deg
                 ),
             )
-            calibration_stage, calibration_z_mm = self._current_calibration_stage()
             annotate_slots_with_cylindrical(
                 self._slots,
                 calibration=self._calibration,
@@ -533,7 +642,7 @@ class _VisionWorker(QObject):
                 calibration_profile_required=bool(self.config.vision_calibration_profile_required),
                 action_error_threshold_mm=float(self.config.vision_action_max_error_mm),
                 center_tolerance_px=float(self.config.vision_servo_center_tolerance_px),
-                action_center_tolerance_px=float(self.config.vision_servo_action_tolerance_px),
+                action_center_tolerance_px=action_center_tolerance_px,
                 alignment_target_pixel=alignment_target_pixel,
                 alignment_target_required=str(self.config.pick_tool_offset_source).strip().lower() == "target_pixel",
                 calibration_stage=calibration_stage,
@@ -617,12 +726,25 @@ class _VisionWorker(QObject):
         frame_w: int,
         frame_h: int,
         roi_center: tuple[int, int],
+        *,
+        calibration_stage: str | None = None,
+        calibration_z_mm: float | None = None,
     ) -> tuple[float, float] | None:
         configured = self._coerce_frame_pixel(self.config.vision_pick_target_pixel, frame_w, frame_h)
         if configured is not None:
             return configured
+        if str(self.config.pick_tool_offset_source).strip().lower() == "command_bias":
+            return (float(roi_center[0]), float(roi_center[1]))
         if self._calibration_profile is not None:
-            profile_target = self._coerce_frame_pixel(self._calibration_profile.target_pixel, frame_w, frame_h)
+            try:
+                active_profile = self._calibration_profile.model_for_stage(
+                    calibration_stage,
+                    z_mm=calibration_z_mm,
+                    allow_fallback=True,
+                )
+            except Exception:
+                active_profile = self._calibration_profile
+            profile_target = self._coerce_frame_pixel(active_profile.target_pixel, frame_w, frame_h)
             if profile_target is not None:
                 return profile_target
         if str(self.config.pick_tool_offset_source).strip().lower() == "target_pixel":
@@ -643,7 +765,10 @@ class _VisionWorker(QObject):
             self._calibration_profile = VisionCalibrationProfile.load(profile_path)
             self._calibration_profile_mtime = mtime
             target = self._calibration_profile.target_pixel
-            suffix = "" if target is None else f" target=({target[0]:.1f},{target[1]:.1f})"
+            if str(self.config.pick_tool_offset_source).strip().lower() == "command_bias":
+                suffix = " target=roi_center command_bias"
+            else:
+                suffix = "" if target is None else f" target=({target[0]:.1f},{target[1]:.1f})"
             self.status_changed.emit(f"Vision calibration profile reloaded: {self._calibration_profile.profile_id}{suffix}")
         except Exception as error:
             self.status_changed.emit(f"Vision calibration profile reload failed: {error}")
@@ -673,6 +798,8 @@ class _VisionWorker(QObject):
             return ("pick", pick_z)
         if abs(z_value - confirm_z) <= tolerance:
             return ("confirm", confirm_z)
+        if z_value < search_z - tolerance:
+            return ("confirm", z_value)
         return ("search", search_z)
 
 

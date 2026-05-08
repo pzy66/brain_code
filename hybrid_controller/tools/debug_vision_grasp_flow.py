@@ -6,6 +6,7 @@ import math
 import sys
 import threading
 import time
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
@@ -15,6 +16,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from hybrid_controller.app_robot_commands import extract_command_opcode
+from hybrid_controller.app_robot_commands import rewrite_pick_command_with_bias
 from hybrid_controller.config import AppConfig
 from hybrid_controller.vision.calibration_profile import VisionCalibrationProfile
 from hybrid_controller.vision.processing import (
@@ -24,6 +26,7 @@ from hybrid_controller.vision.processing import (
     extract_candidates,
     update_slots,
 )
+from hybrid_controller.vision.runtime import _HttpMjpegCapture, _is_web_video_mjpeg_stream, _normalize_web_video_url
 from hybrid_controller.vision.servo_controller import VisionServoController
 from hybrid_controller.vision.target_resolver import resolve_vision_packet
 
@@ -207,6 +210,20 @@ def _load_model(args: argparse.Namespace, config: AppConfig) -> object | None:
         raise
 
 
+def _override_profile_center_tolerance(
+    profile: VisionCalibrationProfile,
+    center_tolerance_px: float,
+) -> VisionCalibrationProfile:
+    tolerance = max(0.0, float(center_tolerance_px))
+    stage_models = None
+    if profile.stage_models:
+        stage_models = {
+            str(name): _override_profile_center_tolerance(stage_profile, tolerance)
+            for name, stage_profile in profile.stage_models.items()
+        }
+    return replace(profile, center_tolerance_px=tolerance, stage_models=stage_models)
+
+
 def _predict_frame(model: object | None, frame: object, *, config: AppConfig, device: str | None, half: bool) -> list[object]:
     if model is None:
         return [_EmptyDetectionResult()]
@@ -228,7 +245,13 @@ def _predict_frame(model: object | None, frame: object, *, config: AppConfig, de
 
 
 def _open_capture(cv2_module: object, stream_url: str, config: AppConfig):
-    source = int(stream_url) if str(stream_url).isdigit() else str(stream_url)
+    source = int(stream_url) if str(stream_url).isdigit() else _normalize_web_video_url(str(stream_url))
+    if _is_web_video_mjpeg_stream(source):
+        timeout_sec = max(0.2, float(config.vision_open_timeout_ms) / 1000.0)
+        try:
+            return _HttpMjpegCapture(str(source), cv2_module=cv2_module, timeout_sec=timeout_sec)
+        except Exception:
+            pass
     backend = getattr(cv2_module, "CAP_ANY", 0)
     if isinstance(source, str) and hasattr(cv2_module, "CAP_FFMPEG"):
         backend = getattr(cv2_module, "CAP_FFMPEG")
@@ -251,6 +274,43 @@ def _open_capture(cv2_module: object, stream_url: str, config: AppConfig):
     return capture
 
 
+def _open_capture_with_backend(cv2_module: object, stream_url: str, config: AppConfig, *, capture_backend: str):
+    backend = str(capture_backend or "auto").strip().lower()
+    source = int(stream_url) if str(stream_url).isdigit() else _normalize_web_video_url(str(stream_url))
+    if backend == "http" and _is_web_video_mjpeg_stream(source):
+        timeout_sec = max(0.2, float(config.vision_open_timeout_ms) / 1000.0)
+        return _HttpMjpegCapture(str(source), cv2_module=cv2_module, timeout_sec=timeout_sec)
+    return _open_capture(cv2_module, stream_url, config)
+
+
+def _read_frames_from_capture(
+    *,
+    capture: object,
+    frame_count: int,
+    drain_frames: int,
+    timeout_sec: float,
+) -> list[tuple[object, float]]:
+    frames: list[tuple[object, float]] = []
+    deadline = time.perf_counter() + max(0.5, float(timeout_sec))
+    drain_remaining = max(0, int(drain_frames))
+    while time.perf_counter() <= deadline and len(frames) < max(1, int(frame_count)):
+        try:
+            ok, frame = capture.read()  # type: ignore[attr-defined]
+        except Exception:
+            ok, frame = False, None
+        now = time.perf_counter()
+        if not ok or frame is None:
+            time.sleep(0.03)
+            continue
+        if drain_remaining > 0:
+            drain_remaining -= 1
+            continue
+        frames.append((frame, now))
+    if not frames:
+        raise RuntimeError("Timed out waiting for camera frames.")
+    return frames
+
+
 def _capture_frames(
     *,
     cv2_module: object,
@@ -259,30 +319,128 @@ def _capture_frames(
     frame_count: int,
     drain_frames: int,
     timeout_sec: float,
+    capture_backend: str = "auto",
 ) -> list[tuple[object, float]]:
-    capture = _open_capture(cv2_module, stream_url, config)
-    frames: list[tuple[object, float]] = []
-    deadline = time.perf_counter() + max(0.5, float(timeout_sec))
-    drain_remaining = max(0, int(drain_frames))
+    capture = _open_capture_with_backend(cv2_module, stream_url, config, capture_backend=capture_backend)
     try:
-        while time.perf_counter() <= deadline and len(frames) < max(1, int(frame_count)):
-            ok, frame = capture.read()
-            now = time.perf_counter()
-            if not ok or frame is None:
-                time.sleep(0.03)
-                continue
-            if drain_remaining > 0:
-                drain_remaining -= 1
-                continue
-            frames.append((frame, now))
+        return _read_frames_from_capture(
+            capture=capture,
+            frame_count=frame_count,
+            drain_frames=drain_frames,
+            timeout_sec=timeout_sec,
+        )
     finally:
         try:
             capture.release()
         except Exception:
             pass
-    if not frames:
-        raise RuntimeError("Timed out waiting for camera frames.")
-    return frames
+
+
+def _capture_frames_from_candidates(
+    *,
+    cv2_module: object,
+    stream_urls: tuple[str, ...],
+    config: AppConfig,
+    frame_count: int,
+    drain_frames: int,
+    timeout_sec: float,
+    capture_backend: str = "auto",
+) -> tuple[str, list[tuple[object, float]]]:
+    errors: list[str] = []
+    for candidate in stream_urls:
+        stream_url = str(candidate).strip()
+        if not stream_url:
+            continue
+        try:
+            frames = _capture_frames(
+                cv2_module=cv2_module,
+                stream_url=stream_url,
+                config=config,
+                frame_count=frame_count,
+                drain_frames=drain_frames,
+                timeout_sec=timeout_sec,
+                capture_backend=capture_backend,
+            )
+            return stream_url, frames
+        except Exception as error:
+            errors.append(f"{stream_url}: {error}")
+    detail = "; ".join(errors) if errors else "no stream URLs configured"
+    raise RuntimeError(f"Could not read camera frames from any stream candidate: {detail}")
+
+
+class _PersistentCaptureReader:
+    def __init__(
+        self,
+        *,
+        cv2_module: object,
+        stream_urls: tuple[str, ...],
+        config: AppConfig,
+        capture_backend: str = "auto",
+    ) -> None:
+        self._cv2_module = cv2_module
+        self._stream_urls = tuple(str(item).strip() for item in stream_urls if str(item).strip())
+        self._config = config
+        self._capture_backend = str(capture_backend or "auto")
+        self._capture: object | None = None
+        self._stream_url: str | None = None
+
+    @property
+    def stream_url(self) -> str | None:
+        return self._stream_url
+
+    def read(
+        self,
+        *,
+        frame_count: int,
+        drain_frames: int,
+        timeout_sec: float,
+    ) -> tuple[str, list[tuple[object, float]]]:
+        self._ensure_open()
+        if self._capture is None or self._stream_url is None:
+            raise RuntimeError("Persistent camera stream is not open.")
+        try:
+            frames = _read_frames_from_capture(
+                capture=self._capture,
+                frame_count=frame_count,
+                drain_frames=drain_frames,
+                timeout_sec=timeout_sec,
+            )
+        except Exception:
+            self.close()
+            raise
+        return self._stream_url, frames
+
+    def close(self) -> None:
+        capture = self._capture
+        self._capture = None
+        self._stream_url = None
+        if capture is None:
+            return
+        try:
+            capture.release()  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+    def _ensure_open(self) -> None:
+        if self._capture is not None:
+            return
+        errors: list[str] = []
+        for candidate in self._stream_urls:
+            try:
+                capture = _open_capture_with_backend(
+                    self._cv2_module,
+                    candidate,
+                    self._config,
+                    capture_backend=self._capture_backend,
+                )
+            except Exception as error:
+                errors.append(f"{candidate}: {error}")
+                continue
+            self._capture = capture
+            self._stream_url = candidate
+            return
+        detail = "; ".join(errors) if errors else "no stream URLs configured"
+        raise RuntimeError(f"Could not open persistent camera stream: {detail}")
 
 
 def _frame_batch_fps(frames: list[tuple[object, float]]) -> float:
@@ -290,6 +448,20 @@ def _frame_batch_fps(frames: list[tuple[object, float]]) -> float:
         return 0.0
     elapsed = max(1e-6, float(frames[-1][1]) - float(frames[0][1]))
     return float(len(frames) - 1) / elapsed
+
+
+def _select_latest_frames(
+    frames: list[tuple[object, float]],
+    latest_count: int | None,
+) -> list[tuple[object, float]]:
+    if not frames:
+        return []
+    if latest_count is None or int(latest_count) <= 0:
+        return frames
+    count = max(1, int(latest_count))
+    if count >= len(frames):
+        return frames
+    return frames[-count:]
 
 
 def _coerce_frame_pixel(value: object, frame_w: int, frame_h: int) -> tuple[float, float] | None:
@@ -327,12 +499,24 @@ def _resolve_alignment_target_pixel(
     frame_w: int,
     frame_h: int,
     roi_center: tuple[int, int],
+    calibration_stage: str | None = None,
+    calibration_z_mm: float | None = None,
 ) -> tuple[float, float] | None:
     configured = _coerce_frame_pixel(config.vision_pick_target_pixel, frame_w, frame_h)
     if configured is not None:
         return configured
+    if str(config.pick_tool_offset_source).strip().lower() == "command_bias":
+        return (float(roi_center[0]), float(roi_center[1]))
     if calibration_profile is not None:
-        profile_target = _coerce_frame_pixel(calibration_profile.target_pixel, frame_w, frame_h)
+        try:
+            active_profile = calibration_profile.model_for_stage(
+                calibration_stage,
+                z_mm=calibration_z_mm,
+                allow_fallback=True,
+            )
+        except Exception:
+            active_profile = calibration_profile
+        profile_target = _coerce_frame_pixel(active_profile.target_pixel, frame_w, frame_h)
         if profile_target is not None:
             return profile_target
     if str(config.pick_tool_offset_source).strip().lower() == "target_pixel":
@@ -362,6 +546,8 @@ def _current_calibration_stage(config: AppConfig, snapshot: Mapping[str, object]
         return ("pick", pick_z)
     if abs(float(robot_z) - confirm_z) <= tolerance:
         return ("confirm", confirm_z)
+    if float(robot_z) < search_z - tolerance:
+        return ("confirm", float(robot_z))
     return ("search", search_z)
 
 
@@ -448,18 +634,37 @@ def _process_frame_batch(
     last_frame = frames[-1][0]
     frame_id = int(frame_id_start)
     batch_fps = _frame_batch_fps(frames)
+    batch_capture_duration_ms = 0.0
+    latest_frame_preprocess_age_ms = 0.0
+    if frames:
+        batch_capture_duration_ms = max(0.0, (float(frames[-1][1]) - float(frames[0][1])) * 1000.0)
+        latest_frame_preprocess_age_ms = max(0.0, (time.perf_counter() - float(frames[-1][1])) * 1000.0)
     for frame, capture_ts in frames:
         frame_id += 1
         frame_h, frame_w = frame.shape[:2]
         roi_center = _resolve_roi_center(config, frame_w, frame_h)
         roi_radius = _resolve_roi_radius(config, frame_w, frame_h)
+        calibration_stage, calibration_z_mm = _current_calibration_stage(config, snapshot_for_stage)
         alignment_target_pixel = _resolve_alignment_target_pixel(
             config=config,
             calibration_profile=calibration_profile,
             frame_w=frame_w,
             frame_h=frame_h,
             roi_center=roi_center,
+            calibration_stage=calibration_stage,
+            calibration_z_mm=calibration_z_mm,
         )
+        action_center_tolerance_px = float(config.vision_servo_action_tolerance_px)
+        if str(calibration_stage or "").strip().lower() == "search":
+            action_center_tolerance_px = max(
+                action_center_tolerance_px,
+                float(getattr(config, "vision_servo_search_action_tolerance_px", action_center_tolerance_px)),
+            )
+        elif str(calibration_stage or "").strip().lower() in {"confirm", "pick"}:
+            action_center_tolerance_px = max(
+                action_center_tolerance_px,
+                float(getattr(config, "vision_servo_low_action_tolerance_px", action_center_tolerance_px)),
+            )
         infer_start = time.perf_counter()
         results = _predict_frame(model, frame, config=config, device=device, half=half)
         infer_ms = (time.perf_counter() - infer_start) * 1000.0
@@ -480,11 +685,11 @@ def _process_frame_batch(
             match_distance=120.0,
             lost_ttl=6,
             grasp_history_len=int(config.vision_grasp_history_frames),
+            center_stability_tolerance_px=float(config.vision_center_stability_tolerance_px),
             grasp_stability_tolerance_px=float(config.vision_grasp_stability_tolerance_px),
             grasp_history_reset_px=float(config.vision_grasp_history_reset_px),
             grasp_angle_stability_tolerance_deg=float(config.vision_grasp_angle_stability_tolerance_deg),
         )
-        calibration_stage, calibration_z_mm = _current_calibration_stage(config, snapshot_for_stage)
         annotate_slots_with_cylindrical(
             slots,
             calibration=None,
@@ -500,7 +705,7 @@ def _process_frame_batch(
             calibration_profile_required=bool(config.vision_calibration_profile_required),
             action_error_threshold_mm=float(config.vision_action_max_error_mm),
             center_tolerance_px=float(config.vision_servo_center_tolerance_px),
-            action_center_tolerance_px=float(config.vision_servo_action_tolerance_px),
+            action_center_tolerance_px=action_center_tolerance_px,
             alignment_target_pixel=alignment_target_pixel,
             alignment_target_required=str(config.pick_tool_offset_source).strip().lower() == "target_pixel",
             calibration_stage=calibration_stage,
@@ -532,10 +737,27 @@ def _process_frame_batch(
             calibration_stage=calibration_stage,
             calibration_z_mm=calibration_z_mm,
         )
+        packet["capture_batch_frames"] = int(len(frames))
+        packet["capture_batch_duration_ms"] = float(batch_capture_duration_ms)
+        packet["latest_frame_preprocess_age_ms"] = float(latest_frame_preprocess_age_ms)
         last_frame = frame
     if packet is None:
         raise RuntimeError("No packet was generated from captured frames.")
     return packet, last_frame, frame_id
+
+
+def _packet_frame_pose_age_ms(packet: Mapping[str, object]) -> float | None:
+    for key in ("latest_frame_preprocess_age_ms", "stream_age_ms", "queue_age_ms"):
+        value = packet.get(key)
+        if value is None:
+            continue
+        try:
+            age_ms = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(age_ms):
+            return max(0.0, age_ms)
+    return None
 
 
 def _resolve_packet(
@@ -544,6 +766,7 @@ def _resolve_packet(
     config: AppConfig,
     snapshot: Mapping[str, object] | None,
     snapshot_age_ms: float,
+    frame_pose_age_ms: float | None = None,
 ) -> dict[str, object]:
     if not isinstance(snapshot, Mapping):
         return dict(packet)
@@ -552,7 +775,7 @@ def _resolve_packet(
         config=config,
         snapshot=snapshot,
         snapshot_age_ms=float(snapshot_age_ms),
-        frame_pose_age_ms=None,
+        frame_pose_age_ms=frame_pose_age_ms,
     )
     return dict(result.packet)
 
@@ -629,10 +852,25 @@ def _decision_for_packet(
         "status": decision.status,
         "message": decision.message,
         "reason": decision.reason,
-        "command": decision.command,
+        "command": _rewrite_final_pick_command_for_debug(config=config, command=decision.command),
+        "raw_command": decision.command,
         "pending": decision.pending_dict,
         "trace": dict(decision.trace),
     }
+
+
+def _rewrite_final_pick_command_for_debug(*, config: AppConfig, command: str | None) -> str | None:
+    if command is None:
+        return None
+    if str(config.pick_tool_offset_source).strip().lower() != "command_bias":
+        return str(command)
+    return rewrite_pick_command_with_bias(
+        str(command),
+        theta_bias_deg=float(getattr(config, "pick_cyl_theta_bias_deg", 0.0)),
+        radius_bias_mm=float(getattr(config, "pick_cyl_radius_bias_mm", 0.0)),
+        tangent_bias_mm=float(getattr(config, "pick_cyl_tangent_bias_mm", 0.0)),
+        pick_z_mm=float(config.robot_pick_z),
+    )
 
 
 def _draw_text(cv2_module: object, image: object, text: str, origin: tuple[int, int], color: tuple[int, int, int]) -> None:
@@ -684,10 +922,19 @@ def _save_overlay(
             else:
                 label_y = 48 + 18 * slot_id
                 x1 = 10
-            grasp = slot.get("grasp_pixel") or slot.get("pixel_center")
+            pixel_center = slot.get("pixel_center")
+            if isinstance(pixel_center, (list, tuple)) and len(pixel_center) >= 2:
+                center_point = (
+                    int(round(float(pixel_center[0]))),
+                    int(round(float(pixel_center[1]))),
+                )
+                cv2_module.drawMarker(overlay, center_point, (255, 255, 0), cv2_module.MARKER_CROSS, 22, 2)
+                cv2_module.circle(overlay, center_point, 5, (255, 255, 0), 1)
+            grasp = slot.get("grasp_pixel")
             if isinstance(grasp, (list, tuple)) and len(grasp) >= 2:
                 point = (int(round(float(grasp[0]))), int(round(float(grasp[1]))))
                 cv2_module.drawMarker(overlay, point, color, cv2_module.MARKER_CROSS, 24, 2)
+                cv2_module.circle(overlay, point, 8, color, 1)
             dist = slot.get("center_distance_px")
             dist_text = "--" if dist is None else f"{float(dist):.1f}px"
             label = f"[{slot_id}] {'PICK' if actionable else reason or 'valid'} dist={dist_text}"
@@ -802,8 +1049,15 @@ def _slot_summary(packet: Mapping[str, object]) -> list[dict[str, object]]:
                 "grasp_pixel": slot.get("grasp_pixel"),
                 "confidence": slot.get("confidence"),
                 "grasp_quality": slot.get("grasp_quality"),
+                "center_stable_frames": slot.get("center_stable_frames"),
+                "center_stability_px": slot.get("center_stability_px"),
                 "grasp_stable_frames": slot.get("grasp_stable_frames"),
+                "grasp_stability_px": slot.get("grasp_stability_px"),
                 "center_distance_px": slot.get("center_distance_px"),
+                "center_tolerance_px": slot.get("center_tolerance_px"),
+                "action_tolerance_px": slot.get("action_tolerance_px"),
+                "estimated_xy_error_mm": slot.get("estimated_xy_error_mm"),
+                "servo_required": bool(slot.get("servo_required", False)),
                 "actionable": bool(slot.get("actionable", False)),
                 "invalid_reason": str(slot.get("invalid_reason", "")),
                 "camera_to_world_raw": slot.get("camera_to_world_raw"),
@@ -833,7 +1087,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--slot-id", type=int, default=None)
     parser.add_argument("--frames", type=int, default=max(3, int(defaults.vision_grasp_stable_frames)))
-    parser.add_argument("--drain-frames", type=int, default=8)
+    parser.add_argument("--drain-frames", type=int, default=30)
+    parser.add_argument(
+        "--process-latest-frames",
+        type=int,
+        default=0,
+        help="Process only the newest N captured frames; 0 keeps the full captured batch.",
+    )
+    parser.add_argument(
+        "--capture-backend",
+        choices=("auto", "http"),
+        default="http",
+        help="Camera capture backend. Use http for Hiwonder web_video_server MJPEG.",
+    )
+    parser.add_argument(
+        "--persistent-camera",
+        action="store_true",
+        help="Keep one camera stream open for the whole debug run instead of opening it once per step.",
+    )
     parser.add_argument("--timeout-sec", type=float, default=5.0)
     parser.add_argument("--ros-timeout-sec", type=float, default=2.0)
     parser.add_argument("--command-timeout-sec", type=float, default=12.0)
@@ -841,17 +1112,76 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--detector", choices=("auto", "yolo", "fallback"), default="auto")
     parser.add_argument("--device", default=str(defaults.vision_device))
     parser.add_argument("--half", action="store_true", default=bool(defaults.vision_half))
+    parser.add_argument(
+        "--center-tolerance-px",
+        type=float,
+        default=None,
+        help="Override the camera-centering tolerance for this debug run only.",
+    )
     parser.add_argument("--no-ros", action="store_true")
     parser.add_argument("--execute", action="store_true", help="Allow MOVE commands to be sent to the robot.")
+    parser.add_argument(
+        "--allow-execute-loop",
+        action="store_true",
+        help=(
+            "Allow --execute to run more than one MOVE/PICK decision step in one process. "
+            "Use with --persistent-camera for live visual-servo descent debugging."
+        ),
+    )
     parser.add_argument("--allow-pick", action="store_true", help="Allow PICK commands that descend and turn suction on.")
+    parser.add_argument(
+        "--pick-radius-bias-mm",
+        type=float,
+        default=defaults.vision_eye_in_hand_pick_radius_bias_mm,
+        help=(
+            "Apply this final cylindrical radius offset inside the vision-servo PICK decision when "
+            "--pick-tool-offset-source command_bias is used. Keep pick_cyl_radius_bias_mm at 0 to avoid double bias."
+        ),
+    )
+    parser.add_argument(
+        "--pick-tool-offset-source",
+        choices=("target_pixel", "command_bias"),
+        default=defaults.pick_tool_offset_source,
+        help="target_pixel uses profile servo.target_pixel; command_bias enables legacy explicit pick radius/tangent/theta offsets.",
+    )
+    parser.add_argument(
+        "--confirm-z-mm",
+        type=float,
+        default=None,
+        help="Override the visual confirmation height for this debug run only.",
+    )
     parser.add_argument("--max-steps", type=int, default=1)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    config = AppConfig(robot_host=str(args.host), vision_calibration_profile_path=Path(args.profile)).resolved()
-    stream_url = str(args.stream_url).strip() or config.resolve_vision_stream_url()
+    if bool(args.execute) and int(args.max_steps) > 1 and not bool(args.allow_execute_loop):
+        print(
+            "[guard] Refusing --execute with --max-steps > 1 unless --allow-execute-loop is set. "
+            "Run one MOVE step at a time, or use the GUI VisionRuntime persistent camera path.",
+            file=sys.stderr,
+        )
+        return 2
+    config_kwargs: dict[str, object] = {
+        "robot_host": str(args.host),
+        "vision_calibration_profile_path": Path(args.profile),
+        "vision_eye_in_hand_pick_radius_bias_mm": float(args.pick_radius_bias_mm),
+        "pick_tool_offset_source": str(args.pick_tool_offset_source),
+    }
+    if args.confirm_z_mm is not None:
+        config_kwargs["vision_pick_confirm_z_mm"] = float(args.confirm_z_mm)
+    if args.center_tolerance_px is not None:
+        config_kwargs["vision_servo_center_tolerance_px"] = float(args.center_tolerance_px)
+        config_kwargs["vision_servo_action_tolerance_px"] = float(args.center_tolerance_px)
+    config = AppConfig(**config_kwargs).resolved()
+    explicit_stream_url = str(args.stream_url).strip()
+    # Default capture follows the locked JetMax camera contract: one official
+    # MJPEG URL from AppConfig, no endpoint scan, no robot-side camera mutation.
+    # --stream-url is reserved for manual diagnosis and should not be used in
+    # normal grasp tuning.
+    stream_candidates = (explicit_stream_url,) if explicit_stream_url else config.resolve_vision_stream_candidates()
+    stream_url = stream_candidates[0]
     output_dir = Path(args.output_dir) if args.output_dir is not None else config.vision_debug_bundle_dir / f"vision_grasp_{_timestamp()}"
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -860,6 +1190,11 @@ def main(argv: list[str] | None = None) -> int:
     calibration_profile = None
     if Path(args.profile).exists():
         calibration_profile = VisionCalibrationProfile.load(Path(args.profile))
+        if args.center_tolerance_px is not None:
+            calibration_profile = _override_profile_center_tolerance(
+                calibration_profile,
+                float(args.center_tolerance_px),
+            )
     else:
         print(f"[vision] Calibration profile missing: {args.profile}", file=sys.stderr)
 
@@ -900,24 +1235,50 @@ def main(argv: list[str] | None = None) -> int:
         "detector": str(args.detector),
         "execute": bool(args.execute),
         "allow_pick": bool(args.allow_pick),
+        "pick_radius_bias_mm": float(args.pick_radius_bias_mm),
+        "confirm_z_mm": None if args.confirm_z_mm is None else float(args.confirm_z_mm),
+        "center_tolerance_px": None if args.center_tolerance_px is None else float(args.center_tolerance_px),
+        "frames_requested": int(args.frames),
+        "drain_frames": int(args.drain_frames),
+        "process_latest_frames": int(args.process_latest_frames),
+        "capture_backend": str(args.capture_backend),
+        "persistent_camera": bool(args.persistent_camera),
         "ros": ros_status,
         "steps": [],
     }
     frame_id = 0
     exit_code = 0
+    persistent_reader: _PersistentCaptureReader | None = None
+    if bool(args.persistent_camera):
+        persistent_reader = _PersistentCaptureReader(
+            cv2_module=cv2,
+            stream_urls=stream_candidates,
+            config=config,
+            capture_backend=str(args.capture_backend),
+        )
     try:
         for step_index in range(max(1, int(args.max_steps))):
             print(f"[step {step_index + 1}] capturing {int(args.frames)} frame(s) from camera...")
-            frames = _capture_frames(
-                cv2_module=cv2,
-                stream_url=stream_url,
-                config=config,
-                frame_count=int(args.frames),
-                drain_frames=int(args.drain_frames),
-                timeout_sec=float(args.timeout_sec),
-            )
+            if persistent_reader is not None:
+                stream_url, frames = persistent_reader.read(
+                    frame_count=int(args.frames),
+                    drain_frames=int(args.drain_frames),
+                    timeout_sec=float(args.timeout_sec),
+                )
+            else:
+                stream_url, frames = _capture_frames_from_candidates(
+                    cv2_module=cv2,
+                    stream_urls=stream_candidates,
+                    config=config,
+                    frame_count=int(args.frames),
+                    drain_frames=int(args.drain_frames),
+                    timeout_sec=float(args.timeout_sec),
+                    capture_backend=str(args.capture_backend),
+                )
+            process_frames = _select_latest_frames(frames, int(args.process_latest_frames))
+            report["stream_url"] = stream_url
             packet, last_frame, frame_id = _process_frame_batch(
-                frames=frames,
+                frames=process_frames,
                 model=model,
                 config=config,
                 calibration_profile=calibration_profile,
@@ -926,6 +1287,8 @@ def main(argv: list[str] | None = None) -> int:
                 device=device,
                 half=half,
             )
+            packet["camera_frames_captured"] = int(len(frames))
+            packet["camera_frames_processed"] = int(len(process_frames))
 
             resolve_snapshot = initial_snapshot
             snapshot_age_ms = 0.0
@@ -942,7 +1305,10 @@ def main(argv: list[str] | None = None) -> int:
                 config=config,
                 snapshot=resolve_snapshot,
                 snapshot_age_ms=snapshot_age_ms,
+                frame_pose_age_ms=_packet_frame_pose_age_ms(packet),
             )
+            resolved_packet["camera_frames_captured"] = int(len(frames))
+            resolved_packet["camera_frames_processed"] = int(len(process_frames))
             selected_slot = _select_slot(resolved_packet, args.slot_id)
             selected_slot_id = None if selected_slot is None else int(selected_slot.get("slot_id", selected_slot.get("slot", 0)))
             decision = _decision_for_packet(
@@ -956,6 +1322,7 @@ def main(argv: list[str] | None = None) -> int:
             raw_path = step_dir / "raw.jpg"
             overlay_path = step_dir / "overlay.jpg"
             packet_path = step_dir / "packet.json"
+            step_dir.mkdir(parents=True, exist_ok=True)
             cv2.imwrite(str(raw_path), last_frame)
             _save_overlay(
                 cv2_module=cv2,
@@ -971,6 +1338,8 @@ def main(argv: list[str] | None = None) -> int:
                 "raw_image": str(raw_path),
                 "overlay_image": str(overlay_path),
                 "packet": str(packet_path),
+                "camera_frames_captured": int(len(frames)),
+                "camera_frames_processed": int(len(process_frames)),
                 "slots": _slot_summary(resolved_packet),
                 "selected_slot_id": selected_slot_id,
                 "selected_slot": selected_slot,
@@ -978,6 +1347,35 @@ def main(argv: list[str] | None = None) -> int:
                 "snapshot": resolve_snapshot,
             }
             print(f"[step {step_index + 1}] valid_slots={len(step_report['slots'])} selected={selected_slot_id}")
+            if selected_slot is not None:
+                print(
+                    "[step {step}] center dist={dist} tol={tol} action_tol={action_tol} "
+                    "frames={processed}/{captured} age={age_ms}ms".format(
+                        step=step_index + 1,
+                        dist=(
+                            "--"
+                            if selected_slot.get("center_distance_px") is None
+                            else f"{float(selected_slot.get('center_distance_px')):.1f}px"
+                        ),
+                        tol=(
+                            "--"
+                            if selected_slot.get("center_tolerance_px") is None
+                            else f"{float(selected_slot.get('center_tolerance_px')):.1f}px"
+                        ),
+                        action_tol=(
+                            "--"
+                            if selected_slot.get("action_tolerance_px") is None
+                            else f"{float(selected_slot.get('action_tolerance_px')):.1f}px"
+                        ),
+                        processed=int(len(process_frames)),
+                        captured=int(len(frames)),
+                        age_ms=(
+                            "--"
+                            if resolved_packet.get("queue_age_ms") is None
+                            else f"{float(resolved_packet.get('queue_age_ms')):.0f}"
+                        ),
+                    )
+                )
             print(
                 "[step {step}] decision action={action} reason={reason} command={command}".format(
                     step=step_index + 1,
@@ -1010,6 +1408,10 @@ def main(argv: list[str] | None = None) -> int:
                         initial_snapshot = settled if settled is not None else resolve_snapshot
                     if str(decision.get("action")) == "PICK" or not bool(execution.get("executed", False)):
                         report["steps"].append(step_report)
+                        if str(decision.get("action")) == "WAIT_STABLE" and str(execution.get("reason")) == "command_unavailable":
+                            time.sleep(max(0.0, float(args.settle_sec)))
+                            initial_snapshot = resolve_snapshot
+                            continue
                         break
             else:
                 step_report["execution"] = {"executed": False, "reason": "dry_run"}
@@ -1029,6 +1431,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[output] partial report: {report_path}", file=sys.stderr)
         exit_code = 1
     finally:
+        if persistent_reader is not None:
+            persistent_reader.close()
         if client is not None:
             client.close()
     return exit_code

@@ -307,11 +307,168 @@
 
 ---
 
-## 6. 运行产物与 run 目录规则
+## 6. 外部频率选择与短预训练五分类
+
+这条主线的目标是：用很短的个人预训练，在公开数据集上得到可迁移、可比较的 SSVEP 五分类配置。这里的“五分类”按当前代码语义是 `idle + 4 个 SSVEP 命令频率`，不是 5 个命令频率。
+
+### 6.1 四个频率怎么判别最合适
+
+当前正式工作频率集是：
+
+```text
+9.8 / 12.0 / 14.8 / 15.8 Hz
+```
+
+频率选择不要只看离线 top-1 accuracy。当前更合理的排序口径是 async-first：
+
+1. 目标频率必须能在目标公开数据集中取到，且所有被试可比。
+2. 频率间距要足够，当前 sweep 通常使用 `min_spacing=1.0`、`min_freq=9.5` 过滤候选。
+3. 若不伤害指标，优先选择 240 Hz 下更接近 frame-lock 的组合。
+4. 先压低 `idle_fp_per_min` 和 `idle_selected_windows_per_min`，再看控制态召回。
+5. 控制态重点看 `control_recall_at_2.5s`、`control_recall_at_3s` 和总体 `control_recall`。
+6. 再看每个频率的最小召回，避免某一个频率明显拖后腿。
+7. 最后比较 macro-F1、accuracy 和 latency。
+
+对应脚本是 `tools/run_external_frequency_server_sweep.py`。它会把这些候选放进正式评估：
+
+- 当前频率集：`9.8,12,14.8,15.8`
+- Wang-like baseline：`8,10,12,15`
+- 若干 240 Hz exact/frame-lock 候选
+- Wang2016/Beta sweep 里排在前面的组合
+
+脚本里的 `_rank_key()` 明确把 idle 假阳性、idle selected windows、控制态召回、每频率召回下限、latency 和 240 Hz frame-lock 放进排序，因此看报告时应优先看这些字段，而不是只看分类准确率。
+
+### 6.2 当前短预训练分类器优化
+
+当前主脚本是 `tools/run_external_short_pretrain_benchmark.py`。最近优化重点有两个：
+
+1. 新增 coverage-aware 汇总，避免“只覆盖单个被试的 recipe”被误读成共享最优。
+2. 增加被试级 scored-trial cache，减少同一 split/idle 组合下重复打分，服务器全量 Wang2016 扫描会更可控。
+
+这条线现在已经从“只盯 FBCCA 网格”切到“文献导向短预训练方法族”：
+
+- baseline 仍保留 `fbcca_lda5,fbcca_ridge5`
+- 第一批新增并正式比较 `itcca5,ecca5,trca5,trca_r5,tdca5`
+- 门控统一走 score-to-idle gate，不给每个 decoder 单独写一套门控逻辑
+- `tdca5` 只在 raw window 足够长时参与候选，按有效 raw length 过滤
+
+当前这一轮的实际顺序是：
+
+- Beta sanity：`S1,S16,S35,S70`
+- Beta full：`S1-S70`
+- Wang confirm：只在 Beta 候选固定后再跑，不重新大搜 Wang
+
+sanity 配置：
+
+- dataset：`beta`
+- subjects：`S1,S16,S35,S70`
+- methods：`itcca5,ecca5,trca5,trca_r5,tdca5`
+- freqs：`9.8,12,14.8,15.8`
+- calibration blocks：`2`
+- idle multipliers：`2.0,3.0`
+- classifier windows：`1.0,1.25,1.5,1.75,2.0`
+- min enter windows：`1,2`
+- max splits per subject：`1`
+- compute backend：`cuda`
+
+full Beta 配置：
+
+- dataset：`beta`
+- subjects：`S1-S70`
+- methods：从 sanity 中选出的 top 2-3 个
+- windows：围绕 sanity 最佳窗口 ±`0.25s`
+- min enter windows：`1,2,3`
+- idle multipliers：`2.0,3.0,4.0`
+- max splits per subject：`2`
+- compute backend：`cuda`
+
+远端输出只允许写在 `/data1/zkx/brain/ssvep/` 下：
+
+```text
+/data1/zkx/brain/ssvep/reports/external_short_pretrain/<run_id>
+/data1/zkx/brain/ssvep/data/external_short_pretrain_datasets/<run_id>
+/data1/zkx/brain/ssvep/logs/<run_id>.log
+```
+
+数据集状态：
+
+- 本地 `wang2016` 不完整，目前只确认有 `S1.mat`。
+- 服务器 `/data1/zkx/brain/ssvep/data/external_sources/wang2016/raw` 完整，确认有 `S1.mat` 到 `S35.mat`，共 35 人，并有 `64-channels.loc`。
+- 下一步使用服务器完整 Wang2016，不把全量数据同步回本地。
+
+### 6.3 共享 recipe 判定规则
+
+`summary.json` 里现在同时保留两套结论：
+
+- `best_recipe`：兼容旧报告，可能来自 partial coverage。
+- `best_shared_recipe`：当前应该采用的主结论，必须覆盖预期被试集合。
+
+每个 recipe summary 会记录：
+
+- `expected_subject_count`
+- `coverage_subject_count`
+- `shared_eligible`
+
+正式结论只看满足下面条件的 recipe：
+
+```text
+shared_eligible == true
+coverage_subject_count == expected_subject_count
+```
+
+这样可以避免 `S16-only win3` 这类 partial coverage 结果误导决策。
+
+已确认的 Beta 小规模结果是：最新 `beta:S1,S16` run 中，旧 `best_recipe = fbcca_lda5 win3_me1` 实际只覆盖 `S16`，不能当共享最优。按 `S1+S16` 都覆盖的共享条件重算，当前最佳是：
+
+```text
+method: fbcca_ridge5
+window/min-enter: win2_me1
+calibration_blocks: [2,3]
+idle_multiplier: 2.0
+mean async 5-class acc: 0.9625
+mean async 5-class macro-F1: 0.8996
+mean idle FP/min: 1.0417
+mean control recall: 1.0
+mean latency: 2.0s
+```
+
+### 6.4 当前 Wang2016 运行状态与下一步
+
+当前远端 Wang2016 全量 run 记录为：
+
+```text
+external_short_pretrain_wang2016_shared_cache_20260507_180858
+```
+
+最近一次记录显示它仍在运行，已产出 `partial_summary.json`，但最终 `summary.json` 和 `best_shared_recipe` 还没有落盘。因此 README 里不要把任何 Wang2016 partial coverage 结果写成最终共享结论。
+
+第一轮完成后的验收条件：
+
+1. `summary.json` 存在。
+2. `best_shared_recipe.coverage_subject_count == 35`。
+3. `shared_recipe_summaries` 非空。
+4. Markdown 报告中的共享榜单必须显示 coverage，不能把 partial coverage recipe 当共享最佳。
+
+如果第一轮 best shared recipe 覆盖 35 人并达到预算：
+
+- `control_recall >= 0.80`
+- `idle_fp_per_min <= 1.0`
+- 优先最大化 `async_macro_f1_5class`
+- latency 优先 `<= 2.0s`
+
+下一步固定该 recipe 做稳健性验证：窗口在最优附近微调，例如 `1.25,1.5,1.75,2.0,2.25`，并把 `max_splits_per_subject` 提高到 `2` 或 `3`。
+
+如果第一轮未达预算，先处理 idle FP/min 超标问题，而不是盲目追求 4-class 准确率。优先把 `idle_multiplier` 扩到 `3.0`，并继续保留 `fbcca_ridge5`，因为它在当前 Beta 小规模验证中更稳。
+
+这些 benchmark artifact 目前仍是研究候选结果。进入在线部署前，还需要补 runtime loader/profile 路径、replay 路径和真实在线路径的一致性测试。
+
+---
+
+## 7. 运行产物与 run 目录规则
 
 当前仓库已经统一采用按任务、按日期、按 run id 的归档方式。
 
-### 6.1 标准路径
+### 7.1 标准路径
 
 ```text
 artifacts/
@@ -326,7 +483,7 @@ artifacts/
     profile_index.json
 ```
 
-### 6.2 一个标准 run 目录通常包含
+### 7.2 一个标准 run 目录通常包含
 
 - `report.json`
 - `report.md`
@@ -340,7 +497,7 @@ artifacts/
 
 并不是所有任务都会发布 profile，但标准路径会统一保留。
 
-### 6.3 `progress_snapshot.json` 的意义
+### 7.3 `progress_snapshot.json` 的意义
 
 这是训练评测 UI 和其他监控逻辑的主要状态来源，通常会记录：
 
@@ -354,13 +511,13 @@ artifacts/
 
 ---
 
-## 7. profile、profile_v2 与 deployed profile
+## 8. profile、profile_v2 与 deployed profile
 
-### 7.1 `profile.json`
+### 8.1 `profile.json`
 
 偏旧格式，但仍是许多运行时链路的直接输入。
 
-### 7.2 `profile_v2.json`
+### 8.2 `profile_v2.json`
 
 结构化程度更高，拆成：
 
@@ -371,7 +528,7 @@ artifacts/
 - metrics
 - metadata
 
-### 7.3 `artifacts/deployed_profiles/`
+### 8.3 `artifacts/deployed_profiles/`
 
 这里是在线系统真正默认读取的位置，通常包含：
 
@@ -381,7 +538,7 @@ artifacts/
 
 `profile_index.json` 记录最近一次发布来源。
 
-### 7.4 发布原则
+### 8.4 发布原则
 
 不是每次 run 结束都应该发布 profile。
 
@@ -399,7 +556,7 @@ artifacts/
 
 ---
 
-## 8. 外部 replay 主线需要特别知道的事
+## 9. 外部 replay 主线需要特别知道的事
 
 当前 external replay 是一条**独立研究主线**，不是本地 4 目标在线系统的替代品。
 
@@ -437,7 +594,7 @@ artifacts/
 
 ---
 
-## 9. 常见工作流
+## 10. 常见工作流
 
 ### 工作流 1：采一轮新数据
 
@@ -481,7 +638,7 @@ artifacts/
 
 ---
 
-## 10. 环境与依赖建议
+## 11. 环境与依赖建议
 
 本目录至少依赖下列类型组件：
 
@@ -503,7 +660,7 @@ artifacts/
 
 ---
 
-## 11. 测试建议
+## 12. 测试建议
 
 最基本的回归入口：
 
@@ -519,17 +676,19 @@ pytest <repo>\02_SSVEP\tests -q
 
 ---
 
-## 12. 当前约束与注意事项
+## 13. 当前约束与注意事项
 
 1. 新代码不要再 import `_archive/`。
 2. 外部 replay 结果默认只用于研究，不直接回流真实在线系统。
 3. `all8` 仍是当前主线通道模式，很多 local-opt 任务会显式拒绝其它通道模式。
 4. 很多优化链路已经从“只看分类准确率”改成“async-first 排名”，阅读报告时不要再只看单个准确率。
 5. UI 是方便入口，不是真理来源；最终请以 run 目录内的 `report.json`、`selection_snapshot.json` 和 profile 文件为准。
+6. 服务器写操作必须限制在 `/data1/zkx/brain/ssvep/`；其它服务器路径只能只读检查。
+7. 外部短预训练五分类结论以 `best_shared_recipe` 为准，不能把 partial coverage 的 `best_recipe` 当共享最优。
 
 ---
 
-## 13. 阅读顺序建议
+## 14. 阅读顺序建议
 
 如果你第一次接手这套代码，建议按下面顺序看：
 
@@ -541,7 +700,7 @@ pytest <repo>\02_SSVEP\tests -q
 
 ---
 
-## 14. 快速索引
+## 15. 快速索引
 
 - 顶层启动：`START_SSVEP.py`
 - UI 说明：[apps/README.md](./apps/README.md)
@@ -549,3 +708,5 @@ pytest <repo>\02_SSVEP\tests -q
 - CLI / 工具说明：[tools/README.md](./tools/README.md)
 - 核心模块说明：[ssvep_core/README.md](./ssvep_core/README.md)
 - 文档导航：[docs/README.md](./docs/README.md)
+- 外部频率 sweep：`tools/run_external_frequency_server_sweep.py`
+- 外部短预训练 benchmark：`tools/run_external_short_pretrain_benchmark.py`

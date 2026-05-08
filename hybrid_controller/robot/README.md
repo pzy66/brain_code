@@ -12,6 +12,29 @@
 - 现在没有业务代码依赖 `9092`。
 - `8888` 不影响 ROS 主链启动；只有你显式要求时才会检查 TCP 端口。
 
+## 摄像头链路契约
+
+JetMax 摄像头必须保持 Hiwonder 官方链路：
+
+```text
+usb_cam.service -> usb_cam_node -> /usb_cam/image_rect_color -> web_video_server:8080 -> PC
+```
+
+桌面端只读取：
+
+```text
+http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80
+```
+
+维护规则：
+
+- 默认启动流程不得改写 `/home/hiwonder/ros/autostart/usb_cam.launch`。
+- 默认启动流程不得停止/重启 `usb_cam.service`。
+- 默认启动流程不得 `pkill web_video_server`，也不得由 hybrid runtime 接管 `web_video_server`。
+- 电脑端不得探测非官方摄像头路径，也不得尝试打开 JetMax 的 `/dev/video*`。
+- 只有明确诊断摄像头发送故障时，才使用 `--repair-camera-sender` 或 `--camera-only`。
+- 只有明确诊断 UVC 驱动故障时，才使用 `--repair-camera-driver`。
+
 ## 目录说明
 
 - `run_hybrid_controller_ros_runtime.sh`
@@ -52,7 +75,7 @@ bash run_hybrid_controller_ros_runtime.sh
 
 1. 拷贝并编译 `hybrid_controller_ros` 到 `~/catkin_ws`
 2. 启动 `rosbridge`（默认 `9091`）
-3. 启动 `web_video_server`（默认 `8080`）
+3. 复用 JetMax 官方 `usb_cam.service` 的 `web_video_server`（默认 `8080`）
 4. 启动 `hybrid_controller_runtime_node.py`
 
 ## 桌面端一键远程启动（推荐）
@@ -60,19 +83,24 @@ bash run_hybrid_controller_ros_runtime.sh
 在 Windows（repo `.venv` 或你自己的 `brain_code` 环境）执行：
 
 ```powershell
-.\.venv\Scripts\python.exe .\hybrid_controller\robot\tools\jetmax_start_ros_runtime.py --host 192.168.149.1 --user hiwonder --password hiwonder --remote-root /home/hiwonder/brain_code
+.\.venv\Scripts\python.exe .\hybrid_controller\robot\tools\jetmax_start_ros_runtime.py --host 192.168.149.1 --user hiwonder --password $env:JETMAX_PASSWORD --remote-root /home/hiwonder/brain_code
 ```
 
 这个工具会：
 
 1. 关闭 JetMax 上系统自启的旧 `rosbridge.service`（避免消息 md5 冲突）
-2. 杀掉残留 `rosbridge/web_video/runtime` 进程
-3. 启动当前仓库版本的 ROS runtime
-4. 等待端口就绪（默认仅检查 `9091` + `8080`）
+2. 保持 JetMax 官方 `usb_cam.service` 摄像头发送链路，不默认重写或重启摄像头
+3. 杀掉残留 `rosbridge/runtime` 进程
+4. 启动当前仓库版本的 ROS runtime
+5. 只等待 `9091` rosbridge 就绪；默认不连接 `8080`，不订阅 `/usb_cam/image_rect_color`
 
 补充：
 
-- `run_hybrid_controller_ros_runtime.sh` 现在默认会强制重启 `rosbridge_websocket` 和 `web_video_server`，避免“旧进程占用端口但消息定义不一致”导致的连接异常。
+- `jetmax_start_ros_runtime.py` 默认不验证摄像头发送，不拉取任何视频帧。需要单独验证官方流时显式加 `--check-camera-stream`。
+- 只有显式加 `--repair-camera-sender --allow-camera-sender-mutation` 或 `--camera-only --allow-camera-sender-mutation` 时，工具才会改写 `/home/hiwonder/ros/autostart/usb_cam.launch` 并重启 `usb_cam.service`。
+- 只有显式加 `--repair-camera-driver --allow-camera-sender-mutation` 时，工具才会停止 `usb_cam.service`、重载 `uvcvideo`，并恢复官方服务。
+- `run_hybrid_controller_ros_runtime.sh` 默认不再接管 `web_video_server`，避免和官方 `usb_cam.service` 抢占摄像头。
+- `--manage-web-video` / `--restart-web-video` 是废弃参数，当前会拒绝执行；上位机和 hybrid runtime 不接管视频发送。
 
 ## 常用健康检查
 
@@ -83,7 +111,7 @@ bash run_hybrid_controller_ros_runtime.sh
 如果要额外验证 TCP 兼容端口：
 
 ```powershell
-.\.venv\Scripts\python.exe .\hybrid_controller\robot\tools\jetmax_start_ros_runtime.py --host 192.168.149.1 --user hiwonder --password hiwonder --require-tcp-check
+.\.venv\Scripts\python.exe .\hybrid_controller\robot\tools\jetmax_start_ros_runtime.py --host 192.168.149.1 --user hiwonder --password $env:JETMAX_PASSWORD --require-tcp-check
 ```
 
 ## legacy（保留但非主线）

@@ -233,6 +233,41 @@ def test_idle_false_positive_rate_is_event_based() -> None:
     assert float(async_metrics["idle_selected_windows_per_min"]) > float(async_metrics["idle_fp_per_min"])
 
 
+def test_five_class_idle_without_gate_selection_ignores_raw_frequency_fallback() -> None:
+    decoder = _SequenceDecoder([np.asarray([1.0, 0.9, 0.8, 0.7])])
+    profile = _test_profile(min_enter_windows=1, min_exit_windows=1)
+    segment = np.zeros((80, 1), dtype=np.float64)
+    trials = [(TrialSpec(label="idle", expected_freq=None, trial_id=1, block_index=0), segment)]
+    bundle = evaluate_decoder_on_trials_v2(
+        decoder,
+        profile,
+        trials,
+        metric_scope="5class",
+        paper_decision_time_mode="fixed-window",
+        async_decision_time_mode="first-correct",
+    )
+    assert bool(bundle["trial_events"][0]["had_selected"]) is False
+    fixed_5 = dict(bundle["paper_lens_metrics_5class"])
+    async_5 = dict(bundle["async_lens_metrics_5class"])
+    assert fixed_5["labels"] == ["idle", "8", "10", "12", "15"]
+    assert fixed_5["confusion_matrix"][0] == [1, 0, 0, 0, 0]
+    assert async_5["confusion_matrix"][0] == [1, 0, 0, 0, 0]
+    assert abs(float(fixed_5["acc"]) - 1.0) < 1e-9
+    assert abs(float(async_5["acc"]) - 1.0) < 1e-9
+
+
+def test_five_class_idle_with_gate_selection_counts_selected_frequency() -> None:
+    decoder = _Constant8Decoder()
+    profile = _test_profile(min_enter_windows=1, min_exit_windows=1)
+    segment = np.zeros((80, 1), dtype=np.float64)
+    trials = [(TrialSpec(label="idle", expected_freq=None, trial_id=1, block_index=0), segment)]
+    bundle = evaluate_decoder_on_trials_v2(decoder, profile, trials, metric_scope="5class")
+    assert bool(bundle["trial_events"][0]["had_selected"]) is True
+    metrics_5 = dict(bundle["metrics_5class"])
+    assert metrics_5["confusion_matrix"][0] == [0, 1, 0, 0, 0]
+    assert abs(float(metrics_5["acc"]) - 0.0) < 1e-9
+
+
 def test_dual_lens_outputs_have_independent_decision_modes() -> None:
     decoder = _Constant8Decoder()
     profile = _test_profile(min_enter_windows=1, min_exit_windows=1)

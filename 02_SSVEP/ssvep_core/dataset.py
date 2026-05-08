@@ -373,6 +373,7 @@ def _protocol_signature_payload(
         "stim_michelson_contrast": round(_safe_float(cfg.get("stim_michelson_contrast", 0.0), 0.0), 6),
         "ramp_sec": round(_safe_float(cfg.get("ramp_sec", 0.0), 0.0), 6),
         "frame_interval_stats": _signature_value(cfg.get("frame_interval_stats", {})),
+        "frame_lock_frequency_report": _signature_value(cfg.get("frame_lock_frequency_report", {})),
         "comfort_rating": _signature_value(cfg.get("comfort_rating", None)),
         "screen_brightness_note": str(cfg.get("screen_brightness_note", "")),
         "active_start_cue_sec": round(_safe_float(cfg.get("active_start_cue_sec", 0.0), 0.0), 6),

@@ -31,4 +31,4 @@ def test_replay_vision_debug_bundle_recreates_pick_decision() -> None:
     )
 
     assert result["decision"]["action"] == "PICK"
-    assert result["decision"]["command"] == "PICK_WORLD 10.00 -120.00"
+    assert result["decision"]["command"] == "PICK_CYL 0.00 160.00"

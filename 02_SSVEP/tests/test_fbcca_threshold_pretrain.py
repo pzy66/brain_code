@@ -138,11 +138,18 @@ def test_threshold_pretrain_saves_default_fbcca_profile(monkeypatch) -> None:
         assert payload["run_valid_for_deployment"] is True
         assert payload["task"] == DEFAULT_FBCCA_THRESHOLD_TASK
         assert payload["decision_search_target"] == "fast-control-pretrain-v1"
-        assert int(payload["profile_validation_status"]["candidate_count"]) == 16
+        assert int(payload["profile_validation_status"]["candidate_count"]) == 32
         assert payload["profile_validation_status"]["release_failures"] == []
-        assert len(payload["candidate_grid"]) == 16
+        assert len(payload["candidate_grid"]) == 32
         chosen = dict(payload["chosen_candidate"])
-        assert set(chosen) >= {"win_sec", "gate_policy", "min_enter_windows", "min_exit_windows", "async_metrics"}
+        assert set(chosen) >= {
+            "win_sec",
+            "gate_policy",
+            "min_enter_windows",
+            "min_exit_windows",
+            "control_state_mode",
+            "async_metrics",
+        }
         assert float(chosen["async_metrics"]["idle_fp_per_min"]) == 0.0
         assert "control_recall_at_2.5s" in dict(payload["chosen_async_metrics"])
         assert "per_frequency_recall" in dict(payload["chosen_async_metrics"])
@@ -208,6 +215,49 @@ def test_threshold_pretrain_deduplicates_window_candidates_after_segment_clamp(m
         payload = run_fbcca_threshold_pretrain(config, log_fn=lambda _msg: None)
         win_values = sorted({float(item["win_sec"]) for item in payload["candidate_grid"]})
         assert win_values == [1.0]
-        assert int(payload["profile_validation_status"]["candidate_count"]) == 2
+        assert int(payload["profile_validation_status"]["candidate_count"]) == 4
+    finally:
+        shutil.rmtree(tmp_root, ignore_errors=True)
+
+
+def test_threshold_pretrain_can_emit_frequency_specific_threshold_profile(monkeypatch) -> None:
+    import ssvep_core.fbcca_threshold_pretrain as module
+
+    tmp_root = PROJECT_DIR / ".tmp_test_artifacts" / f"fbcca_threshold_freq_specific_{uuid.uuid4().hex}"
+    tmp_root.mkdir(parents=True, exist_ok=True)
+    try:
+        dataset = _fake_dataset(tmp_root)
+        monkeypatch.setattr(module, "load_collection_dataset", lambda _path: dataset)
+        monkeypatch.setattr(
+            module,
+            "create_decoder",
+            lambda *args, **kwargs: _FakeFBCCADecoder(
+                win_sec=float(kwargs.get("win_sec", 1.0)),
+                step_sec=float(kwargs.get("step_sec", 0.25)),
+            ),
+        )
+
+        config = FBCCAThresholdPretrainConfig(
+            dataset_manifest_session1=tmp_root / "session_manifest.json",
+            output_profile_path=tmp_root / "profile.json",
+            report_path=tmp_root / "report.json",
+            report_root_dir=tmp_root,
+            organize_report_dir=False,
+            win_sec=1.0,
+            win_sec_candidates=(1.0,),
+            gate_policy_candidates=("balanced",),
+            min_enter_windows_candidates=(1,),
+            min_exit_windows_candidates=(1,),
+            control_state_mode_candidates=("frequency-specific-threshold",),
+            publish_realtime=False,
+        )
+        payload = run_fbcca_threshold_pretrain(config, log_fn=lambda _msg: None)
+
+        profile = load_profile(Path(payload["profile_path"]), require_exists=True)
+        profile_v2_payload = json.loads(Path(payload["profile_v2_path"]).read_text(encoding="utf-8"))
+        assert profile.control_state_mode == "frequency-specific-threshold"
+        assert profile.frequency_specific_thresholds
+        assert profile_v2_payload["gate"]["type"] == "frequency_specific_threshold"
+        assert dict(payload["chosen_candidate"])["control_state_mode"] == "frequency-specific-threshold"
     finally:
         shutil.rmtree(tmp_root, ignore_errors=True)

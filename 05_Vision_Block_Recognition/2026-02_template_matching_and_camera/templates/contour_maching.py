@@ -4,7 +4,7 @@ import numpy as np
 
 def run_geometric_matching():
     # --- 配置区域 (需要根据实际情况微调) ---
-    video_url = "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color"
+    video_url = "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80"
 
     # 1. Canny 阈值：决定了什么样的线条会被提取出来
     # 如果阴影较重，把 lower 调低 (比如 30)
