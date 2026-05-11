@@ -686,6 +686,22 @@ pytest <repo>\02_SSVEP\tests -q
 6. 服务器写操作必须限制在 `/data1/zkx/brain/ssvep/`；其它服务器路径只能只读检查。
 7. 外部短预训练五分类结论以 `best_shared_recipe` 为准，不能把 partial coverage 的 `best_recipe` 当共享最优。
 
+### 13.1 外部短预训练当前优化主线
+
+当前 Beta 全量与弱被试诊断显示，`fbcca_ridge5` 的固定窗 4-class 分频能力仍较强，但异步五分类的主要瓶颈是 command vs no-control / hard non-command 拒识，而不是继续盲目提高离线四分类准确率。
+
+`tools/run_external_short_pretrain_benchmark.py` 已支持三类 gate：
+
+- `balanced_recall_guard`：现有阈值选择策略，在 `idle_fp_per_min <= 1.0` 内优先召回。
+- `adaptive_evidence_gate`：新增的 calibration-only 轻量 no-control 判别器，用 `top score / margin / ratio / full-bank rank / nearest non-command margin / entropy / temporal stability` 训练二分类 evidence gate，并在伪在线阶段累积 evidence 后再进入 command。
+- `subject_adaptive_threshold`：低风险 fallback，不训练新模型，只按每个被试 calibration control/idle score 分布设阈值。
+
+使用原则：
+
+- 当前两个弱被试诊断 run 完成前，不启动新的 Beta 70 人 full。
+- 如果 smoothing/template 诊断未达到 `control_recall >= 0.80` 且 `idle_fp_per_min <= 1.0`，下一轮优先跑 `fbcca_ridge5 + full_reference_bank + adaptive_evidence_gate` 的弱被试 smoke。
+- 如果只在 clean-idle proxy 上变好、hard non-command 上仍差，结论只能写成“真实 no-target 场景有潜力”，不能宣称固定四频可部署。
+
 ---
 
 ## 14. 阅读顺序建议
@@ -710,3 +726,19 @@ pytest <repo>\02_SSVEP\tests -q
 - 文档导航：[docs/README.md](./docs/README.md)
 - 外部频率 sweep：`tools/run_external_frequency_server_sweep.py`
 - 外部短预训练 benchmark：`tools/run_external_short_pretrain_benchmark.py`
+
+### 15.1 Current external short-pretrain decision note
+
+Current BETA evidence shows the deployability bottleneck is async hard no-control
+rejection, not fixed-window 4-command separation.
+
+- Full BETA `fbcca_ridge5` kept high fixed 4-class accuracy but failed async recall.
+- Weak-subject smoothing best: recall `0.46875`, idle FP/min `0.9028`.
+- Weak-subject adaptive evidence best: recall `0.5625`, idle FP/min `2.6389`.
+- Therefore no BETA 70 full run should be launched from adaptive evidence.
+
+The next gate under test is `lrt_multiwindow_reject_gate`: it keeps the
+`fbcca_ridge5 + full_reference_bank` scorer and replaces single-window threshold
+tuning with calibration-only pooled command/no-control LRT evidence plus
+multi-window accumulation. Clean-idle proxy remains diagnostic only; hard
+non-command idle is the acceptance condition for external BETA/Wang results.

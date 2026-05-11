@@ -25,6 +25,7 @@ Dataset source records and local documentation for the external SSVEP datasets c
 
 - `BETA/`: Figshare record metadata plus local description files.
 - `Wang2016/`: Zenodo record metadata plus local readme/channel-location files.
+- `YSU_an/`: source note for the Zhao et al. 2024 asynchronous SSVEP-BCI dataset.
 
 ### 03_metadata
 
@@ -53,6 +54,7 @@ Evidence notes linking each reference to current code/docs.
 | Pseudo-online evaluation | Carrara and Papadopoulo, pseudo-online framework for BCI evaluation | PDF + PubMed/Crossref metadata |
 | External dataset | BETA SSVEP database | Figshare metadata + description files |
 | External dataset | Wang2016 SSVEP benchmark | Zenodo metadata + readme/channel docs |
+| External dataset | Zhao et al. 2024 YSU-an asynchronous SSVEP-BCI dataset | Figshare/article source note |
 
 ## Maintenance Rule
 

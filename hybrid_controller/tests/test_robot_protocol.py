@@ -127,6 +127,7 @@ def test_jetmax_camera_repair_defaults_keep_official_sender_settings() -> None:
     args = jetmax_start_ros_runtime.build_parser().parse_args([])
 
     assert args.skip_camera_check is True
+    assert args.ssh_ready_timeout_sec == 45.0
     assert args.camera_stream_type == "mjpeg"
     assert args.camera_framerate == 20
     assert args.camera_io_method == "mmap"
@@ -228,11 +229,19 @@ def test_jetmax_runtime_start_uses_safe_control_restart_and_ready_checks() -> No
     runtime_source = runtime_node.read_text(encoding="utf-8")
 
     assert 'rosnode kill /hybrid_controller_runtime_node' in source
+    assert "connect_ssh_when_ready" in source
+    assert "--ssh-ready-timeout-sec" in source
     assert '--force-catkin-rebuild' in source
     assert 'HYBRID_FORCE_CATKIN_REBUILD={1 if bool(args.force_catkin_rebuild) else 0}' in source
     assert 'timeout 8 rostopic echo -n 1 --noarr /hybrid_controller/state' in source
     assert '"/hybrid_controller/state did not publish a complete runtime state sample."' in source
     assert 'rospy.init_node("hybrid_controller_runtime_node", anonymous=False' in runtime_source
+    assert "self._teleop_last_cmd_seq = 0" in runtime_source
+    assert "sequence_is_old" in runtime_source
+    assert "client_ts <= 0.0" in runtime_source
+    assert "abs(local_wall_now - client_ts) <= 60.0" in runtime_source
+    assert 'busy_action != "teleop"' in runtime_source
+    assert 'state == "MOVING_XY" and busy_action != "teleop"' in runtime_source
     assert 'HYBRID_FORCE_CATKIN_REBUILD="${HYBRID_FORCE_CATKIN_REBUILD:-0}"' in run_source
     assert "catkin_make --force-cmake" not in run_source
     assert "rsync -a --delete" in run_source
@@ -251,6 +260,8 @@ def test_build_config_from_args_applies_modes() -> None:
         decision_source="ssvep",
         robot_host="192.168.1.9",
         robot_port=9999,
+        robot_connect_on_start=False,
+        ros_probe_before_connect=False,
         vision_stream_url="camera://demo",
         vision_auto_start=False,
         smoke_test_ms=0,
@@ -262,6 +273,8 @@ def test_build_config_from_args_applies_modes() -> None:
     assert config.decision_source == "ssvep"
     assert config.robot_host == "192.168.1.9"
     assert config.robot_port == 9999
+    assert config.robot_connect_on_start is False
+    assert config.ros_probe_before_connect is False
     assert config.vision_stream_url == "camera://demo"
     assert config.vision_auto_start is False
     assert config.timing_profile == "fast"
@@ -286,6 +299,8 @@ def test_build_config_from_args_supports_mi_placeholder_flags() -> None:
         mi_command_cooldown_ms=140,
         robot_host="192.168.1.9",
         robot_port=9999,
+        robot_connect_on_start=False,
+        ros_probe_before_connect=False,
         vision_stream_url="",
         vision_auto_start=False,
         smoke_test_ms=0,

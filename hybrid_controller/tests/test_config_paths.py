@@ -14,6 +14,10 @@ def test_default_config_uses_canonical_dataset_files() -> None:
     assert "datasets\\profiles\\hybrid_controller\\robot_pick_tuning" in str(config.pick_tuning_profile_path)
     assert config.pick_tuning_profile_path.exists()
 
+    assert config.vision_grasp_profile_path.name == "current_grasp_profile.json"
+    assert "datasets\\profiles\\hybrid_controller\\vision_grasp" in str(config.vision_grasp_profile_path)
+    assert config.vision_grasp_profile_path.exists()
+
     assert config.ssvep_profile_dir.name == "ssvep_profiles"
     assert "datasets\\profiles\\hybrid_controller\\ssvep_profiles" in str(config.ssvep_profile_dir)
     assert config.ssvep_profile_dir.exists()

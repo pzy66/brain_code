@@ -14,6 +14,11 @@ The node is designed to run on JetMax after the package is copied into a catkin 
 ## Communication semantics (current)
 
 - Teleop command topic now carries `cmd_seq` and `client_ts` for stale/out-of-order rejection.
+- `CylindricalTeleop` carries three velocity axes:
+  `theta_rate_deg_s`, `radius_rate_mm_s`, and `z_rate_mm_s`.
+- `use_auto_z=true` preserves legacy keyboard teleop behavior where z follows the radius auto-z curve.
+  Continuous visual servo must publish `use_auto_z=false` so centering motion does not change height unless
+  `z_rate_mm_s` is explicitly nonzero.
 - State topic now carries `state_seq`, `robot_ts`, and `last_ack`.
 - Service calls (`move_cyl`, `move_cyl_auto`, `pick_world`, `pick_cyl`, `place`) are
   accepted quickly and queued/executed asynchronously; action completion is confirmed by
@@ -41,3 +46,6 @@ The preferred JetMax startup script is:
 - `brain_code/hybrid_controller/robot/run_hybrid_controller_ros_runtime.sh`
 
 TCP remains available as a legacy fallback, but GUI teleop should use this ROS path by default.
+
+After changing `CylindricalTeleop.msg`, rebuild and redeploy this catkin package on JetMax before running
+desktop continuous-servo code. PC and robot message definitions must stay in lockstep.

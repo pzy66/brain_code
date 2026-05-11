@@ -25,6 +25,8 @@ This note links the curated reference set to the current SSVEP codebase.
 
 - `brain_code/02_SSVEP/ssvep_core/external_beta_dataset.py:16-24` defines the BETA Figshare DOI/API, required channels, frequencies, sample rate, and local source root.
 - `brain_code/02_SSVEP/ssvep_core/external_wang2016_dataset.py:16-59` defines the Wang2016 Zenodo record, required channels, target frequencies, sample rate, and selected 4-command frequency mapping.
+- `brain_code/02_SSVEP/ssvep_core/external_ysuan_dataset.py` integrates the Zhao et al. 2024 YSU-an asynchronous SSVEP dataset adapter. It loads CS plus NS1/NS2/NS3 variables, applies baseline removal / 50 Hz notch / 250 Hz resampling, maps selected CS frequencies to command labels, and keeps NS subtypes available for no-control false-positive reporting.
+- `brain_code/02_SSVEP/tools/run_external_short_pretrain_benchmark.py` supports `ysu_an` as an external dataset, `ysu_an_all8` as a candidate frequency source, YSU-an calibration/holdout split semantics, and NS subtype metrics (`ns1_fp_per_min`, `ns2_fp_per_min`, `ns3_fp_per_min`, `ns_all_fp_per_min`).
 
 ## Implementation evidence from explorer pass
 

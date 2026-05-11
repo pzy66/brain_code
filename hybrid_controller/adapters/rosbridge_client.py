@@ -108,27 +108,44 @@ class RosbridgeClient:
         *,
         theta_rate_deg_s: float,
         radius_rate_mm_s: float,
+        z_rate_mm_s: float = 0.0,
+        use_auto_z: bool = True,
         enabled: bool,
         cmd_seq: int = 0,
         client_ts: float = 0.0,
     ) -> None:
         if self._teleop_topic is None:
             raise RuntimeError("ROS teleop topic is not ready.")
-        message = roslibpy.Message(
-            {
-                "theta_rate_deg_s": float(theta_rate_deg_s),
-                "radius_rate_mm_s": float(radius_rate_mm_s),
-                "enabled": bool(enabled),
-                "cmd_seq": int(max(0, int(cmd_seq))),
-                "client_ts": float(client_ts),
-            }
-        )
+        payload = {
+            "theta_rate_deg_s": float(theta_rate_deg_s),
+            "radius_rate_mm_s": float(radius_rate_mm_s),
+            "z_rate_mm_s": float(z_rate_mm_s),
+            "use_auto_z": bool(use_auto_z),
+            "enabled": bool(enabled),
+            "cmd_seq": int(max(0, int(cmd_seq))),
+            "client_ts": float(client_ts),
+        }
+        message = roslibpy.Message(payload) if roslibpy is not None else payload
         self._teleop_topic.publish(message)
 
-    def stop_teleop(self) -> None:
+    def stop_teleop(
+        self,
+        *,
+        use_auto_z: bool = True,
+        cmd_seq: int = 0,
+        client_ts: float | None = None,
+    ) -> None:
         if self._teleop_topic is None:
             return
-        self.publish_teleop(theta_rate_deg_s=0.0, radius_rate_mm_s=0.0, enabled=False)
+        self.publish_teleop(
+            theta_rate_deg_s=0.0,
+            radius_rate_mm_s=0.0,
+            z_rate_mm_s=0.0,
+            use_auto_z=bool(use_auto_z),
+            enabled=False,
+            cmd_seq=int(max(0, int(cmd_seq))),
+            client_ts=time.time() if client_ts is None else float(client_ts),
+        )
 
     def send_move_cyl(self, theta_deg: float, radius_mm: float, z_mm: float, *, callback: Optional[Callable[[RosServiceResult], None]] = None) -> None:
         self._call_service("move_cyl", {"theta_deg": float(theta_deg), "radius_mm": float(radius_mm), "z_mm": float(z_mm)}, callback=callback)

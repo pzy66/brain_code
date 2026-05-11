@@ -45,6 +45,10 @@ def _default_pick_tuning_profile_path() -> Path:
     return DATASET_ROOT / "robot_pick_tuning" / "current_pick_tuning.json"
 
 
+def _default_vision_grasp_profile_path() -> Path:
+    return DATASET_ROOT / "vision_grasp" / "current_grasp_profile.json"
+
+
 def _default_ssvep_profile_dir() -> Path:
     return HYBRID_SSVEP_PROFILE_DIR
 
@@ -110,17 +114,20 @@ class AppConfig:
     robot_host: str = "192.168.149.1"
     robot_port: int = 8888
     robot_transport: str = "tcp"
+    robot_connect_on_start: bool = False
     rosbridge_port: int = 9091
     rosbridge_timeout_sec: float = 3.0
     ros_reconnect_base_delay_sec: float = 0.6
     ros_reconnect_max_delay_sec: float = 8.0
     ros_reconnect_jitter_ratio: float = 0.2
+    ros_probe_before_connect: bool = False
     ros_runtime_probe_timeout_sec: float = 0.6
     ros_runtime_state_grace_sec: float = 3.0
-    robot_auto_start_on_ros_unavailable: bool = True
-    robot_auto_restart_on_state_stale: bool = True
+    robot_auto_start_on_ros_unavailable: bool = False
+    robot_auto_restart_on_state_stale: bool = False
     robot_auto_start_cooldown_sec: float = 20.0
-    robot_bootstrap_retry_enabled: bool = True
+    robot_auto_start_max_attempts: int = 1
+    robot_bootstrap_retry_enabled: bool = False
     robot_bootstrap_probe_interval_sec: float = 3.0
     robot_bootstrap_probe_timeout_sec: float = 0.35
     robot_timeout_sec: float = 0.5
@@ -230,20 +237,35 @@ class AppConfig:
     vision_grasp_history_reset_px: float = 22.0
     vision_grasp_stability_wait_frames: int = 10
     vision_frame_fallback_enabled: bool = True
-    vision_servo_center_tolerance_px: float = 6.0
-    vision_servo_action_tolerance_px: float = 6.0
+    vision_servo_center_tolerance_px: float = 20.0
+    vision_servo_action_tolerance_px: float = 20.0
     vision_servo_low_action_tolerance_px: float = 8.0
     vision_servo_search_action_tolerance_px: float = 16.0
-    vision_servo_move_gain: float = 0.8
-    vision_servo_fine_move_gain: float = 0.4
-    vision_servo_fine_threshold_px: float = 24.0
-    vision_servo_max_attempts: int = 5
+    vision_servo_move_gain: float = 0.45
+    vision_servo_fine_move_gain: float = 0.20
+    vision_servo_fine_threshold_px: float = 40.0
+    vision_servo_max_attempts: int = 12
     vision_eye_in_hand_pick_flow_enabled: bool = True
     vision_eye_in_hand_pick_radius_bias_mm: float = 40.0
     vision_pick_search_z_mm: float = 190.0
     vision_pick_confirm_z_mm: float = 130.0
     vision_pick_descent_step_mm: float = 5.0
+    vision_pick_descent_coarse_step_mm: float = 10.0
+    vision_pick_descent_fine_step_mm: float = 5.0
+    vision_pick_descent_fine_band_mm: float = 25.0
     vision_pick_z_tolerance_mm: float = 4.0
+    vision_continuous_servo_enabled: bool = False
+    vision_continuous_servo_theta_rate_limit_deg_s: float = 18.0
+    vision_continuous_servo_radius_rate_limit_mm_s: float = 35.0
+    vision_continuous_servo_z_rate_limit_mm_s: float = 18.0
+    vision_continuous_servo_theta_gain_deg_s_per_deg: float = 2.0
+    vision_continuous_servo_radius_gain_mm_s_per_mm: float = 1.2
+    vision_continuous_servo_z_slow_band_mm: float = 20.0
+    vision_continuous_servo_center_allow_descent_px: float = 24.0
+    vision_continuous_servo_center_stop_descent_px: float = 36.0
+    vision_continuous_servo_stable_frames: int = 2
+    vision_continuous_servo_lost_frames: int = 3
+    vision_continuous_servo_command_timeout_ms: float = 250.0
     vision_debug_bundle_enabled: bool = True
     vision_debug_bundle_dir: Path = LOGS_ROOT / "vision_debug"
     pick_tool_offset_source: str = "command_bias"
@@ -260,6 +282,9 @@ class AppConfig:
     sucker_rotation_duration_sec: float = 0.10
     sucker_rotation_angle_quality_threshold: float = 0.20
     pick_tuning_profile_path: Path = _default_pick_tuning_profile_path()
+    vision_grasp_profile_path: Path = _default_vision_grasp_profile_path()
+    vision_grasp_profile_required: bool = True
+    vision_grasp_profile_real_pick_required: bool = True
     ssvep_backend: str = "async_fbcca_idle"
     ssvep_serial_port: str = "auto"
     ssvep_board_id: int = 0
@@ -319,6 +344,22 @@ class AppConfig:
             vision_residual_model=residual_model,
             vision_calibration_grid_size=max(2, int(config.vision_calibration_grid_size)),
             vision_frame_pose_max_age_ms=max(1.0, float(config.vision_frame_pose_max_age_ms)),
+            vision_pick_descent_step_mm=max(0.1, float(config.vision_pick_descent_step_mm)),
+            vision_pick_descent_coarse_step_mm=max(0.1, float(config.vision_pick_descent_coarse_step_mm)),
+            vision_pick_descent_fine_step_mm=max(0.1, float(config.vision_pick_descent_fine_step_mm)),
+            vision_pick_descent_fine_band_mm=max(0.0, float(config.vision_pick_descent_fine_band_mm)),
+            vision_continuous_servo_theta_rate_limit_deg_s=max(
+                0.1, float(config.vision_continuous_servo_theta_rate_limit_deg_s)
+            ),
+            vision_continuous_servo_radius_rate_limit_mm_s=max(
+                0.1, float(config.vision_continuous_servo_radius_rate_limit_mm_s)
+            ),
+            vision_continuous_servo_z_rate_limit_mm_s=max(0.1, float(config.vision_continuous_servo_z_rate_limit_mm_s)),
+            vision_continuous_servo_stable_frames=max(1, int(config.vision_continuous_servo_stable_frames)),
+            vision_continuous_servo_lost_frames=max(1, int(config.vision_continuous_servo_lost_frames)),
+            vision_continuous_servo_command_timeout_ms=max(
+                1.0, float(config.vision_continuous_servo_command_timeout_ms)
+            ),
         )
 
     def resolve_vision_stream_url(self) -> str:

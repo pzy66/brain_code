@@ -298,8 +298,19 @@ class VisionServoController:
         theta_deg, radius_mm, current_z = current_cyl_pose
         search_z = float(getattr(self.config, "vision_pick_search_z_mm", getattr(self.config, "robot_carry_z", 190.0)))
         confirm_z = float(getattr(self.config, "vision_pick_confirm_z_mm", getattr(self.config, "robot_approach_z", 130.0)))
-        step_mm = max(0.1, float(getattr(self.config, "vision_pick_descent_step_mm", abs(search_z - confirm_z))))
+        legacy_step_mm = max(0.1, float(getattr(self.config, "vision_pick_descent_step_mm", abs(search_z - confirm_z))))
+        coarse_step_mm = max(
+            0.1,
+            float(getattr(self.config, "vision_pick_descent_coarse_step_mm", legacy_step_mm)),
+        )
+        fine_step_mm = max(
+            0.1,
+            float(getattr(self.config, "vision_pick_descent_fine_step_mm", legacy_step_mm)),
+        )
+        fine_band_mm = max(0.0, float(getattr(self.config, "vision_pick_descent_fine_band_mm", 0.0)))
         current_z = float(current_z)
+        remaining_z_mm = abs(current_z - confirm_z)
+        step_mm = fine_step_mm if remaining_z_mm <= fine_band_mm else coarse_step_mm
         if current_z > confirm_z:
             next_z = max(confirm_z, current_z - step_mm)
         elif current_z < confirm_z:
@@ -331,6 +342,10 @@ class VisionServoController:
                 "target_z_mm": float(next_z),
                 "confirm_z_mm": float(confirm_z),
                 "descent_step_mm": float(step_mm),
+                "descent_coarse_step_mm": float(coarse_step_mm),
+                "descent_fine_step_mm": float(fine_step_mm),
+                "descent_fine_band_mm": float(fine_band_mm),
+                "remaining_z_mm": float(remaining_z_mm),
             },
         )
 

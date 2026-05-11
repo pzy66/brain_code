@@ -1,0 +1,115 @@
+{
+  "manifest_version": "0.1",
+  "software_name": "基于混合脑机接口的智能机械臂协同控制软件 V1.0",
+  "freeze_tag": "softcopyright-v1.0",
+  "status": "draft",
+  "include": [
+    {
+      "path": "brain/",
+      "reason": "仓库级 CLI 入口和无硬件启动验证"
+    },
+    {
+      "path": "brain_workspace/",
+      "reason": "统一路径解析和工作区基础设施"
+    },
+    {
+      "path": "01_MI/",
+      "reason": "MI 采集、训练、实时推理和后续分类器接入"
+    },
+    {
+      "path": "02_SSVEP/",
+      "reason": "SSVEP 采集、短预训练、异步控制评估和 profile 管理"
+    },
+    {
+      "path": "08_SoftCopyright_UI/",
+      "reason": "软著 V1.0 演示工作台、MI 契约和截图工具"
+    },
+    {
+      "path": "hybrid_controller/",
+      "reason": "视觉识别、机械臂协同控制、机器人安全门控和模拟启动"
+    },
+    {
+      "path": "docs/softcopyright/",
+      "reason": "软著说明书、用户手册、测试报告、源码交存清单和版本说明"
+    },
+    {
+      "path": "references/",
+      "reason": "可公开的方法引用说明和资料索引"
+    },
+    {
+      "path": "tests/",
+      "reason": "仓库级无硬件测试"
+    },
+    {
+      "path": "datasets/profiles/",
+      "reason": "可公开的 profile schema、默认 profile 和轻量配置"
+    },
+    {
+      "path": "datasets/vision/models/best.pt",
+      "reason": "已确定为可追踪的默认视觉基线资产"
+    }
+  ],
+  "exclude": [
+    {
+      "pattern": "**/__pycache__/**",
+      "reason": "Python 缓存"
+    },
+    {
+      "pattern": "**/.pytest_cache/**",
+      "reason": "测试缓存"
+    },
+    {
+      "pattern": "**/logs/**",
+      "reason": "运行日志和现场调试痕迹"
+    },
+    {
+      "pattern": "**/artifacts/**",
+      "reason": "训练、评估、截图和临时输出；软著截图单独归档"
+    },
+    {
+      "pattern": "**/output/**",
+      "reason": "临时输出"
+    },
+    {
+      "pattern": "**/*.pdf",
+      "reason": "论文 PDF 和授权受限资料不纳入源码交存"
+    },
+    {
+      "pattern": "datasets/MI/**",
+      "reason": "真实 EEG 数据不纳入源码交存"
+    },
+    {
+      "pattern": "datasets/SSVEP/**",
+      "reason": "真实 EEG 数据和外部数据集不纳入源码交存"
+    },
+    {
+      "pattern": "02_SSVEP/artifacts/datasets/**",
+      "reason": "外部或派生数据集不纳入源码交存"
+    },
+    {
+      "pattern": "**/*.npz",
+      "reason": "脑电数据和训练中间产物"
+    },
+    {
+      "pattern": "**/*.npy",
+      "reason": "训练中间产物"
+    },
+    {
+      "pattern": "**/*.pt",
+      "except": ["datasets/vision/models/best.pt"],
+      "reason": "真实训练权重默认不纳入源码交存"
+    }
+  ],
+  "freeze_checks": [
+    "python -m py_compile 08_SoftCopyright_UI/run_softcopyright_workbench.py 08_SoftCopyright_UI/softcopyright_workbench/app.py 08_SoftCopyright_UI/softcopyright_workbench/state.py 08_SoftCopyright_UI/softcopyright_workbench/mi_contract.py 08_SoftCopyright_UI/tools/render_static_preview.py",
+    "python 08_SoftCopyright_UI/run_softcopyright_workbench.py --screenshot 08_SoftCopyright_UI/artifacts/workbench.png",
+    "python 08_SoftCopyright_UI/tools/render_static_preview.py --output 08_SoftCopyright_UI/artifacts/workbench_static_preview.png",
+    "python -m brain diagnose",
+    "python -m brain launch --simulate"
+  ],
+  "notes": [
+    "冻结前将 status 改为 frozen，并记录 commit、tag、测试结果和截图路径。",
+    "MI 分类器正式并入后，补充 MI 训练/推理 smoke test 和 profile schema 校验命令。",
+    "此清单是 V1.0 草案，不直接代表最终交存包。"
+  ]
+}

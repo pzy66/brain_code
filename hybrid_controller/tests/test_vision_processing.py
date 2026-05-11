@@ -73,10 +73,10 @@ def test_vision_calibration_undistorts_pixels_when_distortion_coefficients_exist
     assert abs(undistorted[1] - 240.0) < 1e-6
 
 
-def test_extract_candidates_filters_to_roi_and_keeps_distance_order():
+def test_extract_candidates_filters_to_roi_and_uses_unified_score():
     result = _Result(
         xyxy=[
-            [100, 100, 140, 140],
+            [95, 95, 145, 145],
             [300, 300, 360, 360],
             [110, 110, 150, 150],
         ],
@@ -91,7 +91,29 @@ def test_extract_candidates_filters_to_roi_and_keeps_distance_order():
         confidence_threshold=0.25,
     )
     assert detected_count == 2
-    assert [candidate.center for candidate in candidates] == [(130, 130), (120, 120)]
+    assert [candidate.center for candidate in candidates] == [(120, 120), (130, 130)]
+
+
+def test_extract_candidates_prefers_large_graspable_yolo_candidate_over_center_artifact():
+    result = _Result(
+        xyxy=[
+            [315, 235, 325, 245],
+            [245, 180, 335, 270],
+        ],
+        conf=[0.99, 0.78],
+    )
+    candidates, detected_count = extract_candidates(
+        result,
+        frame_shape=(480, 640),
+        roi_center=(320, 240),
+        roi_radius=160,
+        max_det=4,
+        confidence_threshold=0.25,
+    )
+
+    assert detected_count == 2
+    assert candidates[0].center == (290, 225)
+    assert candidates[0].area_px > candidates[1].area_px
 
 
 def test_slot_tracking_and_packet_output_emit_cylindrical_targets():

@@ -1,0 +1,15 @@
+{
+  "profile_id": "jetmax-wood-block-vision-grasp-default-v1",
+  "real_pick_enabled": true,
+  "vision_pick_confirm_z_mm": 175.0,
+  "vision_eye_in_hand_pick_radius_bias_mm": 50.0,
+  "pick_cyl_radius_bias_mm": 0.0,
+  "sucker_rotation_angle_quality_threshold": 0.2,
+  "vision_servo_low_action_tolerance_px": 8.0,
+  "vision_pick_z_tolerance_mm": 4.0,
+  "notes": [
+    "Tracked profile for real JetMax wood-block visual grasping.",
+    "Final radius extension is applied once inside the vision servo command_bias path.",
+    "Keep app-layer pick_cyl_radius_bias_mm at 0.0 unless running manual non-servo diagnostics."
+  ]
+}

@@ -54,9 +54,10 @@ def test_servo_controller_lowers_actionable_search_target_before_pick() -> None:
 
     assert decision.action == "MOVE"
     assert decision.state == SERVO_LOW_CONFIRM
-    assert decision.command == "MOVE_CYL 5.00 150.00 185.00"
+    assert decision.command == "MOVE_CYL 5.00 150.00 180.00"
     assert decision.reason == "descent_confirm"
-    assert decision.trace["target_z_mm"] == 185.0
+    assert decision.trace["target_z_mm"] == 180.0
+    assert decision.trace["descent_step_mm"] == 10.0
 
 
 def test_servo_controller_descends_in_steps_until_confirm_height() -> None:
@@ -80,9 +81,34 @@ def test_servo_controller_descends_in_steps_until_confirm_height() -> None:
 
     assert decision.action == "MOVE"
     assert decision.state == SERVO_LOW_CONFIRM
-    assert decision.command == "MOVE_CYL 5.00 150.00 180.00"
+    assert decision.command == "MOVE_CYL 5.00 150.00 175.00"
     assert decision.pending_dict is not None
     assert decision.pending_dict["stage"] == "low_confirm"
+
+
+def test_servo_controller_uses_fine_descent_near_confirm_height() -> None:
+    config = AppConfig()
+    controller = VisionServoController(config)
+
+    decision = controller.decide(
+        slot_id=1,
+        slot_payload={
+            "slot_id": 1,
+            "valid": True,
+            "actionable": True,
+            "command_mode": "world",
+            "command_point": [20.0, -130.0],
+        },
+        packet={"frame_id": 9},
+        pending={"slot_id": 1, "state": SERVO_LOW_CONFIRM, "attempts": 1},
+        current_cyl_pose=(5.0, 150.0, config.vision_pick_confirm_z_mm + 20.0),
+        at_confirm_z=False,
+        eye_in_hand_enabled=True,
+    )
+
+    assert decision.action == "MOVE"
+    assert decision.command == "MOVE_CYL 5.00 150.00 145.00"
+    assert decision.trace["descent_step_mm"] == 5.0
 
 
 def test_servo_controller_fine_centers_at_current_descent_height() -> None:

@@ -1,3 +1,52 @@
+# Hybrid Controller JetMax Notes
+
+## Locked Camera Contract
+
+Do not change the JetMax camera sender path while tuning grasp motion. The PC side must read exactly the official Hiwonder MJPEG chain:
+
+```text
+usb_cam.service -> usb_cam_node -> /usb_cam/image_rect_color -> web_video_server:8080 -> PC
+```
+
+Default PC stream URL:
+
+```text
+http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80
+```
+
+Normal controller startup must not start, restart, scan, or mutate `usb_cam.service`, `web_video_server`, `uvcvideo`, `/dev/video*`, or camera launch files. Any camera-sender repair must stay behind explicit repair flags in the robot tools. Grasp tuning should optimize only the PC consumer side and our own ROS control path.
+
+## Continuous Visual Servo
+
+The smoother visual-grasp path is `--servo-mode continuous` in `hybrid_controller/tools/debug_vision_grasp_flow.py`. It keeps one official MJPEG connection open, computes velocity commands on the PC, and publishes them to:
+
+```text
+/hybrid_controller/teleop_cyl_cmd
+```
+
+Continuous mode sends `theta_rate_deg_s`, `radius_rate_mm_s`, and `z_rate_mm_s` at about 10 Hz. The JetMax runtime applies them through the 20 Hz cylindrical teleop kernel with acceleration ramping and deadman timeout. In continuous visual servo mode, `use_auto_z=false` so horizontal centering cannot silently change height through the old radius-to-z auto curve.
+
+The legacy stop-and-go mode is still available:
+
+```text
+--servo-mode discrete
+```
+
+Safe dry-run sequence before real grasp:
+
+```powershell
+& $env:BRAIN_PYTHON_EXE .\hybrid_controller\robot\tools\ros_service_probe.py --host 192.168.149.1 --port 9091 --action sucker_freeze --enabled
+& $env:BRAIN_PYTHON_EXE .\hybrid_controller\tools\debug_vision_grasp_flow.py `
+  --execute --allow-pick --persistent-camera `
+  --servo-mode continuous `
+  --continuous-teleop-rate-hz 10 `
+  --continuous-max-duration-sec 30
+```
+
+`--allow-pick` permits the final `PICK_CYL` service call, but the debug tool still blocks a real suction pick unless the robot reports `release_mode_effective=sucker_frozen` or the operator explicitly passes `--allow-real-pick`.
+
+Because `CylindricalTeleop.msg` now includes `z_rate_mm_s` and `use_auto_z`, the JetMax ROS package must be rebuilt and redeployed together with the PC code. Do not run continuous mode against a robot image built with the older message definition.
+
 # Hybrid Controller 机械臂视觉抓取主程序
 
 Current default: launch real-robot work with `hybrid_controller/run_real.py`. The main program runs in `operator_keyboard` mode, so keyboard/operator input replaces MI and SSVEP recognition while robot connection, ROS transport, camera vision, MOVE/PICK/PLACE, tuning, logs, and safety gates stay active. `run_real_ssvep.py` is kept only as an experimental/manual BCI path.
@@ -157,9 +206,25 @@ move_source = sim
 decision_source = sim 或 ssvep
 ```
 
-### 3.2 机械臂端 runtime 自动启动
+### 3.2 机械臂端 runtime 启动
 
-电脑端 GUI 会尝试检查 `192.168.149.1:9091`。如果 ROS runtime 不可用，并且配置允许自动启动，程序会通过 SSH 尝试启动机械臂端 runtime。
+`run_real.py` 默认适配“机械臂重启后，电脑先连 JetMax Wi-Fi，再启动主程序”的流程：GUI 启动时会自动连接 `rosbridge`，但不会在 `9091` 不稳定时自动 SSH 启动 JetMax runtime。这样可以避免控制链路恢复过程干扰官方摄像头 ROS graph。需要启动 runtime 时，使用显式按钮或显式命令；默认启动不会启动、重启、检查或拉取 `8080` 视频流，也不会改官方摄像头发送链路。
+
+GUI 默认直接建立 rosbridge WebSocket，不再先额外打开一次 `9091` TCP 预探测连接。这样调试时对 JetMax Wi-Fi 的连接动作最少。只有需要对比端口状态时才显式加 `--ros-probe-before-connect`。后台 bootstrap 轮询仍默认关闭，避免机械臂 Wi-Fi 弱时反复探测或反复 SSH。
+
+如果 Wi-Fi 连接后自己断开，先运行只读本机诊断，不要先 ping、SSH、扫端口或拉视频流：
+
+```powershell
+python -m hybrid_controller.tools.diagnose_jetmax_wifi_windows
+```
+
+这条诊断只读取 Windows WLAN 事件、路由、DNS 和 Intel 网卡高级属性，不给机械臂发包。当前已见到的风险模式是：JetMax WLAN 同时拿到 `0.0.0.0/0 -> 192.168.149.1` 默认路由和 DNS `192.168.149.1`，Windows WLAN AutoConfig 记录 `4003 limited connectivity recovery`，随后 `8003 网络被驱动程序断开连接`。推荐网络形态是：WLAN 只保留 `192.168.149.0/24` 机械臂本地路由，公网默认路由和 DNS 留给以太网或其他联网网卡。
+
+如果要关闭启动即连接，可以显式加：
+
+```powershell
+python .\hybrid_controller\run_real.py --no-robot-connect-on-start --robot-auto-start-disabled
+```
 
 自动启动依赖：
 
@@ -603,22 +668,28 @@ vision_pick_search_z_mm = 190
 vision_pick_confirm_z_mm = 130
   最终确认高度。
 
-vision_pick_descent_step_mm = 5
-  从搜索高度向确认高度下降时，每次只下降 5 mm 并重新看一帧。
+vision_pick_descent_coarse_step_mm = 10
+  从搜索高度向确认高度下降时，离确认高度较远先每次下降 10 mm。
 
-vision_servo_move_gain = 0.8
+vision_pick_descent_fine_step_mm = 5
+  接近确认高度后切回 5 mm 细调，每步都重新确认画面。
+
+vision_pick_descent_fine_band_mm = 25
+  距离确认高度 25 mm 内进入细调下降。
+
+vision_servo_move_gain = 0.45
   粗对中增益。
 
-vision_servo_fine_move_gain = 0.4
+vision_servo_fine_move_gain = 0.20
   接近目标时的小步增益。
 
-vision_servo_center_tolerance_px = 6
+vision_servo_center_tolerance_px = 20
   profile 建议中心容差。
 
-vision_servo_action_tolerance_px = 6
+vision_servo_action_tolerance_px = 20
   允许最终抓取的动作容差。
 
-vision_servo_max_attempts = 5
+vision_servo_max_attempts = 12
   最大闭环移动次数。
 
 vision_action_max_error_mm = 6
@@ -651,6 +722,7 @@ grasp_pixel 多帧稳定
 PICK 阶段打开吸盘
 PLACE 阶段释放吸盘
 SUCKER_OFF 强制关闭吸盘
+SUCKER_FREEZE 1/0 安全调试开关：开启后 PICK 只走轨迹，不给吸盘上电
 ```
 
 ### 11.2 末端旋转
@@ -951,7 +1023,7 @@ vision_action_max_error_mm = 6.0
 vision_grasp_quality_threshold = 0.25
 vision_grasp_history_frames = 5
 vision_grasp_stable_frames = 3
-vision_servo_max_attempts = 5
+vision_servo_max_attempts = 12
 ```
 
 吸盘偏置：

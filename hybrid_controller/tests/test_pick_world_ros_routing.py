@@ -10,6 +10,7 @@ from hybrid_controller.app import HybridControllerApplication
 from hybrid_controller.app_robot_commands import apply_pick_tool_bias
 from hybrid_controller.config import AppConfig
 from hybrid_controller.cylindrical import cartesian_to_cylindrical
+from hybrid_controller.vision.grasp_profile import load_vision_grasp_profile
 
 
 class _DummyMainWindow:
@@ -56,6 +57,7 @@ class _DummyRosClient:
 def _make_ros_app_stub() -> HybridControllerApplication:
     app = HybridControllerApplication.__new__(HybridControllerApplication)
     app.config = AppConfig(robot_mode="real", robot_transport="ros", vision_mode="robot_camera_detection")
+    app._vision_grasp_profile_result = load_vision_grasp_profile(app.config)
     app.main_window = _DummyMainWindow()
     app.robot_client = _DummyRobotClient()
     app.ros_client = _DummyRosClient()

@@ -40,6 +40,32 @@ bash run_hybrid_controller_ros_runtime.sh
 - `8080`：web_video_server（视觉识别阶段使用，启动 runtime 时不拉流）
 - `8888`：TCP 兼容/诊断（可选）
 
+`run_real.py` 默认用于“机械臂重启后，电脑连接 JetMax Wi-Fi，然后启动主程序”的流程：GUI 启动后会自动连接 `rosbridge`，但不会在 `9091` 不稳定时自动 SSH 启动 JetMax ROS runtime。后台 bootstrap 轮询仍默认关闭，避免反复探测或反复 SSH；需要启动 runtime 时使用显式按钮或显式命令。
+
+自动 bringup 不会启动、重启、检查或拉取 `8080` 视频流，不会订阅 `/usb_cam/image_rect_color`，不会改官方摄像头发送链路。点击“连接机器人”或启动自动连接时默认也不做额外 `9091` TCP 预探测，而是直接建立 rosbridge WebSocket。只有显式加 `--ros-probe-before-connect` 时才恢复预探测。
+
+如果要关闭启动即连接，可以显式加：
+
+```powershell
+python .\hybrid_controller\run_real.py --no-robot-connect-on-start --robot-auto-start-disabled
+```
+
+如果连接 JetMax Wi-Fi 后 Windows 自己断开，先做本机只读诊断：
+
+```powershell
+python -m hybrid_controller.tools.diagnose_jetmax_wifi_windows
+```
+
+该工具只读 Windows WLAN 事件、路由、DNS 和 Intel 网卡高级属性，不 ping 机械臂、不 SSH、不扫端口、不拉相机视频。重点检查：
+
+- 是否有 `0.0.0.0/0 -> 192.168.149.1` 默认路由落在 WLAN 上。
+- WLAN DNS 是否指向 `192.168.149.1`。
+- WLAN AutoConfig 是否出现 `4003 limited connectivity recovery`。
+- WLAN AutoConfig 是否出现 `8003 网络被驱动程序断开连接`。
+- Intel 网卡是否仍为 Roaming Aggressiveness=中间、MIMO Power Save=自动 SMPS、Packet Coalescing=启用。
+
+推荐网络形态：WLAN 只负责 `192.168.149.0/24` 机械臂本地网段；公网默认路由和公共 DNS 留给以太网或其他联网网卡。若仍断开，再按顺序尝试降低 Intel 漫游主动性、关闭 MIMO 省电、关闭包合并，并保留回滚记录。
+
 `robot/tools/jetmax_start_ros_runtime.py` 默认只校验 `9091`，不连接 `8080`，不订阅 `/usb_cam/image_rect_color`，不拉取 MJPEG/H264 视频流。
 脚本会自动 `stop/disable` JetMax 自带的 `rosbridge.service`，避免旧消息定义冲突。  
 如需强制校验 `8888`，加 `--require-tcp-check`。

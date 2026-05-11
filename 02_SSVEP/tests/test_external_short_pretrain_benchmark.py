@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 
 import numpy as np
+import pytest
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 if str(PROJECT_DIR) not in sys.path:
@@ -80,28 +81,94 @@ def _aggregate_test_row(
 def test_enumerate_external_subjects_orders_and_limits(tmp_path: Path) -> None:
     wang_raw = tmp_path / "wang"
     beta_raw = tmp_path / "beta"
+    ysu_raw = tmp_path / "ysu"
     wang_raw.mkdir()
     beta_raw.mkdir()
+    ysu_raw.mkdir()
     (wang_raw / "S2.mat").write_text("", encoding="utf-8")
     (wang_raw / "S1.mat").write_text("", encoding="utf-8")
     (beta_raw / "S16.mat").write_text("", encoding="utf-8")
+    (ysu_raw / "S01").mkdir()
     (tmp_path / "64-channels.loc").write_text("", encoding="utf-8")
 
     rows = bench.enumerate_external_subjects(
-        datasets=("wang2016", "beta"),
+        datasets=("wang2016", "beta", "ysu_an"),
         freqs=(9.8, 12.0, 14.8, 15.8),
         wang_raw_dir=wang_raw,
         wang_channels_loc=tmp_path / "64-channels.loc",
         beta_raw_dir=beta_raw,
+        ysu_an_raw_dir=ysu_raw,
+        ysu_an_channel_loc=tmp_path / "Channel Loc.xlsx",
         subject_limit_per_dataset=1,
     )
 
-    assert [(row.dataset, row.subject) for row in rows] == [("wang2016", "S1"), ("beta", "S16")]
+    assert [(row.dataset, row.subject) for row in rows] == [
+        ("wang2016", "S1"),
+        ("beta", "S16"),
+        ("ysu_an", "S01"),
+    ]
 
 
 def test_parse_subject_whitelist_supports_global_and_dataset_scoped_tokens() -> None:
-    parsed = bench._parse_subject_whitelist("S1,beta:S16,wang2016:S2")
-    assert parsed == (("*", "S1"), ("beta", "S16"), ("wang2016", "S2"))
+    parsed = bench._parse_subject_whitelist("S1,beta:S16,wang2016:S2,ysu_an:S01")
+    assert parsed == (("*", "S1"), ("beta", "S16"), ("wang2016", "S2"), ("ysu_an", "S01"))
+
+
+def test_build_ysuan_all_target_segments_keeps_explicit_ns_idle(monkeypatch: pytest.MonkeyPatch) -> None:
+    freqs = (8.0, 10.5, 12.0, 15.0)
+    available_freqs = bench.YSUAN_TARGET_FREQUENCIES
+    cs_segments = [
+        (
+            TrialSpec(label=f"{float(freq):g}Hz", expected_freq=float(freq), trial_id=index, block_index=0),
+            np.zeros((1000, 8), dtype=np.float64),
+        )
+        for index, freq in enumerate(available_freqs)
+    ]
+    ns_segments = [
+        (
+            TrialSpec(label="ysu_an_ns1_trial01", expected_freq=None, trial_id=100, block_index=0),
+            np.zeros((1000, 8), dtype=np.float64),
+        )
+    ]
+
+    monkeypatch.setattr(bench, "load_ysuan_subject", lambda *args, **kwargs: object())
+    monkeypatch.setattr(bench, "build_ysuan_cs_segments", lambda *args, **kwargs: cs_segments)
+    monkeypatch.setattr(bench, "build_ysuan_ns_segments", lambda *args, **kwargs: ns_segments)
+    spec = bench.ExternalSubjectSpec(dataset="ysu_an", subject="S01", mat_path=Path("S01"), freqs=freqs)
+
+    segments = bench._build_all_target_segments_for_spec(spec, available_freqs=available_freqs)
+
+    assert bench._count_segments(segments, freqs)["idle"] == 1
+
+
+def test_ysuan_holdout_no_control_scored_uses_only_explicit_ns_trials() -> None:
+    scored = [
+        bench.ScoredTrial(
+            trial=TrialSpec(label="ysu_an_ns1_trial05", expected_freq=None, trial_id=1, block_index=4),
+            score_matrix=np.zeros((1, 4), dtype=np.float64),
+            feature_matrix=np.zeros((1, 4), dtype=np.float64),
+            duration_sec=4.0,
+        ),
+        bench.ScoredTrial(
+            trial=TrialSpec(label="hard_idle_9Hz", expected_freq=None, trial_id=2, block_index=0),
+            score_matrix=np.zeros((1, 4), dtype=np.float64),
+            feature_matrix=np.zeros((1, 4), dtype=np.float64),
+            duration_sec=4.0,
+        ),
+        bench.ScoredTrial(
+            trial=TrialSpec(label="8Hz", expected_freq=8.0, trial_id=3, block_index=0),
+            score_matrix=np.zeros((1, 4), dtype=np.float64),
+            feature_matrix=np.zeros((1, 4), dtype=np.float64),
+            duration_sec=4.0,
+        ),
+    ]
+
+    ns_scored, support = bench._ysuan_holdout_no_control_scored(scored, win_sec=2.0)
+
+    assert [item.trial.label for item in ns_scored] == ["ysu_an_ns1_trial05"]
+    assert support["supported"] is True
+    assert support["segment_count"] == 1
+    assert "holdout NS1/NS2/NS3" in str(support["note"])
 
 
 def test_method_parser_supports_short_pretrain_candidates() -> None:
@@ -116,6 +183,10 @@ def test_classifier_recipe_id_preserves_strict_names_and_marks_gap() -> None:
 
 def test_classifier_threshold_policy_parser_supports_recall_guard() -> None:
     assert bench._parse_classifier_threshold_policy(" balanced_recall_guard ") == "balanced_recall_guard"
+    assert (
+        bench._parse_classifier_threshold_policy(" lrt_multiwindow_reject_gate ")
+        == bench.CLASSIFIER_LRT_MULTIWINDOW_REJECT_GATE_POLICY
+    )
 
 
 def test_full_reference_bank_features_add_command_vs_noncommand_evidence() -> None:
@@ -394,6 +465,55 @@ def test_select_split_segments_samples_idle_to_budget() -> None:
     assert len(holdout) == 10
 
 
+def test_select_ysuan_split_uses_two_cs_repeats_and_four_ns_calibration_trials() -> None:
+    freqs = (8.0, 10.5, 12.0, 15.0)
+    segments: list[tuple[TrialSpec, np.ndarray]] = []
+    trial_id = 0
+    for block in range(12):
+        for freq in freqs:
+            segments.append(
+                (
+                    TrialSpec(label=f"{freq:g}Hz", expected_freq=freq, trial_id=trial_id, block_index=block),
+                    np.zeros((1000, 8), dtype=np.float64),
+                )
+            )
+            trial_id += 1
+    for subtype, count, samples in (("ns1", 24, 1000), ("ns2", 24, 1000), ("ns3", 48, 500)):
+        for index in range(count):
+            segments.append(
+                (
+                    TrialSpec(
+                        label=f"ysu_an_{subtype}_trial{index + 1:02d}",
+                        expected_freq=None,
+                        trial_id=trial_id,
+                        block_index=index,
+                    ),
+                    np.zeros((samples, 8), dtype=np.float64),
+                )
+            )
+            trial_id += 1
+
+    calibration, holdout, summary = bench.select_ysuan_split_segments(
+        segments,
+        freqs=freqs,
+        calibration_blocks=(0, 1),
+        holdout_blocks=tuple(range(2, 12)),
+        idle_multiplier=10.0,
+        seed=1,
+    )
+
+    cal_control = [trial for trial, _segment in calibration if trial.expected_freq is not None]
+    cal_idle = [trial for trial, _segment in calibration if trial.expected_freq is None]
+    holdout_control = [trial for trial, _segment in holdout if trial.expected_freq is not None]
+    holdout_idle = [trial for trial, _segment in holdout if trial.expected_freq is None]
+    assert len(cal_control) == 8
+    assert len(cal_idle) == 12
+    assert len(holdout_control) == 40
+    assert len(holdout_idle) == (20 + 20 + 44)
+    assert summary["ysu_an_ns_calibration_counts"] == {"ns1": 4, "ns2": 4, "ns3": 4}
+    assert summary["ysu_an_ns_holdout_counts"] == {"ns1": 20, "ns2": 20, "ns3": 44}
+
+
 def test_extract_row_metrics_reads_fixed_and_async_five_class_fields() -> None:
     payload = {
         "fixed_window_metrics_4class": {"acc": 0.95, "macro_f1": 0.94},
@@ -413,6 +533,12 @@ def test_extract_row_metrics_reads_fixed_and_async_five_class_fields() -> None:
             "switch_latency_s": 2.1,
             "release_latency_s": 1.4,
         },
+        "no_control_subtype_metrics": {
+            "ns1": {"idle_fp_per_min": 0.1},
+            "ns2": {"idle_fp_per_min": 0.2},
+            "ns3": {"idle_fp_per_min": 0.3},
+            "ns_all_fp_per_min": 0.25,
+        },
     }
     metrics = bench._extract_row_metrics(payload)
     assert abs(float(metrics["fixed_acc_4class"]) - 0.95) < 1e-9
@@ -427,6 +553,11 @@ def test_extract_row_metrics_reads_fixed_and_async_five_class_fields() -> None:
     assert abs(float(metrics["detection_latency_s"]) - 1.75) < 1e-9
     assert float(metrics["switch_latency_supported"]) == 0.0
     assert float(metrics["release_latency_supported"]) == 0.0
+    assert abs(float(metrics["ns1_fp_per_min"]) - 0.1) < 1e-9
+    assert abs(float(metrics["ns2_fp_per_min"]) - 0.2) < 1e-9
+    assert abs(float(metrics["ns3_fp_per_min"]) - 0.3) < 1e-9
+    assert abs(float(metrics["ns_all_fp_per_min"]) - 0.25) < 1e-9
+    assert abs(float(metrics["cs_control_recall"]) - 0.9) < 1e-9
 
 
 def test_fbcca_lda5_model_learns_idle_plus_four_commands() -> None:
@@ -598,6 +729,428 @@ def test_fbcca_lda5_max_gap_recovers_single_window_dropout() -> None:
     assert gap_label == "9.8"
     assert gap_confidence >= 0.60
     assert gap_index == 2.0
+
+
+def test_classifier_probability_smoothing_recovers_weak_consecutive_command() -> None:
+    labels = np.asarray(("idle", "9.8", "12", "14.8", "15.8"), dtype=object)
+    model = bench.FBCCALDA5Model(
+        freqs=(9.8, 12.0, 14.8, 15.8),
+        labels=tuple(labels.tolist()),
+        feature_mean=np.zeros(1, dtype=np.float64),
+        feature_std=np.ones(1, dtype=np.float64),
+        class_means=np.zeros((5, 1), dtype=np.float64),
+        pooled_var=np.ones(1, dtype=np.float64),
+        command_confidence_th=0.60,
+        fit_summary={},
+    )
+    probs = np.asarray(
+        [
+            [0.35, 0.65, 0.00, 0.00, 0.00],
+            [0.45, 0.55, 0.00, 0.00, 0.00],
+            [0.35, 0.65, 0.00, 0.00, 0.00],
+        ],
+        dtype=np.float64,
+    )
+
+    strict_label, _strict_confidence, _strict_index = bench._predict_fbcca_lda5_trial_from_probs(
+        model,
+        probs,
+        labels,
+        min_enter_windows=2,
+        max_gap_windows=0,
+    )
+    smoothed = bench._smooth_classifier_probabilities(probs, smoothing_windows=2)
+    smooth_label, smooth_confidence, smooth_index = bench._predict_fbcca_lda5_trial_from_probs(
+        model,
+        smoothed,
+        labels,
+        min_enter_windows=2,
+        max_gap_windows=0,
+    )
+
+    assert strict_label == "idle"
+    assert smooth_label == "9.8"
+    assert smooth_confidence >= 0.60
+    assert smooth_index == 1.0
+
+
+def test_adaptive_gate_feature_matrix_shape_and_rank_features() -> None:
+    labels = np.asarray(("idle", "9.8", "12", "14.8", "15.8"), dtype=object)
+    probs = np.asarray(
+        [
+            [0.20, 0.60, 0.10, 0.05, 0.05],
+            [0.55, 0.15, 0.20, 0.05, 0.05],
+        ],
+        dtype=np.float64,
+    )
+    command_scores = np.asarray(
+        [
+            [0.60, 0.30, 0.20, 0.10],
+            [0.20, 0.50, 0.30, 0.10],
+        ],
+        dtype=np.float64,
+    )
+    command_features = bench._score_matrix_to_features(command_scores)
+    full_features = bench._full_reference_bank_features(
+        command_score_matrix=command_scores,
+        all_score_matrix=np.asarray(
+            [
+                [0.60, 0.30, 0.20, 0.10, 0.55],
+                [0.20, 0.50, 0.30, 0.10, 0.70],
+            ],
+            dtype=np.float64,
+        ),
+        command_freqs=(9.8, 12.0, 14.8, 15.8),
+        all_freqs=(9.8, 12.0, 14.8, 15.8, 10.0),
+    )
+    trial = bench.ScoredTrial(
+        trial=TrialSpec(label="9.8", expected_freq=9.8, trial_id=1, block_index=0),
+        score_matrix=command_scores,
+        feature_matrix=np.column_stack(
+            [
+                command_features,
+                full_features,
+            ]
+        ),
+        duration_sec=2.0,
+    )
+
+    features = bench._adaptive_gate_feature_matrix_for_trial(
+        bench.FBCCALDA5Model(
+            freqs=(9.8, 12.0, 14.8, 15.8),
+            labels=tuple(labels.tolist()),
+            feature_mean=np.zeros(1, dtype=np.float64),
+            feature_std=np.ones(1, dtype=np.float64),
+            class_means=np.zeros((5, 1), dtype=np.float64),
+            pooled_var=np.ones(1, dtype=np.float64),
+            command_confidence_th=0.0,
+            fit_summary={},
+        ),
+        trial,
+        probs,
+        labels,
+    )
+
+    assert features.shape == (2, len(bench.ADAPTIVE_EVIDENCE_FEATURE_NAMES))
+    rank_column = bench.ADAPTIVE_EVIDENCE_FEATURE_NAMES.index("full_bank_inverse_command_rank")
+    margin_column = bench.ADAPTIVE_EVIDENCE_FEATURE_NAMES.index("full_bank_nearest_noncommand_margin")
+    assert features[0, rank_column] == 1.0
+    assert features[1, rank_column] == 0.5
+    assert features[0, margin_column] > 0.0
+    assert features[1, margin_column] < 0.0
+
+
+def test_adaptive_evidence_gate_recovers_continuous_weak_command() -> None:
+    labels = np.asarray(("idle", "9.8", "12", "14.8", "15.8"), dtype=object)
+    model = bench.FBCCALDA5Model(
+        freqs=(9.8, 12.0, 14.8, 15.8),
+        labels=tuple(labels.tolist()),
+        feature_mean=np.zeros(1, dtype=np.float64),
+        feature_std=np.ones(1, dtype=np.float64),
+        class_means=np.zeros((5, 1), dtype=np.float64),
+        pooled_var=np.ones(1, dtype=np.float64),
+        command_confidence_th=0.0,
+        fit_summary={},
+        gate_policy=bench.CLASSIFIER_ADAPTIVE_EVIDENCE_GATE_POLICY,
+        evidence_decision_th=0.60,
+        evidence_enter_th=0.40,
+        evidence_decay=0.50,
+    )
+    probs = np.asarray(
+        [
+            [0.48, 0.52, 0.00, 0.00, 0.00],
+            [0.47, 0.53, 0.00, 0.00, 0.00],
+        ],
+        dtype=np.float64,
+    )
+    gate_probs = np.asarray([0.85, 0.86], dtype=np.float64)
+
+    label, confidence, index = bench._predict_adaptive_evidence_trial_from_probs(
+        model,
+        probs,
+        labels,
+        gate_probs,
+        min_enter_windows=2,
+        max_gap_windows=0,
+    )
+
+    assert label == "9.8"
+    assert confidence >= 0.85
+    assert index == 1.0
+
+
+def test_adaptive_evidence_gate_rejects_unstable_idle_like_windows() -> None:
+    labels = np.asarray(("idle", "9.8", "12", "14.8", "15.8"), dtype=object)
+    model = bench.FBCCALDA5Model(
+        freqs=(9.8, 12.0, 14.8, 15.8),
+        labels=tuple(labels.tolist()),
+        feature_mean=np.zeros(1, dtype=np.float64),
+        feature_std=np.ones(1, dtype=np.float64),
+        class_means=np.zeros((5, 1), dtype=np.float64),
+        pooled_var=np.ones(1, dtype=np.float64),
+        command_confidence_th=0.0,
+        fit_summary={},
+        gate_policy=bench.CLASSIFIER_ADAPTIVE_EVIDENCE_GATE_POLICY,
+        evidence_decision_th=0.70,
+        evidence_enter_th=0.60,
+        evidence_decay=0.50,
+    )
+    probs = np.asarray(
+        [
+            [0.20, 0.50, 0.30, 0.00, 0.00],
+            [0.20, 0.30, 0.50, 0.00, 0.00],
+            [0.20, 0.50, 0.30, 0.00, 0.00],
+        ],
+        dtype=np.float64,
+    )
+    gate_probs = np.asarray([0.55, 0.56, 0.55], dtype=np.float64)
+
+    label, confidence, index = bench._predict_adaptive_evidence_trial_from_probs(
+        model,
+        probs,
+        labels,
+        gate_probs,
+        min_enter_windows=2,
+        max_gap_windows=0,
+    )
+
+    assert label == "idle"
+    assert confidence == 0.0
+    assert index == 0.0
+
+
+def test_adaptive_evidence_gate_enter_threshold_still_honors_min_enter() -> None:
+    labels = np.asarray(("idle", "9.8", "12", "14.8", "15.8"), dtype=object)
+    model = bench.FBCCALDA5Model(
+        freqs=(9.8, 12.0, 14.8, 15.8),
+        labels=tuple(labels.tolist()),
+        feature_mean=np.zeros(1, dtype=np.float64),
+        feature_std=np.ones(1, dtype=np.float64),
+        class_means=np.zeros((5, 1), dtype=np.float64),
+        pooled_var=np.ones(1, dtype=np.float64),
+        command_confidence_th=0.0,
+        fit_summary={},
+        gate_policy=bench.CLASSIFIER_ADAPTIVE_EVIDENCE_GATE_POLICY,
+        evidence_decision_th=0.70,
+        evidence_enter_th=0.25,
+        evidence_decay=0.50,
+    )
+    probs = np.asarray([[0.10, 0.90, 0.00, 0.00, 0.00]], dtype=np.float64)
+    gate_probs = np.asarray([0.95], dtype=np.float64)
+
+    label, confidence, index = bench._predict_adaptive_evidence_trial_from_probs(
+        model,
+        probs,
+        labels,
+        gate_probs,
+        min_enter_windows=2,
+        max_gap_windows=0,
+    )
+
+    assert label == "idle"
+    assert confidence == 0.0
+    assert index == 0.0
+
+
+def _make_lrt_test_model() -> bench.FBCCALDA5Model:
+    return bench.FBCCALDA5Model(
+        freqs=(9.8, 12.0, 14.8, 15.8),
+        labels=("idle", "9.8", "12", "14.8", "15.8"),
+        feature_mean=np.zeros(1, dtype=np.float64),
+        feature_std=np.ones(1, dtype=np.float64),
+        class_means=np.zeros((5, 1), dtype=np.float64),
+        pooled_var=np.ones(1, dtype=np.float64),
+        command_confidence_th=0.0,
+        fit_summary={},
+        gate_policy=bench.CLASSIFIER_LRT_MULTIWINDOW_REJECT_GATE_POLICY,
+        lrt_feature_indices=(0, 1),
+        lrt_feature_mean_control=np.asarray([2.0, 2.0], dtype=np.float64),
+        lrt_feature_std_control=np.ones(2, dtype=np.float64),
+        lrt_feature_mean_idle=np.zeros(2, dtype=np.float64),
+        lrt_feature_std_idle=np.ones(2, dtype=np.float64),
+        lrt_window_th=0.5,
+        lrt_enter_th=1.0,
+        lrt_decay=0.5,
+    )
+
+
+def test_lrt_multiwindow_gate_recovers_continuous_weak_command() -> None:
+    labels = np.asarray(("idle", "9.8", "12", "14.8", "15.8"), dtype=object)
+    probs = np.asarray(
+        [
+            [0.48, 0.52, 0.00, 0.00, 0.00],
+            [0.47, 0.53, 0.00, 0.00, 0.00],
+        ],
+        dtype=np.float64,
+    )
+    evidence = np.asarray([1.1, 1.2], dtype=np.float64)
+
+    label, confidence, index = bench._predict_lrt_multiwindow_reject_trial_from_probs(
+        _make_lrt_test_model(),
+        probs,
+        labels,
+        evidence,
+        min_enter_windows=2,
+        max_gap_windows=0,
+    )
+
+    assert label == "9.8"
+    assert confidence == 1.2
+    assert index == 1.0
+
+
+def test_lrt_multiwindow_gate_rejects_noncommand_like_evidence() -> None:
+    labels = np.asarray(("idle", "9.8", "12", "14.8", "15.8"), dtype=object)
+    probs = np.asarray(
+        [
+            [0.10, 0.90, 0.00, 0.00, 0.00],
+            [0.10, 0.90, 0.00, 0.00, 0.00],
+        ],
+        dtype=np.float64,
+    )
+    evidence = np.asarray([-0.2, -0.1], dtype=np.float64)
+
+    label, confidence, index = bench._predict_lrt_multiwindow_reject_trial_from_probs(
+        _make_lrt_test_model(),
+        probs,
+        labels,
+        evidence,
+        min_enter_windows=2,
+        max_gap_windows=0,
+    )
+
+    assert label == "idle"
+    assert confidence == 0.0
+    assert index == 0.0
+
+
+def test_lrt_window_evidence_prefers_control_distribution() -> None:
+    model = _make_lrt_test_model()
+    evidence = bench._lrt_window_evidence_from_features(
+        model,
+        np.asarray(
+            [
+                [2.0, 2.0],
+                [0.0, 0.0],
+            ],
+            dtype=np.float64,
+        ),
+    )
+
+    assert evidence[0] > 0.0
+    assert evidence[1] < 0.0
+
+
+def test_fit_lrt_multiwindow_model_carries_parameters_into_evaluation() -> None:
+    freqs = (8.0, 9.6, 10.0, 12.0)
+    all_freqs = (8.0, 9.6, 10.0, 12.0, 15.0)
+
+    def scored_trial(label: str, command_scores: np.ndarray, trial_id: int) -> bench.ScoredTrial:
+        expected_freq = None if label == "idle" else float(label)
+        full_scores = np.column_stack(
+            [
+                command_scores,
+                np.full(int(command_scores.shape[0]), 0.25, dtype=np.float64),
+            ]
+        )
+        if label == "idle":
+            full_scores[:, -1] = 6.0
+        features = bench._score_matrices_to_features(
+            command_score_matrix=command_scores,
+            command_freqs=freqs,
+            score_bank_mode="full_reference_bank",
+            all_score_matrix=full_scores,
+            all_freqs=all_freqs,
+        )
+        return bench.ScoredTrial(
+            trial=TrialSpec(label=label, expected_freq=expected_freq, trial_id=trial_id, block_index=0),
+            score_matrix=command_scores,
+            feature_matrix=features,
+            duration_sec=3.0,
+        )
+
+    scored: list[bench.ScoredTrial] = []
+    trial_id = 1
+    for command_index, freq in enumerate(freqs):
+        for _repeat in range(2):
+            scores = np.full((3, 4), 0.35, dtype=np.float64)
+            scores[:, command_index] = 6.0
+            scored.append(scored_trial(f"{freq:g}", scores, trial_id))
+            trial_id += 1
+    for _repeat in range(2):
+        idle_scores = np.full((3, 4), 0.25, dtype=np.float64)
+        scored.append(scored_trial("idle", idle_scores, trial_id))
+        trial_id += 1
+
+    model = bench._fit_fbcca_lda5_model(
+        scored,
+        freqs=freqs,
+        win_sec=1.75,
+        step_sec=0.25,
+        min_enter_windows=2,
+        max_gap_windows=1,
+        smoothing_windows=2,
+        threshold_policy=bench.CLASSIFIER_LRT_MULTIWINDOW_REJECT_GATE_POLICY,
+    )
+    bundle = bench._evaluate_fbcca_lda5_model(
+        model,
+        scored,
+        win_sec=1.75,
+        step_sec=0.25,
+        min_enter_windows=2,
+        max_gap_windows=1,
+    )
+
+    assert model.gate_policy == bench.CLASSIFIER_LRT_MULTIWINDOW_REJECT_GATE_POLICY
+    assert model.lrt_feature_indices
+    assert model.lrt_feature_mean_control is not None
+    assert model.lrt_feature_std_control is not None
+    assert model.lrt_feature_mean_idle is not None
+    assert model.lrt_feature_std_idle is not None
+    assert float(bundle["async_metrics"]["control_trials"]) == 8.0
+    assert float(bundle["async_metrics"]["control_recall"]) == 1.0
+    assert len(bundle["classifier_trial_events"]) == len(scored)
+
+
+def test_classifier_recipe_id_records_smoothing_window() -> None:
+    assert (
+        bench._classifier_recipe_id_with_smoothing(
+            win_sec=1.75,
+            min_enter_windows=2,
+            max_gap_windows=1,
+            smoothing_windows=3,
+        )
+        == "win1p75_me2_gap1_sm3"
+    )
+    assert (
+        bench._classifier_recipe_id_with_smoothing(
+            win_sec=1.75,
+            min_enter_windows=2,
+            max_gap_windows=1,
+            smoothing_windows=1,
+        )
+        == "win1p75_me2_gap1"
+    )
+    assert (
+        bench._classifier_recipe_id_with_smoothing(
+            win_sec=1.75,
+            min_enter_windows=2,
+            max_gap_windows=1,
+            smoothing_windows=2,
+            gate_policy=bench.CLASSIFIER_ADAPTIVE_EVIDENCE_GATE_POLICY,
+        )
+        == "win1p75_me2_gap1_sm2_aeg"
+    )
+    assert (
+        bench._classifier_recipe_id_with_smoothing(
+            win_sec=1.75,
+            min_enter_windows=2,
+            max_gap_windows=1,
+            smoothing_windows=2,
+            gate_policy=bench.CLASSIFIER_LRT_MULTIWINDOW_REJECT_GATE_POLICY,
+        )
+        == "win1p75_me2_gap1_sm2_lrtmw"
+    )
 
 
 def test_fbcca_lda5_fixed_window_uses_last_window() -> None:
@@ -1307,6 +1860,25 @@ def test_score_based_method_artifact_propagates_decoder_metadata(monkeypatch, tm
     assert artifact["training_provenance"]["decoder_name"] == "itcca"
 
 
+def test_fit_decoder_methods_reject_full_reference_bank_mode() -> None:
+    with pytest.raises(ValueError, match="does not support score_bank_mode=full_reference_bank"):
+        bench._score_split_once_for_method(
+            method_name="ecca5",
+            freqs=(9.8, 12.0, 14.8, 15.8),
+            sampling_rate=250,
+            step_sec=0.25,
+            compute_backend="cpu",
+            gpu_device=0,
+            gpu_precision="float32",
+            calibration_segments=[],
+            holdout_segments=[],
+            win_sec=1.5,
+            context="ecca full-bank guard",
+            score_bank_mode="full_reference_bank",
+            full_bank_freqs=(8.0, 8.2, 8.4, 8.6),
+        )
+
+
 def test_score_segment_subset_cached_reuses_overlap_and_preserves_order(monkeypatch) -> None:
     freqs = (9.8, 12.0, 14.8, 15.8)
     feature_count = len(bench._classifier_feature_names(freqs))
@@ -1483,6 +2055,37 @@ def test_aggregate_recipe_rows_uses_subject_level_means() -> None:
     assert abs(float(summary["mean_control_recall_at_2s"]) - 0.575) < 1e-9
     assert abs(float(summary["mean_control_recall_at_2.5s"]) - 0.75) < 1e-9
     assert abs(float(summary["mean_detection_latency_s"]) - 1.9) < 1e-9
+
+
+def test_aggregate_recipe_rows_exposes_ysuan_ns_metrics() -> None:
+    row = _aggregate_test_row(
+        subject="S01",
+        recipe_id="win1p5_me2",
+        async_acc_5class=0.7,
+        async_macro_f1_5class=0.7,
+        idle_fp_per_min=0.4,
+        control_recall=0.8,
+        detection_latency_s=1.5,
+    )
+    row["dataset"] = "ysu_an"
+    row["summary_metrics"].update(
+        {
+            "ns1_fp_per_min": 0.1,
+            "ns2_fp_per_min": 0.2,
+            "ns3_fp_per_min": 0.3,
+            "ns_all_fp_per_min": 0.25,
+            "cs_control_recall": 0.8,
+        }
+    )
+
+    summary = bench.aggregate_recipe_rows([row], expected_subject_count=1)[0]
+
+    assert abs(float(summary["mean_ns1_fp_per_min"]) - 0.1) < 1e-9
+    assert abs(float(summary["mean_ns2_fp_per_min"]) - 0.2) < 1e-9
+    assert abs(float(summary["mean_ns3_fp_per_min"]) - 0.3) < 1e-9
+    assert abs(float(summary["mean_ns_all_fp_per_min"]) - 0.25) < 1e-9
+    assert abs(float(summary["mean_cs_control_recall"]) - 0.8) < 1e-9
+    assert abs(float(summary["subjects"][0]["mean_ns_all_fp_per_min"]) - 0.25) < 1e-9
 
 
 def test_aggregate_recipe_rows_tracks_shared_coverage() -> None:

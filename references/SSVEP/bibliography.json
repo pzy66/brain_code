@@ -212,6 +212,23 @@
                                               "external benchmark confirmation",
                                               "frequency selection"
                                           ]
+                         },
+                         {
+                             "area":  "External dataset",
+                             "key":  "zhao_2024_ysu_an_async_ssvep",
+                             "title":  "YSU-an EEG dataset for studying asynchronous SSVEP-BCI",
+                             "identifiers":  {
+                                                 "doi":  "10.6084/m9.figshare.24906300",
+                                                 "article_doi":  "10.1080/27706710.2024.2418650",
+                                                 "figshare":  "https://figshare.com/articles/dataset/YSU-an_EEG_dataset_for_studying_asynchronous_SSVEP-BCI/24906300"
+                                             },
+                             "local":  [
+                                           "02_dataset_references/YSU_an/figshare_record_note.md"
+                                       ],
+                             "used_for":  [
+                                              "asynchronous no-control validation candidate",
+                                              "CS-vs-NS benchmark planning"
+                                          ]
                          }
                      ]
 }

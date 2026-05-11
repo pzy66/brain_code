@@ -48,13 +48,24 @@ from ssvep_core.external_wang2016_dataset import (
     load_wang2016_subject,
     resolve_wang2016_command_frequencies,
 )
+from ssvep_core.external_ysuan_dataset import (
+    YSUAN_DEFAULT_NS_CALIBRATION_TRIALS_PER_SUBTYPE,
+    YSUAN_FREQS,
+    YSUAN_REQUIRED_CHANNELS,
+    YSUAN_TARGET_FREQUENCIES,
+    build_ysuan_cs_segments,
+    build_ysuan_ns_segments,
+    build_ysuan_segments,
+    load_ysuan_subject,
+    resolve_ysuan_command_frequencies,
+)
 from ssvep_core.fast_fbcca_pretrain import FastFBCCAPretrainConfig, run_fast_fbcca_personalization
 from ssvep_core.fbcca_threshold_pretrain import FBCCAThresholdPretrainConfig, run_fbcca_threshold_pretrain
 from ssvep_core.stimulus_profiles import frame_lock_frequency_report
 
 
 DEFAULT_FREQS = (9.8, 12.0, 14.8, 15.8)
-DEFAULT_DATASETS = ("wang2016", "beta")
+DEFAULT_DATASETS = ("wang2016", "beta", "ysu_an")
 DEFAULT_METHODS = ("zero_shot_default", "fast_fbcca", "threshold_pretrain", "fbcca_lda5", "fbcca_ridge5")
 SUPPORTED_SHORT_PRETRAIN_METHODS = ("itcca5", "ecca5", "trca5", "trca_r5", "tdca5")
 SUPPORTED_METHODS = DEFAULT_METHODS + SUPPORTED_SHORT_PRETRAIN_METHODS
@@ -74,14 +85,25 @@ DEFAULT_THRESHOLD_CONTROL_STATE_MODES = ("unified", "frequency-specific-threshol
 DEFAULT_CLASSIFIER_WIN_SEC_CANDIDATES = (1.5, 2.0, 2.5)
 DEFAULT_CLASSIFIER_MIN_ENTER_CANDIDATES = (1, 2)
 DEFAULT_CLASSIFIER_MAX_GAP_CANDIDATES = (0,)
+DEFAULT_CLASSIFIER_SMOOTHING_WINDOWS_CANDIDATES = (1,)
 DEFAULT_CLASSIFIER_THRESHOLD_POLICY = "balanced"
-CLASSIFIER_THRESHOLD_POLICIES = ("balanced", "balanced_recall_guard")
+CLASSIFIER_CONFIDENCE_GATE_POLICY = "confidence_threshold"
+CLASSIFIER_ADAPTIVE_EVIDENCE_GATE_POLICY = "adaptive_evidence_gate"
+CLASSIFIER_LRT_MULTIWINDOW_REJECT_GATE_POLICY = "lrt_multiwindow_reject_gate"
+CLASSIFIER_SUBJECT_ADAPTIVE_THRESHOLD_POLICY = "subject_adaptive_threshold"
+CLASSIFIER_THRESHOLD_POLICIES = (
+    "balanced",
+    "balanced_recall_guard",
+    CLASSIFIER_ADAPTIVE_EVIDENCE_GATE_POLICY,
+    CLASSIFIER_LRT_MULTIWINDOW_REJECT_GATE_POLICY,
+    CLASSIFIER_SUBJECT_ADAPTIVE_THRESHOLD_POLICY,
+)
 DEFAULT_SCORE_BANK_MODE = "command_only"
 SCORE_BANK_MODES = ("command_only", "full_reference_bank")
 DEFAULT_FREQ_SEARCH_MODE = "none"
 FREQ_SEARCH_MODES = ("none", "shared_fixed4", "personalized_upper_bound", "both")
 DEFAULT_FREQ_CANDIDATE_SOURCE = "frame_locked_240"
-FREQ_CANDIDATE_SOURCES = ("frame_locked_240", "beta_all40", "wang_all40")
+FREQ_CANDIDATE_SOURCES = ("frame_locked_240", "beta_all40", "wang_all40", "ysu_an_all8")
 DEFAULT_IDLE_EVAL_MODE = "hard_noncommand"
 IDLE_EVAL_MODES = ("hard_noncommand", "clean_idle_proxy", "both")
 DEFAULT_PRETRAIN_BUDGET_SEC = 120.0
@@ -110,6 +132,24 @@ FULL_REFERENCE_BANK_FEATURE_NAMES = (
     "nearest_noncommand_margin",
     "all_bank_entropy",
 )
+ADAPTIVE_EVIDENCE_FEATURE_NAMES = (
+    "command_probability",
+    "top_command_probability",
+    "command_vs_idle_probability_margin",
+    "top_command_probability_margin",
+    "top_command_probability_ratio",
+    "probability_entropy",
+    "same_top_command_as_previous",
+    "causal_top_command_streak",
+    "full_bank_command_to_all_ratio",
+    "full_bank_nearest_noncommand_margin",
+    "full_bank_inverse_command_rank",
+    "full_bank_entropy",
+)
+DEFAULT_ADAPTIVE_EVIDENCE_ENTER_CANDIDATES = (0.0, 0.25, 0.5, 1.0, 1.5, 2.0)
+DEFAULT_ADAPTIVE_EVIDENCE_DECAY = 0.50
+DEFAULT_LRT_MULTIWINDOW_ENTER_CANDIDATES = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0)
+DEFAULT_LRT_MULTIWINDOW_DECAY = 0.65
 
 
 @dataclass(frozen=True)
@@ -233,6 +273,22 @@ class FBCCALDA5Model:
     pooled_var: np.ndarray
     command_confidence_th: float
     fit_summary: dict[str, Any]
+    smoothing_windows: int = 1
+    gate_policy: str = CLASSIFIER_CONFIDENCE_GATE_POLICY
+    evidence_weights: Optional[np.ndarray] = None
+    evidence_feature_mean: Optional[np.ndarray] = None
+    evidence_feature_std: Optional[np.ndarray] = None
+    evidence_decision_th: float = 0.0
+    evidence_enter_th: float = 0.0
+    evidence_decay: float = DEFAULT_ADAPTIVE_EVIDENCE_DECAY
+    lrt_feature_indices: tuple[int, ...] = ()
+    lrt_feature_mean_control: Optional[np.ndarray] = None
+    lrt_feature_std_control: Optional[np.ndarray] = None
+    lrt_feature_mean_idle: Optional[np.ndarray] = None
+    lrt_feature_std_idle: Optional[np.ndarray] = None
+    lrt_window_th: float = 0.0
+    lrt_enter_th: float = 0.0
+    lrt_decay: float = DEFAULT_LRT_MULTIWINDOW_DECAY
 
 
 @dataclass(frozen=True)
@@ -245,6 +301,22 @@ class FBCCARidge5Model:
     l2: float
     command_confidence_th: float
     fit_summary: dict[str, Any]
+    smoothing_windows: int = 1
+    gate_policy: str = CLASSIFIER_CONFIDENCE_GATE_POLICY
+    evidence_weights: Optional[np.ndarray] = None
+    evidence_feature_mean: Optional[np.ndarray] = None
+    evidence_feature_std: Optional[np.ndarray] = None
+    evidence_decision_th: float = 0.0
+    evidence_enter_th: float = 0.0
+    evidence_decay: float = DEFAULT_ADAPTIVE_EVIDENCE_DECAY
+    lrt_feature_indices: tuple[int, ...] = ()
+    lrt_feature_mean_control: Optional[np.ndarray] = None
+    lrt_feature_std_control: Optional[np.ndarray] = None
+    lrt_feature_mean_idle: Optional[np.ndarray] = None
+    lrt_feature_std_idle: Optional[np.ndarray] = None
+    lrt_window_th: float = 0.0
+    lrt_enter_th: float = 0.0
+    lrt_decay: float = DEFAULT_LRT_MULTIWINDOW_DECAY
 
 
 def _write_json(path: Path, payload: Any) -> None:
@@ -352,7 +424,12 @@ def _classifier_threshold_rank_key(
     tie_breaker: float = 0.0,
 ) -> tuple[float, ...]:
     normalized = str(policy or DEFAULT_CLASSIFIER_THRESHOLD_POLICY).strip().lower()
-    if normalized == "balanced_recall_guard":
+    if normalized in {
+        "balanced_recall_guard",
+        CLASSIFIER_ADAPTIVE_EVIDENCE_GATE_POLICY,
+        CLASSIFIER_LRT_MULTIWINDOW_REJECT_GATE_POLICY,
+        CLASSIFIER_SUBJECT_ADAPTIVE_THRESHOLD_POLICY,
+    }:
         return _classifier_recall_guard_rank_key(metrics, tie_breaker=tie_breaker)
     if normalized != "balanced":
         raise ValueError(
@@ -492,6 +569,31 @@ def _classifier_recipe_id(*, win_sec: float, min_enter_windows: int, max_gap_win
     return base.replace(".", "p")
 
 
+def _classifier_recipe_id_with_smoothing(
+    *,
+    win_sec: float,
+    min_enter_windows: int,
+    max_gap_windows: int = 0,
+    smoothing_windows: int = 1,
+    gate_policy: str = CLASSIFIER_CONFIDENCE_GATE_POLICY,
+) -> str:
+    base = _classifier_recipe_id(
+        win_sec=float(win_sec),
+        min_enter_windows=int(min_enter_windows),
+        max_gap_windows=max(0, int(max_gap_windows)),
+    )
+    if int(smoothing_windows) > 1:
+        base = f"{base}_sm{int(smoothing_windows)}"
+    normalized_gate = str(gate_policy or CLASSIFIER_CONFIDENCE_GATE_POLICY).strip().lower()
+    if normalized_gate == CLASSIFIER_ADAPTIVE_EVIDENCE_GATE_POLICY:
+        base = f"{base}_aeg"
+    elif normalized_gate == CLASSIFIER_LRT_MULTIWINDOW_REJECT_GATE_POLICY:
+        base = f"{base}_lrtmw"
+    elif normalized_gate == CLASSIFIER_SUBJECT_ADAPTIVE_THRESHOLD_POLICY:
+        base = f"{base}_sat"
+    return base
+
+
 def _score_method_candidate_pairs(
     *,
     method_name: str,
@@ -596,6 +698,8 @@ def _dataset_all_target_freqs(dataset: str) -> tuple[float, ...]:
         from ssvep_core.external_wang2016_dataset import WANG2016_TARGET_FREQUENCIES
 
         return tuple(float(freq) for freq in WANG2016_TARGET_FREQUENCIES)
+    if normalized == "ysu_an":
+        return tuple(float(freq) for freq in YSUAN_TARGET_FREQUENCIES)
     return tuple(float(freq) for freq in DEFAULT_FRAME_LOCKED_240_FREQS)
 
 
@@ -736,6 +840,16 @@ def _build_all_target_segments_for_spec(
             ),
             command_freqs=candidate,
         )
+    if str(spec.dataset).strip().lower() == "ysu_an":
+        subject = load_ysuan_subject(spec.mat_path, channel_loc_path=spec.channel_loc_path)
+        segments = [
+            *build_ysuan_cs_segments(subject, freqs=candidate),
+            *build_ysuan_ns_segments(subject),
+        ]
+        return _relabel_segments_for_command_freqs(
+            segments,
+            command_freqs=candidate,
+        )
     raise ValueError(f"unsupported dataset: {spec.dataset}")
 
 
@@ -768,6 +882,9 @@ def _build_clean_idle_segments_for_spec(
             )
             if item[0].expected_freq is None
         ]
+    if str(spec.dataset).strip().lower() == "ysu_an":
+        subject = load_ysuan_subject(spec.mat_path, channel_loc_path=spec.channel_loc_path)
+        return build_ysuan_ns_segments(subject)
     raise ValueError(f"unsupported dataset: {spec.dataset}")
 
 
@@ -832,6 +949,83 @@ def _evaluate_clean_idle_proxy_from_cache(
     }
 
 
+def _ysuan_ns_subtype_from_label(label: str) -> Optional[str]:
+    text = str(label).strip().lower()
+    match = re.search(r"(?:^|[_-])(ns[123])(?:[_-]|$)", text)
+    if match:
+        return str(match.group(1))
+    return None
+
+
+def _evaluate_no_control_subtypes_from_cache(
+    model: FBCCALDA5Model | FBCCARidge5Model,
+    scored_trials: Sequence[ScoredTrial],
+    *,
+    win_sec: float,
+    step_sec: float,
+    min_enter_windows: int,
+    max_gap_windows: int,
+) -> dict[str, Any]:
+    grouped: dict[str, list[ScoredTrial]] = defaultdict(list)
+    for item in scored_trials:
+        subtype = _ysuan_ns_subtype_from_label(str(item.trial.label))
+        if subtype:
+            grouped[subtype].append(item)
+    subtype_metrics: dict[str, dict[str, Any]] = {}
+    fp_values: list[float] = []
+    for subtype in ("ns1", "ns2", "ns3"):
+        metrics = _evaluate_clean_idle_proxy_from_cache(
+            model,
+            grouped.get(subtype, []),
+            win_sec=float(win_sec),
+            step_sec=float(step_sec),
+            min_enter_windows=max(1, int(min_enter_windows)),
+            max_gap_windows=max(0, int(max_gap_windows)),
+        )
+        subtype_metrics[subtype] = metrics
+        if bool(metrics.get("supported", False)):
+            fp_values.append(_safe_float(metrics.get("idle_fp_per_min"), 0.0))
+    pooled = _evaluate_clean_idle_proxy_from_cache(
+        model,
+        scored_trials,
+        win_sec=float(win_sec),
+        step_sec=float(step_sec),
+        min_enter_windows=max(1, int(min_enter_windows)),
+        max_gap_windows=max(0, int(max_gap_windows)),
+    )
+    return {
+        "supported": bool(pooled.get("supported", False)),
+        "ns1": subtype_metrics["ns1"],
+        "ns2": subtype_metrics["ns2"],
+        "ns3": subtype_metrics["ns3"],
+        "ns_all_fp_per_min": _safe_float(pooled.get("idle_fp_per_min"), float("nan")),
+        "ns_all_trial_fp_rate": _safe_float(pooled.get("idle_trial_fp_rate"), float("nan")),
+        "pooled": pooled,
+    }
+
+
+def _ysuan_holdout_no_control_scored(
+    scored_trials: Sequence[ScoredTrial],
+    *,
+    win_sec: float,
+) -> tuple[list[ScoredTrial], dict[str, Any]]:
+    ns_scored = [
+        item
+        for item in scored_trials
+        if item.trial.expected_freq is None and _ysuan_ns_subtype_from_label(str(item.trial.label))
+    ]
+    durations = [float(item.duration_sec) for item in ns_scored]
+    max_duration = max(durations, default=0.0)
+    return ns_scored, {
+        "available": bool(ns_scored),
+        "supported": bool(ns_scored),
+        "segment_count": int(len(ns_scored)),
+        "max_segment_duration_sec": float(max_duration),
+        "requested_win_sec": float(win_sec),
+        "note": "YSU-an no-control metrics use holdout NS1/NS2/NS3 trials only.",
+    }
+
+
 def _candidate_freqs_for_source(*, source: str, datasets: Sequence[str]) -> tuple[float, ...]:
     normalized = _parse_freq_candidate_source(source)
     if normalized == "frame_locked_240":
@@ -840,6 +1034,8 @@ def _candidate_freqs_for_source(*, source: str, datasets: Sequence[str]) -> tupl
         return _dataset_all_target_freqs("beta")
     if normalized == "wang_all40":
         return _dataset_all_target_freqs("wang2016")
+    if normalized == "ysu_an_all8":
+        return _dataset_all_target_freqs("ysu_an")
     return _dataset_all_target_freqs(str(next(iter(datasets), "beta")))
 
 
@@ -1191,6 +1387,8 @@ def _required_channel_names(dataset: str) -> tuple[str, ...]:
         return tuple(str(name) for name in WANG2016_REQUIRED_CHANNELS)
     if str(dataset) == "beta":
         return tuple(str(name) for name in BETA_REQUIRED_CHANNELS)
+    if str(dataset) == "ysu_an":
+        return tuple(str(name) for name in YSUAN_REQUIRED_CHANNELS)
     raise ValueError(f"unsupported dataset: {dataset}")
 
 
@@ -1201,6 +1399,8 @@ def enumerate_external_subjects(
     wang_raw_dir: Path,
     wang_channels_loc: Path,
     beta_raw_dir: Path,
+    ysu_an_raw_dir: Optional[Path] = None,
+    ysu_an_channel_loc: Optional[Path] = None,
     subject_limit_per_dataset: int = 0,
     subject_whitelist: Sequence[tuple[str, str]] = (),
 ) -> list[ExternalSubjectSpec]:
@@ -1235,6 +1435,34 @@ def enumerate_external_subjects(
                     dataset="beta",
                     subject=path.stem.upper(),
                     mat_path=path,
+                    freqs=requested_freqs,  # type: ignore[arg-type]
+                )
+            )
+    if "ysu_an" in datasets:
+        if ysu_an_raw_dir is None:
+            raise ValueError("ysu_an requires ysu_an_raw_dir")
+        raw_dir = Path(ysu_an_raw_dir).expanduser().resolve()
+        subject_paths: dict[str, Path] = {}
+        for path in sorted(raw_dir.glob("S*")):
+            if not path.is_dir() and path.suffix.lower() != ".mat":
+                continue
+            match = re.search(r"S\d{2}", path.stem.upper())
+            if not match:
+                continue
+            subject_key = match.group(0)
+            if subject_key not in subject_paths or path.is_dir():
+                subject_paths[subject_key] = path
+        paths = [subject_paths[key] for key in sorted(subject_paths)]
+        filtered_paths = [path for path in paths if _subject_allowed("ysu_an", path.stem.upper(), subject_whitelist)]
+        if dataset_limit > 0:
+            filtered_paths = filtered_paths[:dataset_limit]
+        for path in filtered_paths:
+            rows.append(
+                ExternalSubjectSpec(
+                    dataset="ysu_an",
+                    subject=path.stem.upper(),
+                    mat_path=path,
+                    channel_loc_path=Path(ysu_an_channel_loc).expanduser().resolve() if ysu_an_channel_loc else None,
                     freqs=requested_freqs,  # type: ignore[arg-type]
                 )
             )
@@ -1291,6 +1519,32 @@ def load_external_subject_segments(spec: ExternalSubjectSpec) -> tuple[int, list
             "all_target_frequencies": [float(freq) for freq in subject.target_frequencies],
             "idle_proxy_note": (
                 "Idle/no-control is proxied with non-command target stimulus trials from the external benchmark."
+            ),
+        }
+        return int(subject.sampling_rate), segments, metadata
+    if spec.dataset == "ysu_an":
+        subject = load_ysuan_subject(spec.mat_path, channel_loc_path=spec.channel_loc_path)
+        resolved_freqs, target_index = resolve_ysuan_command_frequencies(freqs)
+        segments = build_ysuan_segments(
+            subject,
+            freqs=resolved_freqs,
+            include_ns_idle=True,
+        )
+        metadata = {
+            "dataset": "ysu_an",
+            "subject": subject.subject,
+            "mat_path": str(subject.root_path),
+            "channel_loc_path": "" if spec.channel_loc_path is None else str(spec.channel_loc_path),
+            "sampling_rate": int(subject.sampling_rate),
+            "raw_sampling_rate": int(subject.raw_sampling_rate),
+            "required_channel_names": list(YSUAN_REQUIRED_CHANNELS),
+            "selected_channel_names": list(subject.selected_channel_names),
+            "selected_channel_indices_zero_based": list(subject.selected_channel_indices),
+            "target_index_by_freq": {f"{float(freq):g}": int(index) for freq, index in target_index.items()},
+            "all_target_frequencies": [float(freq) for freq in YSUAN_TARGET_FREQUENCIES],
+            "no_control_subtypes": ["ns1", "ns2", "ns3"],
+            "idle_proxy_note": (
+                "YSU-an idle/no-control uses explicit NS1/NS2/NS3 trials, not non-command target proxy."
             ),
         }
         return int(subject.sampling_rate), segments, metadata
@@ -1374,6 +1628,85 @@ def select_split_segments(
         "idle_multiplier": float(idle_multiplier),
         "idle_pool_count": int(len(calibration_idle_pool)),
         "idle_selected_count": int(len(sampled_idle)),
+        "calibration_blocks": [int(block) for block in calibration_blocks],
+        "holdout_blocks": [int(block) for block in holdout_blocks],
+        "calibration_counts": _count_segments(calibration_segments, freqs),
+        "holdout_counts": _count_segments(holdout_segments, freqs),
+    }
+    return calibration_segments, holdout_segments, summary
+
+
+def select_ysuan_split_segments(
+    segments: Sequence[tuple[TrialSpec, np.ndarray]],
+    *,
+    freqs: Sequence[float],
+    calibration_blocks: Sequence[int],
+    holdout_blocks: Sequence[int],
+    idle_multiplier: float,
+    seed: int,
+    ns_calibration_trials_per_subtype: int = YSUAN_DEFAULT_NS_CALIBRATION_TRIALS_PER_SUBTYPE,
+) -> tuple[list[tuple[TrialSpec, np.ndarray]], list[tuple[TrialSpec, np.ndarray]], dict[str, Any]]:
+    calibration_block_set = {int(block) for block in calibration_blocks}
+    holdout_block_set = {int(block) for block in holdout_blocks}
+    calibration_control = [
+        item
+        for item in segments
+        if int(item[0].block_index) in calibration_block_set and item[0].expected_freq is not None
+    ]
+    holdout_control = [
+        item
+        for item in segments
+        if int(item[0].block_index) in holdout_block_set and item[0].expected_freq is not None
+    ]
+    ns_groups: dict[str, list[tuple[TrialSpec, np.ndarray]]] = defaultdict(list)
+    for item in segments:
+        trial, _segment = item
+        if trial.expected_freq is not None:
+            continue
+        subtype = _ysuan_ns_subtype_from_label(str(trial.label))
+        if subtype:
+            ns_groups[subtype].append(item)
+    calibration_idle_pool: list[tuple[TrialSpec, np.ndarray]] = []
+    holdout_idle: list[tuple[TrialSpec, np.ndarray]] = []
+    ns_cal_count = max(0, int(ns_calibration_trials_per_subtype))
+    for subtype in ("ns1", "ns2", "ns3"):
+        group = sorted(ns_groups.get(subtype, []), key=_trial_sort_key)
+        calibration_idle_pool.extend(group[:ns_cal_count])
+        holdout_idle.extend(group[ns_cal_count:])
+    control_count = len(calibration_control)
+    if control_count <= 0:
+        raise ValueError("YSU-an calibration split produced no CS control trials")
+    holdout_segments = sorted([*holdout_control, *holdout_idle], key=_trial_sort_key)
+    if not holdout_segments or not holdout_control:
+        raise ValueError("YSU-an holdout split produced no CS holdout trials")
+    idle_budget = int(round(float(control_count) * max(float(idle_multiplier), 0.0)))
+    if idle_budget > len(calibration_idle_pool):
+        idle_budget = len(calibration_idle_pool)
+    rng = random.Random(int(seed))
+    sampled_idle = list(calibration_idle_pool)
+    if idle_budget < len(sampled_idle):
+        sampled_idle = rng.sample(sampled_idle, idle_budget)
+    calibration_segments = sorted([*calibration_control, *sampled_idle], key=_trial_sort_key)
+    subtype_counts = {
+        subtype: int(
+            sum(1 for item in sampled_idle if _ysuan_ns_subtype_from_label(str(item[0].label)) == subtype)
+        )
+        for subtype in ("ns1", "ns2", "ns3")
+    }
+    holdout_subtype_counts = {
+        subtype: int(
+            sum(1 for item in holdout_idle if _ysuan_ns_subtype_from_label(str(item[0].label)) == subtype)
+        )
+        for subtype in ("ns1", "ns2", "ns3")
+    }
+    summary = {
+        "seed": int(seed),
+        "idle_multiplier": float(idle_multiplier),
+        "idle_pool_count": int(len(calibration_idle_pool)),
+        "idle_selected_count": int(len(sampled_idle)),
+        "ysu_an_ns_calibration_trials_per_subtype": int(ns_cal_count),
+        "ysu_an_ns_calibration_counts": subtype_counts,
+        "ysu_an_ns_holdout_counts": holdout_subtype_counts,
         "calibration_blocks": [int(block) for block in calibration_blocks],
         "holdout_blocks": [int(block) for block in holdout_blocks],
         "calibration_counts": _count_segments(calibration_segments, freqs),
@@ -1829,6 +2162,176 @@ def _fbcca_ridge5_predict_windows(model: FBCCARidge5Model, feature_matrix: np.nd
     return probs, np.asarray(model.labels, dtype=object)
 
 
+def _softmax_2class_logit(logit: np.ndarray) -> np.ndarray:
+    values = np.asarray(logit, dtype=np.float64)
+    return 1.0 / (1.0 + np.exp(-np.clip(values, -60.0, 60.0)))
+
+
+def _safe_probability_entropy(probs: np.ndarray) -> np.ndarray:
+    values = np.asarray(probs, dtype=np.float64)
+    if values.ndim != 2:
+        raise ValueError("probability matrix must be 2D")
+    safe = np.clip(values, 1e-12, 1.0)
+    safe = safe / np.maximum(np.sum(safe, axis=1, keepdims=True), 1e-12)
+    return (-np.sum(safe * np.log(safe), axis=1) / np.log(float(max(values.shape[1], 2)))).astype(
+        np.float64,
+        copy=False,
+    )
+
+
+def _adaptive_gate_feature_matrix(
+    *,
+    probs: np.ndarray,
+    labels: np.ndarray,
+    scored_trial: Optional[ScoredTrial] = None,
+) -> np.ndarray:
+    probability = np.asarray(probs, dtype=np.float64)
+    if probability.ndim != 2 or probability.shape[0] <= 0:
+        return np.zeros((0, len(ADAPTIVE_EVIDENCE_FEATURE_NAMES)), dtype=np.float64)
+    label_values = np.asarray(labels, dtype=object)
+    idle_matches = np.where(label_values == "idle")[0]
+    if idle_matches.size <= 0:
+        raise ValueError("adaptive evidence gate requires an idle label")
+    idle_index = int(idle_matches[0])
+    command_indices = np.asarray([index for index in range(int(label_values.shape[0])) if index != idle_index], dtype=int)
+    if command_indices.size <= 0:
+        raise ValueError("adaptive evidence gate requires command labels")
+    command_probs = probability[:, command_indices]
+    top_command_local = np.argmax(command_probs, axis=1)
+    top_command_prob = np.take_along_axis(command_probs, top_command_local[:, None], axis=1)[:, 0]
+    if command_probs.shape[1] >= 2:
+        sorted_command = np.sort(command_probs, axis=1)[:, ::-1]
+        top2_command_prob = sorted_command[:, 1]
+    else:
+        top2_command_prob = np.zeros(int(command_probs.shape[0]), dtype=np.float64)
+    idle_prob = probability[:, idle_index]
+    command_probability = 1.0 - idle_prob
+    top_command_label_index = command_indices[top_command_local]
+    same_previous = np.zeros(int(probability.shape[0]), dtype=np.float64)
+    streak = np.ones(int(probability.shape[0]), dtype=np.float64)
+    for index in range(1, int(probability.shape[0])):
+        if int(top_command_label_index[index]) == int(top_command_label_index[index - 1]):
+            same_previous[index] = 1.0
+            streak[index] = streak[index - 1] + 1.0
+    entropy = _safe_probability_entropy(probability)
+
+    full_ratio = np.ones(int(probability.shape[0]), dtype=np.float64)
+    full_margin = np.zeros(int(probability.shape[0]), dtype=np.float64)
+    inverse_rank = np.ones(int(probability.shape[0]), dtype=np.float64)
+    full_entropy = entropy.copy()
+    if scored_trial is not None:
+        features = np.asarray(scored_trial.feature_matrix, dtype=np.float64)
+        full_start = int(command_indices.size + len(CLASSIFIER_DERIVED_FEATURE_NAMES))
+        if features.ndim == 2 and features.shape[1] >= full_start + len(FULL_REFERENCE_BANK_FEATURE_NAMES):
+            full = features[:, full_start : full_start + len(FULL_REFERENCE_BANK_FEATURE_NAMES)]
+            full_ratio = np.asarray(full[:, 3], dtype=np.float64)
+            full_margin = np.asarray(full[:, 4], dtype=np.float64)
+            inverse_rank = 1.0 / np.maximum(np.asarray(full[:, 2], dtype=np.float64), 1.0)
+            full_entropy = np.asarray(full[:, 5], dtype=np.float64)
+
+    return np.column_stack(
+        [
+            command_probability,
+            top_command_prob,
+            command_probability - idle_prob,
+            top_command_prob - top2_command_prob,
+            top_command_prob / np.maximum(top2_command_prob, 1e-12),
+            entropy,
+            same_previous,
+            streak,
+            full_ratio,
+            full_margin,
+            inverse_rank,
+            full_entropy,
+        ]
+    ).astype(np.float64, copy=False)
+
+
+def _adaptive_gate_feature_matrix_for_trial(
+    model: FBCCALDA5Model | FBCCARidge5Model,
+    item: ScoredTrial,
+    probs: np.ndarray,
+    labels: np.ndarray,
+) -> np.ndarray:
+    return _adaptive_gate_feature_matrix(
+        probs=probs,
+        labels=labels,
+        scored_trial=item,
+    )
+
+
+def _adaptive_gate_window_probabilities(
+    model: FBCCALDA5Model | FBCCARidge5Model,
+    features: np.ndarray,
+) -> np.ndarray:
+    if model.evidence_weights is None:
+        raise ValueError("adaptive evidence gate model is missing evidence weights")
+    values = np.asarray(features, dtype=np.float64)
+    if values.ndim != 2:
+        raise ValueError("adaptive evidence gate features must be 2D")
+    mean = (
+        np.asarray(model.evidence_feature_mean, dtype=np.float64)
+        if model.evidence_feature_mean is not None
+        else np.zeros(int(values.shape[1]), dtype=np.float64)
+    )
+    std = (
+        np.asarray(model.evidence_feature_std, dtype=np.float64)
+        if model.evidence_feature_std is not None
+        else np.ones(int(values.shape[1]), dtype=np.float64)
+    )
+    z = (values - mean) / np.maximum(std, 1e-9)
+    design = np.column_stack([np.ones(int(z.shape[0]), dtype=np.float64), z])
+    logits = design @ np.asarray(model.evidence_weights, dtype=np.float64)
+    return _softmax_2class_logit(logits)
+
+
+def _fit_logistic_binary_ridge(
+    x: np.ndarray,
+    y: np.ndarray,
+    *,
+    l2: float = 1.0,
+    max_iter: int = 80,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    features = np.asarray(x, dtype=np.float64)
+    target = np.asarray(y, dtype=np.float64).reshape(-1)
+    if features.ndim != 2 or target.shape[0] != features.shape[0]:
+        raise ValueError("binary logistic fit expects x=(n, d), y=(n,)")
+    if features.shape[0] <= 0 or len(set(float(value) for value in target.tolist())) < 2:
+        raise ValueError("binary logistic fit requires both classes")
+    mean = np.mean(features, axis=0)
+    std = np.std(features, axis=0)
+    std = np.where(std > 1e-9, std, 1.0)
+    z = (features - mean) / std
+    design = np.column_stack([np.ones(int(z.shape[0]), dtype=np.float64), z])
+    weights = np.zeros(int(design.shape[1]), dtype=np.float64)
+    pos = max(float(np.sum(target >= 0.5)), 1.0)
+    neg = max(float(np.sum(target < 0.5)), 1.0)
+    sample_weights = np.where(target >= 0.5, 0.5 / pos, 0.5 / neg)
+    sample_weights *= float(target.shape[0]) / max(float(np.sum(sample_weights)), 1e-12)
+    reg = np.eye(int(design.shape[1]), dtype=np.float64) * max(float(l2), 0.0)
+    reg[0, 0] = 0.0
+    for _ in range(max(1, int(max_iter))):
+        logits = design @ weights
+        probs = _softmax_2class_logit(logits)
+        grad = design.T @ ((probs - target) * sample_weights) + reg @ weights
+        curvature = np.maximum(probs * (1.0 - probs), 1e-6) * sample_weights
+        hessian = design.T @ (design * curvature[:, None]) + reg
+        try:
+            step = np.linalg.solve(hessian, grad)
+        except np.linalg.LinAlgError:
+            step = np.linalg.pinv(hessian) @ grad
+        weights -= step
+        if float(np.linalg.norm(step)) < 1e-6:
+            break
+    return weights.astype(np.float64, copy=False), mean.astype(np.float64, copy=False), std.astype(np.float64, copy=False)
+
+
+def _command_confidence_from_probs(probs: np.ndarray, labels: np.ndarray) -> np.ndarray:
+    values = np.asarray(probs, dtype=np.float64)
+    idle_index = int(np.where(np.asarray(labels, dtype=object) == "idle")[0][0])
+    return 1.0 - values[:, idle_index]
+
+
 def _predict_fbcca_lda5_trial(
     model: FBCCALDA5Model | FBCCARidge5Model,
     item: ScoredTrial,
@@ -1837,6 +2340,31 @@ def _predict_fbcca_lda5_trial(
     max_gap_windows: int = 0,
 ) -> tuple[str, float, float]:
     probs, labels = _predict_classifier_windows(model, item.feature_matrix)
+    probs = _smooth_classifier_probabilities(
+        probs,
+        smoothing_windows=int(getattr(model, "smoothing_windows", 1)),
+    )
+    if str(getattr(model, "gate_policy", CLASSIFIER_CONFIDENCE_GATE_POLICY)) == CLASSIFIER_ADAPTIVE_EVIDENCE_GATE_POLICY:
+        features = _adaptive_gate_feature_matrix_for_trial(model, item, probs, labels)
+        gate_probs = _adaptive_gate_window_probabilities(model, features)
+        return _predict_adaptive_evidence_trial_from_probs(
+            model,
+            probs,
+            labels,
+            gate_probs,
+            min_enter_windows=min_enter_windows,
+            max_gap_windows=max(0, int(max_gap_windows)),
+        )
+    if str(getattr(model, "gate_policy", CLASSIFIER_CONFIDENCE_GATE_POLICY)) == CLASSIFIER_LRT_MULTIWINDOW_REJECT_GATE_POLICY:
+        window_evidence = _lrt_window_evidence_from_features(model, item.feature_matrix)
+        return _predict_lrt_multiwindow_reject_trial_from_probs(
+            model,
+            probs,
+            labels,
+            window_evidence,
+            min_enter_windows=min_enter_windows,
+            max_gap_windows=max(0, int(max_gap_windows)),
+        )
     return _predict_fbcca_lda5_trial_from_probs(
         model,
         probs,
@@ -1844,6 +2372,202 @@ def _predict_fbcca_lda5_trial(
         min_enter_windows=min_enter_windows,
         max_gap_windows=max(0, int(max_gap_windows)),
     )
+
+
+def _smooth_classifier_probabilities(probs: np.ndarray, smoothing_windows: int = 1) -> np.ndarray:
+    values = np.asarray(probs, dtype=np.float64)
+    width = max(1, int(smoothing_windows))
+    if values.ndim != 2 or width <= 1 or values.shape[0] <= 1:
+        return values
+    smoothed = np.empty_like(values, dtype=np.float64)
+    cumulative = np.cumsum(values, axis=0)
+    for index in range(int(values.shape[0])):
+        start = max(0, int(index) - width + 1)
+        total = cumulative[index] - (cumulative[start - 1] if start > 0 else 0.0)
+        smoothed[index] = total / float(index - start + 1)
+    row_sum = np.sum(smoothed, axis=1, keepdims=True)
+    return smoothed / np.maximum(row_sum, 1e-12)
+
+
+def _lrt_window_evidence_from_features(
+    model: FBCCALDA5Model | FBCCARidge5Model,
+    feature_matrix: np.ndarray,
+) -> np.ndarray:
+    features = np.asarray(feature_matrix, dtype=np.float64)
+    if features.ndim != 2 or features.shape[0] <= 0:
+        return np.zeros(0, dtype=np.float64)
+    indices = tuple(int(index) for index in getattr(model, "lrt_feature_indices", ()) or ())
+    if not indices:
+        raise ValueError("lrt multi-window gate requires configured feature indices")
+    selected = features[:, np.asarray(indices, dtype=int)]
+    control_mean = np.asarray(getattr(model, "lrt_feature_mean_control", None), dtype=np.float64)
+    control_std = np.asarray(getattr(model, "lrt_feature_std_control", None), dtype=np.float64)
+    idle_mean = np.asarray(getattr(model, "lrt_feature_mean_idle", None), dtype=np.float64)
+    idle_std = np.asarray(getattr(model, "lrt_feature_std_idle", None), dtype=np.float64)
+    if (
+        control_mean.shape != selected.shape[1:]
+        or control_std.shape != selected.shape[1:]
+        or idle_mean.shape != selected.shape[1:]
+        or idle_std.shape != selected.shape[1:]
+    ):
+        raise ValueError("lrt multi-window gate feature statistics do not match feature indices")
+    control_std = np.maximum(control_std, 1e-6)
+    idle_std = np.maximum(idle_std, 1e-6)
+    control_z = (selected - control_mean) / control_std
+    idle_z = (selected - idle_mean) / idle_std
+    log_control = -0.5 * np.sum(control_z * control_z, axis=1) - np.sum(np.log(control_std))
+    log_idle = -0.5 * np.sum(idle_z * idle_z, axis=1) - np.sum(np.log(idle_std))
+    return (log_control - log_idle).astype(np.float64, copy=False)
+
+
+def _predict_lrt_multiwindow_reject_trial_from_probs(
+    model: FBCCALDA5Model | FBCCARidge5Model,
+    probs: np.ndarray,
+    labels: np.ndarray,
+    window_evidence: np.ndarray,
+    *,
+    min_enter_windows: int,
+    max_gap_windows: int = 0,
+) -> tuple[str, float, float]:
+    if probs.size <= 0:
+        return "idle", 0.0, float("inf")
+    values = np.asarray(probs, dtype=np.float64)
+    evidence = np.asarray(window_evidence, dtype=np.float64).reshape(-1)
+    if evidence.shape[0] != values.shape[0]:
+        raise ValueError("lrt evidence count must match classifier windows")
+    label_values = np.asarray(labels, dtype=object)
+    idle_index = int(np.where(label_values == "idle")[0][0])
+    needed = max(1, int(min_enter_windows))
+    max_gap = max(0, int(max_gap_windows))
+    window_th = float(getattr(model, "lrt_window_th", 0.0))
+    enter_th = float(getattr(model, "lrt_enter_th", 0.0))
+    decay = min(max(float(getattr(model, "lrt_decay", DEFAULT_LRT_MULTIWINDOW_DECAY)), 0.0), 0.99)
+    accumulated_by_label = {str(label): 0.0 for label in label_values if str(label) != "idle"}
+    streak_label = ""
+    streak_count = 0
+    gap_count = 0
+    best_label = "idle"
+    best_score = 0.0
+    best_index = 0
+    for index, row in enumerate(values):
+        pred_index = int(np.argmax(row))
+        pred_label = str(label_values[pred_index])
+        command_confidence = float(1.0 - row[idle_index])
+        evidence_value = float(evidence[index])
+        passes_command = (
+            pred_label != "idle"
+            and command_confidence + 1e-12 >= float(model.command_confidence_th)
+        )
+        passes_lrt = evidence_value + 1e-12 >= window_th
+        if passes_command and passes_lrt:
+            for label in list(accumulated_by_label):
+                if label != pred_label:
+                    accumulated_by_label[label] *= decay
+            increment = max(0.0, evidence_value - window_th)
+            if enter_th <= 1e-12:
+                increment = max(increment, evidence_value)
+            accumulated_by_label[pred_label] = float(accumulated_by_label.get(pred_label, 0.0) + increment)
+            if evidence_value > best_score:
+                best_label = pred_label
+                best_score = evidence_value
+                best_index = int(index)
+            if pred_label == streak_label:
+                streak_count += 1
+            else:
+                streak_label = pred_label
+                streak_count = 1
+            gap_count = 0
+            if streak_count >= needed and (
+                enter_th <= 1e-12 or accumulated_by_label[pred_label] + 1e-12 >= enter_th
+            ):
+                return pred_label, evidence_value, float(index)
+        elif streak_label and gap_count < max_gap:
+            for label in list(accumulated_by_label):
+                accumulated_by_label[label] *= decay
+            gap_count += 1
+        else:
+            for label in list(accumulated_by_label):
+                accumulated_by_label[label] *= decay
+            streak_label = ""
+            streak_count = 0
+            gap_count = 0
+    if needed <= 1 and best_label != "idle" and best_score + 1e-12 >= window_th:
+        return best_label, best_score, float(best_index)
+    return "idle", 0.0, 0.0
+
+
+def _predict_adaptive_evidence_trial_from_probs(
+    model: FBCCALDA5Model | FBCCARidge5Model,
+    probs: np.ndarray,
+    labels: np.ndarray,
+    gate_probs: np.ndarray,
+    *,
+    min_enter_windows: int,
+    max_gap_windows: int = 0,
+) -> tuple[str, float, float]:
+    if probs.size <= 0:
+        return "idle", 0.0, float("inf")
+    values = np.asarray(probs, dtype=np.float64)
+    gates = np.asarray(gate_probs, dtype=np.float64).reshape(-1)
+    if gates.shape[0] != values.shape[0]:
+        raise ValueError("adaptive gate probability count must match classifier windows")
+    label_values = np.asarray(labels, dtype=object)
+    idle_index = int(np.where(label_values == "idle")[0][0])
+    needed = max(1, int(min_enter_windows))
+    max_gap = max(0, int(max_gap_windows))
+    decay = min(max(float(getattr(model, "evidence_decay", DEFAULT_ADAPTIVE_EVIDENCE_DECAY)), 0.0), 0.99)
+    decision_th = float(getattr(model, "evidence_decision_th", 0.5))
+    enter_th = float(getattr(model, "evidence_enter_th", 0.0))
+    evidence_by_label = {str(label): 0.0 for label in label_values if str(label) != "idle"}
+    streak_label = ""
+    streak_count = 0
+    gap_count = 0
+    best_label = "idle"
+    best_conf = 0.0
+    best_index = 0
+    for index, row in enumerate(values):
+        pred_index = int(np.argmax(row))
+        pred_label = str(label_values[pred_index])
+        command_confidence = float(1.0 - row[idle_index])
+        gate_prob = float(gates[index])
+        passes_command = (
+            pred_label != "idle"
+            and command_confidence + 1e-12 >= float(model.command_confidence_th)
+        )
+        passes_gate = gate_prob + 1e-12 >= decision_th
+        if passes_command and passes_gate:
+            for label in list(evidence_by_label):
+                if label != pred_label:
+                    evidence_by_label[label] *= decay
+            increment = max(0.0, gate_prob - decision_th)
+            evidence_by_label[pred_label] = float(evidence_by_label.get(pred_label, 0.0) + increment)
+            if gate_prob > best_conf:
+                best_label = pred_label
+                best_conf = gate_prob
+                best_index = int(index)
+            if pred_label == streak_label:
+                streak_count += 1
+            else:
+                streak_label = pred_label
+                streak_count = 1
+            gap_count = 0
+            if streak_count >= needed and (
+                enter_th <= 1e-12 or evidence_by_label[pred_label] + 1e-12 >= enter_th
+            ):
+                return pred_label, gate_prob, float(index)
+        elif streak_label and gap_count < max_gap:
+            for label in list(evidence_by_label):
+                evidence_by_label[label] *= decay
+            gap_count += 1
+        else:
+            for label in list(evidence_by_label):
+                evidence_by_label[label] *= decay
+            streak_label = ""
+            streak_count = 0
+            gap_count = 0
+    if needed <= 1 and best_label != "idle" and best_conf >= decision_th:
+        return best_label, best_conf, float(best_index)
+    return "idle", 0.0, 0.0
 
 
 def _predict_fbcca_lda5_trial_from_probs(
@@ -1875,7 +2599,7 @@ def _predict_fbcca_lda5_trial_from_probs(
             best_command_label = pred_label
             best_command_confidence = command_confidence
             best_command_index = int(index)
-        if pred_label != "idle" and command_confidence >= float(model.command_confidence_th):
+        if pred_label != "idle" and command_confidence + 1e-12 >= float(model.command_confidence_th):
             if pred_label == streak_label:
                 streak_count += 1
             else:
@@ -1925,6 +2649,10 @@ def _predict_fbcca_lda5_fixed_trial(
     item: ScoredTrial,
 ) -> tuple[str, str, float]:
     probs, labels = _predict_classifier_windows(model, item.feature_matrix)
+    probs = _smooth_classifier_probabilities(
+        probs,
+        smoothing_windows=int(getattr(model, "smoothing_windows", 1)),
+    )
     return _predict_fbcca_lda5_fixed_from_probs(model, probs, labels)
 
 
@@ -2044,6 +2772,7 @@ def _score_split_once_for_method(
     validate_holdout_control: bool = True,
 ) -> tuple[list[ScoredTrial], list[ScoredTrial]]:
     spec = _score_method_spec(method_name)
+    mode = _parse_score_bank_mode(score_bank_mode)
     if not spec.fit_decoder:
         return _score_split_once(
             freqs=freqs,
@@ -2059,6 +2788,11 @@ def _score_split_once_for_method(
             score_bank_mode=score_bank_mode,
             full_bank_freqs=full_bank_freqs,
             validate_holdout_control=bool(validate_holdout_control),
+        )
+    if mode != DEFAULT_SCORE_BANK_MODE:
+        raise ValueError(
+            f"{method_name} does not support score_bank_mode={mode}; "
+            "use command_only for template/spatial decoders or fbcca_lda5/fbcca_ridge5 for full_reference_bank"
         )
     decoder = _build_score_method_decoder(
         method_name=method_name,
@@ -2102,6 +2836,7 @@ def _fbcca_lda5_threshold_candidates(
     model: FBCCALDA5Model | FBCCARidge5Model,
     scored_trials: Sequence[ScoredTrial],
     *,
+    smoothing_windows: int = 1,
     probability_cache: Optional[Sequence[tuple[ScoredTrial, np.ndarray, np.ndarray]]] = None,
 ) -> tuple[float, ...]:
     values: list[float] = [0.0, 1.0]
@@ -2113,6 +2848,10 @@ def _fbcca_lda5_threshold_candidates(
     for _item, probs, labels in cache:
         if probs.size <= 0:
             continue
+        probs = _smooth_classifier_probabilities(
+            probs,
+            smoothing_windows=max(1, int(smoothing_windows)),
+        )
         idle_index = int(np.where(labels == "idle")[0][0])
         pred_indices = np.argmax(probs, axis=1)
         command_mask = pred_indices != idle_index
@@ -2126,6 +2865,475 @@ def _fbcca_lda5_threshold_candidates(
     return tuple(float(value) for value in rounded.tolist())
 
 
+def _fit_adaptive_evidence_gate(
+    base_model: FBCCALDA5Model | FBCCARidge5Model,
+    scored_trials: Sequence[ScoredTrial],
+    *,
+    smoothing_windows: int = 1,
+    l2: float = 1.0,
+) -> dict[str, Any]:
+    probability_cache = _build_classifier_probability_cache(base_model, scored_trials)
+    rows: list[np.ndarray] = []
+    y: list[np.ndarray] = []
+    trial_counts = {"control": 0, "idle": 0}
+    window_counts = {"control": 0, "idle": 0}
+    for item, probs, labels in probability_cache:
+        smoothed = _smooth_classifier_probabilities(
+            probs,
+            smoothing_windows=max(1, int(smoothing_windows)),
+        )
+        features = _adaptive_gate_feature_matrix_for_trial(base_model, item, smoothed, labels)
+        if features.shape[0] <= 0:
+            continue
+        label = _trial_true_label(item.trial)
+        target_value = 0.0 if label == "idle" else 1.0
+        rows.append(features)
+        y.append(np.full(int(features.shape[0]), float(target_value), dtype=np.float64))
+        key = "idle" if label == "idle" else "control"
+        trial_counts[key] += 1
+        window_counts[key] += int(features.shape[0])
+    if not rows:
+        raise ValueError("adaptive evidence gate calibration has no windows")
+    x = np.vstack(rows).astype(np.float64, copy=False)
+    y_array = np.concatenate(y).astype(np.float64, copy=False)
+    if len(set(float(value) for value in y_array.tolist())) < 2:
+        raise ValueError("adaptive evidence gate requires control and idle calibration windows")
+    weights, mean, std = _fit_logistic_binary_ridge(x, y_array, l2=float(l2))
+    logits = np.column_stack([np.ones(int(x.shape[0]), dtype=np.float64), (x - mean) / std]) @ weights
+    p = _softmax_2class_logit(logits)
+    control_scores = p[y_array >= 0.5]
+    idle_scores = p[y_array < 0.5]
+    decision_th = float(np.quantile(idle_scores, 0.95)) if idle_scores.size else 0.5
+    if control_scores.size:
+        decision_th = min(decision_th, float(np.quantile(control_scores, 0.75)))
+    decision_th = float(max(min(decision_th, 0.95), 0.05))
+    return {
+        "evidence_weights": weights,
+        "evidence_feature_mean": mean,
+        "evidence_feature_std": std,
+        "evidence_decision_th": decision_th,
+        "fit_summary": {
+            "adaptive_gate": CLASSIFIER_ADAPTIVE_EVIDENCE_GATE_POLICY,
+            "adaptive_gate_feature_names": list(ADAPTIVE_EVIDENCE_FEATURE_NAMES),
+            "adaptive_gate_l2": float(l2),
+            "adaptive_gate_calibration_windows": int(x.shape[0]),
+            "adaptive_gate_trial_counts": trial_counts,
+            "adaptive_gate_window_counts": window_counts,
+            "adaptive_gate_idle_score_p95": float(np.quantile(idle_scores, 0.95)) if idle_scores.size else None,
+            "adaptive_gate_control_score_p25": float(np.quantile(control_scores, 0.25)) if control_scores.size else None,
+            "adaptive_gate_control_score_p50": float(np.quantile(control_scores, 0.50)) if control_scores.size else None,
+            "adaptive_gate_decision_th_seed": float(decision_th),
+        },
+    }
+
+
+def _adaptive_evidence_threshold_candidates(
+    gate_payload: Mapping[str, Any],
+) -> tuple[float, ...]:
+    seed = _safe_float(gate_payload.get("evidence_decision_th"), 0.5)
+    values = [float(value) for value in DEFAULT_ADAPTIVE_EVIDENCE_ENTER_CANDIDATES]
+    values.extend(
+        [
+            0.0,
+            float(max(seed - 0.20, 0.0)),
+            float(max(seed, 0.0)),
+            float(max(seed + 0.20, 0.0)),
+            float(max(seed * 2.0, 0.0)),
+        ]
+    )
+    rounded = np.unique(np.round(np.asarray(values, dtype=np.float64), 6))
+    return tuple(float(value) for value in rounded.tolist())
+
+
+def _lrt_feature_indices_for_model(model: FBCCALDA5Model | FBCCARidge5Model) -> tuple[int, ...]:
+    feature_names = _classifier_feature_names(
+        model.freqs,
+        score_bank_mode="full_reference_bank",
+    )
+    wanted = (
+        "top1_score",
+        "margin",
+        "ratio",
+        "normalized_top1",
+        "score_entropy",
+        "top_command_to_top_all_ratio",
+        "nearest_noncommand_margin",
+        "all_bank_entropy",
+    )
+    indices: list[int] = []
+    for name in wanted:
+        if name in feature_names:
+            indices.append(int(feature_names.index(name)))
+    if not indices:
+        raise ValueError("lrt multi-window gate requires full-reference-bank features")
+    return tuple(indices)
+
+
+def _fit_lrt_multiwindow_reject_gate(
+    base_model: FBCCALDA5Model | FBCCARidge5Model,
+    scored_trials: Sequence[ScoredTrial],
+    *,
+    smoothing_windows: int = 1,
+) -> dict[str, Any]:
+    probability_cache = _build_classifier_probability_cache(base_model, scored_trials)
+    feature_indices = _lrt_feature_indices_for_model(base_model)
+    control_rows: list[np.ndarray] = []
+    idle_rows: list[np.ndarray] = []
+    trial_counts = {"control": 0, "idle": 0}
+    window_counts = {"control": 0, "idle": 0}
+    for item, probs, _labels in probability_cache:
+        if item.feature_matrix.shape[0] <= 0:
+            continue
+        smoothed = _smooth_classifier_probabilities(
+            probs,
+            smoothing_windows=max(1, int(smoothing_windows)),
+        )
+        pred_indices = np.argmax(smoothed, axis=1)
+        rows = np.asarray(item.feature_matrix, dtype=np.float64)[:, np.asarray(feature_indices, dtype=int)]
+        command_rows: list[np.ndarray] = []
+        for row_index, pred_index in enumerate(pred_indices):
+            true_label = _trial_true_label(item.trial)
+            if true_label != "idle" and str(base_model.labels[int(pred_index)]) == true_label:
+                command_rows.append(rows[row_index])
+        label = _trial_true_label(item.trial)
+        if label == "idle":
+            idle_rows.append(rows)
+            trial_counts["idle"] += 1
+            window_counts["idle"] += int(rows.shape[0])
+        elif command_rows:
+            command_array = np.vstack(command_rows).astype(np.float64, copy=False)
+            control_rows.append(command_array)
+            trial_counts["control"] += 1
+            window_counts["control"] += int(command_array.shape[0])
+    if not control_rows or not idle_rows:
+        raise ValueError("lrt multi-window gate requires calibration command and idle windows")
+    control = np.vstack(control_rows).astype(np.float64, copy=False)
+    idle = np.vstack(idle_rows).astype(np.float64, copy=False)
+    control_mean = np.mean(control, axis=0)
+    idle_mean = np.mean(idle, axis=0)
+    control_std = np.maximum(np.std(control, axis=0), 1e-6)
+    idle_std = np.maximum(np.std(idle, axis=0), 1e-6)
+    seed_model = replace(
+        base_model,
+        gate_policy=CLASSIFIER_LRT_MULTIWINDOW_REJECT_GATE_POLICY,
+        lrt_feature_indices=feature_indices,
+        lrt_feature_mean_control=control_mean,
+        lrt_feature_std_control=control_std,
+        lrt_feature_mean_idle=idle_mean,
+        lrt_feature_std_idle=idle_std,
+    )
+    control_scores = _lrt_window_evidence_from_features(
+        replace(seed_model, lrt_feature_indices=tuple(range(len(feature_indices)))),
+        control,
+    )
+    idle_scores = _lrt_window_evidence_from_features(
+        replace(seed_model, lrt_feature_indices=tuple(range(len(feature_indices)))),
+        idle,
+    )
+    window_th = float(np.quantile(idle_scores, 0.95)) if idle_scores.size else 0.0
+    if control_scores.size:
+        window_th = min(window_th, float(np.quantile(control_scores, 0.50)))
+    window_th = float(max(window_th, 0.0))
+    return {
+        "lrt_feature_indices": feature_indices,
+        "lrt_feature_names": [
+            _classifier_feature_names(base_model.freqs, score_bank_mode="full_reference_bank")[index]
+            for index in feature_indices
+        ],
+        "lrt_feature_mean_control": control_mean,
+        "lrt_feature_std_control": control_std,
+        "lrt_feature_mean_idle": idle_mean,
+        "lrt_feature_std_idle": idle_std,
+        "lrt_window_th": window_th,
+        "fit_summary": {
+            "lrt_multiwindow_gate": CLASSIFIER_LRT_MULTIWINDOW_REJECT_GATE_POLICY,
+            "lrt_feature_names": [
+                _classifier_feature_names(base_model.freqs, score_bank_mode="full_reference_bank")[index]
+                for index in feature_indices
+            ],
+            "lrt_calibration_trial_counts": trial_counts,
+            "lrt_calibration_window_counts": window_counts,
+            "lrt_control_score_p25": float(np.quantile(control_scores, 0.25)) if control_scores.size else None,
+            "lrt_control_score_p50": float(np.quantile(control_scores, 0.50)) if control_scores.size else None,
+            "lrt_idle_score_p95": float(np.quantile(idle_scores, 0.95)) if idle_scores.size else None,
+            "lrt_window_th_seed": float(window_th),
+        },
+    }
+
+
+def _lrt_enter_threshold_candidates(gate_payload: Mapping[str, Any]) -> tuple[float, ...]:
+    seed = _safe_float(gate_payload.get("lrt_window_th"), 0.0)
+    values = [float(value) for value in DEFAULT_LRT_MULTIWINDOW_ENTER_CANDIDATES]
+    values.extend(
+        [
+            0.0,
+            float(max(seed, 0.0)),
+            float(max(seed * 1.5, 0.0)),
+            float(max(seed * 2.0, 0.0)),
+        ]
+    )
+    rounded = np.unique(np.round(np.asarray(values, dtype=np.float64), 6))
+    return tuple(float(value) for value in rounded.tolist())
+
+
+def _select_lrt_multiwindow_reject_gate(
+    base_model: FBCCALDA5Model | FBCCARidge5Model,
+    scored_trials: Sequence[ScoredTrial],
+    *,
+    win_sec: float,
+    step_sec: float,
+    min_enter_windows: int,
+    max_gap_windows: int = 0,
+    smoothing_windows: int = 1,
+    threshold_policy: str = CLASSIFIER_LRT_MULTIWINDOW_REJECT_GATE_POLICY,
+) -> dict[str, Any]:
+    gate_payload = _fit_lrt_multiwindow_reject_gate(
+        base_model,
+        scored_trials,
+        smoothing_windows=max(1, int(smoothing_windows)),
+    )
+    base_window_th = float(gate_payload["lrt_window_th"])
+    window_candidates = np.unique(
+        np.round(
+            np.asarray(
+                [
+                    0.0,
+                    max(base_window_th - 1.0, 0.0),
+                    max(base_window_th - 0.5, 0.0),
+                    base_window_th,
+                    base_window_th + 0.5,
+                    base_window_th + 1.0,
+                ],
+                dtype=np.float64,
+            ),
+            6,
+        )
+    )
+    enter_candidates = _lrt_enter_threshold_candidates(gate_payload)
+    best_model: Optional[FBCCALDA5Model | FBCCARidge5Model] = None
+    best_rank: Optional[tuple[float, ...]] = None
+    best_bundle: dict[str, Any] = {}
+    best_candidate = (0.0, 0.0)
+    for window_th in window_candidates:
+        for enter_th in enter_candidates:
+            model = replace(
+                base_model,
+                command_confidence_th=0.0,
+                smoothing_windows=max(1, int(smoothing_windows)),
+                gate_policy=CLASSIFIER_LRT_MULTIWINDOW_REJECT_GATE_POLICY,
+                lrt_feature_indices=tuple(gate_payload["lrt_feature_indices"]),
+                lrt_feature_mean_control=np.asarray(gate_payload["lrt_feature_mean_control"], dtype=np.float64),
+                lrt_feature_std_control=np.asarray(gate_payload["lrt_feature_std_control"], dtype=np.float64),
+                lrt_feature_mean_idle=np.asarray(gate_payload["lrt_feature_mean_idle"], dtype=np.float64),
+                lrt_feature_std_idle=np.asarray(gate_payload["lrt_feature_std_idle"], dtype=np.float64),
+                lrt_window_th=float(window_th),
+                lrt_enter_th=float(enter_th),
+                lrt_decay=float(DEFAULT_LRT_MULTIWINDOW_DECAY),
+            )
+            bundle = _evaluate_fbcca_lda5_model(
+                model,
+                scored_trials,
+                win_sec=float(win_sec),
+                step_sec=float(step_sec),
+                min_enter_windows=max(1, int(min_enter_windows)),
+                max_gap_windows=max(0, int(max_gap_windows)),
+            )
+            fixed5 = dict(bundle.get("fixed_window_metrics_5class") or {})
+            async5 = dict(bundle.get("async_lens_metrics_5class") or {})
+            async_metrics = dict(bundle.get("async_metrics") or {})
+            selected_metrics = {
+                **async_metrics,
+                "async_acc_5class": _safe_float(async5.get("acc"), 0.0),
+                "async_macro_f1_5class": _safe_float(async5.get("macro_f1"), 0.0),
+                "fixed_acc_5class": _safe_float(fixed5.get("acc"), 0.0),
+                "fixed_macro_f1_5class": _safe_float(fixed5.get("macro_f1"), 0.0),
+            }
+            rank = _classifier_threshold_rank_key(
+                selected_metrics,
+                policy=str(threshold_policy),
+                tie_breaker=float(window_th + enter_th),
+            )
+            if best_rank is None or rank < best_rank:
+                best_rank = rank
+                best_model = model
+                best_bundle = bundle
+                best_candidate = (float(window_th), float(enter_th))
+    if best_model is None:
+        raise ValueError("lrt multi-window gate could not select a candidate")
+    best_async = dict(best_bundle.get("async_metrics") or {})
+    best_async5 = dict(best_bundle.get("async_lens_metrics_5class") or {})
+    best_fixed5 = dict(best_bundle.get("fixed_window_metrics_5class") or {})
+    return {
+        "gate_policy": CLASSIFIER_LRT_MULTIWINDOW_REJECT_GATE_POLICY,
+        "threshold_policy": _parse_classifier_threshold_policy(threshold_policy),
+        "command_confidence_th": 0.0,
+        "smoothing_windows": max(1, int(smoothing_windows)),
+        "max_gap_windows": max(0, int(max_gap_windows)),
+        "candidate_count": int(len(window_candidates) * len(enter_candidates)),
+        "candidate_lrt_window_thresholds_preview": [float(value) for value in window_candidates[:12]],
+        "candidate_lrt_enter_thresholds_preview": [float(value) for value in enter_candidates[:12]],
+        "lrt_feature_indices": tuple(gate_payload["lrt_feature_indices"]),
+        "lrt_feature_mean_control": np.asarray(gate_payload["lrt_feature_mean_control"], dtype=np.float64),
+        "lrt_feature_std_control": np.asarray(gate_payload["lrt_feature_std_control"], dtype=np.float64),
+        "lrt_feature_mean_idle": np.asarray(gate_payload["lrt_feature_mean_idle"], dtype=np.float64),
+        "lrt_feature_std_idle": np.asarray(gate_payload["lrt_feature_std_idle"], dtype=np.float64),
+        "lrt_window_th": float(best_candidate[0]),
+        "lrt_enter_th": float(best_candidate[1]),
+        "lrt_decay": float(DEFAULT_LRT_MULTIWINDOW_DECAY),
+        "fit_summary": dict(gate_payload.get("fit_summary") or {}),
+        "selected_metrics": {
+            "idle_fp_per_min": _safe_float(best_async.get("idle_fp_per_min"), float("inf")),
+            "idle_selected_windows_per_min": _safe_float(best_async.get("idle_selected_windows_per_min"), float("inf")),
+            "control_recall": _safe_float(best_async.get("control_recall"), 0.0),
+            "control_recall_at_2s": _safe_float(best_async.get("control_recall_at_2s"), 0.0),
+            "control_recall_at_2.5s": _safe_float(best_async.get("control_recall_at_2.5s"), 0.0),
+            "control_recall_at_3s": _safe_float(best_async.get("control_recall_at_3s"), 0.0),
+            "detection_latency_s": _safe_float(best_async.get("detection_latency_s"), float("inf")),
+            "async_acc_5class": _safe_float(best_async5.get("acc"), 0.0),
+            "async_macro_f1_5class": _safe_float(best_async5.get("macro_f1"), 0.0),
+            "fixed_acc_5class": _safe_float(best_fixed5.get("acc"), 0.0),
+            "fixed_macro_f1_5class": _safe_float(best_fixed5.get("macro_f1"), 0.0),
+        },
+    }
+
+
+def _select_adaptive_evidence_gate(
+    base_model: FBCCALDA5Model | FBCCARidge5Model,
+    scored_trials: Sequence[ScoredTrial],
+    *,
+    win_sec: float,
+    step_sec: float,
+    min_enter_windows: int,
+    max_gap_windows: int = 0,
+    smoothing_windows: int = 1,
+    threshold_policy: str = CLASSIFIER_ADAPTIVE_EVIDENCE_GATE_POLICY,
+) -> dict[str, Any]:
+    gate_payload = _fit_adaptive_evidence_gate(
+        base_model,
+        scored_trials,
+        smoothing_windows=max(1, int(smoothing_windows)),
+    )
+    best_model: Optional[FBCCALDA5Model | FBCCARidge5Model] = None
+    best_rank: Optional[tuple[float, ...]] = None
+    best_bundle: dict[str, Any] = {}
+    candidates = _adaptive_evidence_threshold_candidates(gate_payload)
+    for threshold in candidates:
+        model = replace(
+            base_model,
+            command_confidence_th=0.0,
+            smoothing_windows=max(1, int(smoothing_windows)),
+            gate_policy=CLASSIFIER_ADAPTIVE_EVIDENCE_GATE_POLICY,
+            evidence_weights=np.asarray(gate_payload["evidence_weights"], dtype=np.float64),
+            evidence_feature_mean=np.asarray(gate_payload["evidence_feature_mean"], dtype=np.float64),
+            evidence_feature_std=np.asarray(gate_payload["evidence_feature_std"], dtype=np.float64),
+            evidence_decision_th=float(gate_payload["evidence_decision_th"]),
+            evidence_enter_th=float(threshold),
+            evidence_decay=float(DEFAULT_ADAPTIVE_EVIDENCE_DECAY),
+        )
+        bundle = _evaluate_fbcca_lda5_model(
+            model,
+            scored_trials,
+            win_sec=float(win_sec),
+            step_sec=float(step_sec),
+            min_enter_windows=max(1, int(min_enter_windows)),
+            max_gap_windows=max(0, int(max_gap_windows)),
+        )
+        fixed5 = dict(bundle.get("fixed_window_metrics_5class") or {})
+        async5 = dict(bundle.get("async_lens_metrics_5class") or {})
+        async_metrics = dict(bundle.get("async_metrics") or {})
+        selected_metrics = {
+            **async_metrics,
+            "async_acc_5class": _safe_float(async5.get("acc"), 0.0),
+            "async_macro_f1_5class": _safe_float(async5.get("macro_f1"), 0.0),
+            "fixed_acc_5class": _safe_float(fixed5.get("acc"), 0.0),
+            "fixed_macro_f1_5class": _safe_float(fixed5.get("macro_f1"), 0.0),
+        }
+        rank = _classifier_threshold_rank_key(
+            selected_metrics,
+            policy=str(threshold_policy),
+            tie_breaker=float(threshold),
+        )
+        if best_rank is None or rank < best_rank:
+            best_rank = rank
+            best_model = model
+            best_bundle = bundle
+    if best_model is None:
+        raise ValueError("adaptive evidence gate could not select a candidate")
+    best_async = dict(best_bundle.get("async_metrics") or {})
+    best_async5 = dict(best_bundle.get("async_lens_metrics_5class") or {})
+    best_fixed5 = dict(best_bundle.get("fixed_window_metrics_5class") or {})
+    return {
+        "gate_policy": CLASSIFIER_ADAPTIVE_EVIDENCE_GATE_POLICY,
+        "threshold_policy": _parse_classifier_threshold_policy(threshold_policy),
+        "command_confidence_th": 0.0,
+        "smoothing_windows": max(1, int(smoothing_windows)),
+        "max_gap_windows": max(0, int(max_gap_windows)),
+        "candidate_count": int(len(candidates)),
+        "candidate_evidence_enter_thresholds_preview": [float(value) for value in candidates[:12]],
+        "evidence_weights": np.asarray(best_model.evidence_weights, dtype=np.float64),
+        "evidence_feature_mean": np.asarray(best_model.evidence_feature_mean, dtype=np.float64),
+        "evidence_feature_std": np.asarray(best_model.evidence_feature_std, dtype=np.float64),
+        "evidence_decision_th": float(best_model.evidence_decision_th),
+        "evidence_enter_th": float(best_model.evidence_enter_th),
+        "evidence_decay": float(best_model.evidence_decay),
+        "fit_summary": dict(gate_payload.get("fit_summary") or {}),
+        "selected_metrics": {
+            "idle_fp_per_min": _safe_float(best_async.get("idle_fp_per_min"), float("inf")),
+            "idle_selected_windows_per_min": _safe_float(best_async.get("idle_selected_windows_per_min"), float("inf")),
+            "control_recall": _safe_float(best_async.get("control_recall"), 0.0),
+            "control_recall_at_2s": _safe_float(best_async.get("control_recall_at_2s"), 0.0),
+            "control_recall_at_2.5s": _safe_float(best_async.get("control_recall_at_2.5s"), 0.0),
+            "control_recall_at_3s": _safe_float(best_async.get("control_recall_at_3s"), 0.0),
+            "detection_latency_s": _safe_float(best_async.get("detection_latency_s"), float("inf")),
+            "async_acc_5class": _safe_float(best_async5.get("acc"), 0.0),
+            "async_macro_f1_5class": _safe_float(best_async5.get("macro_f1"), 0.0),
+            "fixed_acc_5class": _safe_float(best_fixed5.get("acc"), 0.0),
+            "fixed_macro_f1_5class": _safe_float(best_fixed5.get("macro_f1"), 0.0),
+        },
+    }
+
+
+def _subject_adaptive_command_threshold(
+    base_model: FBCCALDA5Model | FBCCARidge5Model,
+    scored_trials: Sequence[ScoredTrial],
+    *,
+    smoothing_windows: int = 1,
+) -> dict[str, Any]:
+    probability_cache = _build_classifier_probability_cache(base_model, scored_trials)
+    idle_values: list[float] = []
+    control_values: list[float] = []
+    for item, probs, labels in probability_cache:
+        smoothed = _smooth_classifier_probabilities(
+            probs,
+            smoothing_windows=max(1, int(smoothing_windows)),
+        )
+        command_conf = _command_confidence_from_probs(smoothed, labels)
+        label = _trial_true_label(item.trial)
+        if label == "idle":
+            idle_values.extend(float(value) for value in command_conf.tolist())
+        else:
+            control_values.extend(float(value) for value in command_conf.tolist())
+    if not idle_values or not control_values:
+        raise ValueError("subject adaptive threshold requires control and idle calibration windows")
+    idle_q = float(np.quantile(np.asarray(idle_values, dtype=np.float64), 0.95))
+    control_q = float(np.quantile(np.asarray(control_values, dtype=np.float64), 0.25))
+    threshold = float(max(0.0, min(1.0, min(max(idle_q, 0.0), max(control_q, idle_q)))))
+    return {
+        "command_confidence_th": threshold,
+        "threshold_policy": CLASSIFIER_SUBJECT_ADAPTIVE_THRESHOLD_POLICY,
+        "smoothing_windows": max(1, int(smoothing_windows)),
+        "candidate_count": 1,
+        "selected_metrics": {},
+        "fit_summary": {
+            "subject_adaptive_threshold_idle_p95": idle_q,
+            "subject_adaptive_threshold_control_p25": control_q,
+            "subject_adaptive_threshold": threshold,
+            "subject_adaptive_threshold_idle_windows": int(len(idle_values)),
+            "subject_adaptive_threshold_control_windows": int(len(control_values)),
+        },
+    }
+
+
 def _select_fbcca_lda5_confidence_threshold(
     base_model: FBCCALDA5Model | FBCCARidge5Model,
     scored_trials: Sequence[ScoredTrial],
@@ -2134,8 +3342,63 @@ def _select_fbcca_lda5_confidence_threshold(
     step_sec: float,
     min_enter_windows: int,
     max_gap_windows: int = 0,
+    smoothing_windows: int = 1,
     threshold_policy: str = DEFAULT_CLASSIFIER_THRESHOLD_POLICY,
 ) -> dict[str, Any]:
+    normalized_policy = _parse_classifier_threshold_policy(threshold_policy)
+    if normalized_policy == CLASSIFIER_ADAPTIVE_EVIDENCE_GATE_POLICY:
+        return _select_adaptive_evidence_gate(
+            base_model,
+            scored_trials,
+            win_sec=float(win_sec),
+            step_sec=float(step_sec),
+            min_enter_windows=max(1, int(min_enter_windows)),
+            max_gap_windows=max(0, int(max_gap_windows)),
+            smoothing_windows=max(1, int(smoothing_windows)),
+            threshold_policy=normalized_policy,
+        )
+    if normalized_policy == CLASSIFIER_LRT_MULTIWINDOW_REJECT_GATE_POLICY:
+        return _select_lrt_multiwindow_reject_gate(
+            base_model,
+            scored_trials,
+            win_sec=float(win_sec),
+            step_sec=float(step_sec),
+            min_enter_windows=max(1, int(min_enter_windows)),
+            max_gap_windows=max(0, int(max_gap_windows)),
+            smoothing_windows=max(1, int(smoothing_windows)),
+            threshold_policy=normalized_policy,
+        )
+    if normalized_policy == CLASSIFIER_SUBJECT_ADAPTIVE_THRESHOLD_POLICY:
+        threshold_payload = _subject_adaptive_command_threshold(
+            base_model,
+            scored_trials,
+            smoothing_windows=max(1, int(smoothing_windows)),
+        )
+        model = replace(
+            base_model,
+            command_confidence_th=float(threshold_payload.get("command_confidence_th", 0.0)),
+            smoothing_windows=max(1, int(smoothing_windows)),
+            gate_policy=CLASSIFIER_SUBJECT_ADAPTIVE_THRESHOLD_POLICY,
+        )
+        bundle = _evaluate_fbcca_lda5_model(
+            model,
+            scored_trials,
+            win_sec=float(win_sec),
+            step_sec=float(step_sec),
+            min_enter_windows=max(1, int(min_enter_windows)),
+            max_gap_windows=max(0, int(max_gap_windows)),
+        )
+        fixed5 = dict(bundle.get("fixed_window_metrics_5class") or {})
+        async5 = dict(bundle.get("async_lens_metrics_5class") or {})
+        async_metrics = dict(bundle.get("async_metrics") or {})
+        threshold_payload["selected_metrics"] = {
+            **async_metrics,
+            "async_acc_5class": _safe_float(async5.get("acc"), 0.0),
+            "async_macro_f1_5class": _safe_float(async5.get("macro_f1"), 0.0),
+            "fixed_acc_5class": _safe_float(fixed5.get("acc"), 0.0),
+            "fixed_macro_f1_5class": _safe_float(fixed5.get("macro_f1"), 0.0),
+        }
+        return threshold_payload
     best_threshold = 0.0
     best_rank: Optional[tuple[float, ...]] = None
     best_bundle: dict[str, Any] = {}
@@ -2143,10 +3406,15 @@ def _select_fbcca_lda5_confidence_threshold(
     candidates = _fbcca_lda5_threshold_candidates(
         base_model,
         scored_trials,
+        smoothing_windows=max(1, int(smoothing_windows)),
         probability_cache=probability_cache,
     )
     for threshold in candidates:
-        model = replace(base_model, command_confidence_th=float(threshold))
+        model = replace(
+            base_model,
+            command_confidence_th=float(threshold),
+            smoothing_windows=max(1, int(smoothing_windows)),
+        )
         bundle = _evaluate_fbcca_lda5_model(
             model,
             scored_trials,
@@ -2168,7 +3436,7 @@ def _select_fbcca_lda5_confidence_threshold(
         }
         rank = _classifier_threshold_rank_key(
             selected_metrics,
-            policy=str(threshold_policy),
+            policy=str(normalized_policy),
             tie_breaker=float(threshold),
         )
         if best_rank is None or rank < best_rank:
@@ -2180,8 +3448,9 @@ def _select_fbcca_lda5_confidence_threshold(
     best_fixed5 = dict(best_bundle.get("fixed_window_metrics_5class") or {})
     return {
         "command_confidence_th": float(best_threshold),
-        "threshold_policy": _parse_classifier_threshold_policy(threshold_policy),
+        "threshold_policy": normalized_policy,
         "max_gap_windows": max(0, int(max_gap_windows)),
+        "smoothing_windows": max(1, int(smoothing_windows)),
         "candidate_count": int(len(candidates)),
         "candidate_thresholds_preview": [float(value) for value in candidates[:12]],
         "selected_metrics": {
@@ -2254,6 +3523,7 @@ def _fit_fbcca_lda5_base_model(
         class_means=np.vstack(class_means),
         pooled_var=pooled_var,
         command_confidence_th=0.0,
+        smoothing_windows=1,
         fit_summary={
             "classifier": _classifier_name_for_model(
                 FBCCALDA5Model(
@@ -2264,6 +3534,7 @@ def _fit_fbcca_lda5_base_model(
                     class_means=np.vstack(class_means),
                     pooled_var=pooled_var,
                     command_confidence_th=0.0,
+                    smoothing_windows=1,
                     fit_summary={},
                 ),
                 score_source_name=score_source_name,
@@ -2285,6 +3556,7 @@ def _fit_fbcca_lda5_model(
     step_sec: float = DEFAULT_STEP_SEC,
     min_enter_windows: int = 1,
     max_gap_windows: int = 0,
+    smoothing_windows: int = 1,
     threshold_policy: str = DEFAULT_CLASSIFIER_THRESHOLD_POLICY,
     base_model: Optional[FBCCALDA5Model] = None,
     score_source_name: str = "fbcca",
@@ -2312,19 +3584,78 @@ def _fit_fbcca_lda5_model(
         step_sec=float(step_sec),
         min_enter_windows=max(1, int(min_enter_windows)),
         max_gap_windows=max(0, int(max_gap_windows)),
+        smoothing_windows=max(1, int(smoothing_windows)),
         threshold_policy=str(threshold_policy),
     )
     confidence_th = float(threshold_selection.get("command_confidence_th", 0.0))
+    gate_policy = str(threshold_selection.get("gate_policy", CLASSIFIER_CONFIDENCE_GATE_POLICY))
+    lrt_feature_indices = tuple(
+        int(index) for index in threshold_selection.get("lrt_feature_indices", ()) or ()
+    )
     return replace(
         model,
         command_confidence_th=max(float(confidence_th), 0.0),
+        smoothing_windows=max(1, int(smoothing_windows)),
+        gate_policy=gate_policy,
+        evidence_weights=(
+            np.asarray(threshold_selection["evidence_weights"], dtype=np.float64)
+            if "evidence_weights" in threshold_selection
+            else None
+        ),
+        evidence_feature_mean=(
+            np.asarray(threshold_selection["evidence_feature_mean"], dtype=np.float64)
+            if "evidence_feature_mean" in threshold_selection
+            else None
+        ),
+        evidence_feature_std=(
+            np.asarray(threshold_selection["evidence_feature_std"], dtype=np.float64)
+            if "evidence_feature_std" in threshold_selection
+            else None
+        ),
+        evidence_decision_th=_safe_float(threshold_selection.get("evidence_decision_th"), 0.0),
+        evidence_enter_th=_safe_float(threshold_selection.get("evidence_enter_th"), 0.0),
+        evidence_decay=_safe_float(threshold_selection.get("evidence_decay"), DEFAULT_ADAPTIVE_EVIDENCE_DECAY),
+        lrt_feature_indices=lrt_feature_indices,
+        lrt_feature_mean_control=(
+            np.asarray(threshold_selection["lrt_feature_mean_control"], dtype=np.float64)
+            if "lrt_feature_mean_control" in threshold_selection
+            else None
+        ),
+        lrt_feature_std_control=(
+            np.asarray(threshold_selection["lrt_feature_std_control"], dtype=np.float64)
+            if "lrt_feature_std_control" in threshold_selection
+            else None
+        ),
+        lrt_feature_mean_idle=(
+            np.asarray(threshold_selection["lrt_feature_mean_idle"], dtype=np.float64)
+            if "lrt_feature_mean_idle" in threshold_selection
+            else None
+        ),
+        lrt_feature_std_idle=(
+            np.asarray(threshold_selection["lrt_feature_std_idle"], dtype=np.float64)
+            if "lrt_feature_std_idle" in threshold_selection
+            else None
+        ),
+        lrt_window_th=_safe_float(threshold_selection.get("lrt_window_th"), 0.0),
+        lrt_enter_th=_safe_float(threshold_selection.get("lrt_enter_th"), 0.0),
+        lrt_decay=_safe_float(threshold_selection.get("lrt_decay"), DEFAULT_LRT_MULTIWINDOW_DECAY),
         fit_summary={
             **model.fit_summary,
+            **dict(threshold_selection.get("fit_summary") or {}),
             "score_source_name": str(score_source_name).strip().lower(),
             "classifier": _classifier_name_for_model(model, score_source_name=score_source_name),
+            "gate_policy": gate_policy,
             "command_confidence_th": max(float(confidence_th), 0.0),
+            "evidence_decision_th": _safe_float(threshold_selection.get("evidence_decision_th"), 0.0),
+            "evidence_enter_th": _safe_float(threshold_selection.get("evidence_enter_th"), 0.0),
+            "evidence_decay": _safe_float(threshold_selection.get("evidence_decay"), DEFAULT_ADAPTIVE_EVIDENCE_DECAY),
+            "lrt_feature_indices": [int(index) for index in lrt_feature_indices],
+            "lrt_window_th": _safe_float(threshold_selection.get("lrt_window_th"), 0.0),
+            "lrt_enter_th": _safe_float(threshold_selection.get("lrt_enter_th"), 0.0),
+            "lrt_decay": _safe_float(threshold_selection.get("lrt_decay"), DEFAULT_LRT_MULTIWINDOW_DECAY),
             "min_enter_windows": max(1, int(min_enter_windows)),
             "max_gap_windows": max(0, int(max_gap_windows)),
+            "smoothing_windows": max(1, int(smoothing_windows)),
             "threshold_policy": _parse_classifier_threshold_policy(threshold_policy),
             "threshold_selection": dict(threshold_selection),
         },
@@ -2394,6 +3725,7 @@ def _fit_fbcca_ridge5_base_model(
         weights=np.asarray(weights, dtype=np.float64),
         l2=float(l2),
         command_confidence_th=0.0,
+        smoothing_windows=1,
         fit_summary={
             "classifier": _classifier_name_for_model(
                 FBCCARidge5Model(
@@ -2404,6 +3736,7 @@ def _fit_fbcca_ridge5_base_model(
                     weights=np.asarray(weights, dtype=np.float64),
                     l2=float(l2),
                     command_confidence_th=0.0,
+                    smoothing_windows=1,
                     fit_summary={},
                 ),
                 score_source_name=score_source_name,
@@ -2426,6 +3759,7 @@ def _fit_fbcca_ridge5_model(
     step_sec: float = DEFAULT_STEP_SEC,
     min_enter_windows: int = 1,
     max_gap_windows: int = 0,
+    smoothing_windows: int = 1,
     threshold_policy: str = DEFAULT_CLASSIFIER_THRESHOLD_POLICY,
     l2_candidates: Sequence[float] = DEFAULT_RIDGE_L2_CANDIDATES,
     base_models: Optional[Sequence[FBCCARidge5Model]] = None,
@@ -2464,18 +3798,76 @@ def _fit_fbcca_ridge5_model(
             step_sec=float(step_sec),
             min_enter_windows=max(1, int(min_enter_windows)),
             max_gap_windows=max(0, int(max_gap_windows)),
+            smoothing_windows=max(1, int(smoothing_windows)),
             threshold_policy=str(threshold_policy),
+        )
+        lrt_feature_indices = tuple(
+            int(index) for index in threshold_selection.get("lrt_feature_indices", ()) or ()
         )
         model = replace(
             base_model,
             command_confidence_th=max(float(threshold_selection.get("command_confidence_th", 0.0)), 0.0),
+            smoothing_windows=max(1, int(smoothing_windows)),
+            gate_policy=str(threshold_selection.get("gate_policy", CLASSIFIER_CONFIDENCE_GATE_POLICY)),
+            evidence_weights=(
+                np.asarray(threshold_selection["evidence_weights"], dtype=np.float64)
+                if "evidence_weights" in threshold_selection
+                else None
+            ),
+            evidence_feature_mean=(
+                np.asarray(threshold_selection["evidence_feature_mean"], dtype=np.float64)
+                if "evidence_feature_mean" in threshold_selection
+                else None
+            ),
+            evidence_feature_std=(
+                np.asarray(threshold_selection["evidence_feature_std"], dtype=np.float64)
+                if "evidence_feature_std" in threshold_selection
+                else None
+            ),
+            evidence_decision_th=_safe_float(threshold_selection.get("evidence_decision_th"), 0.0),
+            evidence_enter_th=_safe_float(threshold_selection.get("evidence_enter_th"), 0.0),
+            evidence_decay=_safe_float(threshold_selection.get("evidence_decay"), DEFAULT_ADAPTIVE_EVIDENCE_DECAY),
+            lrt_feature_indices=lrt_feature_indices,
+            lrt_feature_mean_control=(
+                np.asarray(threshold_selection["lrt_feature_mean_control"], dtype=np.float64)
+                if "lrt_feature_mean_control" in threshold_selection
+                else None
+            ),
+            lrt_feature_std_control=(
+                np.asarray(threshold_selection["lrt_feature_std_control"], dtype=np.float64)
+                if "lrt_feature_std_control" in threshold_selection
+                else None
+            ),
+            lrt_feature_mean_idle=(
+                np.asarray(threshold_selection["lrt_feature_mean_idle"], dtype=np.float64)
+                if "lrt_feature_mean_idle" in threshold_selection
+                else None
+            ),
+            lrt_feature_std_idle=(
+                np.asarray(threshold_selection["lrt_feature_std_idle"], dtype=np.float64)
+                if "lrt_feature_std_idle" in threshold_selection
+                else None
+            ),
+            lrt_window_th=_safe_float(threshold_selection.get("lrt_window_th"), 0.0),
+            lrt_enter_th=_safe_float(threshold_selection.get("lrt_enter_th"), 0.0),
+            lrt_decay=_safe_float(threshold_selection.get("lrt_decay"), DEFAULT_LRT_MULTIWINDOW_DECAY),
             fit_summary={
                 **base_model.fit_summary,
+                **dict(threshold_selection.get("fit_summary") or {}),
                 "score_source_name": str(score_source_name).strip().lower(),
                 "classifier": _classifier_name_for_model(base_model, score_source_name=score_source_name),
+                "gate_policy": str(threshold_selection.get("gate_policy", CLASSIFIER_CONFIDENCE_GATE_POLICY)),
                 "command_confidence_th": max(float(threshold_selection.get("command_confidence_th", 0.0)), 0.0),
+                "evidence_decision_th": _safe_float(threshold_selection.get("evidence_decision_th"), 0.0),
+                "evidence_enter_th": _safe_float(threshold_selection.get("evidence_enter_th"), 0.0),
+                "evidence_decay": _safe_float(threshold_selection.get("evidence_decay"), DEFAULT_ADAPTIVE_EVIDENCE_DECAY),
+                "lrt_feature_indices": [int(index) for index in lrt_feature_indices],
+                "lrt_window_th": _safe_float(threshold_selection.get("lrt_window_th"), 0.0),
+                "lrt_enter_th": _safe_float(threshold_selection.get("lrt_enter_th"), 0.0),
+                "lrt_decay": _safe_float(threshold_selection.get("lrt_decay"), DEFAULT_LRT_MULTIWINDOW_DECAY),
                 "min_enter_windows": max(1, int(min_enter_windows)),
                 "max_gap_windows": max(0, int(max_gap_windows)),
+                "smoothing_windows": max(1, int(smoothing_windows)),
                 "threshold_policy": _parse_classifier_threshold_policy(threshold_policy),
                 "threshold_selection": dict(threshold_selection),
             },
@@ -2535,6 +3927,10 @@ def _evaluate_fbcca_lda5_model(
         else _build_classifier_probability_cache(model, scored_trials)
     )
     for item, probs, labels in cache:
+        probs = _smooth_classifier_probabilities(
+            probs,
+            smoothing_windows=int(getattr(model, "smoothing_windows", 1)),
+        )
         true_label = _trial_true_label(item.trial)
         fixed_pred_5, fixed_pred_4, _fixed_confidence = _predict_fbcca_lda5_fixed_from_probs(model, probs, labels)
         fixed_y5_true.append(true_label)
@@ -2545,13 +3941,47 @@ def _evaluate_fbcca_lda5_model(
             fixed_y4_pred.append(fixed_pred_4)
             fixed_times4.append(float(win_sec))
 
-        async_pred_label, confidence, first_index = _predict_fbcca_lda5_trial_from_probs(
-            model,
-            probs,
-            labels,
-            min_enter_windows=max(1, int(min_enter_windows)),
-            max_gap_windows=max(0, int(max_gap_windows)),
+        use_adaptive_gate = (
+            str(getattr(model, "gate_policy", CLASSIFIER_CONFIDENCE_GATE_POLICY))
+            == CLASSIFIER_ADAPTIVE_EVIDENCE_GATE_POLICY
         )
+        use_lrt_gate = (
+            str(getattr(model, "gate_policy", CLASSIFIER_CONFIDENCE_GATE_POLICY))
+            == CLASSIFIER_LRT_MULTIWINDOW_REJECT_GATE_POLICY
+        )
+        if use_adaptive_gate:
+            gate_features = _adaptive_gate_feature_matrix_for_trial(model, item, probs, labels)
+            gate_probs = _adaptive_gate_window_probabilities(model, gate_features)
+            lrt_evidence = np.asarray([], dtype=np.float64)
+            async_pred_label, confidence, first_index = _predict_adaptive_evidence_trial_from_probs(
+                model,
+                probs,
+                labels,
+                gate_probs,
+                min_enter_windows=max(1, int(min_enter_windows)),
+                max_gap_windows=max(0, int(max_gap_windows)),
+            )
+        elif use_lrt_gate:
+            gate_probs = np.asarray([], dtype=np.float64)
+            lrt_evidence = _lrt_window_evidence_from_features(model, item.feature_matrix)
+            async_pred_label, confidence, first_index = _predict_lrt_multiwindow_reject_trial_from_probs(
+                model,
+                probs,
+                labels,
+                lrt_evidence,
+                min_enter_windows=max(1, int(min_enter_windows)),
+                max_gap_windows=max(0, int(max_gap_windows)),
+            )
+        else:
+            gate_probs = np.asarray([], dtype=np.float64)
+            lrt_evidence = np.asarray([], dtype=np.float64)
+            async_pred_label, confidence, first_index = _predict_fbcca_lda5_trial_from_probs(
+                model,
+                probs,
+                labels,
+                min_enter_windows=max(1, int(min_enter_windows)),
+                max_gap_windows=max(0, int(max_gap_windows)),
+            )
         async_latency = (
             float(win_sec) + float(first_index) * float(step_sec)
             if async_pred_label != "idle"
@@ -2565,10 +3995,19 @@ def _evaluate_fbcca_lda5_model(
         if true_label == "idle":
             idle_total += 1
             idle_index = int(np.where(labels == "idle")[0][0])
-            command_conf = 1.0 - probs[:, idle_index]
-            selected_mask = (np.argmax(probs, axis=1) != idle_index) & (
-                command_conf >= float(model.command_confidence_th)
-            )
+            if use_adaptive_gate:
+                selected_mask = (np.argmax(probs, axis=1) != idle_index) & (
+                    gate_probs >= float(getattr(model, "evidence_decision_th", 0.5))
+                )
+            elif use_lrt_gate:
+                selected_mask = (np.argmax(probs, axis=1) != idle_index) & (
+                    lrt_evidence >= float(getattr(model, "lrt_window_th", 0.0))
+                )
+            else:
+                command_conf = 1.0 - probs[:, idle_index]
+                selected_mask = (np.argmax(probs, axis=1) != idle_index) & (
+                    command_conf >= float(model.command_confidence_th)
+                )
             idle_selected_windows += int(np.sum(selected_mask))
             if async_pred_label != "idle":
                 idle_selected_events += 1
@@ -2668,6 +4107,7 @@ def _evaluate_fbcca_lda5_model(
         "command_confidence_th": float(model.command_confidence_th),
         "min_enter_windows": int(min_enter_windows),
         "max_gap_windows": max(0, int(max_gap_windows)),
+        "smoothing_windows": int(getattr(model, "smoothing_windows", 1)),
     }
 
 
@@ -2715,8 +4155,39 @@ def _classifier_state_payload(model: FBCCALDA5Model | FBCCARidge5Model) -> dict[
         "feature_mean": _array_payload(model.feature_mean),
         "feature_std": _array_payload(model.feature_std),
         "command_confidence_th": float(model.command_confidence_th),
+        "smoothing_windows": int(getattr(model, "smoothing_windows", 1)),
+        "gate_policy": str(getattr(model, "gate_policy", CLASSIFIER_CONFIDENCE_GATE_POLICY)),
+        "evidence_decision_th": float(getattr(model, "evidence_decision_th", 0.0)),
+        "evidence_enter_th": float(getattr(model, "evidence_enter_th", 0.0)),
+        "evidence_decay": float(getattr(model, "evidence_decay", DEFAULT_ADAPTIVE_EVIDENCE_DECAY)),
+        "lrt_feature_indices": [int(index) for index in getattr(model, "lrt_feature_indices", ())],
+        "lrt_window_th": float(getattr(model, "lrt_window_th", 0.0)),
+        "lrt_enter_th": float(getattr(model, "lrt_enter_th", 0.0)),
+        "lrt_decay": float(getattr(model, "lrt_decay", DEFAULT_LRT_MULTIWINDOW_DECAY)),
         "fit_summary": dict(model.fit_summary),
     }
+    if getattr(model, "evidence_weights", None) is not None:
+        payload["evidence_weights"] = _array_payload(np.asarray(model.evidence_weights, dtype=np.float64))
+    if getattr(model, "evidence_feature_mean", None) is not None:
+        payload["evidence_feature_mean"] = _array_payload(np.asarray(model.evidence_feature_mean, dtype=np.float64))
+    if getattr(model, "evidence_feature_std", None) is not None:
+        payload["evidence_feature_std"] = _array_payload(np.asarray(model.evidence_feature_std, dtype=np.float64))
+    if getattr(model, "lrt_feature_mean_control", None) is not None:
+        payload["lrt_feature_mean_control"] = _array_payload(
+            np.asarray(model.lrt_feature_mean_control, dtype=np.float64)
+        )
+    if getattr(model, "lrt_feature_std_control", None) is not None:
+        payload["lrt_feature_std_control"] = _array_payload(
+            np.asarray(model.lrt_feature_std_control, dtype=np.float64)
+        )
+    if getattr(model, "lrt_feature_mean_idle", None) is not None:
+        payload["lrt_feature_mean_idle"] = _array_payload(
+            np.asarray(model.lrt_feature_mean_idle, dtype=np.float64)
+        )
+    if getattr(model, "lrt_feature_std_idle", None) is not None:
+        payload["lrt_feature_std_idle"] = _array_payload(
+            np.asarray(model.lrt_feature_std_idle, dtype=np.float64)
+        )
     if isinstance(model, FBCCARidge5Model):
         payload.update(
             {
@@ -2833,6 +4304,10 @@ def _extract_row_metrics(eval_payload: dict[str, Any]) -> dict[str, float]:
     async_5 = dict(eval_payload.get("async_lens_metrics_5class") or {})
     async_metrics = dict(eval_payload.get("async_metrics") or {})
     clean_idle = dict(eval_payload.get("clean_idle_proxy_metrics") or {})
+    subtype_metrics = dict(eval_payload.get("no_control_subtype_metrics") or {})
+    ns1 = dict(subtype_metrics.get("ns1") or {})
+    ns2 = dict(subtype_metrics.get("ns2") or {})
+    ns3 = dict(subtype_metrics.get("ns3") or {})
     return {
         "fixed_acc_4class": _safe_float(fixed_4.get("acc"), 0.0),
         "fixed_macro_f1_4class": _safe_float(fixed_4.get("macro_f1"), 0.0),
@@ -2860,6 +4335,11 @@ def _extract_row_metrics(eval_payload: dict[str, Any]) -> dict[str, float]:
         "release_latency_s": _safe_float(async_metrics.get("release_latency_s"), float("inf")),
         "clean_idle_proxy_supported": float(1.0 if bool(clean_idle.get("supported", False)) else 0.0),
         "clean_idle_proxy_fp_per_min": _safe_float(clean_idle.get("idle_fp_per_min"), float("nan")),
+        "ns1_fp_per_min": _safe_float(ns1.get("idle_fp_per_min"), float("nan")),
+        "ns2_fp_per_min": _safe_float(ns2.get("idle_fp_per_min"), float("nan")),
+        "ns3_fp_per_min": _safe_float(ns3.get("idle_fp_per_min"), float("nan")),
+        "ns_all_fp_per_min": _safe_float(subtype_metrics.get("ns_all_fp_per_min"), float("nan")),
+        "cs_control_recall": _safe_float(async_metrics.get("control_recall"), 0.0),
     }
 
 
@@ -3039,6 +4519,7 @@ def run_fbcca_lda5_method(
     win_sec: float,
     min_enter_windows: int,
     max_gap_windows: int = 0,
+    smoothing_windows: int = 1,
     threshold_policy: str = DEFAULT_CLASSIFIER_THRESHOLD_POLICY,
     score_bank_mode: str = DEFAULT_SCORE_BANK_MODE,
     calibration_scored: Optional[Sequence[ScoredTrial]] = None,
@@ -3047,10 +4528,12 @@ def run_fbcca_lda5_method(
     clean_idle_scored: Optional[Sequence[ScoredTrial]] = None,
     clean_idle_support: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
-    recipe_id = _classifier_recipe_id(
+    recipe_id = _classifier_recipe_id_with_smoothing(
         win_sec=float(win_sec),
         min_enter_windows=int(min_enter_windows),
         max_gap_windows=max(0, int(max_gap_windows)),
+        smoothing_windows=max(1, int(smoothing_windows)),
+        gate_policy=str(threshold_policy),
     )
     if calibration_scored is None or holdout_scored is None:
         full_bank_freqs = _full_bank_freqs_for_dataset(
@@ -3082,6 +4565,7 @@ def run_fbcca_lda5_method(
         step_sec=float(step_sec),
         min_enter_windows=max(1, int(min_enter_windows)),
         max_gap_windows=max(0, int(max_gap_windows)),
+        smoothing_windows=max(1, int(smoothing_windows)),
         threshold_policy=str(threshold_policy),
         base_model=base_model,
     )
@@ -3098,6 +4582,14 @@ def run_fbcca_lda5_method(
         support_payload = dict(clean_idle_support)
         if support_payload.get("supported") and clean_idle_scored is not None:
             eval_payload["clean_idle_proxy_metrics"] = _evaluate_clean_idle_proxy_from_cache(
+                model,
+                list(clean_idle_scored),
+                win_sec=float(win_sec),
+                step_sec=float(step_sec),
+                min_enter_windows=max(1, int(min_enter_windows)),
+                max_gap_windows=max(0, int(max_gap_windows)),
+            )
+            eval_payload["no_control_subtype_metrics"] = _evaluate_no_control_subtypes_from_cache(
                 model,
                 list(clean_idle_scored),
                 win_sec=float(win_sec),
@@ -3149,9 +4641,17 @@ def run_fbcca_lda5_method(
             "command_confidence_th": float(model.command_confidence_th),
             "min_enter_windows": int(min_enter_windows),
             "max_gap_windows": max(0, int(max_gap_windows)),
+            "smoothing_windows": max(1, int(smoothing_windows)),
+            "gate_policy": str(getattr(model, "gate_policy", CLASSIFIER_CONFIDENCE_GATE_POLICY)),
+            "evidence_decision_th": float(getattr(model, "evidence_decision_th", 0.0)),
+            "evidence_enter_th": float(getattr(model, "evidence_enter_th", 0.0)),
+            "evidence_decay": float(getattr(model, "evidence_decay", DEFAULT_ADAPTIVE_EVIDENCE_DECAY)),
             "threshold_policy": _parse_classifier_threshold_policy(threshold_policy),
             "feature_count": int(model.feature_mean.shape[0]),
             "feature_names": _classifier_feature_names(freqs, score_bank_mode=score_bank_mode),
+            "adaptive_gate_feature_names": list(ADAPTIVE_EVIDENCE_FEATURE_NAMES)
+            if str(getattr(model, "gate_policy", "")) == CLASSIFIER_ADAPTIVE_EVIDENCE_GATE_POLICY
+            else [],
             "score_bank_mode": _parse_score_bank_mode(score_bank_mode),
             "candidate_artifact": candidate_artifact,
             "candidate_artifact_path": candidate_artifact_path,
@@ -3178,6 +4678,7 @@ def run_fbcca_ridge5_method(
     win_sec: float,
     min_enter_windows: int,
     max_gap_windows: int = 0,
+    smoothing_windows: int = 1,
     threshold_policy: str = DEFAULT_CLASSIFIER_THRESHOLD_POLICY,
     calibration_scored: Optional[Sequence[ScoredTrial]] = None,
     holdout_scored: Optional[Sequence[ScoredTrial]] = None,
@@ -3190,10 +4691,12 @@ def run_fbcca_ridge5_method(
     clean_idle_scored: Optional[Sequence[ScoredTrial]] = None,
     clean_idle_support: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
-    recipe_id = _classifier_recipe_id(
+    recipe_id = _classifier_recipe_id_with_smoothing(
         win_sec=float(win_sec),
         min_enter_windows=int(min_enter_windows),
         max_gap_windows=max(0, int(max_gap_windows)),
+        smoothing_windows=max(1, int(smoothing_windows)),
+        gate_policy=str(threshold_policy),
     )
     latency_win_sec = _method_latency_window_sec(
         method_name=str(method_name),
@@ -3231,6 +4734,7 @@ def run_fbcca_ridge5_method(
         step_sec=float(step_sec),
         min_enter_windows=max(1, int(min_enter_windows)),
         max_gap_windows=max(0, int(max_gap_windows)),
+        smoothing_windows=max(1, int(smoothing_windows)),
         threshold_policy=str(threshold_policy),
         base_models=base_models,
         score_source_name=str(score_source_name),
@@ -3248,6 +4752,14 @@ def run_fbcca_ridge5_method(
         support_payload = dict(clean_idle_support)
         if support_payload.get("supported") and clean_idle_scored is not None:
             eval_payload["clean_idle_proxy_metrics"] = _evaluate_clean_idle_proxy_from_cache(
+                model,
+                list(clean_idle_scored),
+                win_sec=float(latency_win_sec),
+                step_sec=float(step_sec),
+                min_enter_windows=max(1, int(min_enter_windows)),
+                max_gap_windows=max(0, int(max_gap_windows)),
+            )
+            eval_payload["no_control_subtype_metrics"] = _evaluate_no_control_subtypes_from_cache(
                 model,
                 list(clean_idle_scored),
                 win_sec=float(latency_win_sec),
@@ -3299,6 +4811,11 @@ def run_fbcca_ridge5_method(
             "command_confidence_th": float(model.command_confidence_th),
             "min_enter_windows": int(min_enter_windows),
             "max_gap_windows": max(0, int(max_gap_windows)),
+            "smoothing_windows": max(1, int(smoothing_windows)),
+            "gate_policy": str(getattr(model, "gate_policy", CLASSIFIER_CONFIDENCE_GATE_POLICY)),
+            "evidence_decision_th": float(getattr(model, "evidence_decision_th", 0.0)),
+            "evidence_enter_th": float(getattr(model, "evidence_enter_th", 0.0)),
+            "evidence_decay": float(getattr(model, "evidence_decay", DEFAULT_ADAPTIVE_EVIDENCE_DECAY)),
             "threshold_policy": _parse_classifier_threshold_policy(threshold_policy),
             "feature_count": int(model.feature_mean.shape[0]),
             "feature_names": _classifier_feature_names(
@@ -3306,6 +4823,9 @@ def run_fbcca_ridge5_method(
                 score_source_name=score_source_name,
                 score_bank_mode=score_bank_mode,
             ),
+            "adaptive_gate_feature_names": list(ADAPTIVE_EVIDENCE_FEATURE_NAMES)
+            if str(getattr(model, "gate_policy", "")) == CLASSIFIER_ADAPTIVE_EVIDENCE_GATE_POLICY
+            else [],
             "score_source_name": str(score_source_name).strip().lower(),
             "score_bank_mode": _parse_score_bank_mode(score_bank_mode),
             "decoder_name": str(decoder_name or _score_method_spec(method_name).decoder_name),
@@ -3529,6 +5049,21 @@ def aggregate_recipe_rows(
                     "mean_clean_idle_proxy_fp_per_min": float(
                         np.mean([_safe_float(m.get("clean_idle_proxy_fp_per_min"), float("nan")) for m in metrics])
                     ),
+                    "mean_ns1_fp_per_min": float(
+                        np.mean([_safe_float(m.get("ns1_fp_per_min"), float("nan")) for m in metrics])
+                    ),
+                    "mean_ns2_fp_per_min": float(
+                        np.mean([_safe_float(m.get("ns2_fp_per_min"), float("nan")) for m in metrics])
+                    ),
+                    "mean_ns3_fp_per_min": float(
+                        np.mean([_safe_float(m.get("ns3_fp_per_min"), float("nan")) for m in metrics])
+                    ),
+                    "mean_ns_all_fp_per_min": float(
+                        np.mean([_safe_float(m.get("ns_all_fp_per_min"), float("nan")) for m in metrics])
+                    ),
+                    "mean_cs_control_recall": float(
+                        np.mean([_safe_float(m.get("cs_control_recall"), 0.0) for m in metrics])
+                    ),
                 }
             )
 
@@ -3624,6 +5159,11 @@ def aggregate_recipe_rows(
             "mean_release_latency_s": subject_metric("mean_release_latency_s"),
             "mean_clean_idle_proxy_supported": subject_metric("mean_clean_idle_proxy_supported"),
             "mean_clean_idle_proxy_fp_per_min": subject_metric("mean_clean_idle_proxy_fp_per_min"),
+            "mean_ns1_fp_per_min": subject_metric("mean_ns1_fp_per_min"),
+            "mean_ns2_fp_per_min": subject_metric("mean_ns2_fp_per_min"),
+            "mean_ns3_fp_per_min": subject_metric("mean_ns3_fp_per_min"),
+            "mean_ns_all_fp_per_min": subject_metric("mean_ns_all_fp_per_min"),
+            "mean_cs_control_recall": subject_metric("mean_cs_control_recall"),
             "selected_recipe_counts": selected_recipe_counts,
             "subjects": subject_summaries,
         }
@@ -3690,7 +5230,7 @@ def render_markdown_summary(
         f"- estimated_pretrain_duration_sec: `{float(dict(budget or {}).get('estimated_pretrain_duration_sec', 0.0)):.1f}`",
         f"- pretrain_budget_pass: `{bool(dict(budget or {}).get('pretrain_budget_pass', True))}`",
         "",
-        "> Idle/no-control is proxied with non-command target stimulus trials from the public external benchmarks.",
+        "> Idle/no-control is proxied with non-command target stimulus trials for Wang/BETA; YSU-an uses explicit NS1/NS2/NS3 no-control trials.",
         "",
     ]
 
@@ -3742,6 +5282,29 @@ def render_markdown_summary(
         lines.append("")
 
     append_recipe_table("Top Shared Recipes", resolved_shared_summaries)
+    if any("mean_ns_all_fp_per_min" in dict(summary) for summary in resolved_shared_summaries):
+        lines.extend(
+            [
+                "",
+                "## YSU-an No-Control Subtype FP",
+                "",
+                "| Rank | Method | Recipe | NS1 FP/min | NS2 FP/min | NS3 FP/min | NS All FP/min | CS Control Recall |",
+                "|---:|---|---|---:|---:|---:|---:|---:|",
+            ]
+        )
+        for index, summary in enumerate(list(resolved_shared_summaries)[:10], start=1):
+            lines.append(
+                "| {rank} | {method} | `{recipe}` | {ns1:.4f} | {ns2:.4f} | {ns3:.4f} | {nsall:.4f} | {cs:.4f} |".format(
+                    rank=index,
+                    method=str(summary.get("method", "")),
+                    recipe=str(summary.get("recipe_id", "")),
+                    ns1=_safe_float(summary.get("mean_ns1_fp_per_min"), float("nan")),
+                    ns2=_safe_float(summary.get("mean_ns2_fp_per_min"), float("nan")),
+                    ns3=_safe_float(summary.get("mean_ns3_fp_per_min"), float("nan")),
+                    nsall=_safe_float(summary.get("mean_ns_all_fp_per_min"), float("nan")),
+                    cs=_safe_float(summary.get("mean_cs_control_recall"), 0.0),
+                )
+            )
     lines.append("")
     append_recipe_table("Top Recipes", summaries)
     if weak_subject_audit:
@@ -3837,6 +5400,10 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
         args.classifier_max_gap_candidates,
         default=DEFAULT_CLASSIFIER_MAX_GAP_CANDIDATES,
     )
+    classifier_smoothing_candidates = _csv_int_tuple(
+        getattr(args, "classifier_smoothing_windows_candidates", ""),
+        default=DEFAULT_CLASSIFIER_SMOOTHING_WINDOWS_CANDIDATES,
+    )
     classifier_threshold_policy = _parse_classifier_threshold_policy(args.classifier_threshold_policy)
     score_bank_mode = _parse_score_bank_mode(getattr(args, "score_bank_mode", DEFAULT_SCORE_BANK_MODE))
     freq_search_mode = _parse_freq_search_mode(getattr(args, "freq_search_mode", DEFAULT_FREQ_SEARCH_MODE))
@@ -3869,6 +5436,8 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
         wang_raw_dir=Path(args.wang_raw_dir),
         wang_channels_loc=Path(args.wang_channels_loc),
         beta_raw_dir=Path(args.beta_raw_dir),
+        ysu_an_raw_dir=Path(args.ysu_an_raw_dir) if getattr(args, "ysu_an_raw_dir", None) else None,
+        ysu_an_channel_loc=Path(args.ysu_an_channel_loc) if getattr(args, "ysu_an_channel_loc", None) else None,
         subject_limit_per_dataset=int(args.subject_limit_per_dataset),
         subject_whitelist=subject_whitelist,
     )
@@ -3941,7 +5510,10 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                 "recipe_summaries": partial_summaries,
                 "shared_recipe_summaries": partial_shared_summaries,
                 "subjects": subject_manifest,
-                "idle_proxy_note": "Idle/no-control is proxied with non-command target stimulus trials from external benchmarks.",
+                "idle_proxy_note": (
+                    "Idle/no-control is proxied with non-command target stimulus trials for Wang/BETA; "
+                    "YSU-an rows use explicit NS1/NS2/NS3 no-control trials."
+                ),
             },
         )
 
@@ -3963,8 +5535,13 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             available_freqs=available_freqs,
             count=int(personalized_candidate_count),
         )
+        active_segments_for_window = [item for item in segments if item[0].expected_freq is not None]
+        if not active_segments_for_window:
+            active_segments_for_window = list(segments)
         counts = _count_segments(segments, freqs)
+        planning_counts = _count_segments(active_segments_for_window, freqs)
         max_supported_win_sec = _max_supported_win_sec(segments, sampling_rate)
+        planning_max_supported_win_sec = _max_supported_win_sec(active_segments_for_window, sampling_rate)
         subject_manifest.append(
             {
                 "dataset": str(spec.dataset),
@@ -3974,25 +5551,27 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                 "sampling_rate": int(sampling_rate),
                 "max_supported_win_sec": float(max_supported_win_sec),
                 "counts": counts,
+                "planning_max_supported_win_sec": float(planning_max_supported_win_sec),
+                "planning_counts": planning_counts,
                 "available_freqs": [float(freq) for freq in available_freqs],
                 "shared_frequency_set_count": int(len(subject_shared_frequency_sets)),
                 "personalized_candidate_freqs": [float(freq) for freq in personalized_subject_candidates],
                 "source_metadata": source_metadata,
             }
         )
-        blocks = list(counts["blocks"])
+        blocks = list(planning_counts["blocks"])
         fast_candidates = [
             (float(win_sec), float(template_weight))
             for win_sec, template_weight in product(
                 fast_win_sec_candidates,
                 fast_template_weight_candidates,
             )
-            if float(win_sec) <= float(max_supported_win_sec) + 1e-9
+            if float(win_sec) <= float(planning_max_supported_win_sec) + 1e-9
         ]
         threshold_supported_wins = tuple(
             float(win_sec)
             for win_sec in threshold_win_sec_candidates
-            if float(win_sec) <= float(max_supported_win_sec) + 1e-9
+            if float(win_sec) <= float(planning_max_supported_win_sec) + 1e-9
         )
         score_method_candidate_pairs_by_method: dict[str, list[tuple[float, int]]] = {}
         for method_name in methods:
@@ -4002,7 +5581,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                 method_name=method_name,
                 win_sec_candidates=classifier_win_sec_candidates,
                 min_enter_candidates=classifier_min_enter_candidates,
-                max_supported_win_sec=float(max_supported_win_sec),
+                max_supported_win_sec=float(planning_max_supported_win_sec),
                 sampling_rate=int(sampling_rate),
             )
         plans_by_calibration: list[tuple[int, list[SplitPlan]]] = []
@@ -4020,7 +5599,11 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
         if "fast_fbcca" in methods:
             rows_per_split += len(fast_candidates)
         for method_name, candidate_pairs in score_method_candidate_pairs_by_method.items():
-            rows_per_split += int(len(candidate_pairs) * len(classifier_max_gap_candidates))
+            rows_per_split += int(
+                len(candidate_pairs)
+                * len(classifier_max_gap_candidates)
+                * len(classifier_smoothing_candidates)
+            )
         if "threshold_pretrain" in methods and threshold_supported_wins:
             rows_per_split += 1
         for calibration_block_count in calibration_blocks:
@@ -4147,14 +5730,24 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                             if idle_eval_mode in {"clean_idle_proxy", "both"}
                             else []
                         )
-                        calibration_segments, holdout_segments, split_summary = select_split_segments(
-                            case_segments,
-                            freqs=case_freqs,
-                            calibration_blocks=plan.calibration_blocks,
-                            holdout_blocks=plan.holdout_blocks,
-                            idle_multiplier=float(idle_multiplier),
-                            seed=int(plan.seed),
-                        )
+                        if str(spec.dataset).strip().lower() == "ysu_an":
+                            calibration_segments, holdout_segments, split_summary = select_ysuan_split_segments(
+                                case_segments,
+                                freqs=case_freqs,
+                                calibration_blocks=plan.calibration_blocks,
+                                holdout_blocks=plan.holdout_blocks,
+                                idle_multiplier=float(idle_multiplier),
+                                seed=int(plan.seed),
+                            )
+                        else:
+                            calibration_segments, holdout_segments, split_summary = select_split_segments(
+                                case_segments,
+                                freqs=case_freqs,
+                                calibration_blocks=plan.calibration_blocks,
+                                holdout_blocks=plan.holdout_blocks,
+                                idle_multiplier=float(idle_multiplier),
+                                seed=int(plan.seed),
+                            )
                         split_summary["calibration_duration_sec"] = _collection_duration_sec(
                             calibration_segments,
                             sampling_rate,
@@ -4244,6 +5837,12 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                         def clean_idle_payload_for(method_name: str, win_sec: float) -> tuple[Optional[list[ScoredTrial]], Optional[dict[str, Any]]]:
                             if idle_eval_mode not in {"clean_idle_proxy", "both"}:
                                 return None, None
+                            if str(spec.dataset).strip().lower() == "ysu_an":
+                                _calibration_scored, holdout_scored = scored_for_method_win(method_name, float(win_sec))
+                                return _ysuan_holdout_no_control_scored(
+                                    holdout_scored,
+                                    win_sec=float(win_sec),
+                                )
                             clean_scored, support = clean_idle_for_method_win(method_name, float(win_sec))
                             return clean_scored, support
 
@@ -4317,7 +5916,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                             if not fast_candidates:
                                 log(
                                     f"skip fast_fbcca dataset={spec.dataset} subject={spec.subject} "
-                                    f"because no win candidate fits max_supported_win_sec={float(max_supported_win_sec):g}s"
+                                    f"because no win candidate fits max_supported_win_sec={float(planning_max_supported_win_sec):g}s"
                                 )
                             for win_sec, template_weight in fast_candidates:
                                 detail = (
@@ -4352,97 +5951,101 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                             if not lda_candidates:
                                 log(
                                     f"skip fbcca_lda5 dataset={spec.dataset} subject={spec.subject} "
-                                    f"because no win candidate fits max_supported_win_sec={float(max_supported_win_sec):g}s"
+                                    f"because no win candidate fits max_supported_win_sec={float(planning_max_supported_win_sec):g}s"
                                 )
                             for win_sec, min_enter in lda_candidates:
                                 calibration_scored, holdout_scored = scored_for_method_win("fbcca_lda5", float(win_sec))
                                 lda_base_model = lda_base_for_win("fbcca_lda5", float(win_sec))
                                 clean_idle_scored, clean_idle_support = clean_idle_payload_for("fbcca_lda5", float(win_sec))
                                 for max_gap in classifier_max_gap_candidates:
-                                    detail = (
-                                        "fbcca_lda5 "
-                                        f"dataset={spec.dataset} subject={spec.subject} split={int(plan.split_index)} "
-                                        f"cal_blocks={len(plan.calibration_blocks)} idle_mult={float(idle_multiplier):g} "
-                                        f"win={float(win_sec):g} min_enter={int(min_enter)} max_gap={int(max_gap)} "
-                                        f"threshold_policy={classifier_threshold_policy}"
-                                    )
-                                    log(detail)
-                                    append_row(
-                                        run_fbcca_lda5_method(
-                                            artifact_dir=method_root / "fbcca_lda5",
-                                            spec=spec,
-                                            split_plan=plan,
-                                            split_summary=split_summary,
-                                            sampling_rate=sampling_rate,
-                                            freqs=case_freqs,
-                                            calibration_segments=calibration_segments,
-                                            holdout_segments=holdout_segments,
-                                            compute_backend=str(args.compute_backend),
-                                            gpu_device=int(args.gpu_device),
-                                            gpu_precision=str(args.gpu_precision),
-                                            step_sec=float(args.step_sec),
-                                            win_sec=float(win_sec),
-                                            min_enter_windows=int(min_enter),
-                                            max_gap_windows=int(max_gap),
-                                            threshold_policy=classifier_threshold_policy,
-                                            score_bank_mode=score_bank_mode,
-                                            calibration_scored=calibration_scored,
-                                            holdout_scored=holdout_scored,
-                                            base_model=lda_base_model,
-                                            clean_idle_scored=clean_idle_scored,
-                                            clean_idle_support=clean_idle_support,
-                                        ),
-                                        method_name="fbcca_lda5",
-                                        detail=detail,
-                                    )
+                                    for smoothing_windows in classifier_smoothing_candidates:
+                                        detail = (
+                                            "fbcca_lda5 "
+                                            f"dataset={spec.dataset} subject={spec.subject} split={int(plan.split_index)} "
+                                            f"cal_blocks={len(plan.calibration_blocks)} idle_mult={float(idle_multiplier):g} "
+                                            f"win={float(win_sec):g} min_enter={int(min_enter)} max_gap={int(max_gap)} "
+                                            f"smooth={int(smoothing_windows)} threshold_policy={classifier_threshold_policy}"
+                                        )
+                                        log(detail)
+                                        append_row(
+                                            run_fbcca_lda5_method(
+                                                artifact_dir=method_root / "fbcca_lda5",
+                                                spec=spec,
+                                                split_plan=plan,
+                                                split_summary=split_summary,
+                                                sampling_rate=sampling_rate,
+                                                freqs=case_freqs,
+                                                calibration_segments=calibration_segments,
+                                                holdout_segments=holdout_segments,
+                                                compute_backend=str(args.compute_backend),
+                                                gpu_device=int(args.gpu_device),
+                                                gpu_precision=str(args.gpu_precision),
+                                                step_sec=float(args.step_sec),
+                                                win_sec=float(win_sec),
+                                                min_enter_windows=int(min_enter),
+                                                max_gap_windows=int(max_gap),
+                                                smoothing_windows=int(smoothing_windows),
+                                                threshold_policy=classifier_threshold_policy,
+                                                score_bank_mode=score_bank_mode,
+                                                calibration_scored=calibration_scored,
+                                                holdout_scored=holdout_scored,
+                                                base_model=lda_base_model,
+                                                clean_idle_scored=clean_idle_scored,
+                                                clean_idle_support=clean_idle_support,
+                                            ),
+                                            method_name="fbcca_lda5",
+                                            detail=detail,
+                                        )
                         if "fbcca_ridge5" in methods:
                             ridge_candidates = score_method_candidate_pairs_by_method.get("fbcca_ridge5", [])
                             if not ridge_candidates:
                                 log(
                                     f"skip fbcca_ridge5 dataset={spec.dataset} subject={spec.subject} "
-                                    f"because no win candidate fits max_supported_win_sec={float(max_supported_win_sec):g}s"
+                                    f"because no win candidate fits max_supported_win_sec={float(planning_max_supported_win_sec):g}s"
                                 )
                             for win_sec, min_enter in ridge_candidates:
                                 calibration_scored, holdout_scored = scored_for_method_win("fbcca_ridge5", float(win_sec))
                                 ridge_base_models = ridge_bases_for_win("fbcca_ridge5", float(win_sec))
                                 clean_idle_scored, clean_idle_support = clean_idle_payload_for("fbcca_ridge5", float(win_sec))
                                 for max_gap in classifier_max_gap_candidates:
-                                    detail = (
-                                        "fbcca_ridge5 "
-                                        f"dataset={spec.dataset} subject={spec.subject} split={int(plan.split_index)} "
-                                        f"cal_blocks={len(plan.calibration_blocks)} idle_mult={float(idle_multiplier):g} "
-                                        f"win={float(win_sec):g} min_enter={int(min_enter)} max_gap={int(max_gap)} "
-                                        f"threshold_policy={classifier_threshold_policy}"
-                                    )
-                                    log(detail)
-                                    append_row(
-                                        run_fbcca_ridge5_method(
-                                            artifact_dir=method_root / "fbcca_ridge5",
-                                            spec=spec,
-                                            split_plan=plan,
-                                            split_summary=split_summary,
-                                            sampling_rate=sampling_rate,
-                                            freqs=case_freqs,
-                                            calibration_segments=calibration_segments,
-                                            holdout_segments=holdout_segments,
-                                            compute_backend=str(args.compute_backend),
-                                            gpu_device=int(args.gpu_device),
-                                            gpu_precision=str(args.gpu_precision),
-                                            step_sec=float(args.step_sec),
-                                            win_sec=float(win_sec),
-                                            min_enter_windows=int(min_enter),
-                                            max_gap_windows=int(max_gap),
-                                            threshold_policy=classifier_threshold_policy,
-                                            score_bank_mode=score_bank_mode,
-                                            calibration_scored=calibration_scored,
-                                            holdout_scored=holdout_scored,
-                                            base_models=ridge_base_models,
-                                            clean_idle_scored=clean_idle_scored,
-                                            clean_idle_support=clean_idle_support,
-                                        ),
-                                        method_name="fbcca_ridge5",
-                                        detail=detail,
-                                    )
+                                    for smoothing_windows in classifier_smoothing_candidates:
+                                        detail = (
+                                            "fbcca_ridge5 "
+                                            f"dataset={spec.dataset} subject={spec.subject} split={int(plan.split_index)} "
+                                            f"cal_blocks={len(plan.calibration_blocks)} idle_mult={float(idle_multiplier):g} "
+                                            f"win={float(win_sec):g} min_enter={int(min_enter)} max_gap={int(max_gap)} "
+                                            f"smooth={int(smoothing_windows)} threshold_policy={classifier_threshold_policy}"
+                                        )
+                                        log(detail)
+                                        append_row(
+                                            run_fbcca_ridge5_method(
+                                                artifact_dir=method_root / "fbcca_ridge5",
+                                                spec=spec,
+                                                split_plan=plan,
+                                                split_summary=split_summary,
+                                                sampling_rate=sampling_rate,
+                                                freqs=case_freqs,
+                                                calibration_segments=calibration_segments,
+                                                holdout_segments=holdout_segments,
+                                                compute_backend=str(args.compute_backend),
+                                                gpu_device=int(args.gpu_device),
+                                                gpu_precision=str(args.gpu_precision),
+                                                step_sec=float(args.step_sec),
+                                                win_sec=float(win_sec),
+                                                min_enter_windows=int(min_enter),
+                                                max_gap_windows=int(max_gap),
+                                                smoothing_windows=int(smoothing_windows),
+                                                threshold_policy=classifier_threshold_policy,
+                                                score_bank_mode=score_bank_mode,
+                                                calibration_scored=calibration_scored,
+                                                holdout_scored=holdout_scored,
+                                                base_models=ridge_base_models,
+                                                clean_idle_scored=clean_idle_scored,
+                                                clean_idle_support=clean_idle_support,
+                                            ),
+                                            method_name="fbcca_ridge5",
+                                            detail=detail,
+                                        )
                         for method_name in SUPPORTED_SHORT_PRETRAIN_METHODS:
                             if method_name not in methods or method_name in {"fbcca_lda5", "fbcca_ridge5"}:
                                 continue
@@ -4450,7 +6053,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                             if not method_candidates:
                                 log(
                                     f"skip {method_name} dataset={spec.dataset} subject={spec.subject} "
-                                    f"because no win candidate fits max_supported_win_sec={float(max_supported_win_sec):g}s"
+                                    f"because no win candidate fits max_supported_win_sec={float(planning_max_supported_win_sec):g}s"
                                 )
                                 continue
                             method_spec = _score_method_spec(method_name)
@@ -4459,51 +6062,53 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                                 ridge_base_models = ridge_bases_for_win(method_name, float(win_sec))
                                 clean_idle_scored, clean_idle_support = clean_idle_payload_for(method_name, float(win_sec))
                                 for max_gap in classifier_max_gap_candidates:
-                                    detail = (
-                                        f"{method_name} "
-                                        f"dataset={spec.dataset} subject={spec.subject} split={int(plan.split_index)} "
-                                        f"cal_blocks={len(plan.calibration_blocks)} idle_mult={float(idle_multiplier):g} "
-                                        f"win={float(win_sec):g} min_enter={int(min_enter)} max_gap={int(max_gap)} "
-                                        f"threshold_policy={classifier_threshold_policy}"
-                                    )
-                                    log(detail)
-                                    append_row(
-                                        run_fbcca_ridge5_method(
-                                            artifact_dir=method_root / method_name,
-                                            spec=spec,
-                                            split_plan=plan,
-                                            split_summary=split_summary,
-                                            sampling_rate=sampling_rate,
-                                            freqs=case_freqs,
-                                            calibration_segments=calibration_segments,
-                                            holdout_segments=holdout_segments,
-                                            compute_backend=str(args.compute_backend),
-                                            gpu_device=int(args.gpu_device),
-                                            gpu_precision=str(args.gpu_precision),
-                                            step_sec=float(args.step_sec),
-                                            win_sec=float(win_sec),
-                                            min_enter_windows=int(min_enter),
-                                            max_gap_windows=int(max_gap),
-                                            threshold_policy=classifier_threshold_policy,
-                                            calibration_scored=calibration_scored,
-                                            holdout_scored=holdout_scored,
-                                            base_models=ridge_base_models,
+                                    for smoothing_windows in classifier_smoothing_candidates:
+                                        detail = (
+                                            f"{method_name} "
+                                            f"dataset={spec.dataset} subject={spec.subject} split={int(plan.split_index)} "
+                                            f"cal_blocks={len(plan.calibration_blocks)} idle_mult={float(idle_multiplier):g} "
+                                            f"win={float(win_sec):g} min_enter={int(min_enter)} max_gap={int(max_gap)} "
+                                            f"smooth={int(smoothing_windows)} threshold_policy={classifier_threshold_policy}"
+                                        )
+                                        log(detail)
+                                        append_row(
+                                            run_fbcca_ridge5_method(
+                                                artifact_dir=method_root / method_name,
+                                                spec=spec,
+                                                split_plan=plan,
+                                                split_summary=split_summary,
+                                                sampling_rate=sampling_rate,
+                                                freqs=case_freqs,
+                                                calibration_segments=calibration_segments,
+                                                holdout_segments=holdout_segments,
+                                                compute_backend=str(args.compute_backend),
+                                                gpu_device=int(args.gpu_device),
+                                                gpu_precision=str(args.gpu_precision),
+                                                step_sec=float(args.step_sec),
+                                                win_sec=float(win_sec),
+                                                min_enter_windows=int(min_enter),
+                                                max_gap_windows=int(max_gap),
+                                                smoothing_windows=int(smoothing_windows),
+                                                threshold_policy=classifier_threshold_policy,
+                                                calibration_scored=calibration_scored,
+                                                holdout_scored=holdout_scored,
+                                                base_models=ridge_base_models,
+                                                method_name=str(method_name),
+                                                score_source_name=str(method_spec.score_source_name),
+                                                score_bank_mode=score_bank_mode,
+                                                decoder_name=str(method_spec.decoder_name),
+                                                decoder_model_params=dict(method_spec.decoder_model_params),
+                                                clean_idle_scored=clean_idle_scored,
+                                                clean_idle_support=clean_idle_support,
+                                            ),
                                             method_name=str(method_name),
-                                            score_source_name=str(method_spec.score_source_name),
-                                            score_bank_mode=score_bank_mode,
-                                            decoder_name=str(method_spec.decoder_name),
-                                            decoder_model_params=dict(method_spec.decoder_model_params),
-                                            clean_idle_scored=clean_idle_scored,
-                                            clean_idle_support=clean_idle_support,
-                                        ),
-                                        method_name=str(method_name),
-                                        detail=detail,
-                                    )
+                                            detail=detail,
+                                        )
                         if "threshold_pretrain" in methods:
                             if not threshold_supported_wins:
                                 log(
                                     f"skip threshold_pretrain dataset={spec.dataset} subject={spec.subject} "
-                                    f"because no win candidate fits max_supported_win_sec={float(max_supported_win_sec):g}s"
+                                    f"because no win candidate fits max_supported_win_sec={float(planning_max_supported_win_sec):g}s"
                                 )
                                 continue
                             detail = (
@@ -4618,6 +6223,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--wang-raw-dir", type=Path, required=True)
     parser.add_argument("--wang-channels-loc", type=Path, required=True)
     parser.add_argument("--beta-raw-dir", type=Path, required=True)
+    parser.add_argument("--ysu-an-raw-dir", type=Path, default=None)
+    parser.add_argument("--ysu-an-channel-loc", type=Path, default=None)
     parser.add_argument("--subject-limit-per-dataset", type=int, default=0)
     parser.add_argument("--subject-whitelist", type=str, default="")
     parser.add_argument("--calibration-blocks", type=str, default="1,2,3")
@@ -4633,6 +6240,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--classifier-win-sec-candidates", type=str, default="1.5,2.0,2.5")
     parser.add_argument("--classifier-min-enter-candidates", type=str, default="1,2")
     parser.add_argument("--classifier-max-gap-candidates", type=str, default="0")
+    parser.add_argument(
+        "--classifier-smoothing-windows-candidates",
+        type=str,
+        default=",".join(str(item) for item in DEFAULT_CLASSIFIER_SMOOTHING_WINDOWS_CANDIDATES),
+    )
     parser.add_argument(
         "--classifier-threshold-policy",
         type=str,

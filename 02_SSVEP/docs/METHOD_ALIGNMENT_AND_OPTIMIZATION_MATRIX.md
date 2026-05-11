@@ -28,6 +28,9 @@
 | `trca5` | `trca` | paper-faithful | 用 class-wise spatial filter + template 的 supervised 短校准基线。 |
 | `trca_r5` | `trca_r` | engineering-approx | TRCA-R / eTRCA 风格的滤波器组集成近似。 |
 | `tdca5` | `tdca` | engineering-approx / near-paper | TDCA 短预训练候选，当前按 `tdca_paper_aligned` 变体处理 raw latency。 |
+| `fbcca_ridge5 + adaptive_evidence_gate` | `fbcca` | engineering-approx | 保留 FBCCA scorer，用 calibration-only logistic/LRT 风格 evidence gate 做 command-vs-no-control 拒识。 |
+| `fbcca_ridge5 + lrt_multiwindow_reject_gate` | `fbcca` | engineering-approx | 保留 FBCCA scorer，用 calibration-only pooled LRT 与多窗口累计证据做 hard non-command 拒识。 |
+| `fbcca_ridge5 + subject_adaptive_threshold` | `fbcca` | engineering fallback | 不新增 decoder，仅用每个被试 calibration score 分布设 no-control 阈值。 |
 
 ## 3. 优化矩阵（问题 -> 证据 -> 改法 -> 风险 -> 验收）
 | 问题 | 证据/文献方向 | 本轮改法 | 主要风险 | 验收阈值 |
@@ -46,6 +49,8 @@
 | 3 评测状态机不连续 | `async_fbcca_idle_standalone.py::evaluate_decoder_on_trials` | 门控 `gate.reset()` 仅在整体评测开始时调用，不再每 trial 重置。 |
 | 4 切换延迟乐观 | `async_fbcca_idle_standalone.py::evaluate_decoder_on_trials`、`benchmark_metric_definition_payload` | 对漏检切换使用惩罚延迟 `trial_duration_sec + win_sec`，`switch_latency_s` 改为惩罚版中位数。 |
 | 6 时钟资源浪费 | `async_fbcca_validation_ui.py::FourArrowStimWidget.apply_phase`、`ssvep_model_evaluation_ui.py::phase_from_benchmark_line` | 非 flicker 阶段显式 `stop_clock()`；模型离线评分阶段 `flicker=False`。 |
+| no-control 拒识不足 | `tools/run_external_short_pretrain_benchmark.py` | `adaptive_evidence_gate` 使用 full-bank rank/margin、概率 margin/entropy 与短时稳定性训练 command-vs-no-control gate；`subject_adaptive_threshold` 作为无模型 fallback。 |
+| adaptive gate FP 超标 | Beta weak adaptive run：recall 提升到 0.5625，但 idle FP/min 升到 2.6389 | `lrt_multiwindow_reject_gate` 改用 pooled command/no-control LRT 分布与多窗口累计 evidence，优先压住 hard non-command FP。 |
 
 ## 3.2 数据集导出落地点（评测流程）
 | 项目 | 代码落地点 | 说明 |
@@ -64,7 +69,12 @@
 ## 5. 参考文献（用于方法映射）
 - CCA 基线：DOI [10.1088/1741-2560/6/4/046002](https://doi.org/10.1088/1741-2560/6/4/046002)
 - FBCCA：PubMed [26035476](https://pubmed.ncbi.nlm.nih.gov/26035476/)
+- BETA 数据集：PMC [PMC7324867](https://pmc.ncbi.nlm.nih.gov/articles/PMC7324867/)
 - CCA 变体对比：DOI [10.1371/journal.pone.0140703](https://doi.org/10.1371/journal.pone.0140703)
 - TRCA：PubMed [28436836](https://pubmed.ncbi.nlm.nih.gov/28436836/)
 - 异步 control-state：PubMed [26246229](https://pubmed.ncbi.nlm.nih.gov/26246229/)
+- 异步 control/no-control LRT：PubMed [28268627](https://pubmed.ncbi.nlm.nih.gov/28268627/)
+- 动态窗口异步 SSVEP：PubMed [30105920](https://pubmed.ncbi.nlm.nih.gov/30105920/)
+- 多窗口时空均衡异步 SSVEP：PubMed [34237711](https://pubmed.ncbi.nlm.nih.gov/34237711/)
+- 异步脑开关 / no-control 综述：[Electronics 9(3), 422](https://www.mdpi.com/2079-9292/9/3/422)
 - 伪在线评测框架：DOI [10.1088/1741-2552/ad171a](https://doi.org/10.1088/1741-2552/ad171a)

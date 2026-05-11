@@ -24,6 +24,7 @@ DEFAULT_ARGS = [
     "8888",
     "--rosbridge-port",
     "9091",
+    "--robot-connect-on-start",
     "--vision-mode",
     "robot_camera_detection",
     "--move-source",
@@ -53,33 +54,36 @@ def _candidate_brain_code_pythons() -> tuple[Path, ...]:
     candidates = [PROJECT_ROOT / ".venv" / venv_dir / python_name]
     for root_name in ("miniconda3", "anaconda3", "mambaforge"):
         candidates.append(home / root_name / "envs" / "brain_code" / venv_dir / python_name)
+        candidates.append(home / root_name / "envs" / "brain-vision" / venv_dir / python_name)
     return tuple(candidates)
 
 
 def _enforce_brain_code_interpreter() -> None:
     override = os.environ.get("BRAIN_PYTHON_EXE", "").strip()
+    expected_paths: tuple[Path, ...]
     if override:
         override_path = Path(override).expanduser()
         if not override_path.exists():
             raise SystemExit(
                 "Interpreter mismatch.\n"
                 f"BRAIN_PYTHON_EXE is set but missing: {override_path}\n"
-                "Please fix BRAIN_PYTHON_EXE or switch PyCharm interpreter to the repo .venv or your brain_code environment."
+                "Please fix BRAIN_PYTHON_EXE or switch PyCharm interpreter to the repo .venv, brain_code, or brain-vision environment."
             )
-        expected = override_path.resolve()
+        expected_paths = (override_path.resolve(),)
     else:
         candidates = _candidate_brain_code_pythons()
-        expected = next((path.resolve() for path in candidates if path.exists()), None)
-    if expected is None:
+        expected_paths = tuple(path.resolve() for path in candidates if path.exists())
+    if not expected_paths:
         return
     current = Path(sys.executable).resolve()
-    if current == expected:
+    if current in expected_paths:
         return
+    expected_text = "\n".join(f"  - {path}" for path in expected_paths)
     raise SystemExit(
         "Interpreter mismatch.\n"
         f"Current: {current}\n"
-        f"Expected: {expected}\n"
-        "Please switch PyCharm interpreter to the repo .venv or your brain_code environment and run again.\n"
+        f"Expected one of:\n{expected_text}\n"
+        "Please switch PyCharm interpreter to the repo .venv, brain_code, or brain-vision environment and run again.\n"
         "Optional override: set BRAIN_PYTHON_EXE to an absolute python.exe path."
     )
 

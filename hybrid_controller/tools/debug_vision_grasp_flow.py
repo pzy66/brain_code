@@ -17,8 +17,14 @@ if str(REPO_ROOT) not in sys.path:
 
 from hybrid_controller.app_robot_commands import extract_command_opcode
 from hybrid_controller.app_robot_commands import rewrite_pick_command_with_bias
+from hybrid_controller.adapters.teleop_ros_channel import RosTeleopPublishPlanner
+from hybrid_controller.adapters.teleop_ros_channel import new_teleop_cmd_seq_base
+from hybrid_controller.adapters.teleop_ros_channel import next_teleop_cmd_seq
 from hybrid_controller.config import AppConfig
 from hybrid_controller.vision.calibration_profile import VisionCalibrationProfile
+from hybrid_controller.vision.continuous_servo_controller import ContinuousVisionServoController
+from hybrid_controller.vision.grasp_profile import apply_vision_grasp_profile
+from hybrid_controller.vision.grasp_profile import load_vision_grasp_profile
 from hybrid_controller.vision.processing import (
     SlotState,
     annotate_slots_with_cylindrical,
@@ -42,6 +48,12 @@ class RosBridgeClient:
         self.port = int(port)
         self.timeout_sec = float(timeout_sec)
         self.ros = None
+        self._state_topic = None
+        self._teleop_topic = None
+        self._state_lock = threading.Lock()
+        self._state_ready = threading.Event()
+        self._latest_state: dict[str, object] | None = None
+        self._latest_state_local_ts: float = 0.0
 
     def connect(self) -> None:
         import roslibpy
@@ -70,10 +82,27 @@ class RosBridgeClient:
             ros.close()
             raise RuntimeError("rosbridge not connected.")
         self.ros = ros
+        self._subscribe_state()
 
     def close(self) -> None:
+        if self._state_topic is not None:
+            try:
+                self._state_topic.unsubscribe()
+            except Exception:
+                pass
+            self._state_topic = None
+        if self._teleop_topic is not None:
+            try:
+                self._teleop_topic.unadvertise()
+            except Exception:
+                pass
+            self._teleop_topic = None
         ros = self.ros
         self.ros = None
+        with self._state_lock:
+            self._latest_state = None
+            self._latest_state_local_ts = 0.0
+            self._state_ready.clear()
         if ros is not None:
             try:
                 ros.close()
@@ -81,30 +110,72 @@ class RosBridgeClient:
                 pass
 
     def fetch_state(self, *, timeout_sec: float | None = None) -> dict[str, object]:
-        import roslibpy
-
-        ros = self._require_ros()
-        topic = roslibpy.Topic(ros, "/hybrid_controller/state", "hybrid_controller_ros/RobotState")
-        done = threading.Event()
-        holder: dict[str, object] = {"message": None}
-
-        def _callback(message: dict[str, object]) -> None:
-            holder["message"] = dict(message)
-            done.set()
-
-        topic.subscribe(_callback)
-        try:
-            if not done.wait(timeout=max(0.1, float(timeout_sec if timeout_sec is not None else self.timeout_sec))):
-                raise TimeoutError("Timed out waiting for /hybrid_controller/state.")
-        finally:
-            try:
-                topic.unsubscribe()
-            except Exception:
-                pass
-        message = holder["message"]
+        timeout = max(0.1, float(timeout_sec if timeout_sec is not None else self.timeout_sec))
+        if not self._state_ready.wait(timeout=timeout):
+            raise TimeoutError("Timed out waiting for /hybrid_controller/state.")
+        with self._state_lock:
+            message = None if self._latest_state is None else dict(self._latest_state)
+            local_ts = float(self._latest_state_local_ts)
         if not isinstance(message, dict):
             raise RuntimeError("Invalid /hybrid_controller/state payload.")
+        message["_local_receive_ts"] = local_ts
         return message
+
+    def advertise_teleop(self) -> None:
+        import roslibpy
+
+        if self._teleop_topic is not None:
+            return
+        self._teleop_topic = roslibpy.Topic(
+            self._require_ros(),
+            "/hybrid_controller/teleop_cyl_cmd",
+            "hybrid_controller_ros/CylindricalTeleop",
+            queue_size=1,
+        )
+        self._teleop_topic.advertise()
+
+    def publish_teleop(
+        self,
+        *,
+        theta_rate_deg_s: float,
+        radius_rate_mm_s: float,
+        z_rate_mm_s: float = 0.0,
+        use_auto_z: bool = False,
+        enabled: bool,
+        cmd_seq: int,
+        client_ts: float,
+    ) -> None:
+        import roslibpy
+
+        self.advertise_teleop()
+        if self._teleop_topic is None:
+            raise RuntimeError("ROS teleop topic is not ready.")
+        self._teleop_topic.publish(
+            roslibpy.Message(
+                {
+                    "theta_rate_deg_s": float(theta_rate_deg_s),
+                    "radius_rate_mm_s": float(radius_rate_mm_s),
+                    "z_rate_mm_s": float(z_rate_mm_s),
+                    "use_auto_z": bool(use_auto_z),
+                    "enabled": bool(enabled),
+                    "cmd_seq": int(max(0, int(cmd_seq))),
+                    "client_ts": float(client_ts),
+                }
+            )
+        )
+
+    def stop_teleop(self, *, use_auto_z: bool = False, cmd_seq: int = 0) -> None:
+        if self._teleop_topic is None:
+            return
+        self.publish_teleop(
+            theta_rate_deg_s=0.0,
+            radius_rate_mm_s=0.0,
+            z_rate_mm_s=0.0,
+            use_auto_z=bool(use_auto_z),
+            enabled=False,
+            cmd_seq=int(max(0, int(cmd_seq))),
+            client_ts=time.time(),
+        )
 
     def call_service(
         self,
@@ -142,6 +213,27 @@ class RosBridgeClient:
         if self.ros is None:
             raise RuntimeError("ROS client is not connected.")
         return self.ros
+
+    def _subscribe_state(self) -> None:
+        import roslibpy
+
+        if self._state_topic is not None:
+            return
+        topic = roslibpy.Topic(
+            self._require_ros(),
+            "/hybrid_controller/state",
+            "hybrid_controller_ros/RobotState",
+            queue_length=1,
+        )
+
+        def _callback(message: dict[str, object]) -> None:
+            with self._state_lock:
+                self._latest_state = dict(message)
+                self._latest_state_local_ts = time.perf_counter()
+                self._state_ready.set()
+
+        topic.subscribe(_callback)
+        self._state_topic = topic
 
 
 def _json_default(value: object) -> object:
@@ -562,7 +654,9 @@ def _state_message_to_snapshot(message: Mapping[str, object]) -> dict[str, objec
         "state": str(message.get("state", "")),
         "state_seq": int(message.get("state_seq", 0) or 0),
         "robot_ts": _float("robot_ts", 0.0),
+        "_local_receive_ts": _float("_local_receive_ts", 0.0),
         "busy": bool(message.get("busy", False)),
+        "busy_action": str(message.get("busy_action", "")),
         "carrying": bool(message.get("carrying", False)),
         "robot_xy": [_float("x_mm"), _float("y_mm")],
         "robot_z": _float("z_mm"),
@@ -582,6 +676,8 @@ def _state_message_to_snapshot(message: Mapping[str, object]) -> dict[str, objec
         "last_ack": str(message.get("last_ack", "")),
         "last_error_code": str(message.get("last_error_code", "")),
         "last_error": str(message.get("last_error_message", "")),
+        "release_mode_effective": str(message.get("release_mode_effective", "")),
+        "sucker_frozen": str(message.get("release_mode_effective", "")).strip().lower() == "sucker_frozen",
         "pick_tuning": {
             "pick_approach_z_mm": _float("pick_approach_z_mm", 130.0),
             "pick_descend_z_mm": _float("pick_descend_z_mm", 85.0),
@@ -595,6 +691,20 @@ def _state_message_to_snapshot(message: Mapping[str, object]) -> dict[str, objec
     return snapshot
 
 
+def _continuous_snapshot_blocks_teleop(snapshot: Mapping[str, object]) -> bool:
+    state = str(snapshot.get("state", "")).strip().upper()
+    busy_action = str(snapshot.get("busy_action", "")).strip().lower()
+    if bool(snapshot.get("carrying", False)):
+        return True
+    if state.startswith("PICK") or state.startswith("PLACE") or state in {"ERROR", "RECOVERING"}:
+        return True
+    if state == "MOVING_XY" and busy_action != "teleop":
+        return True
+    if not bool(snapshot.get("busy", False)):
+        return False
+    return busy_action != "teleop"
+
+
 def _current_cyl_pose(snapshot: Mapping[str, object] | None) -> tuple[float, float, float] | None:
     if not isinstance(snapshot, Mapping):
         return None
@@ -602,13 +712,16 @@ def _current_cyl_pose(snapshot: Mapping[str, object] | None) -> tuple[float, flo
     if not isinstance(cyl, Mapping):
         return None
     try:
-        return (
+        pose = (
             float(cyl.get("theta_deg")),
             float(cyl.get("radius_mm")),
             float(cyl.get("z_mm", snapshot.get("robot_z", 0.0))),
         )
     except (TypeError, ValueError):
         return None
+    if not all(math.isfinite(value) for value in pose):
+        return None
+    return pose
 
 
 def _is_at_confirm_z(config: AppConfig, pose: tuple[float, float, float] | None) -> bool:
@@ -749,6 +862,7 @@ def _process_frame_batch(
 
 
 def _packet_frame_pose_age_ms(packet: Mapping[str, object]) -> float | None:
+    ages: list[float] = []
     for key in ("latest_frame_preprocess_age_ms", "stream_age_ms", "queue_age_ms"):
         value = packet.get(key)
         if value is None:
@@ -758,8 +872,10 @@ def _packet_frame_pose_age_ms(packet: Mapping[str, object]) -> float | None:
         except (TypeError, ValueError):
             continue
         if math.isfinite(age_ms):
-            return max(0.0, age_ms)
-    return None
+            ages.append(max(0.0, age_ms))
+    if not ages:
+        return None
+    return max(ages)
 
 
 def _resolve_packet(
@@ -821,6 +937,27 @@ def _select_slot(packet: Mapping[str, object], slot_id: int | None) -> dict[str,
     return valid_slots[0]
 
 
+def _continuous_slot_id_for_selection(args_slot_id: int | None, pending: Mapping[str, object] | None) -> int | None:
+    if args_slot_id is not None:
+        return int(args_slot_id)
+    if not isinstance(pending, Mapping):
+        return None
+    try:
+        lost_frames = int(pending.get("lost_frames", 0) or 0)
+    except (TypeError, ValueError):
+        lost_frames = 0
+    try:
+        stable_frames = int(pending.get("stable_frames", 0) or 0)
+    except (TypeError, ValueError):
+        stable_frames = 0
+    if stable_frames > 0 and lost_frames <= 0:
+        try:
+            return int(pending.get("slot_id"))
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
 def _decision_for_packet(
     *,
     packet: Mapping[str, object],
@@ -858,6 +995,79 @@ def _decision_for_packet(
         "command": _rewrite_final_pick_command_for_debug(config=config, command=decision.command),
         "raw_command": decision.command,
         "pending": decision.pending_dict,
+        "trace": dict(decision.trace),
+    }
+
+
+def _continuous_decision_for_packet(
+    *,
+    packet: Mapping[str, object],
+    config: AppConfig,
+    snapshot: Mapping[str, object] | None,
+    selected_slot: Mapping[str, object] | None,
+    slot_id: int | None = None,
+    pending: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    if selected_slot is None:
+        pending_slot_id = None
+        if isinstance(pending, Mapping):
+            try:
+                pending_slot_id = int(pending.get("slot_id"))
+            except (TypeError, ValueError):
+                pending_slot_id = None
+        effective_slot_id = int(slot_id if slot_id is not None else pending_slot_id) if (slot_id is not None or pending_slot_id is not None) else None
+        if effective_slot_id is not None:
+            decision = ContinuousVisionServoController(config).decide(
+                slot_id=effective_slot_id,
+                slot_payload=None,
+                packet=packet,
+                pending=pending,
+                current_cyl_pose=_current_cyl_pose(snapshot),
+                frame_pose_age_ms=_packet_frame_pose_age_ms(packet),
+            )
+            return {
+                "action": decision.action,
+                "state": decision.action,
+                "status": decision.status,
+                "reason": decision.reason,
+                "command": None,
+                "raw_command": None,
+                "pending": decision.pending_dict,
+                "theta_rate_deg_s": float(decision.theta_rate_deg_s),
+                "radius_rate_mm_s": float(decision.radius_rate_mm_s),
+                "z_rate_mm_s": float(decision.z_rate_mm_s),
+                "trace": dict(decision.trace),
+            }
+        return {
+            "action": "STOP",
+            "state": "FAILED",
+            "status": "no_valid_slot",
+            "reason": "no_valid_slot",
+            "command": None,
+            "pending": pending,
+            "trace": {},
+        }
+    slot_id = int(selected_slot.get("slot_id", selected_slot.get("slot", 0)))
+    decision = ContinuousVisionServoController(config).decide(
+        slot_id=slot_id,
+        slot_payload=selected_slot,
+        packet=packet,
+        pending=pending,
+        current_cyl_pose=_current_cyl_pose(snapshot),
+        frame_pose_age_ms=_packet_frame_pose_age_ms(packet),
+    )
+    command = _rewrite_final_pick_command_for_debug(config=config, command=decision.command)
+    return {
+        "action": decision.action,
+        "state": decision.action,
+        "status": decision.status,
+        "reason": decision.reason,
+        "command": command,
+        "raw_command": decision.command,
+        "pending": decision.pending_dict,
+        "theta_rate_deg_s": float(decision.theta_rate_deg_s),
+        "radius_rate_mm_s": float(decision.radius_rate_mm_s),
+        "z_rate_mm_s": float(decision.z_rate_mm_s),
         "trace": dict(decision.trace),
     }
 
@@ -1077,6 +1287,351 @@ def _write_json(path: Path, payload: object) -> None:
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False, default=_json_default) + "\n", encoding="utf-8")
 
 
+def _run_continuous_servo_flow(
+    *,
+    args: argparse.Namespace,
+    config: AppConfig,
+    cv2_module: object,
+    model: object | None,
+    calibration_profile: VisionCalibrationProfile | None,
+    stream_candidates: tuple[str, ...],
+    output_dir: Path,
+    client: RosBridgeClient | None,
+    initial_snapshot: dict[str, object] | None,
+    ros_status: dict[str, object],
+    report: dict[str, object],
+    device: str | None,
+    half: bool,
+) -> int:
+    report["servo_mode"] = "continuous"
+    rate_hz = max(1.0, float(args.continuous_teleop_rate_hz))
+    interval_sec = 1.0 / rate_hz
+    save_every = max(0, int(args.continuous_save_every))
+    metrics: dict[str, object] = {
+        "teleop_rate_hz": rate_hz,
+        "max_duration_sec": max(0.1, float(args.continuous_max_duration_sec)),
+        "commands_sent": 0,
+        "stop_count": 0,
+        "max_center_distance_px": 0.0,
+        "mean_frame_age_ms": None,
+        "frame_age_samples": 0,
+        "max_state_age_ms": 0.0,
+        "final_pick_command": None,
+        "final_stop_reason": "",
+        "locked_slot_id": None,
+        "release_mode_effective": None,
+    }
+    report["continuous"] = metrics
+    if client is None or not bool(ros_status.get("connected", False)):
+        report["error"] = "continuous_servo_requires_ros"
+        _write_json(output_dir / "debug_vision_grasp_flow.json", report)
+        print("[guard] --servo-mode continuous requires an active ROS bridge connection.", file=sys.stderr)
+        return 2
+
+    try:
+        client.advertise_teleop()
+    except Exception as error:
+        report["error"] = f"teleop_advertise_failed: {error}"
+        _write_json(output_dir / "debug_vision_grasp_flow.json", report)
+        print(f"[robot] Could not advertise teleop topic: {error}", file=sys.stderr)
+        return 1
+
+    reader = _PersistentCaptureReader(
+        cv2_module=cv2_module,
+        stream_urls=stream_candidates,
+        config=config,
+        capture_backend=str(args.capture_backend),
+    )
+    planner = RosTeleopPublishPlanner(keepalive_interval_sec=max(0.05, min(0.12, interval_sec)))
+    frame_id = 0
+    debug_slots: list[SlotState] | None = None
+    locked_slot_id: int | None = int(args.slot_id) if args.slot_id is not None else None
+    servo_pending: dict[str, object] | None = None
+    frame_ages: list[float] = []
+    cmd_seq = new_teleop_cmd_seq_base()
+    teleop_published = False
+    exit_code = 0
+    loop_index = 0
+    started_at = time.perf_counter()
+    deadline = started_at + max(0.1, float(args.continuous_max_duration_sec))
+
+    try:
+        if bool(initial_snapshot and initial_snapshot.get("busy", False)):
+            report["error"] = "robot_busy_before_continuous_servo"
+            print("[robot] Robot is busy before continuous servo; no teleop command sent.", file=sys.stderr)
+            return 2
+
+        while time.perf_counter() <= deadline:
+            loop_started = time.perf_counter()
+            loop_index += 1
+            try:
+                state_ts = time.perf_counter()
+                state_message = client.fetch_state(timeout_sec=float(args.ros_timeout_sec))
+                snapshot = _state_message_to_snapshot(state_message)
+                snapshot_age_ms = max(0.0, (time.perf_counter() - state_ts) * 1000.0)
+            except Exception as error:
+                snapshot = None
+                snapshot_age_ms = float("inf")
+                print(f"[robot] Could not refresh state during continuous servo: {error}", file=sys.stderr)
+
+            if isinstance(snapshot, Mapping):
+                release_mode = str(snapshot.get("release_mode_effective", ""))
+                metrics["release_mode_effective"] = release_mode
+                try:
+                    local_receive_ts = float(snapshot.get("_local_receive_ts", 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    local_receive_ts = 0.0
+                if local_receive_ts > 0.0:
+                    snapshot_age_ms = max(snapshot_age_ms, max(0.0, (time.perf_counter() - local_receive_ts) * 1000.0))
+                if math.isfinite(snapshot_age_ms):
+                    metrics["max_state_age_ms"] = max(float(metrics["max_state_age_ms"]), float(snapshot_age_ms))
+                if str(snapshot.get("last_error_code", "")).strip():
+                    metrics["final_stop_reason"] = "robot_error"
+                    report["error"] = str(snapshot.get("last_error", snapshot.get("last_error_code", "")))
+                    exit_code = 1
+                    break
+                if _continuous_snapshot_blocks_teleop(snapshot):
+                    cmd_seq = next_teleop_cmd_seq(cmd_seq)
+                    client.stop_teleop(use_auto_z=False, cmd_seq=cmd_seq)
+                    teleop_published = True
+                    metrics["commands_sent"] = int(metrics["commands_sent"]) + 1
+                    metrics["stop_count"] = int(metrics["stop_count"]) + 1
+                    metrics["final_stop_reason"] = "robot_busy"
+                    report["error"] = "robot_busy"
+                    exit_code = 1
+                    break
+            else:
+                release_mode = ""
+            max_state_age_ms = max(1.0, float(getattr(config, "vision_continuous_servo_command_timeout_ms", 250.0)))
+            if not isinstance(snapshot, Mapping) or snapshot_age_ms > max_state_age_ms:
+                cmd_seq = next_teleop_cmd_seq(cmd_seq)
+                client.stop_teleop(use_auto_z=False, cmd_seq=cmd_seq)
+                teleop_published = True
+                metrics["commands_sent"] = int(metrics["commands_sent"]) + 1
+                metrics["stop_count"] = int(metrics["stop_count"]) + 1
+                metrics["final_stop_reason"] = "robot_state_stale"
+                report["error"] = "robot_state_stale"
+                exit_code = 1
+                break
+
+            stream_url, frames = reader.read(
+                frame_count=int(args.frames),
+                drain_frames=int(args.drain_frames) if loop_index == 1 else 0,
+                timeout_sec=float(args.timeout_sec),
+            )
+            process_frames = _select_latest_frames(frames, int(args.process_latest_frames))
+            report["stream_url"] = stream_url
+            packet, last_frame, frame_id, debug_slots = _process_frame_batch(
+                frames=process_frames,
+                model=model,
+                config=config,
+                calibration_profile=calibration_profile,
+                snapshot_for_stage=snapshot,
+                frame_id_start=frame_id,
+                slots=debug_slots,
+                device=device,
+                half=half,
+            )
+            packet["camera_frames_captured"] = int(len(frames))
+            packet["camera_frames_processed"] = int(len(process_frames))
+            frame_age_ms = _packet_frame_pose_age_ms(packet)
+            if frame_age_ms is not None:
+                frame_ages.append(float(frame_age_ms))
+            resolved_packet = _resolve_packet(
+                packet=packet,
+                config=config,
+                snapshot=snapshot,
+                snapshot_age_ms=snapshot_age_ms,
+                frame_pose_age_ms=frame_age_ms,
+            )
+            resolved_packet["camera_frames_captured"] = int(len(frames))
+            resolved_packet["camera_frames_processed"] = int(len(process_frames))
+            selection_slot_id = _continuous_slot_id_for_selection(locked_slot_id, servo_pending)
+            selected_slot = _select_slot(resolved_packet, selection_slot_id)
+            selected_slot_id = None if selected_slot is None else int(selected_slot.get("slot_id", selected_slot.get("slot", 0)))
+            if args.slot_id is not None and locked_slot_id is None and selected_slot_id is not None:
+                locked_slot_id = int(selected_slot_id)
+                metrics["locked_slot_id"] = int(locked_slot_id)
+            if args.slot_id is None and selected_slot_id is not None:
+                metrics["locked_slot_id"] = int(selected_slot_id)
+            decision = _continuous_decision_for_packet(
+                packet=resolved_packet,
+                config=config,
+                snapshot=snapshot,
+                selected_slot=selected_slot,
+                slot_id=locked_slot_id,
+                pending=servo_pending,
+            )
+            servo_pending = decision.get("pending") if isinstance(decision.get("pending"), dict) else None
+            if selected_slot is not None and selected_slot.get("center_distance_px") is not None:
+                try:
+                    metrics["max_center_distance_px"] = max(
+                        float(metrics["max_center_distance_px"]),
+                        float(selected_slot.get("center_distance_px")),
+                    )
+                except (TypeError, ValueError):
+                    pass
+            if frame_ages:
+                metrics["mean_frame_age_ms"] = sum(frame_ages) / float(len(frame_ages))
+                metrics["frame_age_samples"] = int(len(frame_ages))
+
+            step_report: dict[str, object] = {
+                "step": loop_index,
+                "elapsed_sec": max(0.0, time.perf_counter() - started_at),
+                "camera_frames_captured": int(len(frames)),
+                "camera_frames_processed": int(len(process_frames)),
+                "slots": _slot_summary(resolved_packet),
+                "selected_slot_id": selected_slot_id,
+                "selected_slot": selected_slot,
+                "decision": decision,
+                "snapshot": snapshot,
+            }
+            should_save = save_every > 0 and (
+                loop_index == 1 or loop_index % save_every == 0 or str(decision.get("action")) != "SERVO"
+            )
+            if should_save:
+                step_dir = output_dir / f"continuous_{loop_index:03d}"
+                raw_path = step_dir / "raw.jpg"
+                overlay_path = step_dir / "overlay.jpg"
+                packet_path = step_dir / "packet.json"
+                step_dir.mkdir(parents=True, exist_ok=True)
+                cv2_module.imwrite(str(raw_path), last_frame)
+                _save_overlay(
+                    cv2_module=cv2_module,
+                    frame=last_frame,
+                    packet=resolved_packet,
+                    selected_slot_id=selected_slot_id,
+                    output_path=overlay_path,
+                )
+                _write_json(packet_path, resolved_packet)
+                step_report.update(
+                    {
+                        "raw_image": str(raw_path),
+                        "overlay_image": str(overlay_path),
+                        "packet": str(packet_path),
+                    }
+                )
+            report["steps"].append(step_report)
+
+            action = str(decision.get("action", ""))
+            reason = str(decision.get("reason", ""))
+            if action == "SERVO":
+                command = planner.next_command(
+                    theta_rate_deg_s=float(decision.get("theta_rate_deg_s", 0.0)),
+                    radius_rate_mm_s=float(decision.get("radius_rate_mm_s", 0.0)),
+                    z_rate_mm_s=float(decision.get("z_rate_mm_s", 0.0)),
+                    use_auto_z=False,
+                    now_monotonic=time.monotonic(),
+                )
+                if command is not None:
+                    cmd_seq = next_teleop_cmd_seq(cmd_seq)
+                    client.publish_teleop(
+                        theta_rate_deg_s=float(command.theta_rate_deg_s),
+                        radius_rate_mm_s=float(command.radius_rate_mm_s),
+                        z_rate_mm_s=float(command.z_rate_mm_s),
+                        use_auto_z=False,
+                        enabled=bool(command.enabled),
+                        cmd_seq=cmd_seq,
+                        client_ts=time.time(),
+                    )
+                    teleop_published = True
+                    metrics["commands_sent"] = int(metrics["commands_sent"]) + 1
+                print(
+                    "[continuous {step}] slot={slot} rates theta={theta:.2f} r={radius:.2f} z={z:.2f} reason={reason}".format(
+                        step=loop_index,
+                        slot=selected_slot_id,
+                        theta=float(decision.get("theta_rate_deg_s", 0.0)),
+                        radius=float(decision.get("radius_rate_mm_s", 0.0)),
+                        z=float(decision.get("z_rate_mm_s", 0.0)),
+                        reason=reason,
+                    )
+                )
+            elif action == "PICK_READY":
+                cmd_seq = next_teleop_cmd_seq(cmd_seq)
+                client.stop_teleop(use_auto_z=False, cmd_seq=cmd_seq)
+                teleop_published = True
+                metrics["commands_sent"] = int(metrics["commands_sent"]) + 1
+                metrics["stop_count"] = int(metrics["stop_count"]) + 1
+                planner.reset()
+                pick_command = None if decision.get("command") is None else str(decision.get("command"))
+                metrics["final_pick_command"] = pick_command
+                allow_real_pick = bool(args.allow_real_pick)
+                sucker_frozen = str(release_mode).strip().lower() == "sucker_frozen"
+                if not bool(args.allow_pick):
+                    execution = {
+                        "executed": False,
+                        "reason": "pick_blocked_requires_allow_pick",
+                        "command": pick_command,
+                    }
+                    exit_code = 2
+                elif not sucker_frozen and not allow_real_pick:
+                    execution = {
+                        "executed": False,
+                        "reason": "real_pick_blocked_requires_sucker_freeze_or_allow_real_pick",
+                        "command": pick_command,
+                        "release_mode_effective": release_mode,
+                    }
+                    exit_code = 2
+                else:
+                    execution = _execute_command(
+                        client=client,
+                        command=pick_command,
+                        allow_pick=True,
+                        timeout_sec=float(args.command_timeout_sec),
+                    )
+                    if bool(execution.get("executed", False)):
+                        settled = _wait_for_idle(
+                            client=client,
+                            timeout_sec=max(float(args.command_timeout_sec), float(args.settle_sec)),
+                        )
+                        step_report["post_execution_snapshot"] = settled
+                        initial_snapshot = settled if settled is not None else snapshot
+                        time.sleep(max(0.0, float(args.settle_sec)))
+                step_report["execution"] = execution
+                print(f"[continuous {loop_index}] pick_ready command={pick_command} execution={execution}")
+                break
+            else:
+                cmd_seq = next_teleop_cmd_seq(cmd_seq)
+                client.stop_teleop(use_auto_z=False, cmd_seq=cmd_seq)
+                teleop_published = True
+                metrics["commands_sent"] = int(metrics["commands_sent"]) + 1
+                metrics["stop_count"] = int(metrics["stop_count"]) + 1
+                planner.reset()
+                metrics["final_stop_reason"] = reason
+                if reason in {"hold", "lost_target_wait"}:
+                    time.sleep(max(0.0, interval_sec - (time.perf_counter() - loop_started)))
+                    continue
+                exit_code = 1
+                break
+
+            sleep_sec = max(0.0, interval_sec - (time.perf_counter() - loop_started))
+            if sleep_sec > 0.0:
+                time.sleep(sleep_sec)
+        else:
+            metrics["final_stop_reason"] = "timeout"
+            exit_code = 1
+    except Exception as error:
+        report["error"] = str(error)
+        metrics["final_stop_reason"] = "exception"
+        print(f"[error] {error}", file=sys.stderr)
+        exit_code = 1
+    finally:
+        try:
+            if teleop_published:
+                cmd_seq = next_teleop_cmd_seq(cmd_seq)
+                client.stop_teleop(use_auto_z=False, cmd_seq=cmd_seq)
+                metrics["commands_sent"] = int(metrics["commands_sent"]) + 1
+                metrics["stop_count"] = int(metrics["stop_count"]) + 1
+        except Exception:
+            pass
+        reader.close()
+        report_path = output_dir / "debug_vision_grasp_flow.json"
+        _write_json(report_path, report)
+        print(f"[output] overlay/report saved under: {output_dir}")
+        print(f"[output] report: {report_path}")
+    return exit_code
+
+
 def build_parser() -> argparse.ArgumentParser:
     defaults = AppConfig().resolved()
     parser = argparse.ArgumentParser(
@@ -1087,6 +1642,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--stream-url", default="")
     parser.add_argument("--weights", type=Path, default=None)
     parser.add_argument("--profile", type=Path, default=defaults.vision_calibration_profile_path)
+    parser.add_argument("--vision-grasp-profile", type=Path, default=defaults.vision_grasp_profile_path)
+    parser.add_argument(
+        "--vision-grasp-profile-optional",
+        action="store_true",
+        help="Allow debug PICK decisions without a tracked vision-grasp profile.",
+    )
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--slot-id", type=int, default=None)
     parser.add_argument("--frames", type=int, default=max(3, int(defaults.vision_grasp_stable_frames)))
@@ -1094,7 +1655,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--process-latest-frames",
         type=int,
-        default=0,
+        default=max(1, int(defaults.vision_grasp_stable_frames)),
         help="Process only the newest N captured frames; 0 keeps the full captured batch.",
     )
     parser.add_argument(
@@ -1153,12 +1714,61 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Override the visual confirmation height for this debug run only.",
     )
+    parser.add_argument("--servo-max-attempts", type=int, default=None)
+    parser.add_argument("--move-gain", type=float, default=None)
+    parser.add_argument("--fine-move-gain", type=float, default=None)
+    parser.add_argument("--fine-threshold-px", type=float, default=None)
+    parser.add_argument("--descent-step-mm", type=float, default=None)
+    parser.add_argument("--coarse-descent-step-mm", type=float, default=None)
+    parser.add_argument("--fine-descent-step-mm", type=float, default=None)
+    parser.add_argument("--descent-fine-band-mm", type=float, default=None)
+    parser.add_argument(
+        "--servo-mode",
+        choices=("discrete", "continuous"),
+        default="discrete",
+        help="discrete keeps the legacy MOVE/PICK loop; continuous publishes velocity commands on /hybrid_controller/teleop_cyl_cmd.",
+    )
+    parser.add_argument(
+        "--continuous-teleop-rate-hz",
+        type=float,
+        default=10.0,
+        help="Velocity-command publish loop rate for --servo-mode continuous.",
+    )
+    parser.add_argument(
+        "--continuous-max-duration-sec",
+        type=float,
+        default=30.0,
+        help="Safety timeout for --servo-mode continuous.",
+    )
+    parser.add_argument(
+        "--continuous-save-every",
+        type=int,
+        default=5,
+        help="Save every Nth continuous debug frame; 0 disables intermediate image writes.",
+    )
+    parser.add_argument(
+        "--allow-real-pick",
+        action="store_true",
+        help="Permit final PICK when the robot is not in sucker_frozen dry-run mode.",
+    )
     parser.add_argument("--max-steps", type=int, default=1)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if str(args.servo_mode) == "continuous" and not bool(args.persistent_camera):
+        print(
+            "[guard] --servo-mode continuous requires --persistent-camera so the official MJPEG stream stays open.",
+            file=sys.stderr,
+        )
+        return 2
+    if str(args.servo_mode) == "continuous" and not bool(args.execute):
+        print(
+            "[guard] --servo-mode continuous publishes robot teleop commands and requires --execute.",
+            file=sys.stderr,
+        )
+        return 2
     if bool(args.execute) and int(args.max_steps) > 1 and not bool(args.allow_execute_loop):
         print(
             "[guard] Refusing --execute with --max-steps > 1 unless --allow-execute-loop is set. "
@@ -1169,6 +1779,8 @@ def main(argv: list[str] | None = None) -> int:
     config_kwargs: dict[str, object] = {
         "robot_host": str(args.host),
         "vision_calibration_profile_path": Path(args.profile),
+        "vision_grasp_profile_path": Path(args.vision_grasp_profile),
+        "vision_grasp_profile_required": not bool(args.vision_grasp_profile_optional),
         "vision_eye_in_hand_pick_radius_bias_mm": float(args.pick_radius_bias_mm),
         "pick_tool_offset_source": str(args.pick_tool_offset_source),
     }
@@ -1177,7 +1789,31 @@ def main(argv: list[str] | None = None) -> int:
     if args.center_tolerance_px is not None:
         config_kwargs["vision_servo_center_tolerance_px"] = float(args.center_tolerance_px)
         config_kwargs["vision_servo_action_tolerance_px"] = float(args.center_tolerance_px)
+    if args.servo_max_attempts is not None:
+        config_kwargs["vision_servo_max_attempts"] = int(args.servo_max_attempts)
+    if args.move_gain is not None:
+        config_kwargs["vision_servo_move_gain"] = float(args.move_gain)
+    if args.fine_move_gain is not None:
+        config_kwargs["vision_servo_fine_move_gain"] = float(args.fine_move_gain)
+    if args.fine_threshold_px is not None:
+        config_kwargs["vision_servo_fine_threshold_px"] = float(args.fine_threshold_px)
+    if args.descent_step_mm is not None:
+        config_kwargs["vision_pick_descent_step_mm"] = float(args.descent_step_mm)
+        config_kwargs["vision_pick_descent_coarse_step_mm"] = float(args.descent_step_mm)
+        config_kwargs["vision_pick_descent_fine_step_mm"] = float(args.descent_step_mm)
+    if args.coarse_descent_step_mm is not None:
+        config_kwargs["vision_pick_descent_coarse_step_mm"] = float(args.coarse_descent_step_mm)
+    if args.fine_descent_step_mm is not None:
+        config_kwargs["vision_pick_descent_fine_step_mm"] = float(args.fine_descent_step_mm)
+    if args.descent_fine_band_mm is not None:
+        config_kwargs["vision_pick_descent_fine_band_mm"] = float(args.descent_fine_band_mm)
     config = AppConfig(**config_kwargs).resolved()
+    grasp_profile = load_vision_grasp_profile(config)
+    if grasp_profile.ready:
+        config = apply_vision_grasp_profile(config, grasp_profile).resolved()
+    elif bool(config.vision_grasp_profile_required):
+        print(f"[guard] Vision grasp profile unavailable: {grasp_profile.error}", file=sys.stderr)
+        return 2
     explicit_stream_url = str(args.stream_url).strip()
     # Default capture follows the locked JetMax camera contract: one official
     # MJPEG URL from AppConfig, no endpoint scan, no robot-side camera mutation.
@@ -1232,6 +1868,7 @@ def main(argv: list[str] | None = None) -> int:
 
     report: dict[str, object] = {
         "created_at": datetime.now().isoformat(timespec="seconds"),
+        "servo_mode": str(args.servo_mode),
         "stream_url": stream_url,
         "weights": str(args.weights or _resolve_weights_path(config)),
         "profile": str(args.profile),
@@ -1246,9 +1883,35 @@ def main(argv: list[str] | None = None) -> int:
         "process_latest_frames": int(args.process_latest_frames),
         "capture_backend": str(args.capture_backend),
         "persistent_camera": bool(args.persistent_camera),
+        "continuous_teleop_rate_hz": float(args.continuous_teleop_rate_hz),
+        "continuous_max_duration_sec": float(args.continuous_max_duration_sec),
+        "camera_contract": (
+            "PC reads the single official Hiwonder MJPEG stream from "
+            "usb_cam.service -> /usb_cam/image_rect_color -> web_video_server:8080; "
+            "this tool must not start, restart, scan, or mutate the robot camera sender."
+        ),
         "ros": ros_status,
         "steps": [],
     }
+    if str(args.servo_mode) == "continuous":
+        exit_code = _run_continuous_servo_flow(
+            args=args,
+            config=config,
+            cv2_module=cv2,
+            model=model,
+            calibration_profile=calibration_profile,
+            stream_candidates=stream_candidates,
+            output_dir=output_dir,
+            client=client,
+            initial_snapshot=initial_snapshot,
+            ros_status=ros_status,
+            report=report,
+            device=device,
+            half=half,
+        )
+        if client is not None:
+            client.close()
+        return int(exit_code)
     frame_id = 0
     exit_code = 0
     debug_slots: list[SlotState] | None = None

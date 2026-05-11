@@ -322,6 +322,30 @@ def bbox_to_grasp_geometry(
     )
 
 
+def block_candidate_score(
+    item: "DetectionCandidate",
+    *,
+    largest_area_px: float,
+    roi_radius: float,
+    frame_shape: tuple[int, int] | None = None,
+) -> float:
+    area_ratio = min(1.0, float(item.area_px) / max(1.0, float(largest_area_px)))
+    distance_penalty = min(1.0, float(item.distance_to_roi) / max(1.0, float(roi_radius)))
+    edge_penalty = 0.0
+    if frame_shape is not None:
+        frame_h, frame_w = frame_shape
+        bbox = item.bbox
+        edge_touch = bbox[0] <= 1 or bbox[1] <= 1 or bbox[2] >= frame_w - 1 or bbox[3] >= frame_h - 1
+        edge_penalty = 0.45 if edge_touch else 0.0
+    return (
+        2.4 * float(item.grasp_quality)
+        + 1.4 * area_ratio
+        + 0.4 * float(item.confidence)
+        - 0.5 * distance_penalty
+        - edge_penalty
+    )
+
+
 def frame_to_block_candidates(
     frame_bgr: np.ndarray,
     *,
@@ -408,13 +432,11 @@ def frame_to_block_candidates(
         roi_scale = max(1.0, float(roi_radius))
 
         def candidate_score(item: DetectionCandidate) -> float:
-            area_ratio = min(1.0, float(item.area_px) / largest_area)
-            distance_penalty = min(1.0, float(item.distance_to_roi) / roi_scale)
-            return (
-                2.4 * float(item.grasp_quality)
-                + 1.4 * area_ratio
-                + 0.4 * float(item.confidence)
-                - 0.5 * distance_penalty
+            return block_candidate_score(
+                item,
+                largest_area_px=largest_area,
+                roi_radius=roi_scale,
+                frame_shape=(frame_h, frame_w),
             )
 
         candidates.sort(key=lambda item: (-candidate_score(item), item.distance_to_roi, -item.area_px))
@@ -823,7 +845,22 @@ def extract_candidates(
                 distance_to_roi=float(distance_to_roi),
             )
         )
-    candidates.sort(key=lambda item: (item.distance_to_roi, -item.area_px, -item.confidence))
+    if candidates:
+        largest_area = max(1.0, float(max(item.area_px for item in candidates)))
+        roi_scale = max(1.0, float(roi_radius))
+        candidates.sort(
+            key=lambda item: (
+                -block_candidate_score(
+                    item,
+                    largest_area_px=largest_area,
+                    roi_radius=roi_scale,
+                    frame_shape=frame_shape,
+                ),
+                item.distance_to_roi,
+                -item.area_px,
+                -item.confidence,
+            )
+        )
     if not candidates and bool(fallback_to_frame) and frame_bgr is not None:
         candidates = frame_to_block_candidates(
             frame_bgr,

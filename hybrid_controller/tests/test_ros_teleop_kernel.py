@@ -27,6 +27,78 @@ def test_teleop_kernel_generates_steps_when_enabled() -> None:
     assert step is not None
     assert step.pose.theta_deg > 0.0
     assert step.pose.radius_mm > 120.0
+    assert step.z_rate_mm_s == 0.0
+
+
+def test_teleop_kernel_can_disable_auto_z_for_horizontal_servo() -> None:
+    kernel = CylindricalTeleopKernel(
+        theta_limits_deg=(-120.0, 120.0),
+        radius_limits_mm=(80.0, 260.0),
+        z_limits_mm=(120.0, 220.0),
+        auto_z_profile=((80.0, 130.0), (260.0, 220.0)),
+        validator=_allow_all,
+        tick_hz=20.0,
+        deadman_timeout_sec=0.2,
+        radius_accel_mm_s2=400.0,
+    )
+    now = time.monotonic()
+    kernel.update_command(
+        theta_rate_deg_s=0.0,
+        radius_rate_mm_s=60.0,
+        z_rate_mm_s=0.0,
+        use_auto_z=False,
+        enabled=True,
+        timestamp=now,
+    )
+    step = kernel.step(CylindricalPose(theta_deg=0.0, radius_mm=120.0, z_mm=175.0), now=now + 0.05)
+    assert step is not None
+    assert step.pose.radius_mm > 120.0
+    assert step.pose.z_mm == 175.0
+
+
+def test_teleop_kernel_keeps_z_when_auto_z_disabled_for_theta_only_servo() -> None:
+    kernel = CylindricalTeleopKernel(
+        theta_limits_deg=(-120.0, 120.0),
+        radius_limits_mm=(80.0, 260.0),
+        z_limits_mm=(120.0, 220.0),
+        auto_z_profile=((80.0, 130.0), (260.0, 220.0)),
+        validator=_allow_all,
+        tick_hz=20.0,
+        deadman_timeout_sec=0.2,
+        theta_accel_deg_s2=400.0,
+    )
+    now = time.monotonic()
+    kernel.update_command(
+        theta_rate_deg_s=60.0,
+        radius_rate_mm_s=0.0,
+        z_rate_mm_s=0.0,
+        use_auto_z=False,
+        enabled=True,
+        timestamp=now,
+    )
+    step = kernel.step(CylindricalPose(theta_deg=0.0, radius_mm=120.0, z_mm=175.0), now=now + 0.05)
+    assert step is not None
+    assert step.pose.theta_deg > 0.0
+    assert step.pose.z_mm == 175.0
+
+
+def test_teleop_kernel_supports_explicit_z_rate() -> None:
+    kernel = CylindricalTeleopKernel(
+        theta_limits_deg=(-120.0, 120.0),
+        radius_limits_mm=(80.0, 260.0),
+        z_limits_mm=(120.0, 220.0),
+        auto_z_profile=((80.0, 170.0), (260.0, 180.0)),
+        validator=_allow_all,
+        tick_hz=20.0,
+        deadman_timeout_sec=0.2,
+        z_accel_mm_s2=400.0,
+    )
+    now = time.monotonic()
+    kernel.update_command(theta_rate_deg_s=0.0, radius_rate_mm_s=0.0, z_rate_mm_s=-40.0, enabled=True, timestamp=now)
+    step = kernel.step(CylindricalPose(theta_deg=0.0, radius_mm=120.0, z_mm=175.0), now=now + 0.05)
+    assert step is not None
+    assert step.pose.z_mm < 175.0
+    assert step.z_rate_mm_s < 0.0
 
 
 def test_teleop_kernel_stops_after_deadman_timeout() -> None:
@@ -40,6 +112,25 @@ def test_teleop_kernel_stops_after_deadman_timeout() -> None:
     )
     now = time.monotonic()
     kernel.update_command(theta_rate_deg_s=30.0, radius_rate_mm_s=0.0, enabled=True, timestamp=now)
+    first = kernel.step(CylindricalPose(theta_deg=0.0, radius_mm=120.0, z_mm=175.0), now=now + 0.05)
+    assert first is not None
+    stale = kernel.step(first.pose, now=now + 0.30)
+    assert stale is None
+
+
+def test_teleop_kernel_stops_z_after_deadman_timeout() -> None:
+    kernel = CylindricalTeleopKernel(
+        theta_limits_deg=(-120.0, 120.0),
+        radius_limits_mm=(80.0, 260.0),
+        z_limits_mm=(120.0, 220.0),
+        auto_z_profile=((80.0, 170.0), (260.0, 180.0)),
+        validator=_allow_all,
+        tick_hz=20.0,
+        deadman_timeout_sec=0.2,
+        z_accel_mm_s2=400.0,
+    )
+    now = time.monotonic()
+    kernel.update_command(theta_rate_deg_s=0.0, radius_rate_mm_s=0.0, z_rate_mm_s=-40.0, enabled=True, timestamp=now)
     first = kernel.step(CylindricalPose(theta_deg=0.0, radius_mm=120.0, z_mm=175.0), now=now + 0.05)
     assert first is not None
     stale = kernel.step(first.pose, now=now + 0.30)
@@ -60,6 +151,23 @@ def test_teleop_kernel_respects_validator_failures() -> None:
     now = time.monotonic()
     kernel.update_command(theta_rate_deg_s=0.0, radius_rate_mm_s=200.0, enabled=True, timestamp=now)
     step = kernel.step(CylindricalPose(theta_deg=0.0, radius_mm=125.5, z_mm=175.0), now=now + 0.05)
+    assert step is None
+
+
+def test_teleop_kernel_respects_z_validator_failures() -> None:
+    kernel = CylindricalTeleopKernel(
+        theta_limits_deg=(-120.0, 120.0),
+        radius_limits_mm=(80.0, 260.0),
+        z_limits_mm=(120.0, 220.0),
+        auto_z_profile=((80.0, 170.0), (260.0, 180.0)),
+        validator=lambda theta, radius, z: {"ok": z >= 130.0, "message": "too_low"},
+        tick_hz=20.0,
+        deadman_timeout_sec=0.2,
+        z_accel_mm_s2=400.0,
+    )
+    now = time.monotonic()
+    kernel.update_command(theta_rate_deg_s=0.0, radius_rate_mm_s=0.0, z_rate_mm_s=-80.0, enabled=True, timestamp=now)
+    step = kernel.step(CylindricalPose(theta_deg=0.0, radius_mm=125.5, z_mm=130.5), now=now + 0.05)
     assert step is None
 
 

@@ -62,15 +62,18 @@ class _TeleopKernel(object):
         self,
         theta_limits_deg,
         radius_limits_mm,
+        z_limits_mm,
         auto_z_profile,
         validator,
         tick_hz=20.0,
         deadman_timeout_sec=0.2,
         theta_accel_deg_s2=220.0,
         radius_accel_mm_s2=220.0,
+        z_accel_mm_s2=120.0,
     ):
         self.theta_limits_deg = (float(theta_limits_deg[0]), float(theta_limits_deg[1]))
         self.radius_limits_mm = (float(radius_limits_mm[0]), float(radius_limits_mm[1]))
+        self.z_limits_mm = (float(z_limits_mm[0]), float(z_limits_mm[1]))
         self.auto_z_profile = tuple((float(radius), float(z_mm)) for radius, z_mm in auto_z_profile)
         self.validator = validator
         self.tick_hz = max(float(tick_hz), 1.0)
@@ -78,27 +81,42 @@ class _TeleopKernel(object):
         self.deadman_timeout_sec = max(float(deadman_timeout_sec), self.tick_sec)
         self.theta_accel_deg_s2 = max(float(theta_accel_deg_s2), 1.0)
         self.radius_accel_mm_s2 = max(float(radius_accel_mm_s2), 1.0)
+        self.z_accel_mm_s2 = max(float(z_accel_mm_s2), 1.0)
         self.theta_rate_deg_s = 0.0
         self.radius_rate_mm_s = 0.0
+        self.z_rate_mm_s = 0.0
         self.command_theta_rate_deg_s = 0.0
         self.command_radius_rate_mm_s = 0.0
+        self.command_z_rate_mm_s = 0.0
+        self.command_use_auto_z = True
         self.command_enabled = False
         self.command_ts = time.monotonic()
 
-    def update_command(self, theta_rate_deg_s=0.0, radius_rate_mm_s=0.0, enabled=False, timestamp=None):
+    def update_command(
+        self,
+        theta_rate_deg_s=0.0,
+        radius_rate_mm_s=0.0,
+        z_rate_mm_s=0.0,
+        use_auto_z=True,
+        enabled=False,
+        timestamp=None,
+    ):
         self.command_theta_rate_deg_s = float(theta_rate_deg_s)
         self.command_radius_rate_mm_s = float(radius_rate_mm_s)
+        self.command_z_rate_mm_s = float(z_rate_mm_s)
+        self.command_use_auto_z = bool(use_auto_z)
         self.command_enabled = bool(enabled)
         self.command_ts = float(time.monotonic() if timestamp is None else timestamp)
 
     def clear_command(self, timestamp=None):
-        self.update_command(0.0, 0.0, False, timestamp=timestamp)
+        self.update_command(0.0, 0.0, 0.0, self.command_use_auto_z, False, timestamp=timestamp)
 
     def step(self, current_pose, now=None):
         current_time = float(time.monotonic() if now is None else now)
         stale = (current_time - float(self.command_ts)) > self.deadman_timeout_sec
         target_theta_rate = 0.0 if stale or not self.command_enabled else float(self.command_theta_rate_deg_s)
         target_radius_rate = 0.0 if stale or not self.command_enabled else float(self.command_radius_rate_mm_s)
+        target_z_rate = 0.0 if stale or not self.command_enabled else float(self.command_z_rate_mm_s)
         self.theta_rate_deg_s = self._ramp(
             self.theta_rate_deg_s,
             target_theta_rate,
@@ -109,7 +127,12 @@ class _TeleopKernel(object):
             target_radius_rate,
             self.radius_accel_mm_s2 * self.tick_sec,
         )
-        if abs(self.theta_rate_deg_s) < 1e-6 and abs(self.radius_rate_mm_s) < 1e-6:
+        self.z_rate_mm_s = self._ramp(
+            self.z_rate_mm_s,
+            target_z_rate,
+            self.z_accel_mm_s2 * self.tick_sec,
+        )
+        if abs(self.theta_rate_deg_s) < 1e-6 and abs(self.radius_rate_mm_s) < 1e-6 and abs(self.z_rate_mm_s) < 1e-6:
             return None
 
         next_theta = self._clamp(
@@ -120,11 +143,18 @@ class _TeleopKernel(object):
             float(current_pose.radius_mm) + self.radius_rate_mm_s * self.tick_sec,
             self.radius_limits_mm,
         )
-        next_z = float(interpolate_auto_z(self.auto_z_profile, next_radius))
+        if bool(self.command_use_auto_z) and abs(self.z_rate_mm_s) < 1e-6:
+            next_z = float(interpolate_auto_z(self.auto_z_profile, next_radius))
+        else:
+            next_z = self._clamp(
+                float(current_pose.z_mm) + self.z_rate_mm_s * self.tick_sec,
+                self.z_limits_mm,
+            )
         validation = self.validator(next_theta, next_radius, next_z)
         if not bool(validation.get("ok", False)):
             self.theta_rate_deg_s = 0.0
             self.radius_rate_mm_s = 0.0
+            self.z_rate_mm_s = 0.0
             return None
         pose = CylindricalPose(next_theta, next_radius, next_z).normalized()
         return _TeleopStep(pose, stale)
@@ -232,12 +262,14 @@ class HybridControllerRuntimeNode(object):
         self.teleop_kernel = _TeleopKernel(
             theta_limits_deg=self.executor.theta_limits,
             radius_limits_mm=self.executor.auto_radius_limits,
+            z_limits_mm=self.executor.z_limits,
             auto_z_profile=self.executor._auto_z_profile,
             validator=self._validate_cyl_target_for_teleop,
             tick_hz=20.0,
             deadman_timeout_sec=0.6,
             theta_accel_deg_s2=180.0,
             radius_accel_mm_s2=200.0,
+            z_accel_mm_s2=120.0,
         )
         self._teleop_command_duration_sec = 0.08
         self._teleop_active = False
@@ -280,20 +312,31 @@ class HybridControllerRuntimeNode(object):
 
     def _on_teleop_cmd(self, message):
         cmd_seq = int(getattr(message, "cmd_seq", 0) or 0)
-        if cmd_seq > 0 and self._teleop_last_cmd_seq > 0 and cmd_seq <= self._teleop_last_cmd_seq:
-            return
-        if cmd_seq > 0:
-            self._teleop_last_cmd_seq = int(cmd_seq)
         client_ts = float(getattr(message, "client_ts", 0.0) or 0.0)
+        sequence_is_old = cmd_seq > 0 and self._teleop_last_cmd_seq > 0 and cmd_seq <= self._teleop_last_cmd_seq
         if client_ts > 0.0:
             if self._teleop_last_client_ts > 0.0 and client_ts < self._teleop_last_client_ts:
                 return
-            if (time.time() - client_ts) > 2.0:
+            if sequence_is_old and self._teleop_last_client_ts > 0.0 and client_ts <= self._teleop_last_client_ts:
+                return
+            # client_ts is generated on the desktop. JetMax images are not always
+            # NTP-synced, so only use absolute age rejection when the clocks are
+            # already close enough for that comparison to be meaningful.
+            local_wall_now = time.time()
+            if abs(local_wall_now - client_ts) <= 60.0 and (local_wall_now - client_ts) > 2.0:
                 return
             self._teleop_last_client_ts = float(client_ts)
+        if sequence_is_old:
+            if client_ts <= 0.0:
+                return
+            self._teleop_last_cmd_seq = 0
+        if cmd_seq > 0:
+            self._teleop_last_cmd_seq = int(cmd_seq)
         self.teleop_kernel.update_command(
             theta_rate_deg_s=float(message.theta_rate_deg_s),
             radius_rate_mm_s=float(message.radius_rate_mm_s),
+            z_rate_mm_s=float(getattr(message, "z_rate_mm_s", 0.0) or 0.0),
+            use_auto_z=bool(getattr(message, "use_auto_z", True)),
             enabled=bool(message.enabled),
             timestamp=time.monotonic(),
         )
@@ -321,8 +364,16 @@ class HybridControllerRuntimeNode(object):
     def _on_teleop_tick(self, _event):
         with self.executor._lock:
             state = str(self.executor._state)
+            busy = bool(self.executor._busy)
+            busy_action = str(self.executor._busy_action)
             current_commanded_cyl = tuple(self.executor._commanded_cyl)
         if state.startswith("PICK") or state.startswith("PLACE") or state in {"ERROR", "RECOVERING"}:
+            self._stop_teleop()
+            return
+        if busy and busy_action != "teleop":
+            self._stop_teleop()
+            return
+        if state == "MOVING_XY" and busy_action != "teleop":
             self._stop_teleop()
             return
         current_pose = CylindricalPose(

@@ -13,6 +13,8 @@ if str(REPO_ROOT) not in sys.path:
 
 from hybrid_controller.config import AppConfig
 from hybrid_controller.cylindrical import cartesian_to_cylindrical
+from hybrid_controller.vision.grasp_profile import apply_vision_grasp_profile
+from hybrid_controller.vision.grasp_profile import load_vision_grasp_profile
 from hybrid_controller.vision.servo_controller import VisionServoController
 from hybrid_controller.vision.target_resolver import resolve_vision_packet
 
@@ -38,12 +40,14 @@ def _load_bundle_debug(bundle_dir: Path | None) -> dict[str, object]:
 def _as_config(debug: Mapping[str, object]) -> AppConfig:
     runtime = debug.get("runtime")
     runtime_map = runtime if isinstance(runtime, Mapping) else {}
-    return AppConfig(
+    config = AppConfig(
         pick_tool_offset_source=str(runtime_map.get("pick_tool_offset_source", AppConfig.pick_tool_offset_source)),
         pick_cyl_radius_bias_mm=float(runtime_map.get("pick_cyl_radius_bias_mm", AppConfig.pick_cyl_radius_bias_mm)),
         pick_cyl_tangent_bias_mm=float(runtime_map.get("pick_cyl_tangent_bias_mm", AppConfig.pick_cyl_tangent_bias_mm)),
         pick_cyl_theta_bias_deg=float(runtime_map.get("pick_cyl_theta_bias_deg", AppConfig.pick_cyl_theta_bias_deg)),
     ).resolved()
+    profile_result = load_vision_grasp_profile(config)
+    return apply_vision_grasp_profile(config, profile_result).resolved() if profile_result.ready else config
 
 
 def _first_slot_id(packet: Mapping[str, object]) -> int:
@@ -169,6 +173,7 @@ def replay(
     )
     return {
         "slot_id": selected_slot_id,
+        "metrics": _packet_metrics(resolved_packet),
         "resolution": {
             "mapping_mode": resolved.mapping_mode,
             "first_invalid_reason": resolved.first_invalid_reason,
@@ -184,6 +189,44 @@ def replay(
             "command": decision.command,
             "pending": decision.pending_dict,
         },
+    }
+
+
+def _packet_metrics(packet: Mapping[str, object]) -> dict[str, object]:
+    slots = packet.get("slots")
+    if not isinstance(slots, list):
+        return {
+            "valid_count": 0,
+            "actionable_count": 0,
+            "servo_required_count": 0,
+            "invalid_reasons": {},
+            "mean_center_distance_px": None,
+        }
+    valid_slots = [slot for slot in slots if isinstance(slot, Mapping) and bool(slot.get("valid", False))]
+    invalid_reasons: dict[str, int] = {}
+    distances: list[float] = []
+    actionable_count = 0
+    servo_required_count = 0
+    for slot in valid_slots:
+        if bool(slot.get("actionable", False)):
+            actionable_count += 1
+        if bool(slot.get("servo_required", False)) or str(slot.get("invalid_reason", "")) == "vision_servo_required":
+            servo_required_count += 1
+        reason = str(slot.get("invalid_reason", "") or "")
+        if reason:
+            invalid_reasons[reason] = invalid_reasons.get(reason, 0) + 1
+        try:
+            distance = float(slot.get("center_distance_px"))
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(distance):
+            distances.append(distance)
+    return {
+        "valid_count": len(valid_slots),
+        "actionable_count": int(actionable_count),
+        "servo_required_count": int(servo_required_count),
+        "invalid_reasons": invalid_reasons,
+        "mean_center_distance_px": None if not distances else sum(distances) / float(len(distances)),
     }
 
 

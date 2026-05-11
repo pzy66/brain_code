@@ -3,6 +3,14 @@ from __future__ import annotations
 from hybrid_controller.adapters.rosbridge_client import RosbridgeClient
 
 
+class _FakeTopic:
+    def __init__(self) -> None:
+        self.messages: list[dict[str, object]] = []
+
+    def publish(self, message) -> None:
+        self.messages.append(dict(message))
+
+
 def test_rosbridge_client_emits_ack_when_last_ack_changes() -> None:
     events: list[tuple[str, str]] = []
     client = RosbridgeClient(
@@ -65,3 +73,23 @@ def test_rosbridge_client_accepts_equal_seq_with_newer_robot_ts() -> None:
     latest = client.latest_state_snapshot()
     assert isinstance(latest, dict)
     assert float(latest.get("robot_ts", 0.0) or 0.0) == 10.1
+
+
+def test_rosbridge_stop_teleop_preserves_sequence_and_explicit_z_mode() -> None:
+    client = RosbridgeClient("127.0.0.1", 9091)
+    topic = _FakeTopic()
+    client._teleop_topic = topic
+
+    client.stop_teleop(use_auto_z=False, cmd_seq=42, client_ts=1234.5)
+
+    assert topic.messages == [
+        {
+            "theta_rate_deg_s": 0.0,
+            "radius_rate_mm_s": 0.0,
+            "z_rate_mm_s": 0.0,
+            "use_auto_z": False,
+            "enabled": False,
+            "cmd_seq": 42,
+            "client_ts": 1234.5,
+        }
+    ]

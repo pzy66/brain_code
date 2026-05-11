@@ -17,3 +17,8 @@ Current collections:
 - `SSVEP/`: curated references currently used by `02_SSVEP`, including a
   Chinese reading list, bibliography JSON, PubMed/Crossref metadata, BETA and
   Wang2016 dataset reference records, and openly shareable PDF material.
+- `JetMax_WiFi/`: PC-side Windows/Intel Wi-Fi references used to diagnose
+  JetMax local-network disconnects without touching the robot camera sender.
+- `Vision_Grasp/`: JetMax wood-block recognition and grasp-flow method notes,
+  including YOLO segmentation, visual servoing, suction grasping, and
+  small-object detection references used by `hybrid_controller`.

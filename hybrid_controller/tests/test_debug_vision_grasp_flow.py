@@ -5,7 +5,11 @@ import numpy as np
 from hybrid_controller.config import AppConfig
 from hybrid_controller.tools.debug_vision_grasp_flow import (
     _capture_frames_from_candidates,
+    _continuous_decision_for_packet,
+    _continuous_slot_id_for_selection,
+    _continuous_snapshot_blocks_teleop,
     _current_calibration_stage,
+    _current_cyl_pose,
     _decision_for_packet,
     main,
     _override_profile_center_tolerance,
@@ -14,7 +18,9 @@ from hybrid_controller.tools.debug_vision_grasp_flow import (
     _resolve_alignment_target_pixel,
     _resolve_packet,
     _rewrite_final_pick_command_for_debug,
+    _state_message_to_snapshot,
     _select_latest_frames,
+    _select_slot,
 )
 from hybrid_controller.vision.calibration_profile import VisionCalibrationProfile
 
@@ -175,9 +181,43 @@ def test_select_latest_frames_keeps_only_newest_frames() -> None:
     assert _select_latest_frames(frames, 99) == frames
 
 
-def test_debug_packet_frame_pose_age_uses_latest_preprocess_age() -> None:
-    assert _packet_frame_pose_age_ms({"latest_frame_preprocess_age_ms": 42.0, "queue_age_ms": 200.0}) == 42.0
+def test_debug_packet_frame_pose_age_uses_conservative_max_age() -> None:
+    assert _packet_frame_pose_age_ms({"latest_frame_preprocess_age_ms": 42.0, "queue_age_ms": 200.0}) == 200.0
     assert _packet_frame_pose_age_ms({"latest_frame_preprocess_age_ms": "bad", "stream_age_ms": 55.0}) == 55.0
+    assert _packet_frame_pose_age_ms({"latest_frame_preprocess_age_ms": 20.0, "stream_age_ms": 80.0}) == 80.0
+
+
+def test_state_snapshot_preserves_local_receive_timestamp() -> None:
+    snapshot = _state_message_to_snapshot({"state": "IDLE", "_local_receive_ts": 123.45, "busy_action": "teleop"})
+
+    assert snapshot["_local_receive_ts"] == 123.45
+    assert snapshot["busy_action"] == "teleop"
+
+
+def test_debug_current_cyl_pose_rejects_non_finite_values() -> None:
+    assert (
+        _current_cyl_pose(
+            {
+                "robot_cyl": {
+                    "theta_deg": float("nan"),
+                    "radius_mm": 150.0,
+                    "z_mm": 190.0,
+                }
+            }
+        )
+        is None
+    )
+
+
+def test_continuous_snapshot_blocks_non_teleop_busy_state() -> None:
+    assert _continuous_snapshot_blocks_teleop({"busy": True, "busy_action": "pick"}) is True
+    assert _continuous_snapshot_blocks_teleop({"busy": True, "busy_action": "teleop"}) is False
+    assert _continuous_snapshot_blocks_teleop({"busy": False, "busy_action": "pick"}) is False
+    assert _continuous_snapshot_blocks_teleop({"state": "PICK_DESCEND", "busy": False}) is True
+    assert _continuous_snapshot_blocks_teleop({"state": "ERROR", "busy": False}) is True
+    assert _continuous_snapshot_blocks_teleop({"state": "MOVING_XY", "busy": False, "busy_action": ""}) is True
+    assert _continuous_snapshot_blocks_teleop({"state": "MOVING_XY", "busy": False, "busy_action": "teleop"}) is False
+    assert _continuous_snapshot_blocks_teleop({"state": "CARRY_READY", "busy": False, "carrying": True}) is True
 
 
 def test_debug_resolve_packet_forwards_frame_pose_age() -> None:
@@ -213,6 +253,22 @@ def test_debug_execute_loop_requires_explicit_opt_in(capsys) -> None:
     captured = capsys.readouterr()
     assert exit_code == 2
     assert "--allow-execute-loop" in captured.err
+
+
+def test_debug_continuous_mode_requires_persistent_camera(capsys) -> None:
+    exit_code = main(["--servo-mode", "continuous", "--execute", "--no-ros", "--detector", "fallback"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "--persistent-camera" in captured.err
+
+
+def test_debug_continuous_mode_requires_execute(capsys) -> None:
+    exit_code = main(["--servo-mode", "continuous", "--persistent-camera", "--no-ros", "--detector", "fallback"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "--execute" in captured.err
 
 
 def test_debug_calibration_stage_switches_to_confirm_after_descent_starts() -> None:
@@ -309,3 +365,62 @@ def test_debug_final_pick_rewrite_keeps_default_single_bias_when_app_layer_bias_
     )
 
     assert command == "PICK_CYL 7.00 200.00"
+
+
+def test_continuous_auto_selection_reconsiders_tracker_slot_until_stable() -> None:
+    packet = {
+        "slots": [
+            {
+                "slot_id": 1,
+                "valid": True,
+                "actionable": False,
+                "invalid_reason": "vision_servo_required",
+                "center_distance_px": 141.0,
+                "confidence": 0.95,
+            },
+            {
+                "slot_id": 3,
+                "valid": True,
+                "actionable": False,
+                "invalid_reason": "vision_servo_required",
+                "center_distance_px": 21.0,
+                "confidence": 0.94,
+            },
+        ]
+    }
+
+    assert _continuous_slot_id_for_selection(None, {"slot_id": 1, "stable_frames": 0, "lost_frames": 0}) is None
+    assert _select_slot(packet, _continuous_slot_id_for_selection(None, {"slot_id": 1, "stable_frames": 0}))[
+        "slot_id"
+    ] == 3
+
+
+def test_continuous_auto_selection_keeps_slot_after_stable_center() -> None:
+    assert _continuous_slot_id_for_selection(None, {"slot_id": 3, "stable_frames": 2, "lost_frames": 0}) == 3
+
+
+def test_debug_continuous_command_bias_pick_command_has_single_final_radius_offset() -> None:
+    config = AppConfig(
+        pick_tool_offset_source="command_bias",
+        vision_eye_in_hand_pick_radius_bias_mm=40.0,
+        pick_cyl_radius_bias_mm=0.0,
+    )
+
+    decision = _continuous_decision_for_packet(
+        packet={"frame_id": 1, "queue_age_ms": 1.0},
+        config=config,
+        snapshot={"robot_cyl": {"theta_deg": 7.0, "radius_mm": 160.0, "z_mm": config.vision_pick_confirm_z_mm}},
+        selected_slot={
+            "slot_id": 1,
+            "valid": True,
+            "actionable": True,
+            "center_distance_px": 4.0,
+            "action_tolerance_px": 20.0,
+            "command": "PICK_WORLD 0.00 -160.00",
+        },
+        pending={"slot_id": 1, "stable_frames": 1},
+    )
+
+    assert decision["action"] == "PICK_READY"
+    assert decision["command"] == "PICK_CYL 7.00 200.00"
+    assert decision["raw_command"] == "PICK_CYL 7.00 200.00"

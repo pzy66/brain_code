@@ -60,6 +60,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--password", default=DEFAULT_PASSWORD)
     parser.add_argument("--remote-root", default=DEFAULT_REMOTE_ROOT)
     parser.add_argument("--ssh-timeout-sec", type=float, default=10.0)
+    parser.add_argument(
+        "--ssh-ready-timeout-sec",
+        type=float,
+        default=45.0,
+        help="Wait this long for SSH after a fresh JetMax reboot before giving up.",
+    )
     parser.add_argument("--ready-timeout-sec", type=float, default=90.0)
     parser.add_argument("--rosbridge-port", type=int, default=DEFAULT_ROSBRIDGE_PORT)
     parser.add_argument("--web-video-port", type=int, default=DEFAULT_WEB_VIDEO_PORT)
@@ -206,13 +212,12 @@ def main(argv: list[str] | None = None) -> int:
     remote_robot_dir = f"{args.remote_root}/hybrid_controller/robot"
     remote_log = f"{args.remote_root}/hybrid_ros_runtime.log"
 
-    ssh = paramiko.SSHClient()
-    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    ssh.connect(
-        args.host,
-        username=args.user,
-        password=args.password,
-        timeout=float(args.ssh_timeout_sec),
+    ssh = connect_ssh_when_ready(
+        host=str(args.host),
+        user=str(args.user),
+        password=str(args.password),
+        timeout_sec=float(args.ssh_timeout_sec),
+        ready_timeout_sec=float(args.ssh_ready_timeout_sec),
     )
     try:
         if args.camera_only:
@@ -315,6 +320,50 @@ def _camera_sender_mutation_requested(args: argparse.Namespace) -> bool:
             bool(args.repair_camera_sender),
             bool(args.repair_camera_driver),
             bool(args.remove_camera_driver_override),
+        )
+    )
+
+
+def connect_ssh_when_ready(
+    *,
+    host: str,
+    user: str,
+    password: str,
+    timeout_sec: float,
+    ready_timeout_sec: float,
+) -> paramiko.SSHClient:
+    deadline = time.monotonic() + max(float(timeout_sec), float(ready_timeout_sec))
+    last_error: Exception | None = None
+    attempt = 0
+    while True:
+        attempt += 1
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        try:
+            ssh.connect(
+                host,
+                username=user,
+                password=password,
+                timeout=max(1.0, float(timeout_sec)),
+                banner_timeout=max(1.0, float(timeout_sec)),
+                auth_timeout=max(1.0, float(timeout_sec)),
+            )
+            if attempt > 1:
+                print(f"SSH ready after {attempt} attempts.")
+            return ssh
+        except Exception as error:
+            last_error = error
+            try:
+                ssh.close()
+            except Exception:
+                pass
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(1.5)
+    raise RuntimeError(
+        "JetMax SSH did not become ready within {0:.1f}s: {1}".format(
+            max(float(timeout_sec), float(ready_timeout_sec)),
+            last_error,
         )
     )
 

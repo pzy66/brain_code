@@ -13,6 +13,9 @@
   - 只有显式传 `--allow-camera-sender-mutation` 加修复参数时才允许修改相机发送
 - `ros_service_probe.py`
   - 通过 rosbridge 调用 ROS 服务，做联通与动作探针
+- `diagnose_jetmax_wifi_windows.py`（在 `hybrid_controller/tools/`）
+  - Windows 本机只读 Wi-Fi 诊断
+  - 不 ping、不 SSH、不扫端口、不拉相机视频，优先用于排查 JetMax Wi-Fi 自己断开
 - `jetmax_move_probe.py`
   - TCP 兼容链路的移动探针（可选）
 - `jetmax_env_probe.py`
@@ -34,6 +37,16 @@
 默认检查：
 
 - `9091`（rosbridge）
+
+GUI 点击“连接机器人”时默认直接建立 rosbridge WebSocket，不再额外预探测 `9091`。如确实需要端口对照诊断，显式使用 `--ros-probe-before-connect`。
+
+若 Windows 连接 JetMax Wi-Fi 后自己断开，先在电脑端运行：
+
+```powershell
+python -m hybrid_controller.tools.diagnose_jetmax_wifi_windows
+```
+
+重点确认 WLAN 是否被 Windows 配成默认网关/DNS 到 `192.168.149.1`，以及是否出现 WLAN AutoConfig `4003`/`8003` 事件。该问题属于本机网络层，不要通过重启 `usb_cam.service`、`web_video_server` 或拉取视频流来验证。
 
 默认不检查：
 

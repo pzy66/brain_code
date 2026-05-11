@@ -58,6 +58,22 @@ def _make_manual_servo_stub(packet: dict[str, object]) -> HybridControllerApplic
     return app
 
 
+class _ContinuousRosClient:
+    def __init__(self, *, connected: bool = True) -> None:
+        self.connected = bool(connected)
+        self.teleop_calls: list[dict[str, object]] = []
+        self.stop_calls: list[dict[str, object]] = []
+
+    def is_connected(self) -> bool:
+        return self.connected
+
+    def publish_teleop(self, **payload) -> None:
+        self.teleop_calls.append(dict(payload))
+
+    def stop_teleop(self, **payload) -> None:
+        self.stop_calls.append(dict(payload))
+
+
 def _packet(
     *,
     mapping_mode: str,
@@ -229,7 +245,7 @@ def test_manual_pick_slot_servo_descends_one_step_from_search_height() -> None:
     sent = app._send_vision_servo_pick_move(1, app._latest_vision_packet["slots"][0])
 
     assert sent is True
-    assert app.sent_commands == ["MOVE_CYL 12.00 175.00 185.00"]
+    assert app.sent_commands == ["MOVE_CYL 12.00 175.00 180.00"]
     assert app._vision_servo_pick["stage"] == "low_confirm"
 
 
@@ -386,7 +402,7 @@ def test_pending_servo_pick_lowers_to_confirm_z_before_pick_from_search_height()
         }
     )
 
-    assert app.sent_commands == ["MOVE_CYL 12.00 175.00 185.00"]
+    assert app.sent_commands == ["MOVE_CYL 12.00 175.00 180.00"]
     assert app._vision_servo_pick is not None
     assert app._vision_servo_pick["stage"] == "low_confirm"
     assert app._vision_servo_pick["waiting_for_ack"] is True
@@ -419,3 +435,79 @@ def test_pending_servo_pick_keeps_waiting_for_unstable_fresh_frames() -> None:
     assert app.sent_commands == []
     assert app._vision_servo_pick is not None
     assert app._vision_servo_pick["stability_wait_frames"] == 1
+
+
+def test_continuous_servo_publishes_only_when_explicitly_enabled() -> None:
+    app = _make_manual_servo_stub({"frame_id": 1, "slots": []})
+    app.config = AppConfig(
+        robot_transport="ros",
+        vision_continuous_servo_enabled=True,
+        vision_continuous_servo_command_timeout_ms=250.0,
+    )
+    app.ros_client = _ContinuousRosClient()
+    app._continuous_vision_servo_controller = None
+    app._continuous_vision_servo_pick = None
+    app._teleop_cmd_seq = 0
+    app.controller = types.SimpleNamespace(state=None)
+    app._current_robot_cyl_pose = lambda: (0.0, 150.0, 190.0)
+    app._uses_ros_transport = types.MethodType(lambda self: True, app)
+
+    app._pump_continuous_vision_servo(
+        {
+            "frame_id": 2,
+            "queue_age_ms": 10.0,
+            "slots": [
+                {
+                    "slot_id": 1,
+                    "valid": True,
+                    "actionable": False,
+                    "invalid_reason": "vision_servo_required",
+                    "center_distance_px": 80.0,
+                    "servo_command_mode": "cyl",
+                    "servo_command_point": [10.0, 180.0],
+                }
+            ],
+        }
+    )
+
+    assert app.ros_client.teleop_calls
+    assert app.ros_client.teleop_calls[-1]["enabled"] is True
+    assert app._continuous_vision_servo_pick["slot_id"] == 1
+
+
+def test_continuous_servo_stops_on_stale_frame_in_app_integration() -> None:
+    app = _make_manual_servo_stub({"frame_id": 1, "slots": []})
+    app.config = AppConfig(
+        robot_transport="ros",
+        vision_continuous_servo_enabled=True,
+        vision_continuous_servo_command_timeout_ms=100.0,
+    )
+    app.ros_client = _ContinuousRosClient()
+    app._continuous_vision_servo_controller = None
+    app._continuous_vision_servo_pick = {"slot_id": 1, "stable_frames": 0}
+    app._teleop_cmd_seq = 0
+    app.controller = types.SimpleNamespace(state=None)
+    app._current_robot_cyl_pose = lambda: (0.0, 150.0, 190.0)
+    app._uses_ros_transport = types.MethodType(lambda self: True, app)
+
+    app._pump_continuous_vision_servo(
+        {
+            "frame_id": 3,
+            "queue_age_ms": 250.0,
+            "slots": [
+                {
+                    "slot_id": 1,
+                    "valid": True,
+                    "actionable": False,
+                    "invalid_reason": "vision_servo_required",
+                    "center_distance_px": 8.0,
+                    "servo_command_mode": "cyl",
+                    "servo_command_point": [0.0, 150.0],
+                }
+            ],
+        }
+    )
+
+    assert app.ros_client.teleop_calls == []
+    assert app.ros_client.stop_calls
+    assert "frame_stale" in app.runtime_info["vision_servo_status"]
