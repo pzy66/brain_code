@@ -46,6 +46,7 @@ def _make_manual_servo_stub(packet: dict[str, object]) -> HybridControllerApplic
         "robot_xy": [0.0, -150.0],
         "robot_z": AppConfig.vision_pick_confirm_z_mm,
     }
+    app._compute_remote_snapshot_age_ms = lambda: 0.0
 
     def _send(self, command: str, **_kwargs) -> None:
         self.sent_commands.append(str(command))
@@ -55,6 +56,10 @@ def _make_manual_servo_stub(packet: dict[str, object]) -> HybridControllerApplic
 
     app._send_robot_text_command = types.MethodType(_send, app)
     app._handle_runtime_status = types.MethodType(_status, app)
+    app._rt_get = lambda key, default=None: app.runtime_info.get(key, default)  # type: ignore[method-assign]
+    app._rt_set = lambda key, value: app.runtime_info.__setitem__(key, value)  # type: ignore[method-assign]
+    app._finish_pick_trace = types.MethodType(lambda self, response=None, **_: setattr(self, "_trace_response", response), app)
+    app.dispatch_event = types.MethodType(lambda self, event: self.statuses.append(("event", getattr(event, "value", ""))), app)
     return app
 
 
@@ -448,6 +453,7 @@ def test_continuous_servo_publishes_only_when_explicitly_enabled() -> None:
     app._continuous_vision_servo_controller = None
     app._continuous_vision_servo_pick = None
     app._teleop_cmd_seq = 0
+    app.runtime_info["state_age_ms"] = 0.0
     app.controller = types.SimpleNamespace(state=None)
     app._current_robot_cyl_pose = lambda: (0.0, 150.0, 190.0)
     app._uses_ros_transport = types.MethodType(lambda self: True, app)
@@ -475,6 +481,47 @@ def test_continuous_servo_publishes_only_when_explicitly_enabled() -> None:
     assert app._continuous_vision_servo_pick["slot_id"] == 1
 
 
+def test_manual_pick_slot_prefers_continuous_servo_when_enabled() -> None:
+    app = _make_manual_servo_stub(
+        {
+            "frame_id": 3,
+            "queue_age_ms": 10.0,
+            "slots": [
+                {
+                    "slot_id": 1,
+                    "valid": True,
+                    "actionable": True,
+                    "center_distance_px": 80.0,
+                    "servo_command_mode": "cyl",
+                    "servo_command_point": [10.0, 180.0],
+                    "command_mode": "world",
+                    "command_point": [42.0, -130.0],
+                }
+            ],
+        }
+    )
+    app.config = AppConfig(
+        robot_transport="ros",
+        vision_continuous_servo_enabled=True,
+        vision_continuous_servo_command_timeout_ms=250.0,
+    )
+    app.ros_client = _ContinuousRosClient()
+    app._continuous_vision_servo_controller = None
+    app._continuous_vision_servo_pick = None
+    app._teleop_cmd_seq = 0
+    app.runtime_info["state_age_ms"] = 0.0
+    app.controller = types.SimpleNamespace(state=None, context=types.SimpleNamespace(latest_vision_targets=[]))
+    app.slot_catalog = None
+    app._current_robot_cyl_pose = lambda: (0.0, 150.0, 190.0)
+    app._uses_ros_transport = types.MethodType(lambda self: True, app)
+
+    app._on_manual_pick_slot_requested(1)
+
+    assert app.ros_client.teleop_calls
+    assert app.sent_commands == []
+    assert app._continuous_vision_servo_pick["slot_id"] == 1
+
+
 def test_continuous_servo_stops_on_stale_frame_in_app_integration() -> None:
     app = _make_manual_servo_stub({"frame_id": 1, "slots": []})
     app.config = AppConfig(
@@ -486,6 +533,7 @@ def test_continuous_servo_stops_on_stale_frame_in_app_integration() -> None:
     app._continuous_vision_servo_controller = None
     app._continuous_vision_servo_pick = {"slot_id": 1, "stable_frames": 0}
     app._teleop_cmd_seq = 0
+    app.runtime_info["state_age_ms"] = 0.0
     app.controller = types.SimpleNamespace(state=None)
     app._current_robot_cyl_pose = lambda: (0.0, 150.0, 190.0)
     app._uses_ros_transport = types.MethodType(lambda self: True, app)
@@ -511,3 +559,13 @@ def test_continuous_servo_stops_on_stale_frame_in_app_integration() -> None:
     assert app.ros_client.teleop_calls == []
     assert app.ros_client.stop_calls
     assert "frame_stale" in app.runtime_info["vision_servo_status"]
+
+
+def test_pick_cyl_radius_out_of_limits_is_rejected() -> None:
+    app = _make_manual_servo_stub({"frame_id": 1, "slots": []})
+    app.config = AppConfig(robot_mode="fake", robot_auto_radius_limits_mm=(80.0, 260.0))
+    app._vision_grasp_profile_result = types.SimpleNamespace(ready=True, profile=types.SimpleNamespace(real_pick_enabled=True), error="")
+
+    assert app._reject_unsafe_pick_command("PICK_CYL 0.00 300.00") is True
+    assert app.sent_commands == []
+    assert "pick_radius_out_of_limits" in app.statuses[-2][1]

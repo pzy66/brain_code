@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import subprocess
 import threading
 
 from hybrid_controller.app import HybridControllerApplication
@@ -99,6 +100,22 @@ def _make_app(config: AppConfig) -> HybridControllerApplication:
     app._queue_vision_packet = lambda packet: None  # type: ignore[method-assign]
     app._queue_vision_frame = lambda frame: None  # type: ignore[method-assign]
     app._queue_runtime_status = lambda component, message: None  # type: ignore[method-assign]
+    app._bridge = type(
+        "Bridge",
+        (),
+        {
+            "robot_start_finished": type(
+                "Signal",
+                (),
+                {"emitted": [], "emit": lambda self, ok, details: self.emitted.append((ok, details))},
+            )(),
+            "runtime_status_received": type(
+                "Signal",
+                (),
+                {"emitted": [], "emit": lambda self, component, message: self.emitted.append((component, message))},
+            )(),
+        },
+    )()
     return app
 
 
@@ -272,6 +289,32 @@ def test_robot_auto_start_attempt_limit_blocks_repeat_starts() -> None:
     assert any("attempt limit reached" in message for _, message in statuses)
 
 
+def test_robot_start_worker_uses_camera_safe_runtime_args(monkeypatch) -> None:
+    app = _make_app(AppConfig(robot_mode="real", robot_transport="ros", robot_host="192.168.149.1", rosbridge_port=9091))
+    captured: dict[str, object] = {}
+
+    def fake_run(command, **kwargs):
+        captured["command"] = list(command)
+        captured["kwargs"] = dict(kwargs)
+        return subprocess.CompletedProcess(command, 0, stdout="ok", stderr="")
+
+    monkeypatch.setattr("hybrid_controller.app.subprocess.run", fake_run)
+
+    app._start_robot_runtime_worker()
+
+    command = captured["command"]
+    assert "--host" in command
+    assert command[command.index("--host") + 1] == "192.168.149.1"
+    assert "--rosbridge-port" in command
+    assert command[command.index("--rosbridge-port") + 1] == "9091"
+    assert "--skip-camera-check" in command
+    assert "--skip-tcp-check" in command
+    assert "--check-camera-stream" not in command
+    assert "--repair-camera-sender" not in command
+    assert "--restart-web-video" not in command
+    assert "--manage-web-video" not in command
+
+
 def test_robot_bootstrap_reconnects_when_rosbridge_port_returns() -> None:
     app = _make_app(
         AppConfig(
@@ -339,7 +382,7 @@ def test_runtime_auto_start_and_stale_restart_are_disabled_by_default() -> None:
     assert config.robot_auto_start_max_attempts == 1
 
 
-def test_vision_auto_start_reads_official_stream_without_ros_state(monkeypatch) -> None:
+def test_vision_auto_start_defers_until_ros_state_is_fresh(monkeypatch) -> None:
     started: list[str] = []
 
     class FakeVisionRuntime:
@@ -362,10 +405,10 @@ def test_vision_auto_start_reads_official_stream_without_ros_state(monkeypatch) 
 
     app._setup_vision_mode()
 
-    assert started == ["start"]
-    assert isinstance(app.vision_runtime, FakeVisionRuntime)
-    assert app.runtime_info["vision_health"] == "starting_without_calibration"
-    assert app._vision_auto_start_deferred_reason == ""
+    assert started == []
+    assert app.vision_runtime is None
+    assert app.runtime_info["vision_health"] == "waiting_control:rosbridge_not_connected"
+    assert app._vision_auto_start_deferred_reason == "rosbridge_not_connected"
 
 
 def test_vision_auto_start_defers_while_robot_runtime_start_is_active() -> None:
@@ -383,7 +426,7 @@ def test_vision_auto_start_defers_while_robot_runtime_start_is_active() -> None:
     app._setup_vision_mode()
 
     assert app.vision_runtime is None
-    assert app.runtime_info["vision_health"] == "waiting_for_robot_runtime:robot_runtime_start_active"
+    assert app.runtime_info["vision_health"] == "waiting_control:robot_runtime_start_active"
 
 
 def test_vision_auto_start_runs_when_ros_state_is_fresh(monkeypatch) -> None:
@@ -423,7 +466,7 @@ def test_vision_auto_start_runs_when_ros_state_is_fresh(monkeypatch) -> None:
 
     assert started == ["start"]
     assert isinstance(app.vision_runtime, FakeVisionRuntime)
-    assert app.runtime_info["vision_health"] == "starting_without_calibration"
+    assert app.runtime_info["vision_health"] == "starting_8080_without_calibration"
     assert app._vision_auto_start_deferred_reason == ""
 
 
@@ -452,11 +495,21 @@ def test_deferred_vision_starts_after_robot_runtime_start_finishes(monkeypatch) 
     vision_runtime_module = importlib.import_module("hybrid_controller.vision.runtime")
     monkeypatch.setattr(vision_runtime_module, "VisionRuntime", FakeVisionRuntime)
     app.runtime_info["robot_start_active"] = False
-    app.runtime_info["robot_health"] = "reconnecting"
+    app.runtime_info["robot_health"] = "connected"
+    snapshot = {"state": "IDLE", "busy": False, "carrying": False}
+    app.ros_client = _ReadyRosClient(snapshot)  # type: ignore[assignment]
+    app._remote_snapshot_cache = dict(snapshot)
+    app._remote_snapshot_envelope = RobotSnapshotEnvelope(
+        payload=dict(snapshot),
+        ts=__import__("time").time(),
+        transport="unit",
+        ok=True,
+        error="",
+    )
     app._maybe_start_deferred_vision(source="unit_runtime_finished")
 
     assert started == ["start"]
-    assert app.runtime_info["vision_health"] == "starting_without_calibration"
+    assert app.runtime_info["vision_health"] == "starting_8080_without_calibration"
 
 
 def test_robot_runtime_health_marks_disconnected_when_rosbridge_connected_but_state_stale() -> None:

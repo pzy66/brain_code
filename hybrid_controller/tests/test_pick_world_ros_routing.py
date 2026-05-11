@@ -45,6 +45,9 @@ class _DummyRosClient:
         self.pick_world_calls: list[tuple[float, float]] = []
         self.pick_tuning_calls: list[dict[str, object]] = []
 
+    def is_connected(self) -> bool:
+        return True
+
     def send_pick_world(self, x_mm: float, y_mm: float, *, callback) -> None:  # noqa: ANN001
         self.pick_world_calls.append((float(x_mm), float(y_mm)))
         callback(RosServiceResult(ok=True, message="ACK PICK_DONE", raw={}))
@@ -87,6 +90,7 @@ def _make_ros_app_stub() -> HybridControllerApplication:
         "vision_last_resolved_base_xy": [10.0, -120.0],
         "vision_last_resolved_cyl": [0.0, 120.0, 85.0],
         "vision_snapshot_age_ms": 12.0,
+        "state_age_ms": 0.0,
     }
     app._queued_events: list[object] = []
     app._status_lines: list[tuple[str, str]] = []
@@ -120,7 +124,7 @@ def test_pick_world_ros_mode_without_ros_client_rejects_instead_of_tcp_fallback(
 
     assert app.robot_client.commands == []
     assert app._status_lines
-    assert "ROS transport command rejected" in app._status_lines[-1][1]
+    assert "control_state_not_fresh" in app._status_lines[-1][1]
     assert app._queued_events
     assert any(getattr(event, "type", "") == "robot_error" for event in app._queued_events)
 

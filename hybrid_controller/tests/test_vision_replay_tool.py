@@ -36,7 +36,8 @@ def test_replay_vision_debug_bundle_recreates_pick_decision() -> None:
     )
 
     assert result["decision"]["action"] == "PICK"
-    assert result["decision"]["command"] == "PICK_CYL 0.00 170.00"
+    expected_radius = 120.0 + float(config.vision_eye_in_hand_pick_radius_bias_mm)
+    assert result["decision"]["command"] == f"PICK_CYL 0.00 {expected_radius:.2f}"
     assert result["metrics"]["valid_count"] == 1
     assert result["metrics"]["actionable_count"] == 1
     assert result["metrics"]["servo_required_count"] == 0

@@ -53,10 +53,18 @@ def test_run_real_defaults_to_keyboard_operator_profile() -> None:
     assert args[args.index("--robot-transport") + 1] == "ros"
     assert args[args.index("--vision-mode") + 1] == "robot_camera_detection"
     assert "--robot-connect-on-start" in args
-    assert "--robot-auto-start-on-ros-unavailable" not in args
+    assert "--robot-auto-start-on-ros-unavailable" in args
+    assert args[args.index("--robot-auto-start-max-attempts") + 1] == "1"
+    assert args[args.index("--ros-reconnect-base-delay-sec") + 1] == "3.0"
+    assert args[args.index("--ros-reconnect-max-delay-sec") + 1] == "30.0"
     assert "--robot-bootstrap-retry-enabled" not in args
     assert "--ros-probe-before-connect" not in args
-    assert "--vision-auto-start" not in args
+    assert "--vision-auto-start" in args
+    assert "--vision-continuous-servo-enabled" in args
+    assert "--check-camera-stream" not in args
+    assert "--repair-camera-sender" not in args
+    assert "--restart-web-video" not in args
+    assert "--manage-web-video" not in args
     assert "--enable-ssvep-runtime" not in args
     assert "--mi-enabled" not in args
 
@@ -78,6 +86,7 @@ def test_build_config_keyboard_operator_defaults_disable_bci_runtime_sources() -
     assert config.mi_enabled is False
     assert config.ssvep_runtime_enabled is False
     assert config.vision_auto_start is False
+    assert config.vision_continuous_servo_enabled is True
     assert config.robot_connect_on_start is True
     assert config.ros_probe_before_connect is False
     assert config.robot_auto_start_on_ros_unavailable is False
@@ -91,6 +100,7 @@ def test_raw_app_config_keeps_conservative_robot_bringup_defaults() -> None:
     assert config.ros_probe_before_connect is False
     assert config.robot_auto_start_on_ros_unavailable is False
     assert config.robot_bootstrap_retry_enabled is False
+    assert config.vision_continuous_servo_enabled is True
 
 
 def test_build_config_allows_explicit_vision_auto_start() -> None:

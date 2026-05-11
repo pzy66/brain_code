@@ -129,6 +129,7 @@ class HybridControllerApplication:
         self._vision_frame_staging = None
         self._vision_frame_signal_pending = False
         self._last_teleop_warn_ts = 0.0
+        self._last_ros_reconnect_log_ts = 0.0
         self._last_mi_health_signature: tuple[object, ...] | None = None
         self._last_mi_status_emit_ts = 0.0
         self._pick_cyl_radius_bias_mm = float(self.config.pick_cyl_radius_bias_mm)
@@ -452,6 +453,9 @@ class HybridControllerApplication:
         if event.source == "robot" and event.type == "robot_disconnected":
             self._last_ros_disconnect_ts = time.monotonic()
             self._stop_teleop_motion(send_command=False, reason="robot_disconnected")
+            self._continuous_vision_servo_pick = None
+            self._vision_servo_pick = None
+            self._rt_set("vision_servo_status", "continuous_stop reason=control_unavailable")
             self._rt_update(
                 {
                     "robot_connected": False,
@@ -557,13 +561,12 @@ class HybridControllerApplication:
         return self.config.robot_mode == "real" and self.config.robot_transport == "ros"
 
     def _vision_stream_start_allowed(self) -> tuple[bool, str]:
-        """Gate PC-side MJPEG consumption only during active runtime startup.
+        """Gate PC-side MJPEG consumption until the control path is stable.
 
         The JetMax camera sender is owned by the robot's default startup chain.
-        The desktop must not start, repair, or restart camera services. Reading
-        8080 also must not depend on a fresh ROS state snapshot: vision packets
-        can be produced while the control path is still recovering, and those
-        packets will be marked non-actionable until robot state is available.
+        The desktop must not start, repair, or restart camera services; it only
+        opens the official 8080 MJPEG stream after control bringup is no longer
+        active and a fresh robot state is available.
         """
 
         if not self._uses_ros_transport():
@@ -572,12 +575,29 @@ class HybridControllerApplication:
             return False, "robot_runtime_start_active"
         if str(self._rt_get("robot_health", "")).strip() == "starting_remote_runtime":
             return False, "robot_runtime_starting"
+        if self.ros_client is None or not self.ros_client.is_connected():
+            return False, "rosbridge_not_connected"
+        state_age_ms = self._current_state_age_ms()
+        stale_threshold_ms = float(getattr(self.config, "robot_state_stale_threshold_ms", 700.0))
+        if not math.isfinite(state_age_ms) or state_age_ms > stale_threshold_ms:
+            return False, "robot_state_not_fresh"
         return True, "ready"
+
+    def _current_state_age_ms(self) -> float:
+        value = self._rt_get("state_age_ms", None)
+        if value is not None:
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return float("inf")
+        if getattr(self.config, "robot_mode", "") == "real" and not hasattr(self, "_remote_snapshot_lock"):
+            return 0.0
+        return float(self._compute_remote_snapshot_age_ms())
 
     def _defer_vision_auto_start(self, reason: str) -> None:
         reason_text = str(reason or "robot_state_not_ready")
         self._vision_auto_start_deferred_reason = reason_text
-        self._rt_set("vision_health", f"waiting_for_robot_runtime:{reason_text}")
+        self._rt_set("vision_health", f"waiting_control:{reason_text}")
         now = time.monotonic()
         if (now - float(getattr(self, "_last_vision_auto_start_deferred_log_ts", 0.0))) >= 3.0:
             self._last_vision_auto_start_deferred_log_ts = float(now)
@@ -1111,6 +1131,44 @@ class HybridControllerApplication:
         self._finish_pick_trace(response=f"ERR {message}")
         return True
 
+    def _reject_unsafe_pick_command(self, command: str) -> bool:
+        opcode = self._extract_command_opcode(command)
+        if opcode not in {"PICK", "PICK_WORLD", "PICK_CYL"}:
+            return False
+        if self._uses_ros_transport():
+            state_age_ms = self._current_state_age_ms()
+            stale_threshold_ms = float(getattr(self.config, "robot_state_stale_threshold_ms", 700.0))
+            if (
+                self.ros_client is None
+                or not self.ros_client.is_connected()
+                or not math.isfinite(state_age_ms)
+                or state_age_ms > stale_threshold_ms
+            ):
+                return self._reject_pick_command(command, "control_state_not_fresh")
+        snapshot = self._fetch_remote_robot_snapshot() if getattr(self.config, "robot_mode", "") == "real" else None
+        if isinstance(snapshot, dict):
+            if bool(snapshot.get("busy", False)):
+                return self._reject_pick_command(command, "robot_busy")
+        if opcode == "PICK_CYL":
+            parts = str(command or "").strip().split()
+            if len(parts) >= 3:
+                try:
+                    radius_mm = float(parts[2])
+                except (TypeError, ValueError):
+                    return self._reject_pick_command(command, "pick_radius_invalid")
+                limits = getattr(self.config, "robot_auto_radius_limits_mm", self.config.robot_radius_limits_mm)
+                if radius_mm < float(limits[0]) or radius_mm > float(limits[1]):
+                    return self._reject_pick_command(command, "pick_radius_out_of_limits")
+        return False
+
+    def _reject_pick_command(self, command: str, reason: str) -> bool:
+        release_mode = str(self._rt_get("release_mode_effective", "") or "")
+        message = f"Vision grasp safety blocks PICK: {reason} command={command} release_mode={release_mode or '--'}"
+        self._handle_runtime_status("vision", message)
+        self.dispatch_event(Event(source="robot", type="robot_error", value=message))
+        self._finish_pick_trace(response=f"ERR {message}")
+        return True
+
     def _save_pick_tuning_profile(self) -> Path:
         path = Path(self.config.pick_tuning_profile_path)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -1235,6 +1293,7 @@ class HybridControllerApplication:
 
         self._vision_auto_start_deferred_reason = ""
         calibration_params = self._fetch_vision_calibration_params()
+        self._rt_set("vision_health", f"starting_8080:{self.config.resolve_vision_stream_url()}")
         self.vision_runtime = VisionRuntime(
             self.config,
             calibration_params=calibration_params,
@@ -1254,9 +1313,9 @@ class HybridControllerApplication:
         )
         self.vision_runtime.start()
         if calibration_params is None:
-            self._rt_set("vision_health", "starting_without_calibration")
+            self._rt_set("vision_health", "starting_8080_without_calibration")
         else:
-            self._rt_set("vision_health", "starting")
+            self._rt_set("vision_health", "starting_8080")
 
     def _setup_brain_sources(self) -> None:
         self.input_orchestrator.set_sources(
@@ -1433,6 +1492,8 @@ class HybridControllerApplication:
         if opcode in {"PICK", "PICK_WORLD", "PICK_CYL"}:
             self._begin_pick_trace(command=outgoing_command, original_command=original_command)
             if self._reject_pick_without_grasp_profile(outgoing_command):
+                return
+            if self._reject_unsafe_pick_command(outgoing_command):
                 return
         elif opcode in {"MOVE_CYL", "MOVE_CYL_AUTO"} and isinstance(getattr(self, "_vision_servo_pick", None), dict):
             self._write_vision_debug_bundle(
@@ -2263,7 +2324,16 @@ class HybridControllerApplication:
             self._bridge.robot_start_finished.emit(False, f"Start script not found: {script_path}")
             return
         self._bridge.runtime_status_received.emit("robot", f"Robot start interpreter: {sys.executable}")
-        command = [sys.executable, str(script_path), "--host", str(self.config.robot_host)]
+        command = [
+            sys.executable,
+            str(script_path),
+            "--host",
+            str(self.config.robot_host),
+            "--rosbridge-port",
+            str(int(self.config.rosbridge_port)),
+            "--skip-camera-check",
+            "--skip-tcp-check",
+        ]
         try:
             result = subprocess.run(
                 command,
@@ -2369,9 +2439,27 @@ class HybridControllerApplication:
         self._send_robot_text_command("SUCKER_OFF")
 
     def _on_manual_pick_slot_requested(self, slot_id: int) -> None:
+        slot_payload = self._vision_slot_payload(int(slot_id))
+        if (
+            bool(getattr(self.config, "vision_continuous_servo_enabled", False))
+            and self._vision_eye_in_hand_pick_flow_enabled()
+            and slot_payload is not None
+        ):
+            self._vision_servo_pick = None
+            self._continuous_vision_servo_pick = {"slot_id": int(slot_id), "stable_frames": 0, "lost_frames": 0}
+            packet = self._latest_vision_packet if isinstance(self._latest_vision_packet, dict) else {}
+            decision = self._continuous_vision_servo_controller_instance().decide(
+                slot_id=int(slot_id),
+                slot_payload=slot_payload,
+                packet=packet,
+                pending=self._continuous_vision_servo_pick,
+                current_cyl_pose=self._current_robot_cyl_pose(),
+                frame_pose_age_ms=self._packet_frame_pose_age_ms(packet),
+            )
+            if self._apply_continuous_vision_servo_decision(decision):
+                return
         command = self._build_manual_pick_command(int(slot_id))
         if command is None:
-            slot_payload = self._vision_slot_payload(int(slot_id))
             if slot_payload is not None and self._send_vision_servo_pick_move(int(slot_id), slot_payload):
                 return
             details = ""
@@ -2692,6 +2780,22 @@ class HybridControllerApplication:
             return
         if not self._uses_ros_transport():
             self._rt_set("vision_servo_status", "continuous_stop reason=ros_transport_required")
+            return
+        state_age_ms = self._current_state_age_ms()
+        stale_threshold_ms = float(getattr(self.config, "robot_state_stale_threshold_ms", 700.0))
+        if (
+            self.ros_client is None
+            or not self.ros_client.is_connected()
+            or not math.isfinite(state_age_ms)
+            or state_age_ms > stale_threshold_ms
+        ):
+            self._continuous_vision_servo_pick = None
+            if self.ros_client is not None:
+                try:
+                    self.ros_client.stop_teleop(use_auto_z=False)
+                except Exception:
+                    pass
+            self._rt_set("vision_servo_status", "continuous_stop reason=control_unavailable")
             return
         if self.controller.state in {TaskState.S2_PICKING, TaskState.S3_PLACING, TaskState.ERROR}:
             return
@@ -3211,6 +3315,9 @@ class HybridControllerApplication:
         self._ros_last_connected = False
         self._ros_connected_since_ts = 0.0
         self._ros_stale_detection_count = 0
+        if getattr(self, "_continuous_vision_servo_pick", None) is not None:
+            self._continuous_vision_servo_pick = None
+            self._rt_set("vision_servo_status", "continuous_stop reason=control_unavailable")
         now = time.monotonic()
         if now < float(self._ros_reconnect_next_ts):
             return
@@ -3226,7 +3333,8 @@ class HybridControllerApplication:
             jitter = random.uniform(-1.0, 1.0) * backoff * max(0.0, jitter_scale)
             delay = max(0.2, backoff + jitter)
             self._ros_reconnect_next_ts = now + delay
-            if self._should_log_teleop_warning():
+            if (now - float(getattr(self, "_last_ros_reconnect_log_ts", 0.0))) >= 10.0:
+                self._last_ros_reconnect_log_ts = float(now)
                 self._queue_runtime_status(
                     "robot",
                     "ROS reconnect failed (attempt {0}), retry in {1:.2f}s: {2}".format(
@@ -3583,7 +3691,11 @@ class HybridControllerApplication:
             f"snapshot_age_ms={remote_age_ms:.1f} "
             f"slots={valid_slots} actionable={actionable_slots} "
             f"mapping={mapping_mode} profile={profile_id} "
+            f"servo_mode={'continuous' if bool(getattr(self.config, 'vision_continuous_servo_enabled', False)) else 'discrete'} "
             f"grasp_profile={self._rt_get('vision_grasp_profile_id', '--')} "
+            f"confirm_z={float(getattr(self.config, 'vision_pick_confirm_z_mm', 0.0)):.1f} "
+            f"radius_bias={float(getattr(self.config, 'vision_eye_in_hand_pick_radius_bias_mm', 0.0)):.1f} "
+            f"release_mode={self._rt_get('release_mode_effective', '--')} "
             f"invalid={invalid_reason} "
             f"servo={self._rt_get('vision_servo_status', 'idle')} "
             f"resolved_xy={resolved_base_xy} resolved_cyl={resolved_cyl}"
