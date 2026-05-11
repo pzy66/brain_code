@@ -116,7 +116,7 @@ import hashlib
 import json
 from pathlib import Path
 root = Path({REMOTE_ROOT!r})
-manifest = json.loads((root / "_metadata" / "download_manifest.json").read_text(encoding="utf-8"))
+manifest = json.loads((root / "_metadata" / "download_manifest.json").read_text(encoding="utf-8-sig"))
 rows = []
 ok = True
 for item in manifest:

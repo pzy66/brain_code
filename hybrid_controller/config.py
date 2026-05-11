@@ -117,9 +117,9 @@ class AppConfig:
     robot_connect_on_start: bool = False
     rosbridge_port: int = 9091
     rosbridge_timeout_sec: float = 3.0
-    ros_reconnect_base_delay_sec: float = 0.6
-    ros_reconnect_max_delay_sec: float = 8.0
-    ros_reconnect_jitter_ratio: float = 0.2
+    ros_reconnect_base_delay_sec: float = 3.0
+    ros_reconnect_max_delay_sec: float = 30.0
+    ros_reconnect_jitter_ratio: float = 0.25
     ros_probe_before_connect: bool = False
     ros_runtime_probe_timeout_sec: float = 0.6
     ros_runtime_state_grace_sec: float = 3.0
@@ -254,7 +254,7 @@ class AppConfig:
     vision_pick_descent_fine_step_mm: float = 5.0
     vision_pick_descent_fine_band_mm: float = 25.0
     vision_pick_z_tolerance_mm: float = 4.0
-    vision_continuous_servo_enabled: bool = False
+    vision_continuous_servo_enabled: bool = True
     vision_continuous_servo_theta_rate_limit_deg_s: float = 18.0
     vision_continuous_servo_radius_rate_limit_mm_s: float = 35.0
     vision_continuous_servo_z_rate_limit_mm_s: float = 18.0
