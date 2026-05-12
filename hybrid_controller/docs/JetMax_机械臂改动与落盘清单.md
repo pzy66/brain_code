@@ -36,7 +36,9 @@
 ### 3) 启动脚本行为修正（ROS 主链优先）
 
 - `<repo>\hybrid_controller\robot\tools\jetmax_start_ros_runtime.py`
-  - 默认只校验 ROS 主链端口可用（`9091` + `8080`）
+  - 默认只校验 ROS 主链控制端口可用（`9091`）
+  - 默认不连接 `8080`，不订阅 `/usb_cam/image_rect_color`，不拉取视频流
+  - 只有显式 `--check-camera-stream` 才做官方视频流读取健康检查
   - 新增 `--require-tcp-check` 用于可选强制检查 `8888`
 
 ### 4) 诊断工具补齐

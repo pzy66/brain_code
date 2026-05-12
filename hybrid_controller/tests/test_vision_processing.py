@@ -4,6 +4,7 @@ import numpy as np
 import cv2
 import pytest
 
+from hybrid_controller.config import AppConfig
 from hybrid_controller.vision.processing import (
     DetectionCandidate,
     SlotState,
@@ -11,6 +12,7 @@ from hybrid_controller.vision.processing import (
     annotate_slots_with_cylindrical,
     build_vision_packet,
     extract_candidates,
+    frame_brightness_quality,
     frame_to_block_candidates,
     mask_to_grasp_geometry,
     packet_to_targets,
@@ -55,6 +57,39 @@ def test_vision_calibration_identity_maps_pixel_to_world_plane():
     )
     world_xyz = calibration.camera_to_world(12.0, 34.0)
     assert world_xyz == (12.0, 34.0, 0.0)
+
+
+def test_frame_brightness_quality_flags_black_official_stream_frame() -> None:
+    frame = np.full((480, 640, 3), 16, dtype=np.uint8)
+
+    quality = frame_brightness_quality(frame)
+
+    assert quality["valid"] is True
+    assert quality["too_dark"] is True
+    assert quality["reason"] == "frame_too_dark"
+    assert quality["gray_mean"] == pytest.approx(16.0)
+    assert quality["gray_p95"] == pytest.approx(16.0)
+
+
+def test_build_vision_packet_records_frame_block_reason() -> None:
+    slots = [SlotState(slot=1, freq_hz=8.0)]
+
+    packet = build_vision_packet(
+        frame_id=1,
+        frame_size=(640, 480),
+        roi_center=(320, 240),
+        roi_radius=160,
+        slots=slots,
+        capture_fps=30.0,
+        infer_ms=4.0,
+        queue_age_ms=12.0,
+        detected_count=0,
+        calibration_ready=True,
+        frame_quality={"too_dark": True, "reason": "frame_too_dark", "gray_mean": 16.0, "gray_p95": 16.0},
+    )
+
+    assert packet["frame_block_reason"] == "frame_too_dark"
+    assert packet["frame_quality"]["gray_mean"] == 16.0
 
 
 def test_vision_calibration_undistorts_pixels_when_distortion_coefficients_exist():
@@ -318,6 +353,91 @@ def test_frame_block_fallback_prefers_full_block_over_small_colored_artifact():
     assert candidates[0].bbox[0] <= 90
     assert candidates[0].bbox[2] >= 160
     assert candidates[0].area_px > candidates[1].area_px
+
+
+def test_frame_block_fallback_rejects_tiny_low_height_fragment_by_default():
+    frame = np.full((480, 640, 3), 235, dtype=np.uint8)
+    frame[252:303, 259:308] = (40, 120, 55)
+
+    candidates = frame_to_block_candidates(
+        frame,
+        roi_center=(320, 240),
+        roi_radius=260,
+        max_det=4,
+    )
+
+    assert candidates == []
+
+
+def test_update_slots_does_not_replace_full_block_with_small_fragment():
+    slots = [SlotState(slot=1, freq_hz=8.0)]
+    full = DetectionCandidate(
+        center=(321, 256),
+        grasp_pixel=(320, 256),
+        bbox=(229, 152, 410, 349),
+        area_px=19620,
+        confidence=0.55,
+        polygon=[(229, 152), (410, 152), (410, 349), (229, 349)],
+        grasp_quality=0.8,
+        oriented_bbox=[(229, 152), (410, 152), (410, 349), (229, 349)],
+        distance_to_roi=20.0,
+        geometry_center=(310, 248),
+        geometry_center_f=(310.0, 248.0),
+    )
+    fragment = DetectionCandidate(
+        center=(283, 264),
+        grasp_pixel=(284, 264),
+        bbox=(260, 237, 308, 297),
+        area_px=1338,
+        confidence=0.55,
+        polygon=[(260, 237), (308, 237), (308, 297), (260, 297)],
+        grasp_quality=0.7,
+        oriented_bbox=[(260, 237), (308, 237), (308, 297), (260, 297)],
+        distance_to_roi=50.0,
+        geometry_center=(281, 266),
+        geometry_center_f=(281.0, 266.0),
+    )
+
+    update_slots(slots, [full], match_distance=120.0, lost_ttl=6)
+    update_slots(slots, [fragment], match_distance=120.0, lost_ttl=6)
+
+    assert slots[0].pixel_center == (321, 256)
+    assert slots[0].observed is False
+    assert slots[0].lost_frames == 1
+
+
+def test_extract_candidates_can_prefer_more_complete_shape_candidate_when_requested():
+    frame = np.full((240, 320, 3), 235, dtype=np.uint8)
+    rect = ((165.0, 118.0), (90.0, 75.0), -20.0)
+    full_points = cv2.boxPoints(rect).astype(np.int32)
+    cv2.fillPoly(frame, [full_points], (40, 145, 55))
+    partial_mask = np.zeros((240, 320), dtype=np.float32)
+    partial_mask[78:150, 160:215] = 1.0
+
+    class _Masks:
+        data = _TensorLike([partial_mask])
+
+    result = _Result(xyxy=[[155, 75, 220, 155]], conf=[0.92])
+    result.masks = _Masks()
+
+    candidates, detected_count = extract_candidates(
+        result,
+        frame_shape=(240, 320),
+        roi_center=(160, 120),
+        roi_radius=180,
+        max_det=4,
+        confidence_threshold=0.25,
+        frame_bgr=frame,
+        fallback_to_frame=True,
+        prefer_frame_fallback=True,
+        fallback_min_area_ratio=1.2,
+    )
+
+    assert detected_count == 1
+    assert candidates
+    assert candidates[0].area_px > 6000
+    assert abs(candidates[0].center[0] - 165) <= 8
+    assert abs(candidates[0].center[1] - 118) <= 8
 
 
 def test_profile_mapping_marks_far_eye_in_hand_target_for_servo():
@@ -823,6 +943,179 @@ def test_delta_servo_centering_uses_block_center_not_smoothed_grasp_pixel():
     assert packet_slot["camera_to_world_raw"] == [10.0, 0.0, 0.0]
 
 
+def test_delta_servo_can_use_grasp_pixel_as_measurement_point():
+    slots = [SlotState(slot=1, freq_hz=8.0)]
+    slot = slots[0]
+    slot.valid = True
+    slot.observed = True
+    slot.pixel_center = (330, 240)
+    slot.grasp_pixel = (320, 240)
+    slot.grasp_quality = 1.0
+    slot.grasp_stable_frames = 3
+    profile = VisionCalibrationProfile.from_dict(
+        {
+            "profile_id": "unit-profile",
+            "image_size": [640, 480],
+            "pixel_to_delta": {"model": "affine", "matrix": [[1, 0, -320], [0, 1, -240]]},
+            "residual": {"p95_error_mm": 2.0},
+            "servo": {"target_pixel": [320, 240], "center_tolerance_px": 8.0},
+        }
+    )
+
+    annotate_slots_with_cylindrical(
+        slots,
+        calibration=None,
+        calibration_profile=profile,
+        frame_size=(640, 480),
+        roi_center=(320, 240),
+        alignment_target_pixel=(320.0, 240.0),
+        mapping_mode="delta_servo",
+        calibration_profile_required=True,
+        action_error_threshold_mm=6.0,
+        action_center_tolerance_px=8.0,
+        servo_measurement_point="grasp",
+    )
+
+    packet_slot = slot.to_packet()
+    assert packet_slot["center_distance_px"] == 0.0
+    assert packet_slot["servo_required"] is False
+    assert packet_slot["camera_to_world_raw"] == [0.0, 0.0, 0.0]
+
+
+def test_delta_servo_can_use_geometry_center_as_measurement_point():
+    slots = [SlotState(slot=1, freq_hz=8.0)]
+    slot = slots[0]
+    slot.valid = True
+    slot.observed = True
+    slot.pixel_center = (330, 240)
+    slot.geometry_center = (322, 240)
+    slot.grasp_pixel = (318, 240)
+    slot.grasp_quality = 1.0
+    slot.grasp_stable_frames = 3
+    profile = VisionCalibrationProfile.from_dict(
+        {
+            "profile_id": "unit-profile",
+            "image_size": [640, 480],
+            "pixel_to_delta": {"model": "affine", "matrix": [[1, 0, -320], [0, 1, -240]]},
+            "residual": {"p95_error_mm": 2.0},
+            "servo": {"target_pixel": [320, 240], "center_tolerance_px": 8.0},
+        }
+    )
+
+    annotate_slots_with_cylindrical(
+        slots,
+        calibration=None,
+        calibration_profile=profile,
+        frame_size=(640, 480),
+        roi_center=(320, 240),
+        alignment_target_pixel=(320.0, 240.0),
+        mapping_mode="delta_servo",
+        calibration_profile_required=True,
+        action_error_threshold_mm=6.0,
+        action_center_tolerance_px=8.0,
+        servo_measurement_point="geometry",
+    )
+
+    packet_slot = slot.to_packet()
+    assert packet_slot["pixel_center"] == [330, 240]
+    assert packet_slot["geometry_center"] == [322, 240]
+    assert packet_slot["center_distance_px"] == 2.0
+    assert packet_slot["servo_required"] is False
+    assert packet_slot["camera_to_world_raw"] == [2.0, 0.0, 0.0]
+
+
+def test_delta_servo_can_use_subpixel_geometry_center_for_strict_confirm():
+    slots = [SlotState(slot=1, freq_hz=8.0)]
+    slot = slots[0]
+    slot.valid = True
+    slot.observed = True
+    slot.pixel_center = (316, 235)
+    slot.pixel_center_f = (316.0, 235.0)
+    slot.geometry_center = (316, 235)
+    slot.geometry_center_f = (318.8, 238.6)
+    slot.grasp_pixel = (302, 235)
+    slot.grasp_quality = 1.0
+    slot.grasp_stable_frames = 3
+    profile = VisionCalibrationProfile.from_dict(
+        {
+            "profile_id": "unit-profile",
+            "image_size": [640, 480],
+            "pixel_to_delta": {"model": "affine", "matrix": [[1, 0, -320], [0, 1, -240]]},
+            "residual": {"p95_error_mm": 2.0},
+            "servo": {"target_pixel": [320, 240], "center_tolerance_px": 2.0},
+        }
+    )
+
+    annotate_slots_with_cylindrical(
+        slots,
+        calibration=None,
+        calibration_profile=profile,
+        frame_size=(640, 480),
+        roi_center=(320, 240),
+        alignment_target_pixel=(320.0, 240.0),
+        mapping_mode="delta_servo",
+        calibration_profile_required=True,
+        action_error_threshold_mm=20.0,
+        center_tolerance_px=2.0,
+        action_center_tolerance_px=2.0,
+        calibration_stage="confirm",
+        calibration_z_mm=120.0,
+        servo_measurement_point="geometry_subpixel",
+    )
+
+    packet_slot = slot.to_packet()
+    assert packet_slot["geometry_center"] == [316, 235]
+    assert packet_slot["geometry_center_f"] == [318.8, 238.6]
+    assert packet_slot["measurement_point"] == "geometry_subpixel"
+    assert packet_slot["alignment_target_pixel"] == [320.0, 240.0]
+    assert packet_slot["center_distance_px"] == pytest.approx(1.843908891458578)
+    assert packet_slot["servo_required"] is False
+    assert packet_slot["camera_to_world_raw"] == pytest.approx([-1.2, -1.4, 0.0])
+
+
+def test_low_height_seven_pixel_error_uses_normal_servo_gain():
+    from hybrid_controller.vision.target_resolver import resolve_vision_packet
+
+    config = AppConfig(
+        vision_servo_move_gain=0.45,
+        vision_servo_fine_move_gain=0.35,
+        vision_servo_fine_threshold_px=3.0,
+    )
+    packet = {
+        "mapping_mode": "delta_servo",
+        "calibration_ready": True,
+        "slots": [
+            {
+                "slot_id": 1,
+                "valid": True,
+                "servo_required": True,
+                "camera_to_world_raw": [1.5, -1.8, 0.0],
+                "center_distance_px": 7.0,
+            }
+        ],
+    }
+    snapshot = {
+        "robot_xy": [-24.0, -171.2],
+        "robot_cyl": {"theta_deg": 8.0, "radius_mm": 172.9, "z_mm": 120.0},
+    }
+
+    resolved = resolve_vision_packet(
+        packet=packet,
+        config=config,
+        snapshot=snapshot,
+        snapshot_age_ms=0.0,
+        frame_pose_age_ms=0.0,
+    ).packet
+
+    slot = resolved["slots"][0]
+    assert slot["invalid_reason"] == "vision_servo_required"
+    assert slot["servo_command_point"] is not None
+    # The target should reflect the normal 0.45 gain. If the fine 0.35 path
+    # runs at 7 px, the theta/radius delta is noticeably smaller.
+    assert slot["servo_command_point"][0] == pytest.approx(7.722352457023939)
+    assert slot["servo_command_point"][1] == pytest.approx(173.58426116730743)
+
+
 def test_delta_servo_confirm_height_waits_before_unstable_off_center_move():
     slots = [SlotState(slot=1, freq_hz=8.0)]
     slot = slots[0]
@@ -1082,6 +1375,96 @@ def test_confirm_stage_keeps_strict_action_tolerance():
     assert packet_slot["servo_required"] is True
 
 
+def test_confirm_stage_low_action_tolerance_can_be_stricter_than_global_default():
+    slots = [SlotState(slot=1, freq_hz=8.0)]
+    slot = slots[0]
+    slot.valid = True
+    slot.observed = True
+    slot.pixel_center = (323, 240)
+    slot.grasp_pixel = (323, 240)
+    slot.grasp_quality = 1.0
+    slot.center_stable_frames = 3
+    slot.grasp_stable_frames = 3
+    profile = VisionCalibrationProfile.from_dict(
+        {
+            "profile_id": "unit-profile",
+            "image_size": [640, 480],
+            "pixel_to_delta": {"model": "affine", "matrix": [[1, 0, -320], [0, 1, -240]]},
+            "residual": {"p95_error_mm": 2.0},
+            "servo": {"target_pixel": [320, 240], "center_tolerance_px": 8.0},
+        }
+    )
+
+    annotate_slots_with_cylindrical(
+        slots,
+        calibration=None,
+        calibration_profile=profile,
+        frame_size=(640, 480),
+        roi_center=(320, 240),
+        alignment_target_pixel=(320.0, 240.0),
+        mapping_mode="delta_servo",
+        calibration_profile_required=True,
+        action_error_threshold_mm=20.0,
+        center_tolerance_px=20.0,
+        action_center_tolerance_px=2.0,
+        required_stable_frames=3,
+        calibration_stage="confirm",
+        calibration_z_mm=120.0,
+    )
+
+    packet_slot = slot.to_packet()
+    assert packet_slot["center_distance_px"] == 3.0
+    assert packet_slot["action_tolerance_px"] == 2.0
+    assert packet_slot["servo_required"] is True
+
+
+def test_confirm_stage_unstable_visible_error_still_requests_servo():
+    slots = [SlotState(slot=1, freq_hz=8.0)]
+    slot = slots[0]
+    slot.valid = True
+    slot.observed = True
+    slot.pixel_center = (302, 237)
+    slot.geometry_center = (304, 235)
+    slot.grasp_pixel = (290, 236)
+    slot.grasp_quality = 1.0
+    slot.center_stable_frames = 1
+    slot.grasp_stable_frames = 1
+    slot.area_stability_ratio = 0.0
+    profile = VisionCalibrationProfile.from_dict(
+        {
+            "profile_id": "unit-profile",
+            "image_size": [640, 480],
+            "pixel_to_delta": {"model": "affine", "matrix": [[1, 0, -320], [0, 1, -240]]},
+            "residual": {"p95_error_mm": 2.0},
+            "servo": {"target_pixel": [320, 240], "center_tolerance_px": 2.0},
+        }
+    )
+
+    annotate_slots_with_cylindrical(
+        slots,
+        calibration=None,
+        calibration_profile=profile,
+        frame_size=(640, 480),
+        roi_center=(320, 240),
+        alignment_target_pixel=(320.0, 240.0),
+        mapping_mode="delta_servo",
+        calibration_profile_required=True,
+        calibration_stage="confirm",
+        calibration_z_mm=120.0,
+        action_error_threshold_mm=20.0,
+        center_tolerance_px=2.0,
+        action_center_tolerance_px=2.0,
+        required_stable_frames=3,
+        servo_measurement_point="geometry",
+    )
+
+    packet_slot = slot.to_packet()
+    assert packet_slot["center_distance_px"] == pytest.approx(16.76305461424021)
+    assert packet_slot["action_tolerance_px"] == 2.0
+    assert packet_slot["servo_required"] is True
+    assert packet_slot["invalid_reason"] == "awaiting_robot_snapshot_delta_resolve"
+
+
 def test_confirm_stage_can_use_low_action_tolerance_for_near_center_noise():
     slots = [SlotState(slot=1, freq_hz=8.0)]
     slot = slots[0]
@@ -1122,6 +1505,6 @@ def test_confirm_stage_can_use_low_action_tolerance_for_near_center_noise():
 
     packet_slot = slot.to_packet()
     assert packet_slot["center_distance_px"] == pytest.approx(6.082762530298219)
-    assert packet_slot["action_tolerance_px"] == 8.0
+    assert packet_slot["action_tolerance_px"] == 6.0
     assert packet_slot["servo_required"] is False
-    assert packet_slot["invalid_reason"] == "awaiting_robot_snapshot_delta_resolve"
+    assert packet_slot["invalid_reason"] == "grasp_unstable"

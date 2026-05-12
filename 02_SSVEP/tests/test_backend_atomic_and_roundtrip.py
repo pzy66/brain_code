@@ -138,3 +138,172 @@ def test_saved_profile_roundtrip_matches_realtime_decoder_outputs() -> None:
         import shutil
 
         shutil.rmtree(tmp_root, ignore_errors=True)
+
+
+def test_fbcca_score_ridge5_profile_can_request_cuda_scoring_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    freqs = (8.0, 10.5, 12.0, 15.0)
+    labels = ("idle", "8", "10.5", "12", "15")
+    feature_count = int(len(freqs) + 6)
+    weights = np.zeros((feature_count + 1, len(labels)), dtype=np.float64)
+    state = {
+        "freqs": list(freqs),
+        "labels": list(labels),
+        "feature_mean": [0.0] * feature_count,
+        "feature_std": [1.0] * feature_count,
+        "weights": weights.tolist(),
+        "smoothing_windows": 1,
+        "gate_policy": "confidence_threshold",
+        "command_confidence_th": 0.5,
+    }
+    profile = ThresholdProfile(
+        freqs=freqs,
+        win_sec=2.0,
+        step_sec=0.25,
+        enter_score_th=999.0,
+        enter_ratio_th=999.0,
+        enter_margin_th=999.0,
+        exit_score_th=999.0,
+        exit_ratio_th=999.0,
+        min_enter_windows=2,
+        min_exit_windows=1,
+        model_name="fbcca_score_ridge_5class",
+        model_params={
+            "state": state,
+            "score_bank_mode": "command_only",
+            "decoder_name": "fbcca_fixed_all8",
+            "decoder_model_params": {"Nh": 5, "subband_weight_mode": "chen_fixed"},
+            "feature_names": [f"feature_{index}" for index in range(feature_count)],
+        },
+        gate_policy="confidence_threshold",
+        eeg_channels=tuple(range(8)),
+    )
+
+    requested_backends: list[str] = []
+    original_create_decoder = async_module.create_decoder
+
+    def recording_create_decoder(model_name: str, *args, **kwargs):
+        if str(model_name) == "fbcca_fixed_all8":
+            requested_backends.append(str(kwargs.get("decoder_compute_backend", "")))
+        return original_create_decoder(model_name, *args, **kwargs)
+
+    monkeypatch.setattr(async_module, "create_decoder", recording_create_decoder)
+    monkeypatch.setattr(
+        async_module,
+        "resolve_compute_backend",
+        lambda _requested, gpu_device=0, precision="float32": NumpyBackend(
+            precision=precision,
+            gpu_device=gpu_device,
+        ),
+    )
+    decoder = load_decoder_from_profile(profile, sampling_rate=250, compute_backend="cuda", gpu_warmup=False)
+
+    assert requested_backends == ["cuda"]
+    assert decoder.compute_backend_requested == "cuda"
+
+
+def test_fbcca_score_ridge5_profile_roundtrip_drives_lrt_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    tmp_root = _manual_tmp_dir("ridge5_lrt_profile")
+    try:
+        freqs = (8.0, 10.5, 12.0, 15.0)
+        all_freqs = (8.0, 9.0, 10.5, 11.0, 12.0, 13.0, 14.0, 15.0)
+        labels = ("idle", "8", "10.5", "12", "15")
+        feature_count = int(len(freqs) + 6 + 6)
+        weights = np.zeros((feature_count + 1, len(labels)), dtype=np.float64)
+        weights[0, 0] = 1.0
+        weights[1 + 0, 1] = 8.0
+        weights[1 + 4, 1] = 4.0
+        weights[1 + 0, 0] = -4.0
+        weights[1 + 4, 0] = -2.0
+        state = {
+            "freqs": list(freqs),
+            "labels": list(labels),
+            "feature_mean": [0.0] * feature_count,
+            "feature_std": [1.0] * feature_count,
+            "weights": weights.tolist(),
+            "l2": 0.3,
+            "command_confidence_th": 0.50,
+            "smoothing_windows": 1,
+            "gate_policy": "lrt_multiwindow_reject_gate",
+            "lrt_feature_indices": [13, 14],
+            "lrt_feature_mean_control": [1.0, 4.0],
+            "lrt_feature_std_control": [1.0, 1.0],
+            "lrt_feature_mean_idle": [0.0, -4.0],
+            "lrt_feature_std_idle": [1.0, 1.0],
+            "lrt_window_th": 0.5,
+            "lrt_enter_th": 1.0,
+            "lrt_decay": 0.65,
+            "fit_summary": {"max_gap_windows": 0},
+        }
+        profile = ThresholdProfile(
+            freqs=freqs,
+            win_sec=2.0,
+            step_sec=0.25,
+            enter_score_th=999.0,
+            enter_ratio_th=999.0,
+            enter_margin_th=999.0,
+            exit_score_th=999.0,
+            exit_ratio_th=999.0,
+            min_enter_windows=2,
+            min_exit_windows=1,
+            model_name="fbcca_score_ridge_5class",
+            model_params={
+                "state": state,
+                "score_source_name": "fbcca",
+                "score_bank_mode": "full_reference_bank",
+                "decoder_name": "fbcca_fixed_all8",
+                "decoder_model_params": {"Nh": 5, "subband_weight_mode": "chen_fixed"},
+                "full_reference_bank_freqs": list(all_freqs),
+                "feature_names": [f"feature_{index}" for index in range(feature_count)],
+            },
+            gate_policy="lrt_multiwindow_reject_gate",
+            eeg_channels=tuple(range(8)),
+            channel_weight_mode=None,
+            channel_weights=None,
+        )
+        profile_path = tmp_root / "ridge5_profile.json"
+        save_profile(profile, profile_path)
+        loaded = load_profile(profile_path, require_exists=True)
+
+        command_scores = np.asarray([[5.0, 0.2, 0.2, 0.2]], dtype=np.float64)
+        full_command = np.asarray([[5.0, 0.1, 0.2, 0.1, 0.2, 0.1, 0.1, 0.2]], dtype=np.float64)
+        idle_full = np.asarray([[0.2, 5.0, 0.2, 4.5, 0.2, 4.0, 3.5, 0.2]], dtype=np.float64)
+        scored_windows = iter(
+            [
+                command_scores,
+                full_command,
+                command_scores,
+                full_command,
+                command_scores,
+                idle_full,
+                command_scores,
+                idle_full,
+            ]
+        )
+
+        def fake_score_window(_self, _window: np.ndarray) -> np.ndarray:
+            next_scores = next(scored_windows)
+            return np.asarray(next_scores[0], dtype=np.float64)
+
+        monkeypatch.setattr(async_module.FBCCADecoder, "score_window", fake_score_window)
+        decoder = load_decoder_from_profile(loaded, sampling_rate=250, compute_backend="cpu", gpu_precision="float32")
+        gate = AsyncDecisionGate.from_profile(loaded)
+        window = np.zeros((decoder.win_samples, 8), dtype=np.float64)
+
+        first = gate.update(decoder.analyze_window(window))
+        second = gate.update(decoder.analyze_window(window))
+        gate.reset()
+        idle_first = gate.update(decoder.analyze_window(window))
+        idle_second = gate.update(decoder.analyze_window(window))
+
+        assert first["state"] == "idle"
+        assert second["state"] == "selected"
+        assert second["selected_freq"] == 8.0
+        assert second["classifier_pred_label"] == "8"
+        assert float(second["lrt_window_evidence"]) > 0.5
+        assert idle_first["state"] == "idle"
+        assert idle_second["state"] == "idle"
+        assert idle_second["selected_freq"] is None
+    finally:
+        import shutil
+
+        shutil.rmtree(tmp_root, ignore_errors=True)

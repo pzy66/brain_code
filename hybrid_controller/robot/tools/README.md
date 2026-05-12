@@ -23,10 +23,10 @@
 
 ## legacy 工具（仅兼容）
 
-- `jetmax_start_runtime.py`
+- `jetmax_start_runtime.py`（默认拒绝执行；必须显式加 `--allow-legacy-tcp-start`）
 - `deploy_jetmax_runtime.py`
 
-说明：这两项是 TCP-only 老路径，不是当前 GUI 的主链。
+说明：这两项是 TCP-only 老路径，不是当前 GUI 的主链。需要临时回退到 TCP-only 时优先用 `deploy_jetmax_runtime.py`，因为它会同步 `robot_runtime_py36.py` 及其运行依赖；`jetmax_start_runtime.py` 只作为历史兼容入口保留，避免误用旧单文件启动路径。
 
 ## 一键启动（ROS 主链）
 
@@ -143,3 +143,13 @@ http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&widt
 - `place`
 - `abort`
 - `reset`
+
+## 机械臂端补丁备份
+
+修改 `robot/` 下的实机相关文件前，先在上位机创建备份目录：
+
+```text
+hybrid_controller/robot/backups/robot_runtime_<purpose>_<timestamp>/
+```
+
+备份必须包含 `MANIFEST.json`，记录每个文件的相对路径和 SHA256。建议覆盖 ROS runtime node、`runtime/` 核心文件、启动/部署工具和本说明文档。备份只保存在上位机，不随启动工具自动同步到 JetMax。

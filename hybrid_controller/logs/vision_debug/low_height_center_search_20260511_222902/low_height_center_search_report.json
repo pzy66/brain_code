@@ -1,0 +1,622 @@
+{
+  "created_at": "2026-05-11T22:29:02",
+  "camera_contract": "PC reads the single official JetMax MJPEG URL only; this tool does not start, restart, scan, repair, or mutate usb_cam.service/web_video_server/uvcvideo/devices.",
+  "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+  "slot_id": 1,
+  "z_mm": 120.0,
+  "dry_run": false,
+  "steps": [
+    {
+      "iteration": 1,
+      "theta_step_deg": 0.8,
+      "radius_step_mm": 2.0,
+      "candidates": [
+        {
+          "label": "iter_01_candidate_01",
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "pose_cyl": [
+            8.770000457763672,
+            176.33999633789062,
+            120.0
+          ],
+          "skipped": true,
+          "reason": "outside_max_total_move"
+        },
+        {
+          "label": "iter_01_candidate_02",
+          "offset": [
+            -0.8,
+            0.0
+          ],
+          "pose_cyl": [
+            7.970000457763672,
+            176.33999633789062,
+            120.0
+          ],
+          "skipped": true,
+          "reason": "outside_max_total_move"
+        },
+        {
+          "label": "iter_01_candidate_03",
+          "offset": [
+            0.8,
+            0.0
+          ],
+          "pose_cyl": [
+            9.570000457763673,
+            176.33999633789062,
+            120.0
+          ],
+          "skipped": true,
+          "reason": "outside_max_total_move"
+        },
+        {
+          "label": "iter_01_candidate_04",
+          "offset": [
+            0.0,
+            -2.0
+          ],
+          "pose_cyl": [
+            8.770000457763672,
+            174.33999633789062,
+            120.0
+          ],
+          "skipped": true,
+          "reason": "outside_max_total_move"
+        },
+        {
+          "label": "iter_01_candidate_05",
+          "offset": [
+            0.0,
+            2.0
+          ],
+          "pose_cyl": [
+            8.770000457763672,
+            178.33999633789062,
+            120.0
+          ],
+          "skipped": true,
+          "reason": "outside_max_total_move"
+        }
+      ],
+      "step_shrunk": true
+    },
+    {
+      "iteration": 2,
+      "theta_step_deg": 0.4,
+      "radius_step_mm": 1.0,
+      "candidates": [
+        {
+          "label": "iter_02_candidate_01",
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "pose_cyl": [
+            8.770000457763672,
+            176.33999633789062,
+            120.0
+          ],
+          "skipped": true,
+          "reason": "outside_max_total_move"
+        },
+        {
+          "label": "iter_02_candidate_02",
+          "offset": [
+            -0.4,
+            0.0
+          ],
+          "pose_cyl": [
+            8.370000457763672,
+            176.33999633789062,
+            120.0
+          ],
+          "skipped": true,
+          "reason": "outside_max_total_move"
+        },
+        {
+          "label": "iter_02_candidate_03",
+          "offset": [
+            0.4,
+            0.0
+          ],
+          "pose_cyl": [
+            9.170000457763672,
+            176.33999633789062,
+            120.0
+          ],
+          "skipped": true,
+          "reason": "outside_max_total_move"
+        },
+        {
+          "label": "iter_02_candidate_04",
+          "offset": [
+            0.0,
+            -1.0
+          ],
+          "pose_cyl": [
+            8.770000457763672,
+            175.33999633789062,
+            120.0
+          ],
+          "skipped": true,
+          "reason": "outside_max_total_move"
+        },
+        {
+          "label": "iter_02_candidate_05",
+          "offset": [
+            0.0,
+            1.0
+          ],
+          "pose_cyl": [
+            8.770000457763672,
+            177.33999633789062,
+            120.0
+          ],
+          "skipped": true,
+          "reason": "outside_max_total_move"
+        }
+      ],
+      "step_shrunk": true
+    }
+  ],
+  "start_pose_cyl": [
+    8.770000457763672,
+    176.33999633789062,
+    140.0
+  ],
+  "baseline": {
+    "median_center_distance_px": 21.963033229381967,
+    "min_center_distance_px": 21.316174803197878,
+    "max_center_distance_px": 22.609891655566056,
+    "repeat_spread_px": 1.3130799574852707,
+    "stable": true,
+    "samples": [
+      {
+        "slot_id": 1,
+        "frame_id": 3,
+        "pose_cyl": [
+          8.770000457763672,
+          176.33999633789062,
+          120.0
+        ],
+        "pose_xy": [
+          -26.886274992541217,
+          -174.27829045946237
+        ],
+        "pixel": [
+          303.6896667480469,
+          253.72415161132812
+        ],
+        "pixel_center": [
+          304,
+          255
+        ],
+        "pixel_center_f": [
+          303.80559074159373,
+          254.798911791801
+        ],
+        "geometry_center": [
+          304,
+          254
+        ],
+        "geometry_center_f": [
+          303.6896667480469,
+          253.72415161132812
+        ],
+        "grasp_pixel": [
+          290,
+          254
+        ],
+        "grasp_pixel_f": [
+          290.0,
+          254.0
+        ],
+        "center_distance_px": 21.316174803197878,
+        "confidence": 0.55,
+        "area_px": 34392,
+        "bbox": [
+          193,
+          132,
+          415,
+          378
+        ],
+        "snapshot": {
+          "state": "IDLE",
+          "state_seq": 3995,
+          "robot_ts": 1745855134.1522517,
+          "_local_receive_ts": 364017.8351579,
+          "busy": false,
+          "busy_action": "",
+          "carrying": false,
+          "robot_xy": [
+            -26.88599967956543,
+            -174.2779998779297
+          ],
+          "robot_z": 120.0,
+          "robot_cyl": {
+            "theta_deg": 8.770000457763672,
+            "radius_mm": 176.33999633789062,
+            "z_mm": 120.0
+          },
+          "limits_cyl": {
+            "theta_deg": [
+              -120.0,
+              120.0
+            ],
+            "radius_mm": [
+              50.0,
+              280.0
+            ]
+          },
+          "limits_cyl_auto": {
+            "radius_mm": [
+              80.0,
+              260.0
+            ]
+          },
+          "calibration_ready": true,
+          "last_ack": "MOVE",
+          "last_error_code": "",
+          "last_error": "",
+          "release_mode_effective": "sucker_frozen",
+          "sucker_frozen": true,
+          "pick_tuning": {
+            "pick_approach_z_mm": 130.0,
+            "pick_descend_z_mm": 85.0,
+            "pick_pre_suction_sec": 0.25,
+            "pick_bottom_hold_sec": 0.15000000596046448,
+            "pick_lift_sec": 0.800000011920929,
+            "z_carry_floor_mm": 160.0
+          },
+          "sucker_rotation_supported": true
+        },
+        "packet_frame_id": 3,
+        "repeat_index": 1
+      },
+      {
+        "slot_id": 1,
+        "frame_id": 6,
+        "pose_cyl": [
+          8.770000457763672,
+          176.33999633789062,
+          120.0
+        ],
+        "pose_xy": [
+          -26.886274992541217,
+          -174.27829045946237
+        ],
+        "pixel": [
+          302.55169677734375,
+          254.37928771972656
+        ],
+        "pixel_center": [
+          304,
+          255
+        ],
+        "pixel_center_f": [
+          303.5529527161527,
+          254.89213282174077
+        ],
+        "geometry_center": [
+          303,
+          254
+        ],
+        "geometry_center_f": [
+          302.55169677734375,
+          254.37928771972656
+        ],
+        "grasp_pixel": [
+          290,
+          254
+        ],
+        "grasp_pixel_f": [
+          290.0,
+          254.0
+        ],
+        "center_distance_px": 22.609891655566056,
+        "confidence": 0.55,
+        "area_px": 34322,
+        "bbox": [
+          193,
+          132,
+          415,
+          379
+        ],
+        "snapshot": {
+          "state": "IDLE",
+          "state_seq": 3995,
+          "robot_ts": 1745855135.552246,
+          "_local_receive_ts": 364019.2341673,
+          "busy": false,
+          "busy_action": "",
+          "carrying": false,
+          "robot_xy": [
+            -26.88599967956543,
+            -174.2779998779297
+          ],
+          "robot_z": 120.0,
+          "robot_cyl": {
+            "theta_deg": 8.770000457763672,
+            "radius_mm": 176.33999633789062,
+            "z_mm": 120.0
+          },
+          "limits_cyl": {
+            "theta_deg": [
+              -120.0,
+              120.0
+            ],
+            "radius_mm": [
+              50.0,
+              280.0
+            ]
+          },
+          "limits_cyl_auto": {
+            "radius_mm": [
+              80.0,
+              260.0
+            ]
+          },
+          "calibration_ready": true,
+          "last_ack": "MOVE",
+          "last_error_code": "",
+          "last_error": "",
+          "release_mode_effective": "sucker_frozen",
+          "sucker_frozen": true,
+          "pick_tuning": {
+            "pick_approach_z_mm": 130.0,
+            "pick_descend_z_mm": 85.0,
+            "pick_pre_suction_sec": 0.25,
+            "pick_bottom_hold_sec": 0.15000000596046448,
+            "pick_lift_sec": 0.800000011920929,
+            "z_carry_floor_mm": 160.0
+          },
+          "sucker_rotation_supported": true
+        },
+        "packet_frame_id": 6,
+        "repeat_index": 2
+      }
+    ],
+    "label": "baseline",
+    "packet_frame_id": 6,
+    "pose_cyl": [
+      8.770000457763672,
+      176.33999633789062,
+      140.0
+    ]
+  },
+  "stop_reason": "iteration_limit",
+  "left_pose_cyl": [
+    8.770000457763672,
+    176.33999633789062,
+    140.0
+  ],
+  "best_pose_cyl": [
+    8.770000457763672,
+    176.33999633789062,
+    140.0
+  ],
+  "best_measurement": {
+    "median_center_distance_px": 21.963033229381967,
+    "min_center_distance_px": 21.316174803197878,
+    "max_center_distance_px": 22.609891655566056,
+    "repeat_spread_px": 1.3130799574852707,
+    "stable": true,
+    "samples": [
+      {
+        "slot_id": 1,
+        "frame_id": 3,
+        "pose_cyl": [
+          8.770000457763672,
+          176.33999633789062,
+          120.0
+        ],
+        "pose_xy": [
+          -26.886274992541217,
+          -174.27829045946237
+        ],
+        "pixel": [
+          303.6896667480469,
+          253.72415161132812
+        ],
+        "pixel_center": [
+          304,
+          255
+        ],
+        "pixel_center_f": [
+          303.80559074159373,
+          254.798911791801
+        ],
+        "geometry_center": [
+          304,
+          254
+        ],
+        "geometry_center_f": [
+          303.6896667480469,
+          253.72415161132812
+        ],
+        "grasp_pixel": [
+          290,
+          254
+        ],
+        "grasp_pixel_f": [
+          290.0,
+          254.0
+        ],
+        "center_distance_px": 21.316174803197878,
+        "confidence": 0.55,
+        "area_px": 34392,
+        "bbox": [
+          193,
+          132,
+          415,
+          378
+        ],
+        "snapshot": {
+          "state": "IDLE",
+          "state_seq": 3995,
+          "robot_ts": 1745855134.1522517,
+          "_local_receive_ts": 364017.8351579,
+          "busy": false,
+          "busy_action": "",
+          "carrying": false,
+          "robot_xy": [
+            -26.88599967956543,
+            -174.2779998779297
+          ],
+          "robot_z": 120.0,
+          "robot_cyl": {
+            "theta_deg": 8.770000457763672,
+            "radius_mm": 176.33999633789062,
+            "z_mm": 120.0
+          },
+          "limits_cyl": {
+            "theta_deg": [
+              -120.0,
+              120.0
+            ],
+            "radius_mm": [
+              50.0,
+              280.0
+            ]
+          },
+          "limits_cyl_auto": {
+            "radius_mm": [
+              80.0,
+              260.0
+            ]
+          },
+          "calibration_ready": true,
+          "last_ack": "MOVE",
+          "last_error_code": "",
+          "last_error": "",
+          "release_mode_effective": "sucker_frozen",
+          "sucker_frozen": true,
+          "pick_tuning": {
+            "pick_approach_z_mm": 130.0,
+            "pick_descend_z_mm": 85.0,
+            "pick_pre_suction_sec": 0.25,
+            "pick_bottom_hold_sec": 0.15000000596046448,
+            "pick_lift_sec": 0.800000011920929,
+            "z_carry_floor_mm": 160.0
+          },
+          "sucker_rotation_supported": true
+        },
+        "packet_frame_id": 3,
+        "repeat_index": 1
+      },
+      {
+        "slot_id": 1,
+        "frame_id": 6,
+        "pose_cyl": [
+          8.770000457763672,
+          176.33999633789062,
+          120.0
+        ],
+        "pose_xy": [
+          -26.886274992541217,
+          -174.27829045946237
+        ],
+        "pixel": [
+          302.55169677734375,
+          254.37928771972656
+        ],
+        "pixel_center": [
+          304,
+          255
+        ],
+        "pixel_center_f": [
+          303.5529527161527,
+          254.89213282174077
+        ],
+        "geometry_center": [
+          303,
+          254
+        ],
+        "geometry_center_f": [
+          302.55169677734375,
+          254.37928771972656
+        ],
+        "grasp_pixel": [
+          290,
+          254
+        ],
+        "grasp_pixel_f": [
+          290.0,
+          254.0
+        ],
+        "center_distance_px": 22.609891655566056,
+        "confidence": 0.55,
+        "area_px": 34322,
+        "bbox": [
+          193,
+          132,
+          415,
+          379
+        ],
+        "snapshot": {
+          "state": "IDLE",
+          "state_seq": 3995,
+          "robot_ts": 1745855135.552246,
+          "_local_receive_ts": 364019.2341673,
+          "busy": false,
+          "busy_action": "",
+          "carrying": false,
+          "robot_xy": [
+            -26.88599967956543,
+            -174.2779998779297
+          ],
+          "robot_z": 120.0,
+          "robot_cyl": {
+            "theta_deg": 8.770000457763672,
+            "radius_mm": 176.33999633789062,
+            "z_mm": 120.0
+          },
+          "limits_cyl": {
+            "theta_deg": [
+              -120.0,
+              120.0
+            ],
+            "radius_mm": [
+              50.0,
+              280.0
+            ]
+          },
+          "limits_cyl_auto": {
+            "radius_mm": [
+              80.0,
+              260.0
+            ]
+          },
+          "calibration_ready": true,
+          "last_ack": "MOVE",
+          "last_error_code": "",
+          "last_error": "",
+          "release_mode_effective": "sucker_frozen",
+          "sucker_frozen": true,
+          "pick_tuning": {
+            "pick_approach_z_mm": 130.0,
+            "pick_descend_z_mm": 85.0,
+            "pick_pre_suction_sec": 0.25,
+            "pick_bottom_hold_sec": 0.15000000596046448,
+            "pick_lift_sec": 0.800000011920929,
+            "z_carry_floor_mm": 160.0
+          },
+          "sucker_rotation_supported": true
+        },
+        "packet_frame_id": 6,
+        "repeat_index": 2
+      }
+    ],
+    "label": "baseline",
+    "packet_frame_id": 6,
+    "pose_cyl": [
+      8.770000457763672,
+      176.33999633789062,
+      140.0
+    ]
+  }
+}

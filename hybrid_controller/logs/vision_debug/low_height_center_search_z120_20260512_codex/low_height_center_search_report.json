@@ -1,0 +1,5173 @@
+{
+  "created_at": "2026-05-12T09:38:11",
+  "camera_contract": "PC reads the single official JetMax MJPEG URL only; this tool does not start, restart, scan, repair, or mutate usb_cam.service/web_video_server/uvcvideo/devices.",
+  "measurement_contract": "Low-height search uses stop-settle-measure: wait for IDLE, settle, drain transition frames, then measure repeated subpixel geometry points from the persistent official MJPEG stream.",
+  "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+  "slot_id": 1,
+  "z_mm": 120.0,
+  "measurement_point": "geometry_subpixel",
+  "coarse_action_tolerance_px": 8.0,
+  "final_center_tolerance_px": 2.0,
+  "settle_sec": 1.2,
+  "drain_frames": 16,
+  "dry_run": false,
+  "steps": [
+    {
+      "iteration": 1,
+      "theta_step_deg": 0.35,
+      "radius_step_mm": 1.2,
+      "candidates": [
+        {
+          "label": "iter_01_candidate_01",
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "pose_cyl": [
+            7.458000183105469,
+            174.4459991455078,
+            120.0
+          ],
+          "skipped": false,
+          "measurement": {
+            "median_center_distance_px": 4.5468104469470765,
+            "min_center_distance_px": 4.539612399584013,
+            "max_center_distance_px": 4.55400849431014,
+            "repeat_spread_px": 0.1063436462322388,
+            "stable": true,
+            "sample_count": 2,
+            "captured_frames": 20,
+            "processed_frames": 6,
+            "camera_transport_last": {
+              "open_count": 1,
+              "bytes_read": 2007040,
+              "content_length_payloads": 104,
+              "jpeg_marker_payloads": 0,
+              "frames_accepted": 104,
+              "frames_rejected": 0,
+              "buffer_resets": 0,
+              "reopen_count": 0,
+              "last_reject_reason": "",
+              "buffer_bytes": 1350,
+              "consecutive_rejected_frames": 0,
+              "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+              "reader": "http_multipart_mjpeg",
+              "content_length_preferred": true,
+              "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+              "capture_backend": "http",
+              "open": true
+            },
+            "samples": [
+              {
+                "slot_id": 1,
+                "frame_id": 9,
+                "pose_cyl": [
+                  7.458000183105469,
+                  174.4459991455078,
+                  120.0
+                ],
+                "pose_xy": [
+                  -22.642984860271522,
+                  -172.9702340129423
+                ],
+                "pixel": [
+                  317.9325256347656,
+                  244.04148864746094
+                ],
+                "pixel_center": [
+                  318,
+                  245
+                ],
+                "pixel_center_f": [
+                  317.9743633664497,
+                  244.54690533287655
+                ],
+                "geometry_center": [
+                  318,
+                  244
+                ],
+                "geometry_center_f": [
+                  317.9325256347656,
+                  244.04148864746094
+                ],
+                "grasp_pixel": [
+                  316,
+                  244
+                ],
+                "grasp_pixel_f": [
+                  316.0,
+                  244.0
+                ],
+                "center_distance_px": 4.539612399584013,
+                "confidence": 0.55,
+                "area_px": 34676,
+                "bbox": [
+                  208,
+                  121,
+                  430,
+                  369
+                ],
+                "snapshot": {
+                  "state": "IDLE",
+                  "state_seq": 4225,
+                  "robot_ts": 1745895294.7926855,
+                  "_local_receive_ts": 404178.7885822,
+                  "busy": false,
+                  "busy_action": "",
+                  "carrying": false,
+                  "robot_xy": [
+                    -22.64299964904785,
+                    -172.97000122070312
+                  ],
+                  "robot_z": 120.0,
+                  "robot_cyl": {
+                    "theta_deg": 7.458000183105469,
+                    "radius_mm": 174.4459991455078,
+                    "z_mm": 120.0
+                  },
+                  "limits_cyl": {
+                    "theta_deg": [
+                      -120.0,
+                      120.0
+                    ],
+                    "radius_mm": [
+                      50.0,
+                      280.0
+                    ]
+                  },
+                  "limits_cyl_auto": {
+                    "radius_mm": [
+                      80.0,
+                      260.0
+                    ]
+                  },
+                  "calibration_ready": true,
+                  "last_ack": "MOVE",
+                  "last_error_code": "",
+                  "last_error": "",
+                  "release_mode_effective": "sucker_frozen",
+                  "sucker_frozen": true,
+                  "pick_tuning": {
+                    "pick_approach_z_mm": 130.0,
+                    "pick_descend_z_mm": 85.0,
+                    "pick_pre_suction_sec": 0.25,
+                    "pick_bottom_hold_sec": 0.15000000596046448,
+                    "pick_lift_sec": 0.800000011920929,
+                    "z_carry_floor_mm": 160.0
+                  },
+                  "sucker_rotation_supported": true
+                },
+                "packet_frame_id": 9,
+                "settle_sec": 1.2,
+                "drain_frames": 16,
+                "captured_frames": 10,
+                "processed_frames": 3,
+                "camera_transport": {
+                  "open_count": 1,
+                  "bytes_read": 1507328,
+                  "content_length_payloads": 78,
+                  "jpeg_marker_payloads": 0,
+                  "frames_accepted": 78,
+                  "frames_rejected": 0,
+                  "buffer_resets": 0,
+                  "reopen_count": 0,
+                  "last_reject_reason": "",
+                  "buffer_bytes": 2618,
+                  "consecutive_rejected_frames": 0,
+                  "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "reader": "http_multipart_mjpeg",
+                  "content_length_preferred": true,
+                  "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "capture_backend": "http",
+                  "open": true
+                },
+                "repeat_index": 1
+              },
+              {
+                "slot_id": 1,
+                "frame_id": 12,
+                "pose_cyl": [
+                  7.458000183105469,
+                  174.4459991455078,
+                  120.0
+                ],
+                "pose_xy": [
+                  -22.642984860271522,
+                  -172.9702340129423
+                ],
+                "pixel": [
+                  317.83258056640625,
+                  244.00515747070312
+                ],
+                "pixel_center": [
+                  318,
+                  245
+                ],
+                "pixel_center_f": [
+                  317.83774815492876,
+                  244.95274329195033
+                ],
+                "geometry_center": [
+                  318,
+                  244
+                ],
+                "geometry_center_f": [
+                  317.83258056640625,
+                  244.00515747070312
+                ],
+                "grasp_pixel": [
+                  317,
+                  244
+                ],
+                "grasp_pixel_f": [
+                  317.0,
+                  244.0
+                ],
+                "center_distance_px": 4.55400849431014,
+                "confidence": 0.55,
+                "area_px": 34601,
+                "bbox": [
+                  208,
+                  121,
+                  431,
+                  369
+                ],
+                "snapshot": {
+                  "state": "IDLE",
+                  "state_seq": 4225,
+                  "robot_ts": 1745895298.1930428,
+                  "_local_receive_ts": 404182.1890073,
+                  "busy": false,
+                  "busy_action": "",
+                  "carrying": false,
+                  "robot_xy": [
+                    -22.64299964904785,
+                    -172.97000122070312
+                  ],
+                  "robot_z": 120.0,
+                  "robot_cyl": {
+                    "theta_deg": 7.458000183105469,
+                    "radius_mm": 174.4459991455078,
+                    "z_mm": 120.0
+                  },
+                  "limits_cyl": {
+                    "theta_deg": [
+                      -120.0,
+                      120.0
+                    ],
+                    "radius_mm": [
+                      50.0,
+                      280.0
+                    ]
+                  },
+                  "limits_cyl_auto": {
+                    "radius_mm": [
+                      80.0,
+                      260.0
+                    ]
+                  },
+                  "calibration_ready": true,
+                  "last_ack": "MOVE",
+                  "last_error_code": "",
+                  "last_error": "",
+                  "release_mode_effective": "sucker_frozen",
+                  "sucker_frozen": true,
+                  "pick_tuning": {
+                    "pick_approach_z_mm": 130.0,
+                    "pick_descend_z_mm": 85.0,
+                    "pick_pre_suction_sec": 0.25,
+                    "pick_bottom_hold_sec": 0.15000000596046448,
+                    "pick_lift_sec": 0.800000011920929,
+                    "z_carry_floor_mm": 160.0
+                  },
+                  "sucker_rotation_supported": true
+                },
+                "packet_frame_id": 12,
+                "settle_sec": 1.2,
+                "drain_frames": 16,
+                "captured_frames": 10,
+                "processed_frames": 3,
+                "camera_transport": {
+                  "open_count": 1,
+                  "bytes_read": 2007040,
+                  "content_length_payloads": 104,
+                  "jpeg_marker_payloads": 0,
+                  "frames_accepted": 104,
+                  "frames_rejected": 0,
+                  "buffer_resets": 0,
+                  "reopen_count": 0,
+                  "last_reject_reason": "",
+                  "buffer_bytes": 1350,
+                  "consecutive_rejected_frames": 0,
+                  "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "reader": "http_multipart_mjpeg",
+                  "content_length_preferred": true,
+                  "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "capture_backend": "http",
+                  "open": true
+                },
+                "repeat_index": 2
+              }
+            ],
+            "label": "iter_01_candidate_01",
+            "packet_frame_id": 12,
+            "pose_cyl": [
+              7.458000183105469,
+              174.4459991455078,
+              120.0
+            ]
+          }
+        },
+        {
+          "label": "iter_01_candidate_02",
+          "offset": [
+            -0.35,
+            0.0
+          ],
+          "pose_cyl": [
+            7.108000183105469,
+            174.4459991455078,
+            120.0
+          ],
+          "skipped": false,
+          "measurement": {
+            "median_center_distance_px": 4.331465245151991,
+            "min_center_distance_px": 4.257598721344382,
+            "max_center_distance_px": 4.4053317689595985,
+            "repeat_spread_px": 0.1617088173439743,
+            "stable": true,
+            "sample_count": 2,
+            "captured_frames": 20,
+            "processed_frames": 6,
+            "camera_transport_last": {
+              "open_count": 1,
+              "bytes_read": 3026944,
+              "content_length_payloads": 157,
+              "jpeg_marker_payloads": 0,
+              "frames_accepted": 156,
+              "frames_rejected": 1,
+              "buffer_resets": 0,
+              "reopen_count": 0,
+              "last_reject_reason": "temporal_splice:content_length",
+              "buffer_bytes": 625,
+              "consecutive_rejected_frames": 0,
+              "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+              "reader": "http_multipart_mjpeg",
+              "content_length_preferred": true,
+              "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+              "capture_backend": "http",
+              "open": true
+            },
+            "samples": [
+              {
+                "slot_id": 1,
+                "frame_id": 15,
+                "pose_cyl": [
+                  7.107999801635742,
+                  174.4459991455078,
+                  120.0
+                ],
+                "pose_xy": [
+                  -21.58595277974938,
+                  -173.10532418289435
+                ],
+                "pixel": [
+                  321.7130432128906,
+                  244.05862426757812
+                ],
+                "pixel_center": [
+                  321,
+                  245
+                ],
+                "pixel_center_f": [
+                  321.26913353252127,
+                  245.46193403815215
+                ],
+                "geometry_center": [
+                  322,
+                  244
+                ],
+                "geometry_center_f": [
+                  321.7130432128906,
+                  244.05862426757812
+                ],
+                "grasp_pixel": [
+                  321,
+                  244
+                ],
+                "grasp_pixel_f": [
+                  321.0,
+                  244.0
+                ],
+                "center_distance_px": 4.4053317689595985,
+                "confidence": 0.55,
+                "area_px": 34466,
+                "bbox": [
+                  211,
+                  130,
+                  434,
+                  369
+                ],
+                "snapshot": {
+                  "state": "IDLE",
+                  "state_seq": 4227,
+                  "robot_ts": 1745895303.9926002,
+                  "_local_receive_ts": 404187.9888405,
+                  "busy": false,
+                  "busy_action": "",
+                  "carrying": false,
+                  "robot_xy": [
+                    -21.586000442504883,
+                    -173.10499572753906
+                  ],
+                  "robot_z": 120.0,
+                  "robot_cyl": {
+                    "theta_deg": 7.107999801635742,
+                    "radius_mm": 174.4459991455078,
+                    "z_mm": 120.0
+                  },
+                  "limits_cyl": {
+                    "theta_deg": [
+                      -120.0,
+                      120.0
+                    ],
+                    "radius_mm": [
+                      50.0,
+                      280.0
+                    ]
+                  },
+                  "limits_cyl_auto": {
+                    "radius_mm": [
+                      80.0,
+                      260.0
+                    ]
+                  },
+                  "calibration_ready": true,
+                  "last_ack": "MOVE",
+                  "last_error_code": "",
+                  "last_error": "",
+                  "release_mode_effective": "sucker_frozen",
+                  "sucker_frozen": true,
+                  "pick_tuning": {
+                    "pick_approach_z_mm": 130.0,
+                    "pick_descend_z_mm": 85.0,
+                    "pick_pre_suction_sec": 0.25,
+                    "pick_bottom_hold_sec": 0.15000000596046448,
+                    "pick_lift_sec": 0.800000011920929,
+                    "z_carry_floor_mm": 160.0
+                  },
+                  "sucker_rotation_supported": true
+                },
+                "packet_frame_id": 15,
+                "settle_sec": 1.2,
+                "drain_frames": 16,
+                "captured_frames": 10,
+                "processed_frames": 3,
+                "camera_transport": {
+                  "open_count": 1,
+                  "bytes_read": 2527232,
+                  "content_length_payloads": 131,
+                  "jpeg_marker_payloads": 0,
+                  "frames_accepted": 130,
+                  "frames_rejected": 1,
+                  "buffer_resets": 0,
+                  "reopen_count": 0,
+                  "last_reject_reason": "temporal_splice:content_length",
+                  "buffer_bytes": 1351,
+                  "consecutive_rejected_frames": 0,
+                  "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "reader": "http_multipart_mjpeg",
+                  "content_length_preferred": true,
+                  "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "capture_backend": "http",
+                  "open": true
+                },
+                "repeat_index": 1
+              },
+              {
+                "slot_id": 1,
+                "frame_id": 18,
+                "pose_cyl": [
+                  7.107999801635742,
+                  174.4459991455078,
+                  120.0
+                ],
+                "pose_xy": [
+                  -21.58595277974938,
+                  -173.10532418289435
+                ],
+                "pixel": [
+                  321.7149658203125,
+                  243.8969268798828
+                ],
+                "pixel_center": [
+                  322,
+                  245
+                ],
+                "pixel_center_f": [
+                  321.5590684100598,
+                  244.92984463963836
+                ],
+                "geometry_center": [
+                  322,
+                  244
+                ],
+                "geometry_center_f": [
+                  321.7149658203125,
+                  243.8969268798828
+                ],
+                "grasp_pixel": [
+                  321,
+                  244
+                ],
+                "grasp_pixel_f": [
+                  321.0,
+                  244.0
+                ],
+                "center_distance_px": 4.257598721344382,
+                "confidence": 0.55,
+                "area_px": 34590,
+                "bbox": [
+                  211,
+                  121,
+                  434,
+                  368
+                ],
+                "snapshot": {
+                  "state": "IDLE",
+                  "state_seq": 4227,
+                  "robot_ts": 1745895307.1929088,
+                  "_local_receive_ts": 404191.1886867,
+                  "busy": false,
+                  "busy_action": "",
+                  "carrying": false,
+                  "robot_xy": [
+                    -21.586000442504883,
+                    -173.10499572753906
+                  ],
+                  "robot_z": 120.0,
+                  "robot_cyl": {
+                    "theta_deg": 7.107999801635742,
+                    "radius_mm": 174.4459991455078,
+                    "z_mm": 120.0
+                  },
+                  "limits_cyl": {
+                    "theta_deg": [
+                      -120.0,
+                      120.0
+                    ],
+                    "radius_mm": [
+                      50.0,
+                      280.0
+                    ]
+                  },
+                  "limits_cyl_auto": {
+                    "radius_mm": [
+                      80.0,
+                      260.0
+                    ]
+                  },
+                  "calibration_ready": true,
+                  "last_ack": "MOVE",
+                  "last_error_code": "",
+                  "last_error": "",
+                  "release_mode_effective": "sucker_frozen",
+                  "sucker_frozen": true,
+                  "pick_tuning": {
+                    "pick_approach_z_mm": 130.0,
+                    "pick_descend_z_mm": 85.0,
+                    "pick_pre_suction_sec": 0.25,
+                    "pick_bottom_hold_sec": 0.15000000596046448,
+                    "pick_lift_sec": 0.800000011920929,
+                    "z_carry_floor_mm": 160.0
+                  },
+                  "sucker_rotation_supported": true
+                },
+                "packet_frame_id": 18,
+                "settle_sec": 1.2,
+                "drain_frames": 16,
+                "captured_frames": 10,
+                "processed_frames": 3,
+                "camera_transport": {
+                  "open_count": 1,
+                  "bytes_read": 3026944,
+                  "content_length_payloads": 157,
+                  "jpeg_marker_payloads": 0,
+                  "frames_accepted": 156,
+                  "frames_rejected": 1,
+                  "buffer_resets": 0,
+                  "reopen_count": 0,
+                  "last_reject_reason": "temporal_splice:content_length",
+                  "buffer_bytes": 625,
+                  "consecutive_rejected_frames": 0,
+                  "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "reader": "http_multipart_mjpeg",
+                  "content_length_preferred": true,
+                  "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "capture_backend": "http",
+                  "open": true
+                },
+                "repeat_index": 2
+              }
+            ],
+            "label": "iter_01_candidate_02",
+            "packet_frame_id": 18,
+            "pose_cyl": [
+              7.108000183105469,
+              174.4459991455078,
+              120.0
+            ]
+          }
+        },
+        {
+          "label": "iter_01_candidate_03",
+          "offset": [
+            0.35,
+            0.0
+          ],
+          "pose_cyl": [
+            7.808000183105468,
+            174.4459991455078,
+            120.0
+          ],
+          "skipped": false,
+          "measurement": {
+            "median_center_distance_px": 4.492980073147727,
+            "min_center_distance_px": 4.221664925183683,
+            "max_center_distance_px": 4.764295221111771,
+            "repeat_spread_px": 0.5436213451447057,
+            "stable": true,
+            "sample_count": 2,
+            "captured_frames": 20,
+            "processed_frames": 6,
+            "camera_transport_last": {
+              "open_count": 1,
+              "bytes_read": 4030464,
+              "content_length_payloads": 209,
+              "jpeg_marker_payloads": 0,
+              "frames_accepted": 208,
+              "frames_rejected": 1,
+              "buffer_resets": 0,
+              "reopen_count": 0,
+              "last_reject_reason": "temporal_splice:content_length",
+              "buffer_bytes": 4054,
+              "consecutive_rejected_frames": 0,
+              "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+              "reader": "http_multipart_mjpeg",
+              "content_length_preferred": true,
+              "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+              "capture_backend": "http",
+              "open": true
+            },
+            "samples": [
+              {
+                "slot_id": 1,
+                "frame_id": 21,
+                "pose_cyl": [
+                  7.808000087738037,
+                  174.4459991455078,
+                  120.0
+                ],
+                "pose_xy": [
+                  -23.699170565899564,
+                  -172.82868955229313
+                ],
+                "pixel": [
+                  321.7217102050781,
+                  243.85462951660156
+                ],
+                "pixel_center": [
+                  321,
+                  246
+                ],
+                "pixel_center_f": [
+                  321.1545771301869,
+                  245.7569326460679
+                ],
+                "geometry_center": [
+                  322,
+                  244
+                ],
+                "geometry_center_f": [
+                  321.7217102050781,
+                  243.85462951660156
+                ],
+                "grasp_pixel": [
+                  320,
+                  244
+                ],
+                "grasp_pixel_f": [
+                  320.0,
+                  244.0
+                ],
+                "center_distance_px": 4.221664925183683,
+                "confidence": 0.55,
+                "area_px": 34384,
+                "bbox": [
+                  211,
+                  130,
+                  434,
+                  368
+                ],
+                "snapshot": {
+                  "state": "IDLE",
+                  "state_seq": 4229,
+                  "robot_ts": 1745895312.997061,
+                  "_local_receive_ts": 404196.9930496,
+                  "busy": false,
+                  "busy_action": "",
+                  "carrying": false,
+                  "robot_xy": [
+                    -23.698999404907227,
+                    -172.82899475097656
+                  ],
+                  "robot_z": 120.0,
+                  "robot_cyl": {
+                    "theta_deg": 7.808000087738037,
+                    "radius_mm": 174.4459991455078,
+                    "z_mm": 120.0
+                  },
+                  "limits_cyl": {
+                    "theta_deg": [
+                      -120.0,
+                      120.0
+                    ],
+                    "radius_mm": [
+                      50.0,
+                      280.0
+                    ]
+                  },
+                  "limits_cyl_auto": {
+                    "radius_mm": [
+                      80.0,
+                      260.0
+                    ]
+                  },
+                  "calibration_ready": true,
+                  "last_ack": "MOVE",
+                  "last_error_code": "",
+                  "last_error": "",
+                  "release_mode_effective": "sucker_frozen",
+                  "sucker_frozen": true,
+                  "pick_tuning": {
+                    "pick_approach_z_mm": 130.0,
+                    "pick_descend_z_mm": 85.0,
+                    "pick_pre_suction_sec": 0.25,
+                    "pick_bottom_hold_sec": 0.15000000596046448,
+                    "pick_lift_sec": 0.800000011920929,
+                    "z_carry_floor_mm": 160.0
+                  },
+                  "sucker_rotation_supported": true
+                },
+                "packet_frame_id": 21,
+                "settle_sec": 1.2,
+                "drain_frames": 16,
+                "captured_frames": 10,
+                "processed_frames": 3,
+                "camera_transport": {
+                  "open_count": 1,
+                  "bytes_read": 3526656,
+                  "content_length_payloads": 183,
+                  "jpeg_marker_payloads": 0,
+                  "frames_accepted": 182,
+                  "frames_rejected": 1,
+                  "buffer_resets": 0,
+                  "reopen_count": 0,
+                  "last_reject_reason": "temporal_splice:content_length",
+                  "buffer_bytes": 445,
+                  "consecutive_rejected_frames": 0,
+                  "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "reader": "http_multipart_mjpeg",
+                  "content_length_preferred": true,
+                  "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "capture_backend": "http",
+                  "open": true
+                },
+                "repeat_index": 1
+              },
+              {
+                "slot_id": 1,
+                "frame_id": 24,
+                "pose_cyl": [
+                  7.808000087738037,
+                  174.4459991455078,
+                  120.0
+                ],
+                "pose_xy": [
+                  -23.699170565899564,
+                  -172.82868955229313
+                ],
+                "pixel": [
+                  321.9111328125,
+                  244.3641815185547
+                ],
+                "pixel_center": [
+                  321,
+                  246
+                ],
+                "pixel_center_f": [
+                  321.1965839046028,
+                  245.75744570539777
+                ],
+                "geometry_center": [
+                  322,
+                  244
+                ],
+                "geometry_center_f": [
+                  321.9111328125,
+                  244.3641815185547
+                ],
+                "grasp_pixel": [
+                  320,
+                  244
+                ],
+                "grasp_pixel_f": [
+                  320.0,
+                  244.0
+                ],
+                "center_distance_px": 4.764295221111771,
+                "confidence": 0.55,
+                "area_px": 34376,
+                "bbox": [
+                  210,
+                  132,
+                  434,
+                  368
+                ],
+                "snapshot": {
+                  "state": "IDLE",
+                  "state_seq": 4229,
+                  "robot_ts": 1745895315.3924747,
+                  "_local_receive_ts": 404199.3889746,
+                  "busy": false,
+                  "busy_action": "",
+                  "carrying": false,
+                  "robot_xy": [
+                    -23.698999404907227,
+                    -172.82899475097656
+                  ],
+                  "robot_z": 120.0,
+                  "robot_cyl": {
+                    "theta_deg": 7.808000087738037,
+                    "radius_mm": 174.4459991455078,
+                    "z_mm": 120.0
+                  },
+                  "limits_cyl": {
+                    "theta_deg": [
+                      -120.0,
+                      120.0
+                    ],
+                    "radius_mm": [
+                      50.0,
+                      280.0
+                    ]
+                  },
+                  "limits_cyl_auto": {
+                    "radius_mm": [
+                      80.0,
+                      260.0
+                    ]
+                  },
+                  "calibration_ready": true,
+                  "last_ack": "MOVE",
+                  "last_error_code": "",
+                  "last_error": "",
+                  "release_mode_effective": "sucker_frozen",
+                  "sucker_frozen": true,
+                  "pick_tuning": {
+                    "pick_approach_z_mm": 130.0,
+                    "pick_descend_z_mm": 85.0,
+                    "pick_pre_suction_sec": 0.25,
+                    "pick_bottom_hold_sec": 0.15000000596046448,
+                    "pick_lift_sec": 0.800000011920929,
+                    "z_carry_floor_mm": 160.0
+                  },
+                  "sucker_rotation_supported": true
+                },
+                "packet_frame_id": 24,
+                "settle_sec": 1.2,
+                "drain_frames": 16,
+                "captured_frames": 10,
+                "processed_frames": 3,
+                "camera_transport": {
+                  "open_count": 1,
+                  "bytes_read": 4030464,
+                  "content_length_payloads": 209,
+                  "jpeg_marker_payloads": 0,
+                  "frames_accepted": 208,
+                  "frames_rejected": 1,
+                  "buffer_resets": 0,
+                  "reopen_count": 0,
+                  "last_reject_reason": "temporal_splice:content_length",
+                  "buffer_bytes": 4054,
+                  "consecutive_rejected_frames": 0,
+                  "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "reader": "http_multipart_mjpeg",
+                  "content_length_preferred": true,
+                  "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "capture_backend": "http",
+                  "open": true
+                },
+                "repeat_index": 2
+              }
+            ],
+            "label": "iter_01_candidate_03",
+            "packet_frame_id": 24,
+            "pose_cyl": [
+              7.808000183105468,
+              174.4459991455078,
+              120.0
+            ]
+          }
+        },
+        {
+          "label": "iter_01_candidate_04",
+          "offset": [
+            0.0,
+            -1.2
+          ],
+          "pose_cyl": [
+            7.458000183105469,
+            173.24599914550782,
+            120.0
+          ],
+          "skipped": false,
+          "measurement": {
+            "median_center_distance_px": 3.6159578047912913,
+            "min_center_distance_px": 3.3179712753735955,
+            "max_center_distance_px": 3.9139443342089866,
+            "repeat_spread_px": 0.6445074013791677,
+            "stable": true,
+            "sample_count": 2,
+            "captured_frames": 20,
+            "processed_frames": 6,
+            "camera_transport_last": {
+              "open_count": 1,
+              "bytes_read": 5025792,
+              "content_length_payloads": 261,
+              "jpeg_marker_payloads": 0,
+              "frames_accepted": 260,
+              "frames_rejected": 1,
+              "buffer_resets": 0,
+              "reopen_count": 0,
+              "last_reject_reason": "temporal_splice:content_length",
+              "buffer_bytes": 169,
+              "consecutive_rejected_frames": 0,
+              "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+              "reader": "http_multipart_mjpeg",
+              "content_length_preferred": true,
+              "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+              "capture_backend": "http",
+              "open": true
+            },
+            "samples": [
+              {
+                "slot_id": 1,
+                "frame_id": 27,
+                "pose_cyl": [
+                  7.458000183105469,
+                  173.24600219726562,
+                  120.0
+                ],
+                "pose_xy": [
+                  -22.487225984375748,
+                  -171.78038870855596
+                ],
+                "pixel": [
+                  321.5603942871094,
+                  243.58944702148438
+                ],
+                "pixel_center": [
+                  321,
+                  245
+                ],
+                "pixel_center_f": [
+                  321.24160225280883,
+                  245.47076233441567
+                ],
+                "geometry_center": [
+                  322,
+                  244
+                ],
+                "geometry_center_f": [
+                  321.5603942871094,
+                  243.58944702148438
+                ],
+                "grasp_pixel": [
+                  320,
+                  245
+                ],
+                "grasp_pixel_f": [
+                  320.0,
+                  245.0
+                ],
+                "center_distance_px": 3.9139443342089866,
+                "confidence": 0.55,
+                "area_px": 34457,
+                "bbox": [
+                  210,
+                  129,
+                  434,
+                  368
+                ],
+                "snapshot": {
+                  "state": "IDLE",
+                  "state_seq": 4231,
+                  "robot_ts": 1745895321.258796,
+                  "_local_receive_ts": 404205.2555243,
+                  "busy": false,
+                  "busy_action": "",
+                  "carrying": false,
+                  "robot_xy": [
+                    -22.48699951171875,
+                    -171.77999877929688
+                  ],
+                  "robot_z": 120.0,
+                  "robot_cyl": {
+                    "theta_deg": 7.458000183105469,
+                    "radius_mm": 173.24600219726562,
+                    "z_mm": 120.0
+                  },
+                  "limits_cyl": {
+                    "theta_deg": [
+                      -120.0,
+                      120.0
+                    ],
+                    "radius_mm": [
+                      50.0,
+                      280.0
+                    ]
+                  },
+                  "limits_cyl_auto": {
+                    "radius_mm": [
+                      80.0,
+                      260.0
+                    ]
+                  },
+                  "calibration_ready": true,
+                  "last_ack": "MOVE",
+                  "last_error_code": "",
+                  "last_error": "",
+                  "release_mode_effective": "sucker_frozen",
+                  "sucker_frozen": true,
+                  "pick_tuning": {
+                    "pick_approach_z_mm": 130.0,
+                    "pick_descend_z_mm": 85.0,
+                    "pick_pre_suction_sec": 0.25,
+                    "pick_bottom_hold_sec": 0.15000000596046448,
+                    "pick_lift_sec": 0.800000011920929,
+                    "z_carry_floor_mm": 160.0
+                  },
+                  "sucker_rotation_supported": true
+                },
+                "packet_frame_id": 27,
+                "settle_sec": 1.2,
+                "drain_frames": 16,
+                "captured_frames": 10,
+                "processed_frames": 3,
+                "camera_transport": {
+                  "open_count": 1,
+                  "bytes_read": 4530176,
+                  "content_length_payloads": 235,
+                  "jpeg_marker_payloads": 0,
+                  "frames_accepted": 234,
+                  "frames_rejected": 1,
+                  "buffer_resets": 0,
+                  "reopen_count": 0,
+                  "last_reject_reason": "temporal_splice:content_length",
+                  "buffer_bytes": 3958,
+                  "consecutive_rejected_frames": 0,
+                  "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "reader": "http_multipart_mjpeg",
+                  "content_length_preferred": true,
+                  "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "capture_backend": "http",
+                  "open": true
+                },
+                "repeat_index": 1
+              },
+              {
+                "slot_id": 1,
+                "frame_id": 30,
+                "pose_cyl": [
+                  7.458000183105469,
+                  173.24600219726562,
+                  120.0
+                ],
+                "pose_xy": [
+                  -22.487225984375748,
+                  -171.78038870855596
+                ],
+                "pixel": [
+                  321.52679443359375,
+                  242.94581604003906
+                ],
+                "pixel_center": [
+                  321,
+                  244
+                ],
+                "pixel_center_f": [
+                  321.4202605826126,
+                  243.86612426035504
+                ],
+                "geometry_center": [
+                  322,
+                  243
+                ],
+                "geometry_center_f": [
+                  321.52679443359375,
+                  242.94581604003906
+                ],
+                "grasp_pixel": [
+                  320,
+                  245
+                ],
+                "grasp_pixel_f": [
+                  320.0,
+                  245.0
+                ],
+                "center_distance_px": 3.3179712753735955,
+                "confidence": 0.55,
+                "area_px": 34792,
+                "bbox": [
+                  211,
+                  119,
+                  434,
+                  368
+                ],
+                "snapshot": {
+                  "state": "IDLE",
+                  "state_seq": 4231,
+                  "robot_ts": 1745895323.725819,
+                  "_local_receive_ts": 404207.7224761,
+                  "busy": false,
+                  "busy_action": "",
+                  "carrying": false,
+                  "robot_xy": [
+                    -22.48699951171875,
+                    -171.77999877929688
+                  ],
+                  "robot_z": 120.0,
+                  "robot_cyl": {
+                    "theta_deg": 7.458000183105469,
+                    "radius_mm": 173.24600219726562,
+                    "z_mm": 120.0
+                  },
+                  "limits_cyl": {
+                    "theta_deg": [
+                      -120.0,
+                      120.0
+                    ],
+                    "radius_mm": [
+                      50.0,
+                      280.0
+                    ]
+                  },
+                  "limits_cyl_auto": {
+                    "radius_mm": [
+                      80.0,
+                      260.0
+                    ]
+                  },
+                  "calibration_ready": true,
+                  "last_ack": "MOVE",
+                  "last_error_code": "",
+                  "last_error": "",
+                  "release_mode_effective": "sucker_frozen",
+                  "sucker_frozen": true,
+                  "pick_tuning": {
+                    "pick_approach_z_mm": 130.0,
+                    "pick_descend_z_mm": 85.0,
+                    "pick_pre_suction_sec": 0.25,
+                    "pick_bottom_hold_sec": 0.15000000596046448,
+                    "pick_lift_sec": 0.800000011920929,
+                    "z_carry_floor_mm": 160.0
+                  },
+                  "sucker_rotation_supported": true
+                },
+                "packet_frame_id": 30,
+                "settle_sec": 1.2,
+                "drain_frames": 16,
+                "captured_frames": 10,
+                "processed_frames": 3,
+                "camera_transport": {
+                  "open_count": 1,
+                  "bytes_read": 5025792,
+                  "content_length_payloads": 261,
+                  "jpeg_marker_payloads": 0,
+                  "frames_accepted": 260,
+                  "frames_rejected": 1,
+                  "buffer_resets": 0,
+                  "reopen_count": 0,
+                  "last_reject_reason": "temporal_splice:content_length",
+                  "buffer_bytes": 169,
+                  "consecutive_rejected_frames": 0,
+                  "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "reader": "http_multipart_mjpeg",
+                  "content_length_preferred": true,
+                  "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "capture_backend": "http",
+                  "open": true
+                },
+                "repeat_index": 2
+              }
+            ],
+            "label": "iter_01_candidate_04",
+            "packet_frame_id": 30,
+            "pose_cyl": [
+              7.458000183105469,
+              173.24599914550782,
+              120.0
+            ]
+          }
+        },
+        {
+          "label": "iter_01_candidate_05",
+          "offset": [
+            0.0,
+            1.2
+          ],
+          "pose_cyl": [
+            7.458000183105469,
+            175.6459991455078,
+            120.0
+          ],
+          "skipped": false,
+          "measurement": {
+            "median_center_distance_px": 3.4325077810870237,
+            "min_center_distance_px": 3.2843840646346467,
+            "max_center_distance_px": 3.5806314975394002,
+            "repeat_spread_px": 0.3142108946818485,
+            "stable": true,
+            "sample_count": 2,
+            "captured_frames": 20,
+            "processed_frames": 6,
+            "camera_transport_last": {
+              "open_count": 1,
+              "bytes_read": 6025216,
+              "content_length_payloads": 313,
+              "jpeg_marker_payloads": 0,
+              "frames_accepted": 312,
+              "frames_rejected": 1,
+              "buffer_resets": 0,
+              "reopen_count": 0,
+              "last_reject_reason": "temporal_splice:content_length",
+              "buffer_bytes": 2086,
+              "consecutive_rejected_frames": 0,
+              "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+              "reader": "http_multipart_mjpeg",
+              "content_length_preferred": true,
+              "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+              "capture_backend": "http",
+              "open": true
+            },
+            "samples": [
+              {
+                "slot_id": 1,
+                "frame_id": 33,
+                "pose_cyl": [
+                  7.458000183105469,
+                  175.64599609375,
+                  120.0
+                ],
+                "pose_xy": [
+                  -22.7987437361673,
+                  -174.16007931732867
+                ],
+                "pixel": [
+                  321.7069396972656,
+                  243.1475830078125
+                ],
+                "pixel_center": [
+                  321,
+                  244
+                ],
+                "pixel_center_f": [
+                  321.45819226720533,
+                  244.1552533500242
+                ],
+                "geometry_center": [
+                  322,
+                  243
+                ],
+                "geometry_center_f": [
+                  321.7069396972656,
+                  243.1475830078125
+                ],
+                "grasp_pixel": [
+                  320,
+                  244
+                ],
+                "grasp_pixel_f": [
+                  320.0,
+                  244.0
+                ],
+                "center_distance_px": 3.5806314975394002,
+                "confidence": 0.55,
+                "area_px": 34788,
+                "bbox": [
+                  211,
+                  119,
+                  434,
+                  368
+                ],
+                "snapshot": {
+                  "state": "IDLE",
+                  "state_seq": 4233,
+                  "robot_ts": 1745895329.525298,
+                  "_local_receive_ts": 404213.5213102,
+                  "busy": false,
+                  "busy_action": "",
+                  "carrying": false,
+                  "robot_xy": [
+                    -22.798999786376953,
+                    -174.16000366210938
+                  ],
+                  "robot_z": 120.0,
+                  "robot_cyl": {
+                    "theta_deg": 7.458000183105469,
+                    "radius_mm": 175.64599609375,
+                    "z_mm": 120.0
+                  },
+                  "limits_cyl": {
+                    "theta_deg": [
+                      -120.0,
+                      120.0
+                    ],
+                    "radius_mm": [
+                      50.0,
+                      280.0
+                    ]
+                  },
+                  "limits_cyl_auto": {
+                    "radius_mm": [
+                      80.0,
+                      260.0
+                    ]
+                  },
+                  "calibration_ready": true,
+                  "last_ack": "MOVE",
+                  "last_error_code": "",
+                  "last_error": "",
+                  "release_mode_effective": "sucker_frozen",
+                  "sucker_frozen": true,
+                  "pick_tuning": {
+                    "pick_approach_z_mm": 130.0,
+                    "pick_descend_z_mm": 85.0,
+                    "pick_pre_suction_sec": 0.25,
+                    "pick_bottom_hold_sec": 0.15000000596046448,
+                    "pick_lift_sec": 0.800000011920929,
+                    "z_carry_floor_mm": 160.0
+                  },
+                  "sucker_rotation_supported": true
+                },
+                "packet_frame_id": 33,
+                "settle_sec": 1.2,
+                "drain_frames": 16,
+                "captured_frames": 10,
+                "processed_frames": 3,
+                "camera_transport": {
+                  "open_count": 1,
+                  "bytes_read": 5525504,
+                  "content_length_payloads": 287,
+                  "jpeg_marker_payloads": 0,
+                  "frames_accepted": 286,
+                  "frames_rejected": 1,
+                  "buffer_resets": 0,
+                  "reopen_count": 0,
+                  "last_reject_reason": "temporal_splice:content_length",
+                  "buffer_bytes": 1343,
+                  "consecutive_rejected_frames": 0,
+                  "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "reader": "http_multipart_mjpeg",
+                  "content_length_preferred": true,
+                  "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "capture_backend": "http",
+                  "open": true
+                },
+                "repeat_index": 1
+              },
+              {
+                "slot_id": 1,
+                "frame_id": 36,
+                "pose_cyl": [
+                  7.458000183105469,
+                  175.64599609375,
+                  120.0
+                ],
+                "pose_xy": [
+                  -22.7987437361673,
+                  -174.16007931732867
+                ],
+                "pixel": [
+                  321.65313720703125,
+                  242.8380126953125
+                ],
+                "pixel_center": [
+                  321,
+                  244
+                ],
+                "pixel_center_f": [
+                  321.12947729220224,
+                  244.41642387889175
+                ],
+                "geometry_center": [
+                  322,
+                  243
+                ],
+                "geometry_center_f": [
+                  321.65313720703125,
+                  242.8380126953125
+                ],
+                "grasp_pixel": [
+                  320,
+                  244
+                ],
+                "grasp_pixel_f": [
+                  320.0,
+                  244.0
+                ],
+                "center_distance_px": 3.2843840646346467,
+                "confidence": 0.55,
+                "area_px": 34665,
+                "bbox": [
+                  211,
+                  128,
+                  434,
+                  368
+                ],
+                "snapshot": {
+                  "state": "IDLE",
+                  "state_seq": 4233,
+                  "robot_ts": 1745895332.0587487,
+                  "_local_receive_ts": 404216.0551449,
+                  "busy": false,
+                  "busy_action": "",
+                  "carrying": false,
+                  "robot_xy": [
+                    -22.798999786376953,
+                    -174.16000366210938
+                  ],
+                  "robot_z": 120.0,
+                  "robot_cyl": {
+                    "theta_deg": 7.458000183105469,
+                    "radius_mm": 175.64599609375,
+                    "z_mm": 120.0
+                  },
+                  "limits_cyl": {
+                    "theta_deg": [
+                      -120.0,
+                      120.0
+                    ],
+                    "radius_mm": [
+                      50.0,
+                      280.0
+                    ]
+                  },
+                  "limits_cyl_auto": {
+                    "radius_mm": [
+                      80.0,
+                      260.0
+                    ]
+                  },
+                  "calibration_ready": true,
+                  "last_ack": "MOVE",
+                  "last_error_code": "",
+                  "last_error": "",
+                  "release_mode_effective": "sucker_frozen",
+                  "sucker_frozen": true,
+                  "pick_tuning": {
+                    "pick_approach_z_mm": 130.0,
+                    "pick_descend_z_mm": 85.0,
+                    "pick_pre_suction_sec": 0.25,
+                    "pick_bottom_hold_sec": 0.15000000596046448,
+                    "pick_lift_sec": 0.800000011920929,
+                    "z_carry_floor_mm": 160.0
+                  },
+                  "sucker_rotation_supported": true
+                },
+                "packet_frame_id": 36,
+                "settle_sec": 1.2,
+                "drain_frames": 16,
+                "captured_frames": 10,
+                "processed_frames": 3,
+                "camera_transport": {
+                  "open_count": 1,
+                  "bytes_read": 6025216,
+                  "content_length_payloads": 313,
+                  "jpeg_marker_payloads": 0,
+                  "frames_accepted": 312,
+                  "frames_rejected": 1,
+                  "buffer_resets": 0,
+                  "reopen_count": 0,
+                  "last_reject_reason": "temporal_splice:content_length",
+                  "buffer_bytes": 2086,
+                  "consecutive_rejected_frames": 0,
+                  "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "reader": "http_multipart_mjpeg",
+                  "content_length_preferred": true,
+                  "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "capture_backend": "http",
+                  "open": true
+                },
+                "repeat_index": 2
+              }
+            ],
+            "label": "iter_01_candidate_05",
+            "packet_frame_id": 36,
+            "pose_cyl": [
+              7.458000183105469,
+              175.6459991455078,
+              120.0
+            ]
+          }
+        }
+      ],
+      "best_candidate": {
+        "pose_cyl": [
+          7.458000183105469,
+          175.6459991455078,
+          120.0
+        ],
+        "median_center_distance_px": 3.4325077810870237,
+        "improvement_px": 0.8826758996431909
+      }
+    },
+    {
+      "iteration": 2,
+      "theta_step_deg": 0.35,
+      "radius_step_mm": 1.2,
+      "candidates": [
+        {
+          "label": "iter_02_candidate_01",
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "pose_cyl": [
+            7.458000183105469,
+            175.6459991455078,
+            120.0
+          ],
+          "skipped": false,
+          "measurement": {
+            "median_center_distance_px": 3.2981523593477657,
+            "min_center_distance_px": 3.1439235469145626,
+            "max_center_distance_px": 3.4523811717809694,
+            "repeat_spread_px": 0.3088159127387747,
+            "stable": true,
+            "sample_count": 2,
+            "captured_frames": 20,
+            "processed_frames": 6,
+            "camera_transport_last": {
+              "open_count": 1,
+              "bytes_read": 7024640,
+              "content_length_payloads": 365,
+              "jpeg_marker_payloads": 0,
+              "frames_accepted": 364,
+              "frames_rejected": 1,
+              "buffer_resets": 0,
+              "reopen_count": 0,
+              "last_reject_reason": "temporal_splice:content_length",
+              "buffer_bytes": 2436,
+              "consecutive_rejected_frames": 0,
+              "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+              "reader": "http_multipart_mjpeg",
+              "content_length_preferred": true,
+              "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+              "capture_backend": "http",
+              "open": true
+            },
+            "samples": [
+              {
+                "slot_id": 1,
+                "frame_id": 39,
+                "pose_cyl": [
+                  7.458000183105469,
+                  175.64599609375,
+                  120.0
+                ],
+                "pose_xy": [
+                  -22.7987437361673,
+                  -174.16007931732867
+                ],
+                "pixel": [
+                  321.5863952636719,
+                  243.06631469726562
+                ],
+                "pixel_center": [
+                  321,
+                  244
+                ],
+                "pixel_center_f": [
+                  321.27165421679877,
+                  244.41355419969207
+                ],
+                "geometry_center": [
+                  322,
+                  243
+                ],
+                "geometry_center_f": [
+                  321.5863952636719,
+                  243.06631469726562
+                ],
+                "grasp_pixel": [
+                  320,
+                  244
+                ],
+                "grasp_pixel_f": [
+                  320.0,
+                  244.0
+                ],
+                "center_distance_px": 3.4523811717809694,
+                "confidence": 0.55,
+                "area_px": 34730,
+                "bbox": [
+                  211,
+                  129,
+                  434,
+                  368
+                ],
+                "snapshot": {
+                  "state": "IDLE",
+                  "state_seq": 4235,
+                  "robot_ts": 1745895337.3931952,
+                  "_local_receive_ts": 404221.3891952,
+                  "busy": false,
+                  "busy_action": "",
+                  "carrying": false,
+                  "robot_xy": [
+                    -22.798999786376953,
+                    -174.16000366210938
+                  ],
+                  "robot_z": 120.0,
+                  "robot_cyl": {
+                    "theta_deg": 7.458000183105469,
+                    "radius_mm": 175.64599609375,
+                    "z_mm": 120.0
+                  },
+                  "limits_cyl": {
+                    "theta_deg": [
+                      -120.0,
+                      120.0
+                    ],
+                    "radius_mm": [
+                      50.0,
+                      280.0
+                    ]
+                  },
+                  "limits_cyl_auto": {
+                    "radius_mm": [
+                      80.0,
+                      260.0
+                    ]
+                  },
+                  "calibration_ready": true,
+                  "last_ack": "MOVE",
+                  "last_error_code": "",
+                  "last_error": "",
+                  "release_mode_effective": "sucker_frozen",
+                  "sucker_frozen": true,
+                  "pick_tuning": {
+                    "pick_approach_z_mm": 130.0,
+                    "pick_descend_z_mm": 85.0,
+                    "pick_pre_suction_sec": 0.25,
+                    "pick_bottom_hold_sec": 0.15000000596046448,
+                    "pick_lift_sec": 0.800000011920929,
+                    "z_carry_floor_mm": 160.0
+                  },
+                  "sucker_rotation_supported": true
+                },
+                "packet_frame_id": 39,
+                "settle_sec": 1.2,
+                "drain_frames": 16,
+                "captured_frames": 10,
+                "processed_frames": 3,
+                "camera_transport": {
+                  "open_count": 1,
+                  "bytes_read": 6524928,
+                  "content_length_payloads": 339,
+                  "jpeg_marker_payloads": 0,
+                  "frames_accepted": 338,
+                  "frames_rejected": 1,
+                  "buffer_resets": 0,
+                  "reopen_count": 0,
+                  "last_reject_reason": "temporal_splice:content_length",
+                  "buffer_bytes": 2832,
+                  "consecutive_rejected_frames": 0,
+                  "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "reader": "http_multipart_mjpeg",
+                  "content_length_preferred": true,
+                  "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "capture_backend": "http",
+                  "open": true
+                },
+                "repeat_index": 1
+              },
+              {
+                "slot_id": 1,
+                "frame_id": 42,
+                "pose_cyl": [
+                  7.458000183105469,
+                  175.64599609375,
+                  120.0
+                ],
+                "pose_xy": [
+                  -22.7987437361673,
+                  -174.16007931732867
+                ],
+                "pixel": [
+                  321.4320373535156,
+                  242.79884338378906
+                ],
+                "pixel_center": [
+                  321,
+                  244
+                ],
+                "pixel_center_f": [
+                  321.4288025430704,
+                  243.6883603439957
+                ],
+                "geometry_center": [
+                  321,
+                  243
+                ],
+                "geometry_center_f": [
+                  321.4320373535156,
+                  242.79884338378906
+                ],
+                "grasp_pixel": [
+                  320,
+                  244
+                ],
+                "grasp_pixel_f": [
+                  320.0,
+                  244.0
+                ],
+                "center_distance_px": 3.1439235469145626,
+                "confidence": 0.55,
+                "area_px": 34879,
+                "bbox": [
+                  210,
+                  121,
+                  435,
+                  368
+                ],
+                "snapshot": {
+                  "state": "IDLE",
+                  "state_seq": 4235,
+                  "robot_ts": 1745895340.259393,
+                  "_local_receive_ts": 404224.2561751,
+                  "busy": false,
+                  "busy_action": "",
+                  "carrying": false,
+                  "robot_xy": [
+                    -22.798999786376953,
+                    -174.16000366210938
+                  ],
+                  "robot_z": 120.0,
+                  "robot_cyl": {
+                    "theta_deg": 7.458000183105469,
+                    "radius_mm": 175.64599609375,
+                    "z_mm": 120.0
+                  },
+                  "limits_cyl": {
+                    "theta_deg": [
+                      -120.0,
+                      120.0
+                    ],
+                    "radius_mm": [
+                      50.0,
+                      280.0
+                    ]
+                  },
+                  "limits_cyl_auto": {
+                    "radius_mm": [
+                      80.0,
+                      260.0
+                    ]
+                  },
+                  "calibration_ready": true,
+                  "last_ack": "MOVE",
+                  "last_error_code": "",
+                  "last_error": "",
+                  "release_mode_effective": "sucker_frozen",
+                  "sucker_frozen": true,
+                  "pick_tuning": {
+                    "pick_approach_z_mm": 130.0,
+                    "pick_descend_z_mm": 85.0,
+                    "pick_pre_suction_sec": 0.25,
+                    "pick_bottom_hold_sec": 0.15000000596046448,
+                    "pick_lift_sec": 0.800000011920929,
+                    "z_carry_floor_mm": 160.0
+                  },
+                  "sucker_rotation_supported": true
+                },
+                "packet_frame_id": 42,
+                "settle_sec": 1.2,
+                "drain_frames": 16,
+                "captured_frames": 10,
+                "processed_frames": 3,
+                "camera_transport": {
+                  "open_count": 1,
+                  "bytes_read": 7024640,
+                  "content_length_payloads": 365,
+                  "jpeg_marker_payloads": 0,
+                  "frames_accepted": 364,
+                  "frames_rejected": 1,
+                  "buffer_resets": 0,
+                  "reopen_count": 0,
+                  "last_reject_reason": "temporal_splice:content_length",
+                  "buffer_bytes": 2436,
+                  "consecutive_rejected_frames": 0,
+                  "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "reader": "http_multipart_mjpeg",
+                  "content_length_preferred": true,
+                  "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "capture_backend": "http",
+                  "open": true
+                },
+                "repeat_index": 2
+              }
+            ],
+            "label": "iter_02_candidate_01",
+            "packet_frame_id": 42,
+            "pose_cyl": [
+              7.458000183105469,
+              175.6459991455078,
+              120.0
+            ]
+          }
+        },
+        {
+          "label": "iter_02_candidate_02",
+          "offset": [
+            -0.35,
+            0.0
+          ],
+          "pose_cyl": [
+            7.108000183105469,
+            175.6459991455078,
+            120.0
+          ],
+          "skipped": false,
+          "measurement": {
+            "median_center_distance_px": 3.319935468762356,
+            "min_center_distance_px": 3.307918432409945,
+            "max_center_distance_px": 3.331952505114767,
+            "repeat_spread_px": 0.1528114184595325,
+            "stable": true,
+            "sample_count": 2,
+            "captured_frames": 20,
+            "processed_frames": 6,
+            "camera_transport_last": {
+              "open_count": 1,
+              "bytes_read": 8024064,
+              "content_length_payloads": 417,
+              "jpeg_marker_payloads": 0,
+              "frames_accepted": 416,
+              "frames_rejected": 1,
+              "buffer_resets": 0,
+              "reopen_count": 0,
+              "last_reject_reason": "temporal_splice:content_length",
+              "buffer_bytes": 2391,
+              "consecutive_rejected_frames": 0,
+              "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+              "reader": "http_multipart_mjpeg",
+              "content_length_preferred": true,
+              "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+              "capture_backend": "http",
+              "open": true
+            },
+            "samples": [
+              {
+                "slot_id": 1,
+                "frame_id": 45,
+                "pose_cyl": [
+                  7.107999801635742,
+                  175.64599609375,
+                  120.0
+                ],
+                "pose_xy": [
+                  -21.73444043545648,
+                  -174.2960987593332
+                ],
+                "pixel": [
+                  321.7456359863281,
+                  242.83807373046875
+                ],
+                "pixel_center": [
+                  321,
+                  245
+                ],
+                "pixel_center_f": [
+                  321.12497848660433,
+                  244.85356548677643
+                ],
+                "geometry_center": [
+                  322,
+                  243
+                ],
+                "geometry_center_f": [
+                  321.7456359863281,
+                  242.83807373046875
+                ],
+                "grasp_pixel": [
+                  320,
+                  244
+                ],
+                "grasp_pixel_f": [
+                  320.0,
+                  244.0
+                ],
+                "center_distance_px": 3.331952505114767,
+                "confidence": 0.55,
+                "area_px": 34518,
+                "bbox": [
+                  212,
+                  129,
+                  434,
+                  368
+                ],
+                "snapshot": {
+                  "state": "IDLE",
+                  "state_seq": 4237,
+                  "robot_ts": 1745895346.0593097,
+                  "_local_receive_ts": 404230.0561121,
+                  "busy": false,
+                  "busy_action": "",
+                  "carrying": false,
+                  "robot_xy": [
+                    -21.733999252319336,
+                    -174.29600524902344
+                  ],
+                  "robot_z": 120.0,
+                  "robot_cyl": {
+                    "theta_deg": 7.107999801635742,
+                    "radius_mm": 175.64599609375,
+                    "z_mm": 120.0
+                  },
+                  "limits_cyl": {
+                    "theta_deg": [
+                      -120.0,
+                      120.0
+                    ],
+                    "radius_mm": [
+                      50.0,
+                      280.0
+                    ]
+                  },
+                  "limits_cyl_auto": {
+                    "radius_mm": [
+                      80.0,
+                      260.0
+                    ]
+                  },
+                  "calibration_ready": true,
+                  "last_ack": "MOVE",
+                  "last_error_code": "",
+                  "last_error": "",
+                  "release_mode_effective": "sucker_frozen",
+                  "sucker_frozen": true,
+                  "pick_tuning": {
+                    "pick_approach_z_mm": 130.0,
+                    "pick_descend_z_mm": 85.0,
+                    "pick_pre_suction_sec": 0.25,
+                    "pick_bottom_hold_sec": 0.15000000596046448,
+                    "pick_lift_sec": 0.800000011920929,
+                    "z_carry_floor_mm": 160.0
+                  },
+                  "sucker_rotation_supported": true
+                },
+                "packet_frame_id": 45,
+                "settle_sec": 1.2,
+                "drain_frames": 16,
+                "captured_frames": 10,
+                "processed_frames": 3,
+                "camera_transport": {
+                  "open_count": 1,
+                  "bytes_read": 7524352,
+                  "content_length_payloads": 391,
+                  "jpeg_marker_payloads": 0,
+                  "frames_accepted": 390,
+                  "frames_rejected": 1,
+                  "buffer_resets": 0,
+                  "reopen_count": 0,
+                  "last_reject_reason": "temporal_splice:content_length",
+                  "buffer_bytes": 2660,
+                  "consecutive_rejected_frames": 0,
+                  "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "reader": "http_multipart_mjpeg",
+                  "content_length_preferred": true,
+                  "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "capture_backend": "http",
+                  "open": true
+                },
+                "repeat_index": 1
+              },
+              {
+                "slot_id": 1,
+                "frame_id": 48,
+                "pose_cyl": [
+                  7.107999801635742,
+                  175.64599609375,
+                  120.0
+                ],
+                "pose_xy": [
+                  -21.73444043545648,
+                  -174.2960987593332
+                ],
+                "pixel": [
+                  321.60321044921875,
+                  242.89344787597656
+                ],
+                "pixel_center": [
+                  321,
+                  245
+                ],
+                "pixel_center_f": [
+                  321.1322510450667,
+                  244.61653209643245
+                ],
+                "geometry_center": [
+                  322,
+                  243
+                ],
+                "geometry_center_f": [
+                  321.60321044921875,
+                  242.89344787597656
+                ],
+                "grasp_pixel": [
+                  320,
+                  244
+                ],
+                "grasp_pixel_f": [
+                  320.0,
+                  244.0
+                ],
+                "center_distance_px": 3.307918432409945,
+                "confidence": 0.55,
+                "area_px": 34584,
+                "bbox": [
+                  211,
+                  128,
+                  434,
+                  368
+                ],
+                "snapshot": {
+                  "state": "IDLE",
+                  "state_seq": 4237,
+                  "robot_ts": 1745895348.5922153,
+                  "_local_receive_ts": 404232.5887068,
+                  "busy": false,
+                  "busy_action": "",
+                  "carrying": false,
+                  "robot_xy": [
+                    -21.733999252319336,
+                    -174.29600524902344
+                  ],
+                  "robot_z": 120.0,
+                  "robot_cyl": {
+                    "theta_deg": 7.107999801635742,
+                    "radius_mm": 175.64599609375,
+                    "z_mm": 120.0
+                  },
+                  "limits_cyl": {
+                    "theta_deg": [
+                      -120.0,
+                      120.0
+                    ],
+                    "radius_mm": [
+                      50.0,
+                      280.0
+                    ]
+                  },
+                  "limits_cyl_auto": {
+                    "radius_mm": [
+                      80.0,
+                      260.0
+                    ]
+                  },
+                  "calibration_ready": true,
+                  "last_ack": "MOVE",
+                  "last_error_code": "",
+                  "last_error": "",
+                  "release_mode_effective": "sucker_frozen",
+                  "sucker_frozen": true,
+                  "pick_tuning": {
+                    "pick_approach_z_mm": 130.0,
+                    "pick_descend_z_mm": 85.0,
+                    "pick_pre_suction_sec": 0.25,
+                    "pick_bottom_hold_sec": 0.15000000596046448,
+                    "pick_lift_sec": 0.800000011920929,
+                    "z_carry_floor_mm": 160.0
+                  },
+                  "sucker_rotation_supported": true
+                },
+                "packet_frame_id": 48,
+                "settle_sec": 1.2,
+                "drain_frames": 16,
+                "captured_frames": 10,
+                "processed_frames": 3,
+                "camera_transport": {
+                  "open_count": 1,
+                  "bytes_read": 8024064,
+                  "content_length_payloads": 417,
+                  "jpeg_marker_payloads": 0,
+                  "frames_accepted": 416,
+                  "frames_rejected": 1,
+                  "buffer_resets": 0,
+                  "reopen_count": 0,
+                  "last_reject_reason": "temporal_splice:content_length",
+                  "buffer_bytes": 2391,
+                  "consecutive_rejected_frames": 0,
+                  "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "reader": "http_multipart_mjpeg",
+                  "content_length_preferred": true,
+                  "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "capture_backend": "http",
+                  "open": true
+                },
+                "repeat_index": 2
+              }
+            ],
+            "label": "iter_02_candidate_02",
+            "packet_frame_id": 48,
+            "pose_cyl": [
+              7.108000183105469,
+              175.6459991455078,
+              120.0
+            ]
+          }
+        },
+        {
+          "label": "iter_02_candidate_03",
+          "offset": [
+            0.35,
+            0.0
+          ],
+          "pose_cyl": [
+            7.808000183105468,
+            175.6459991455078,
+            120.0
+          ],
+          "skipped": false,
+          "measurement": {
+            "median_center_distance_px": 3.3135920140557573,
+            "min_center_distance_px": 3.0263676640678514,
+            "max_center_distance_px": 3.600816364043663,
+            "repeat_spread_px": 0.6960171415002774,
+            "stable": true,
+            "sample_count": 2,
+            "captured_frames": 20,
+            "processed_frames": 6,
+            "camera_transport_last": {
+              "open_count": 1,
+              "bytes_read": 9023488,
+              "content_length_payloads": 469,
+              "jpeg_marker_payloads": 0,
+              "frames_accepted": 468,
+              "frames_rejected": 1,
+              "buffer_resets": 0,
+              "reopen_count": 0,
+              "last_reject_reason": "temporal_splice:content_length",
+              "buffer_bytes": 1362,
+              "consecutive_rejected_frames": 0,
+              "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+              "reader": "http_multipart_mjpeg",
+              "content_length_preferred": true,
+              "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+              "capture_backend": "http",
+              "open": true
+            },
+            "samples": [
+              {
+                "slot_id": 1,
+                "frame_id": 51,
+                "pose_cyl": [
+                  7.808000087738037,
+                  175.64599609375,
+                  120.0
+                ],
+                "pose_xy": [
+                  -23.862194839853988,
+                  -174.01756118619318
+                ],
+                "pixel": [
+                  321.5362854003906,
+                  242.60743713378906
+                ],
+                "pixel_center": [
+                  322,
+                  243
+                ],
+                "pixel_center_f": [
+                  321.5913449299958,
+                  243.30801866779805
+                ],
+                "geometry_center": [
+                  322,
+                  243
+                ],
+                "geometry_center_f": [
+                  321.5362854003906,
+                  242.60743713378906
+                ],
+                "grasp_pixel": [
+                  320,
+                  244
+                ],
+                "grasp_pixel_f": [
+                  320.0,
+                  244.0
+                ],
+                "center_distance_px": 3.0263676640678514,
+                "confidence": 0.55,
+                "area_px": 35001,
+                "bbox": [
+                  211,
+                  119,
+                  434,
+                  368
+                ],
+                "snapshot": {
+                  "state": "IDLE",
+                  "state_seq": 4239,
+                  "robot_ts": 1745895354.3922017,
+                  "_local_receive_ts": 404238.3884838,
+                  "busy": false,
+                  "busy_action": "",
+                  "carrying": false,
+                  "robot_xy": [
+                    -23.86199951171875,
+                    -174.01800537109375
+                  ],
+                  "robot_z": 120.0,
+                  "robot_cyl": {
+                    "theta_deg": 7.808000087738037,
+                    "radius_mm": 175.64599609375,
+                    "z_mm": 120.0
+                  },
+                  "limits_cyl": {
+                    "theta_deg": [
+                      -120.0,
+                      120.0
+                    ],
+                    "radius_mm": [
+                      50.0,
+                      280.0
+                    ]
+                  },
+                  "limits_cyl_auto": {
+                    "radius_mm": [
+                      80.0,
+                      260.0
+                    ]
+                  },
+                  "calibration_ready": true,
+                  "last_ack": "MOVE",
+                  "last_error_code": "",
+                  "last_error": "",
+                  "release_mode_effective": "sucker_frozen",
+                  "sucker_frozen": true,
+                  "pick_tuning": {
+                    "pick_approach_z_mm": 130.0,
+                    "pick_descend_z_mm": 85.0,
+                    "pick_pre_suction_sec": 0.25,
+                    "pick_bottom_hold_sec": 0.15000000596046448,
+                    "pick_lift_sec": 0.800000011920929,
+                    "z_carry_floor_mm": 160.0
+                  },
+                  "sucker_rotation_supported": true
+                },
+                "packet_frame_id": 51,
+                "settle_sec": 1.2,
+                "drain_frames": 16,
+                "captured_frames": 10,
+                "processed_frames": 3,
+                "camera_transport": {
+                  "open_count": 1,
+                  "bytes_read": 8523776,
+                  "content_length_payloads": 443,
+                  "jpeg_marker_payloads": 0,
+                  "frames_accepted": 442,
+                  "frames_rejected": 1,
+                  "buffer_resets": 0,
+                  "reopen_count": 0,
+                  "last_reject_reason": "temporal_splice:content_length",
+                  "buffer_bytes": 1914,
+                  "consecutive_rejected_frames": 0,
+                  "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "reader": "http_multipart_mjpeg",
+                  "content_length_preferred": true,
+                  "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "capture_backend": "http",
+                  "open": true
+                },
+                "repeat_index": 1
+              },
+              {
+                "slot_id": 1,
+                "frame_id": 54,
+                "pose_cyl": [
+                  7.808000087738037,
+                  175.64599609375,
+                  120.0
+                ],
+                "pose_xy": [
+                  -23.862194839853988,
+                  -174.01756118619318
+                ],
+                "pixel": [
+                  321.4462585449219,
+                  243.297607421875
+                ],
+                "pixel_center": [
+                  321,
+                  245
+                ],
+                "pixel_center_f": [
+                  321.0852397995705,
+                  244.774201861131
+                ],
+                "geometry_center": [
+                  321,
+                  243
+                ],
+                "geometry_center_f": [
+                  321.4462585449219,
+                  243.297607421875
+                ],
+                "grasp_pixel": [
+                  320,
+                  244
+                ],
+                "grasp_pixel_f": [
+                  320.0,
+                  244.0
+                ],
+                "center_distance_px": 3.600816364043663,
+                "confidence": 0.55,
+                "area_px": 34581,
+                "bbox": [
+                  211,
+                  130,
+                  434,
+                  368
+                ],
+                "snapshot": {
+                  "state": "IDLE",
+                  "state_seq": 4239,
+                  "robot_ts": 1745895356.8586519,
+                  "_local_receive_ts": 404240.8554842,
+                  "busy": false,
+                  "busy_action": "",
+                  "carrying": false,
+                  "robot_xy": [
+                    -23.86199951171875,
+                    -174.01800537109375
+                  ],
+                  "robot_z": 120.0,
+                  "robot_cyl": {
+                    "theta_deg": 7.808000087738037,
+                    "radius_mm": 175.64599609375,
+                    "z_mm": 120.0
+                  },
+                  "limits_cyl": {
+                    "theta_deg": [
+                      -120.0,
+                      120.0
+                    ],
+                    "radius_mm": [
+                      50.0,
+                      280.0
+                    ]
+                  },
+                  "limits_cyl_auto": {
+                    "radius_mm": [
+                      80.0,
+                      260.0
+                    ]
+                  },
+                  "calibration_ready": true,
+                  "last_ack": "MOVE",
+                  "last_error_code": "",
+                  "last_error": "",
+                  "release_mode_effective": "sucker_frozen",
+                  "sucker_frozen": true,
+                  "pick_tuning": {
+                    "pick_approach_z_mm": 130.0,
+                    "pick_descend_z_mm": 85.0,
+                    "pick_pre_suction_sec": 0.25,
+                    "pick_bottom_hold_sec": 0.15000000596046448,
+                    "pick_lift_sec": 0.800000011920929,
+                    "z_carry_floor_mm": 160.0
+                  },
+                  "sucker_rotation_supported": true
+                },
+                "packet_frame_id": 54,
+                "settle_sec": 1.2,
+                "drain_frames": 16,
+                "captured_frames": 10,
+                "processed_frames": 3,
+                "camera_transport": {
+                  "open_count": 1,
+                  "bytes_read": 9023488,
+                  "content_length_payloads": 469,
+                  "jpeg_marker_payloads": 0,
+                  "frames_accepted": 468,
+                  "frames_rejected": 1,
+                  "buffer_resets": 0,
+                  "reopen_count": 0,
+                  "last_reject_reason": "temporal_splice:content_length",
+                  "buffer_bytes": 1362,
+                  "consecutive_rejected_frames": 0,
+                  "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "reader": "http_multipart_mjpeg",
+                  "content_length_preferred": true,
+                  "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "capture_backend": "http",
+                  "open": true
+                },
+                "repeat_index": 2
+              }
+            ],
+            "label": "iter_02_candidate_03",
+            "packet_frame_id": 54,
+            "pose_cyl": [
+              7.808000183105468,
+              175.6459991455078,
+              120.0
+            ]
+          }
+        },
+        {
+          "label": "iter_02_candidate_04",
+          "offset": [
+            0.0,
+            -1.2
+          ],
+          "pose_cyl": [
+            7.458000183105469,
+            174.4459991455078,
+            120.0
+          ],
+          "skipped": false,
+          "measurement": {
+            "median_center_distance_px": 3.177827848397956,
+            "min_center_distance_px": 2.9825686106093037,
+            "max_center_distance_px": 3.3730870861866085,
+            "repeat_spread_px": 0.44652615036355975,
+            "stable": true,
+            "sample_count": 2,
+            "captured_frames": 20,
+            "processed_frames": 6,
+            "camera_transport_last": {
+              "open_count": 1,
+              "bytes_read": 10027008,
+              "content_length_payloads": 521,
+              "jpeg_marker_payloads": 0,
+              "frames_accepted": 520,
+              "frames_rejected": 1,
+              "buffer_resets": 0,
+              "reopen_count": 0,
+              "last_reject_reason": "temporal_splice:content_length",
+              "buffer_bytes": 3889,
+              "consecutive_rejected_frames": 0,
+              "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+              "reader": "http_multipart_mjpeg",
+              "content_length_preferred": true,
+              "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+              "capture_backend": "http",
+              "open": true
+            },
+            "samples": [
+              {
+                "slot_id": 1,
+                "frame_id": 57,
+                "pose_cyl": [
+                  7.458000183105469,
+                  174.4459991455078,
+                  120.0
+                ],
+                "pose_xy": [
+                  -22.642984860271522,
+                  -172.9702340129423
+                ],
+                "pixel": [
+                  321.5062561035156,
+                  243.01809692382812
+                ],
+                "pixel_center": [
+                  322,
+                  243
+                ],
+                "pixel_center_f": [
+                  321.5475021168501,
+                  243.06948913350269
+                ],
+                "geometry_center": [
+                  322,
+                  243
+                ],
+                "geometry_center_f": [
+                  321.5062561035156,
+                  243.01809692382812
+                ],
+                "grasp_pixel": [
+                  320,
+                  244
+                ],
+                "grasp_pixel_f": [
+                  320.0,
+                  244.0
+                ],
+                "center_distance_px": 3.3730870861866085,
+                "confidence": 0.55,
+                "area_px": 35085,
+                "bbox": [
+                  211,
+                  119,
+                  435,
+                  368
+                ],
+                "snapshot": {
+                  "state": "IDLE",
+                  "state_seq": 4241,
+                  "robot_ts": 1745895362.65875,
+                  "_local_receive_ts": 404246.6550738,
+                  "busy": false,
+                  "busy_action": "",
+                  "carrying": false,
+                  "robot_xy": [
+                    -22.64299964904785,
+                    -172.97000122070312
+                  ],
+                  "robot_z": 120.0,
+                  "robot_cyl": {
+                    "theta_deg": 7.458000183105469,
+                    "radius_mm": 174.4459991455078,
+                    "z_mm": 120.0
+                  },
+                  "limits_cyl": {
+                    "theta_deg": [
+                      -120.0,
+                      120.0
+                    ],
+                    "radius_mm": [
+                      50.0,
+                      280.0
+                    ]
+                  },
+                  "limits_cyl_auto": {
+                    "radius_mm": [
+                      80.0,
+                      260.0
+                    ]
+                  },
+                  "calibration_ready": true,
+                  "last_ack": "MOVE",
+                  "last_error_code": "",
+                  "last_error": "",
+                  "release_mode_effective": "sucker_frozen",
+                  "sucker_frozen": true,
+                  "pick_tuning": {
+                    "pick_approach_z_mm": 130.0,
+                    "pick_descend_z_mm": 85.0,
+                    "pick_pre_suction_sec": 0.25,
+                    "pick_bottom_hold_sec": 0.15000000596046448,
+                    "pick_lift_sec": 0.800000011920929,
+                    "z_carry_floor_mm": 160.0
+                  },
+                  "sucker_rotation_supported": true
+                },
+                "packet_frame_id": 57,
+                "settle_sec": 1.2,
+                "drain_frames": 16,
+                "captured_frames": 10,
+                "processed_frames": 3,
+                "camera_transport": {
+                  "open_count": 1,
+                  "bytes_read": 9523200,
+                  "content_length_payloads": 495,
+                  "jpeg_marker_payloads": 0,
+                  "frames_accepted": 494,
+                  "frames_rejected": 1,
+                  "buffer_resets": 0,
+                  "reopen_count": 0,
+                  "last_reject_reason": "temporal_splice:content_length",
+                  "buffer_bytes": 541,
+                  "consecutive_rejected_frames": 0,
+                  "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "reader": "http_multipart_mjpeg",
+                  "content_length_preferred": true,
+                  "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "capture_backend": "http",
+                  "open": true
+                },
+                "repeat_index": 1
+              },
+              {
+                "slot_id": 1,
+                "frame_id": 60,
+                "pose_cyl": [
+                  7.458000183105469,
+                  174.4459991455078,
+                  120.0
+                ],
+                "pose_xy": [
+                  -22.642984860271522,
+                  -172.9702340129423
+                ],
+                "pixel": [
+                  321.5108337402344,
+                  242.57159423828125
+                ],
+                "pixel_center": [
+                  321,
+                  244
+                ],
+                "pixel_center_f": [
+                  321.43458288436454,
+                  243.58747802415925
+                ],
+                "geometry_center": [
+                  322,
+                  243
+                ],
+                "geometry_center_f": [
+                  321.5108337402344,
+                  242.57159423828125
+                ],
+                "grasp_pixel": [
+                  320,
+                  244
+                ],
+                "grasp_pixel_f": [
+                  320.0,
+                  244.0
+                ],
+                "center_distance_px": 2.9825686106093037,
+                "confidence": 0.55,
+                "area_px": 34905,
+                "bbox": [
+                  211,
+                  119,
+                  434,
+                  368
+                ],
+                "snapshot": {
+                  "state": "IDLE",
+                  "state_seq": 4241,
+                  "robot_ts": 1745895365.1922398,
+                  "_local_receive_ts": 404249.1888942,
+                  "busy": false,
+                  "busy_action": "",
+                  "carrying": false,
+                  "robot_xy": [
+                    -22.64299964904785,
+                    -172.97000122070312
+                  ],
+                  "robot_z": 120.0,
+                  "robot_cyl": {
+                    "theta_deg": 7.458000183105469,
+                    "radius_mm": 174.4459991455078,
+                    "z_mm": 120.0
+                  },
+                  "limits_cyl": {
+                    "theta_deg": [
+                      -120.0,
+                      120.0
+                    ],
+                    "radius_mm": [
+                      50.0,
+                      280.0
+                    ]
+                  },
+                  "limits_cyl_auto": {
+                    "radius_mm": [
+                      80.0,
+                      260.0
+                    ]
+                  },
+                  "calibration_ready": true,
+                  "last_ack": "MOVE",
+                  "last_error_code": "",
+                  "last_error": "",
+                  "release_mode_effective": "sucker_frozen",
+                  "sucker_frozen": true,
+                  "pick_tuning": {
+                    "pick_approach_z_mm": 130.0,
+                    "pick_descend_z_mm": 85.0,
+                    "pick_pre_suction_sec": 0.25,
+                    "pick_bottom_hold_sec": 0.15000000596046448,
+                    "pick_lift_sec": 0.800000011920929,
+                    "z_carry_floor_mm": 160.0
+                  },
+                  "sucker_rotation_supported": true
+                },
+                "packet_frame_id": 60,
+                "settle_sec": 1.2,
+                "drain_frames": 16,
+                "captured_frames": 10,
+                "processed_frames": 3,
+                "camera_transport": {
+                  "open_count": 1,
+                  "bytes_read": 10027008,
+                  "content_length_payloads": 521,
+                  "jpeg_marker_payloads": 0,
+                  "frames_accepted": 520,
+                  "frames_rejected": 1,
+                  "buffer_resets": 0,
+                  "reopen_count": 0,
+                  "last_reject_reason": "temporal_splice:content_length",
+                  "buffer_bytes": 3889,
+                  "consecutive_rejected_frames": 0,
+                  "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "reader": "http_multipart_mjpeg",
+                  "content_length_preferred": true,
+                  "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "capture_backend": "http",
+                  "open": true
+                },
+                "repeat_index": 2
+              }
+            ],
+            "label": "iter_02_candidate_04",
+            "packet_frame_id": 60,
+            "pose_cyl": [
+              7.458000183105469,
+              174.4459991455078,
+              120.0
+            ]
+          }
+        },
+        {
+          "label": "iter_02_candidate_05",
+          "offset": [
+            0.0,
+            1.2
+          ],
+          "pose_cyl": [
+            7.458000183105469,
+            176.8459991455078,
+            120.0
+          ],
+          "skipped": false,
+          "measurement": {
+            "median_center_distance_px": 9.443714432358862,
+            "min_center_distance_px": 9.253510644887546,
+            "max_center_distance_px": 9.633918219830177,
+            "repeat_spread_px": 0.3819063370531859,
+            "stable": true,
+            "sample_count": 2,
+            "captured_frames": 20,
+            "processed_frames": 6,
+            "camera_transport_last": {
+              "open_count": 1,
+              "bytes_read": 11030528,
+              "content_length_payloads": 573,
+              "jpeg_marker_payloads": 0,
+              "frames_accepted": 572,
+              "frames_rejected": 1,
+              "buffer_resets": 0,
+              "reopen_count": 0,
+              "last_reject_reason": "temporal_splice:content_length",
+              "buffer_bytes": 3073,
+              "consecutive_rejected_frames": 0,
+              "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+              "reader": "http_multipart_mjpeg",
+              "content_length_preferred": true,
+              "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+              "capture_backend": "http",
+              "open": true
+            },
+            "samples": [
+              {
+                "slot_id": 1,
+                "frame_id": 63,
+                "pose_cyl": [
+                  7.458000183105469,
+                  176.8459930419922,
+                  120.0
+                ],
+                "pose_xy": [
+                  -22.954502612063077,
+                  -175.34992462171502
+                ],
+                "pixel": [
+                  321.5152893066406,
+                  249.12860107421875
+                ],
+                "pixel_center": [
+                  322,
+                  250
+                ],
+                "pixel_center_f": [
+                  321.50595004209936,
+                  249.87855739545327
+                ],
+                "geometry_center": [
+                  322,
+                  249
+                ],
+                "geometry_center_f": [
+                  321.5152893066406,
+                  249.12860107421875
+                ],
+                "grasp_pixel": [
+                  320,
+                  250
+                ],
+                "grasp_pixel_f": [
+                  320.0,
+                  250.0
+                ],
+                "center_distance_px": 9.253510644887546,
+                "confidence": 0.55,
+                "area_px": 35276,
+                "bbox": [
+                  210,
+                  125,
+                  434,
+                  375
+                ],
+                "snapshot": {
+                  "state": "IDLE",
+                  "state_seq": 4243,
+                  "robot_ts": 1745895370.992342,
+                  "_local_receive_ts": 404254.9885495,
+                  "busy": false,
+                  "busy_action": "",
+                  "carrying": false,
+                  "robot_xy": [
+                    -22.954999923706055,
+                    -175.35000610351562
+                  ],
+                  "robot_z": 120.0,
+                  "robot_cyl": {
+                    "theta_deg": 7.458000183105469,
+                    "radius_mm": 176.8459930419922,
+                    "z_mm": 120.0
+                  },
+                  "limits_cyl": {
+                    "theta_deg": [
+                      -120.0,
+                      120.0
+                    ],
+                    "radius_mm": [
+                      50.0,
+                      280.0
+                    ]
+                  },
+                  "limits_cyl_auto": {
+                    "radius_mm": [
+                      80.0,
+                      260.0
+                    ]
+                  },
+                  "calibration_ready": true,
+                  "last_ack": "MOVE",
+                  "last_error_code": "",
+                  "last_error": "",
+                  "release_mode_effective": "sucker_frozen",
+                  "sucker_frozen": true,
+                  "pick_tuning": {
+                    "pick_approach_z_mm": 130.0,
+                    "pick_descend_z_mm": 85.0,
+                    "pick_pre_suction_sec": 0.25,
+                    "pick_bottom_hold_sec": 0.15000000596046448,
+                    "pick_lift_sec": 0.800000011920929,
+                    "z_carry_floor_mm": 160.0
+                  },
+                  "sucker_rotation_supported": true
+                },
+                "packet_frame_id": 63,
+                "settle_sec": 1.2,
+                "drain_frames": 16,
+                "captured_frames": 10,
+                "processed_frames": 3,
+                "camera_transport": {
+                  "open_count": 1,
+                  "bytes_read": 10526720,
+                  "content_length_payloads": 547,
+                  "jpeg_marker_payloads": 0,
+                  "frames_accepted": 546,
+                  "frames_rejected": 1,
+                  "buffer_resets": 0,
+                  "reopen_count": 0,
+                  "last_reject_reason": "temporal_splice:content_length",
+                  "buffer_bytes": 2106,
+                  "consecutive_rejected_frames": 0,
+                  "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "reader": "http_multipart_mjpeg",
+                  "content_length_preferred": true,
+                  "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "capture_backend": "http",
+                  "open": true
+                },
+                "repeat_index": 1
+              },
+              {
+                "slot_id": 1,
+                "frame_id": 66,
+                "pose_cyl": [
+                  7.458000183105469,
+                  176.8459930419922,
+                  120.0
+                ],
+                "pose_xy": [
+                  -22.954502612063077,
+                  -175.34992462171502
+                ],
+                "pixel": [
+                  321.5435485839844,
+                  249.50946044921875
+                ],
+                "pixel_center": [
+                  321,
+                  250
+                ],
+                "pixel_center_f": [
+                  321.3916769697651,
+                  249.92255816567382
+                ],
+                "geometry_center": [
+                  322,
+                  250
+                ],
+                "geometry_center_f": [
+                  321.5435485839844,
+                  249.50946044921875
+                ],
+                "grasp_pixel": [
+                  320,
+                  250
+                ],
+                "grasp_pixel_f": [
+                  320.0,
+                  250.0
+                ],
+                "center_distance_px": 9.633918219830177,
+                "confidence": 0.55,
+                "area_px": 35234,
+                "bbox": [
+                  210,
+                  125,
+                  434,
+                  375
+                ],
+                "snapshot": {
+                  "state": "IDLE",
+                  "state_seq": 4243,
+                  "robot_ts": 1745895373.458663,
+                  "_local_receive_ts": 404257.4553082,
+                  "busy": false,
+                  "busy_action": "",
+                  "carrying": false,
+                  "robot_xy": [
+                    -22.954999923706055,
+                    -175.35000610351562
+                  ],
+                  "robot_z": 120.0,
+                  "robot_cyl": {
+                    "theta_deg": 7.458000183105469,
+                    "radius_mm": 176.8459930419922,
+                    "z_mm": 120.0
+                  },
+                  "limits_cyl": {
+                    "theta_deg": [
+                      -120.0,
+                      120.0
+                    ],
+                    "radius_mm": [
+                      50.0,
+                      280.0
+                    ]
+                  },
+                  "limits_cyl_auto": {
+                    "radius_mm": [
+                      80.0,
+                      260.0
+                    ]
+                  },
+                  "calibration_ready": true,
+                  "last_ack": "MOVE",
+                  "last_error_code": "",
+                  "last_error": "",
+                  "release_mode_effective": "sucker_frozen",
+                  "sucker_frozen": true,
+                  "pick_tuning": {
+                    "pick_approach_z_mm": 130.0,
+                    "pick_descend_z_mm": 85.0,
+                    "pick_pre_suction_sec": 0.25,
+                    "pick_bottom_hold_sec": 0.15000000596046448,
+                    "pick_lift_sec": 0.800000011920929,
+                    "z_carry_floor_mm": 160.0
+                  },
+                  "sucker_rotation_supported": true
+                },
+                "packet_frame_id": 66,
+                "settle_sec": 1.2,
+                "drain_frames": 16,
+                "captured_frames": 10,
+                "processed_frames": 3,
+                "camera_transport": {
+                  "open_count": 1,
+                  "bytes_read": 11030528,
+                  "content_length_payloads": 573,
+                  "jpeg_marker_payloads": 0,
+                  "frames_accepted": 572,
+                  "frames_rejected": 1,
+                  "buffer_resets": 0,
+                  "reopen_count": 0,
+                  "last_reject_reason": "temporal_splice:content_length",
+                  "buffer_bytes": 3073,
+                  "consecutive_rejected_frames": 0,
+                  "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "reader": "http_multipart_mjpeg",
+                  "content_length_preferred": true,
+                  "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "capture_backend": "http",
+                  "open": true
+                },
+                "repeat_index": 2
+              }
+            ],
+            "label": "iter_02_candidate_05",
+            "packet_frame_id": 66,
+            "pose_cyl": [
+              7.458000183105469,
+              176.8459991455078,
+              120.0
+            ]
+          }
+        }
+      ],
+      "best_candidate": {
+        "pose_cyl": [
+          7.458000183105469,
+          174.4459991455078,
+          120.0
+        ],
+        "median_center_distance_px": 3.177827848397956,
+        "improvement_px": 0.25467993268906763
+      },
+      "step_shrunk": true
+    },
+    {
+      "iteration": 3,
+      "theta_step_deg": 0.175,
+      "radius_step_mm": 0.6,
+      "candidates": [
+        {
+          "label": "iter_03_candidate_01",
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "pose_cyl": [
+            7.458000183105469,
+            175.6459991455078,
+            120.0
+          ],
+          "skipped": false,
+          "measurement": {
+            "median_center_distance_px": 9.419575300161899,
+            "min_center_distance_px": 9.391860340547979,
+            "max_center_distance_px": 9.44729025977582,
+            "repeat_spread_px": 0.25265366956720686,
+            "stable": true,
+            "sample_count": 2,
+            "captured_frames": 20,
+            "processed_frames": 6,
+            "camera_transport_last": {
+              "open_count": 1,
+              "bytes_read": 12034048,
+              "content_length_payloads": 625,
+              "jpeg_marker_payloads": 0,
+              "frames_accepted": 624,
+              "frames_rejected": 1,
+              "buffer_resets": 0,
+              "reopen_count": 0,
+              "last_reject_reason": "temporal_splice:content_length",
+              "buffer_bytes": 1637,
+              "consecutive_rejected_frames": 0,
+              "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+              "reader": "http_multipart_mjpeg",
+              "content_length_preferred": true,
+              "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+              "capture_backend": "http",
+              "open": true
+            },
+            "samples": [
+              {
+                "slot_id": 1,
+                "frame_id": 69,
+                "pose_cyl": [
+                  7.458000183105469,
+                  175.64599609375,
+                  120.0
+                ],
+                "pose_xy": [
+                  -22.7987437361673,
+                  -174.16007931732867
+                ],
+                "pixel": [
+                  321.68817138671875,
+                  249.2388916015625
+                ],
+                "pixel_center": [
+                  321,
+                  251
+                ],
+                "pixel_center_f": [
+                  321.2236675037386,
+                  250.55774385598602
+                ],
+                "geometry_center": [
+                  322,
+                  249
+                ],
+                "geometry_center_f": [
+                  321.68817138671875,
+                  249.2388916015625
+                ],
+                "grasp_pixel": [
+                  320,
+                  250
+                ],
+                "grasp_pixel_f": [
+                  320.0,
+                  250.0
+                ],
+                "center_distance_px": 9.391860340547979,
+                "confidence": 0.55,
+                "area_px": 35084,
+                "bbox": [
+                  210,
+                  128,
+                  435,
+                  375
+                ],
+                "snapshot": {
+                  "state": "IDLE",
+                  "state_seq": 4245,
+                  "robot_ts": 1745895379.2594845,
+                  "_local_receive_ts": 404263.2563116,
+                  "busy": false,
+                  "busy_action": "",
+                  "carrying": false,
+                  "robot_xy": [
+                    -22.798999786376953,
+                    -174.16000366210938
+                  ],
+                  "robot_z": 120.0,
+                  "robot_cyl": {
+                    "theta_deg": 7.458000183105469,
+                    "radius_mm": 175.64599609375,
+                    "z_mm": 120.0
+                  },
+                  "limits_cyl": {
+                    "theta_deg": [
+                      -120.0,
+                      120.0
+                    ],
+                    "radius_mm": [
+                      50.0,
+                      280.0
+                    ]
+                  },
+                  "limits_cyl_auto": {
+                    "radius_mm": [
+                      80.0,
+                      260.0
+                    ]
+                  },
+                  "calibration_ready": true,
+                  "last_ack": "MOVE",
+                  "last_error_code": "",
+                  "last_error": "",
+                  "release_mode_effective": "sucker_frozen",
+                  "sucker_frozen": true,
+                  "pick_tuning": {
+                    "pick_approach_z_mm": 130.0,
+                    "pick_descend_z_mm": 85.0,
+                    "pick_pre_suction_sec": 0.25,
+                    "pick_bottom_hold_sec": 0.15000000596046448,
+                    "pick_lift_sec": 0.800000011920929,
+                    "z_carry_floor_mm": 160.0
+                  },
+                  "sucker_rotation_supported": true
+                },
+                "packet_frame_id": 69,
+                "settle_sec": 1.2,
+                "drain_frames": 16,
+                "captured_frames": 10,
+                "processed_frames": 3,
+                "camera_transport": {
+                  "open_count": 1,
+                  "bytes_read": 11530240,
+                  "content_length_payloads": 599,
+                  "jpeg_marker_payloads": 0,
+                  "frames_accepted": 598,
+                  "frames_rejected": 1,
+                  "buffer_resets": 0,
+                  "reopen_count": 0,
+                  "last_reject_reason": "temporal_splice:content_length",
+                  "buffer_bytes": 765,
+                  "consecutive_rejected_frames": 0,
+                  "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "reader": "http_multipart_mjpeg",
+                  "content_length_preferred": true,
+                  "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "capture_backend": "http",
+                  "open": true
+                },
+                "repeat_index": 1
+              },
+              {
+                "slot_id": 1,
+                "frame_id": 72,
+                "pose_cyl": [
+                  7.458000183105469,
+                  175.64599609375,
+                  120.0
+                ],
+                "pose_xy": [
+                  -22.7987437361673,
+                  -174.16007931732867
+                ],
+                "pixel": [
+                  321.4543762207031,
+                  249.3346710205078
+                ],
+                "pixel_center": [
+                  321,
+                  250
+                ],
+                "pixel_center_f": [
+                  321.45040582143855,
+                  249.51505737475512
+                ],
+                "geometry_center": [
+                  321,
+                  249
+                ],
+                "geometry_center_f": [
+                  321.4543762207031,
+                  249.3346710205078
+                ],
+                "grasp_pixel": [
+                  321,
+                  250
+                ],
+                "grasp_pixel_f": [
+                  321.0,
+                  250.0
+                ],
+                "center_distance_px": 9.44729025977582,
+                "confidence": 0.55,
+                "area_px": 35384,
+                "bbox": [
+                  210,
+                  125,
+                  435,
+                  375
+                ],
+                "snapshot": {
+                  "state": "IDLE",
+                  "state_seq": 4245,
+                  "robot_ts": 1745895381.7288792,
+                  "_local_receive_ts": 404265.7251443,
+                  "busy": false,
+                  "busy_action": "",
+                  "carrying": false,
+                  "robot_xy": [
+                    -22.798999786376953,
+                    -174.16000366210938
+                  ],
+                  "robot_z": 120.0,
+                  "robot_cyl": {
+                    "theta_deg": 7.458000183105469,
+                    "radius_mm": 175.64599609375,
+                    "z_mm": 120.0
+                  },
+                  "limits_cyl": {
+                    "theta_deg": [
+                      -120.0,
+                      120.0
+                    ],
+                    "radius_mm": [
+                      50.0,
+                      280.0
+                    ]
+                  },
+                  "limits_cyl_auto": {
+                    "radius_mm": [
+                      80.0,
+                      260.0
+                    ]
+                  },
+                  "calibration_ready": true,
+                  "last_ack": "MOVE",
+                  "last_error_code": "",
+                  "last_error": "",
+                  "release_mode_effective": "sucker_frozen",
+                  "sucker_frozen": true,
+                  "pick_tuning": {
+                    "pick_approach_z_mm": 130.0,
+                    "pick_descend_z_mm": 85.0,
+                    "pick_pre_suction_sec": 0.25,
+                    "pick_bottom_hold_sec": 0.15000000596046448,
+                    "pick_lift_sec": 0.800000011920929,
+                    "z_carry_floor_mm": 160.0
+                  },
+                  "sucker_rotation_supported": true
+                },
+                "packet_frame_id": 72,
+                "settle_sec": 1.2,
+                "drain_frames": 16,
+                "captured_frames": 10,
+                "processed_frames": 3,
+                "camera_transport": {
+                  "open_count": 1,
+                  "bytes_read": 12034048,
+                  "content_length_payloads": 625,
+                  "jpeg_marker_payloads": 0,
+                  "frames_accepted": 624,
+                  "frames_rejected": 1,
+                  "buffer_resets": 0,
+                  "reopen_count": 0,
+                  "last_reject_reason": "temporal_splice:content_length",
+                  "buffer_bytes": 1637,
+                  "consecutive_rejected_frames": 0,
+                  "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "reader": "http_multipart_mjpeg",
+                  "content_length_preferred": true,
+                  "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "capture_backend": "http",
+                  "open": true
+                },
+                "repeat_index": 2
+              }
+            ],
+            "label": "iter_03_candidate_01",
+            "packet_frame_id": 72,
+            "pose_cyl": [
+              7.458000183105469,
+              175.6459991455078,
+              120.0
+            ]
+          }
+        },
+        {
+          "label": "iter_03_candidate_02",
+          "offset": [
+            -0.175,
+            0.0
+          ],
+          "pose_cyl": [
+            7.283000183105469,
+            175.6459991455078,
+            120.0
+          ],
+          "skipped": false,
+          "measurement": {
+            "median_center_distance_px": 9.444931405618874,
+            "min_center_distance_px": 9.284866774740408,
+            "max_center_distance_px": 9.604996036497338,
+            "repeat_spread_px": 0.3245184458294502,
+            "stable": true,
+            "sample_count": 2,
+            "captured_frames": 20,
+            "processed_frames": 6,
+            "camera_transport_last": {
+              "open_count": 1,
+              "bytes_read": 13041664,
+              "content_length_payloads": 677,
+              "jpeg_marker_payloads": 0,
+              "frames_accepted": 676,
+              "frames_rejected": 1,
+              "buffer_resets": 0,
+              "reopen_count": 0,
+              "last_reject_reason": "temporal_splice:content_length",
+              "buffer_bytes": 3226,
+              "consecutive_rejected_frames": 0,
+              "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+              "reader": "http_multipart_mjpeg",
+              "content_length_preferred": true,
+              "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+              "capture_backend": "http",
+              "open": true
+            },
+            "samples": [
+              {
+                "slot_id": 1,
+                "frame_id": 75,
+                "pose_cyl": [
+                  7.2829999923706055,
+                  175.64599609375,
+                  120.0
+                ],
+                "pose_xy": [
+                  -22.266695947941884,
+                  -174.2289017222101
+                ],
+                "pixel": [
+                  321.50689697265625,
+                  249.48605346679688
+                ],
+                "pixel_center": [
+                  322,
+                  250
+                ],
+                "pixel_center_f": [
+                  321.51519309939226,
+                  249.60091858739182
+                ],
+                "geometry_center": [
+                  322,
+                  249
+                ],
+                "geometry_center_f": [
+                  321.50689697265625,
+                  249.48605346679688
+                ],
+                "grasp_pixel": [
+                  320,
+                  250
+                ],
+                "grasp_pixel_f": [
+                  320.0,
+                  250.0
+                ],
+                "center_distance_px": 9.604996036497338,
+                "confidence": 0.55,
+                "area_px": 35361,
+                "bbox": [
+                  210,
+                  125,
+                  434,
+                  375
+                ],
+                "snapshot": {
+                  "state": "IDLE",
+                  "state_seq": 4247,
+                  "robot_ts": 1745895387.525916,
+                  "_local_receive_ts": 404271.5304883,
+                  "busy": false,
+                  "busy_action": "",
+                  "carrying": false,
+                  "robot_xy": [
+                    -22.267000198364258,
+                    -174.22900390625
+                  ],
+                  "robot_z": 120.0,
+                  "robot_cyl": {
+                    "theta_deg": 7.2829999923706055,
+                    "radius_mm": 175.64599609375,
+                    "z_mm": 120.0
+                  },
+                  "limits_cyl": {
+                    "theta_deg": [
+                      -120.0,
+                      120.0
+                    ],
+                    "radius_mm": [
+                      50.0,
+                      280.0
+                    ]
+                  },
+                  "limits_cyl_auto": {
+                    "radius_mm": [
+                      80.0,
+                      260.0
+                    ]
+                  },
+                  "calibration_ready": true,
+                  "last_ack": "MOVE",
+                  "last_error_code": "",
+                  "last_error": "",
+                  "release_mode_effective": "sucker_frozen",
+                  "sucker_frozen": true,
+                  "pick_tuning": {
+                    "pick_approach_z_mm": 130.0,
+                    "pick_descend_z_mm": 85.0,
+                    "pick_pre_suction_sec": 0.25,
+                    "pick_bottom_hold_sec": 0.15000000596046448,
+                    "pick_lift_sec": 0.800000011920929,
+                    "z_carry_floor_mm": 160.0
+                  },
+                  "sucker_rotation_supported": true
+                },
+                "packet_frame_id": 75,
+                "settle_sec": 1.2,
+                "drain_frames": 16,
+                "captured_frames": 10,
+                "processed_frames": 3,
+                "camera_transport": {
+                  "open_count": 1,
+                  "bytes_read": 12537856,
+                  "content_length_payloads": 651,
+                  "jpeg_marker_payloads": 0,
+                  "frames_accepted": 650,
+                  "frames_rejected": 1,
+                  "buffer_resets": 0,
+                  "reopen_count": 0,
+                  "last_reject_reason": "temporal_splice:content_length",
+                  "buffer_bytes": 2095,
+                  "consecutive_rejected_frames": 0,
+                  "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "reader": "http_multipart_mjpeg",
+                  "content_length_preferred": true,
+                  "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "capture_backend": "http",
+                  "open": true
+                },
+                "repeat_index": 1
+              },
+              {
+                "slot_id": 1,
+                "frame_id": 78,
+                "pose_cyl": [
+                  7.2829999923706055,
+                  175.64599609375,
+                  120.0
+                ],
+                "pose_xy": [
+                  -22.266695947941884,
+                  -174.2289017222101
+                ],
+                "pixel": [
+                  321.4049987792969,
+                  249.17794799804688
+                ],
+                "pixel_center": [
+                  321,
+                  250
+                ],
+                "pixel_center_f": [
+                  321.2984562607204,
+                  249.9825661502123
+                ],
+                "geometry_center": [
+                  321,
+                  249
+                ],
+                "geometry_center_f": [
+                  321.4049987792969,
+                  249.17794799804688
+                ],
+                "grasp_pixel": [
+                  320,
+                  250
+                ],
+                "grasp_pixel_f": [
+                  320.0,
+                  250.0
+                ],
+                "center_distance_px": 9.284866774740408,
+                "confidence": 0.55,
+                "area_px": 35216,
+                "bbox": [
+                  210,
+                  128,
+                  434,
+                  375
+                ],
+                "snapshot": {
+                  "state": "IDLE",
+                  "state_seq": 4247,
+                  "robot_ts": 1745895390.0596213,
+                  "_local_receive_ts": 404274.0561231,
+                  "busy": false,
+                  "busy_action": "",
+                  "carrying": false,
+                  "robot_xy": [
+                    -22.267000198364258,
+                    -174.22900390625
+                  ],
+                  "robot_z": 120.0,
+                  "robot_cyl": {
+                    "theta_deg": 7.2829999923706055,
+                    "radius_mm": 175.64599609375,
+                    "z_mm": 120.0
+                  },
+                  "limits_cyl": {
+                    "theta_deg": [
+                      -120.0,
+                      120.0
+                    ],
+                    "radius_mm": [
+                      50.0,
+                      280.0
+                    ]
+                  },
+                  "limits_cyl_auto": {
+                    "radius_mm": [
+                      80.0,
+                      260.0
+                    ]
+                  },
+                  "calibration_ready": true,
+                  "last_ack": "MOVE",
+                  "last_error_code": "",
+                  "last_error": "",
+                  "release_mode_effective": "sucker_frozen",
+                  "sucker_frozen": true,
+                  "pick_tuning": {
+                    "pick_approach_z_mm": 130.0,
+                    "pick_descend_z_mm": 85.0,
+                    "pick_pre_suction_sec": 0.25,
+                    "pick_bottom_hold_sec": 0.15000000596046448,
+                    "pick_lift_sec": 0.800000011920929,
+                    "z_carry_floor_mm": 160.0
+                  },
+                  "sucker_rotation_supported": true
+                },
+                "packet_frame_id": 78,
+                "settle_sec": 1.2,
+                "drain_frames": 16,
+                "captured_frames": 10,
+                "processed_frames": 3,
+                "camera_transport": {
+                  "open_count": 1,
+                  "bytes_read": 13041664,
+                  "content_length_payloads": 677,
+                  "jpeg_marker_payloads": 0,
+                  "frames_accepted": 676,
+                  "frames_rejected": 1,
+                  "buffer_resets": 0,
+                  "reopen_count": 0,
+                  "last_reject_reason": "temporal_splice:content_length",
+                  "buffer_bytes": 3226,
+                  "consecutive_rejected_frames": 0,
+                  "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "reader": "http_multipart_mjpeg",
+                  "content_length_preferred": true,
+                  "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "capture_backend": "http",
+                  "open": true
+                },
+                "repeat_index": 2
+              }
+            ],
+            "label": "iter_03_candidate_02",
+            "packet_frame_id": 78,
+            "pose_cyl": [
+              7.283000183105469,
+              175.6459991455078,
+              120.0
+            ]
+          }
+        },
+        {
+          "label": "iter_03_candidate_03",
+          "offset": [
+            0.175,
+            0.0
+          ],
+          "pose_cyl": [
+            7.633000183105469,
+            175.6459991455078,
+            120.0
+          ],
+          "skipped": false,
+          "measurement": {
+            "median_center_distance_px": 9.255846010553578,
+            "min_center_distance_px": 9.234330069347202,
+            "max_center_distance_px": 9.277361951759953,
+            "repeat_spread_px": 0.10174306192405302,
+            "stable": true,
+            "sample_count": 2,
+            "captured_frames": 20,
+            "processed_frames": 6,
+            "camera_transport_last": {
+              "open_count": 1,
+              "bytes_read": 14065664,
+              "content_length_payloads": 730,
+              "jpeg_marker_payloads": 0,
+              "frames_accepted": 728,
+              "frames_rejected": 2,
+              "buffer_resets": 0,
+              "reopen_count": 0,
+              "last_reject_reason": "temporal_splice:content_length",
+              "buffer_bytes": 1656,
+              "consecutive_rejected_frames": 0,
+              "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+              "reader": "http_multipart_mjpeg",
+              "content_length_preferred": true,
+              "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+              "capture_backend": "http",
+              "open": true
+            },
+            "samples": [
+              {
+                "slot_id": 1,
+                "frame_id": 81,
+                "pose_cyl": [
+                  7.632999897003174,
+                  175.64599609375,
+                  120.0
+                ],
+                "pose_xy": [
+                  -23.330577387860846,
+                  -174.0896323808936
+                ],
+                "pixel": [
+                  321.5528259277344,
+                  249.146484375
+                ],
+                "pixel_center": [
+                  321,
+                  250
+                ],
+                "pixel_center_f": [
+                  321.1753034151849,
+                  250.3158622636184
+                ],
+                "geometry_center": [
+                  322,
+                  249
+                ],
+                "geometry_center_f": [
+                  321.5528259277344,
+                  249.146484375
+                ],
+                "grasp_pixel": [
+                  320,
+                  250
+                ],
+                "grasp_pixel_f": [
+                  320.0,
+                  250.0
+                ],
+                "center_distance_px": 9.277361951759953,
+                "confidence": 0.55,
+                "area_px": 35077,
+                "bbox": [
+                  210,
+                  128,
+                  434,
+                  375
+                ],
+                "snapshot": {
+                  "state": "IDLE",
+                  "state_seq": 4249,
+                  "robot_ts": 1745895395.8591797,
+                  "_local_receive_ts": 404279.8570742,
+                  "busy": false,
+                  "busy_action": "",
+                  "carrying": false,
+                  "robot_xy": [
+                    -23.33099937438965,
+                    -174.08999633789062
+                  ],
+                  "robot_z": 120.0,
+                  "robot_cyl": {
+                    "theta_deg": 7.632999897003174,
+                    "radius_mm": 175.64599609375,
+                    "z_mm": 120.0
+                  },
+                  "limits_cyl": {
+                    "theta_deg": [
+                      -120.0,
+                      120.0
+                    ],
+                    "radius_mm": [
+                      50.0,
+                      280.0
+                    ]
+                  },
+                  "limits_cyl_auto": {
+                    "radius_mm": [
+                      80.0,
+                      260.0
+                    ]
+                  },
+                  "calibration_ready": true,
+                  "last_ack": "MOVE",
+                  "last_error_code": "",
+                  "last_error": "",
+                  "release_mode_effective": "sucker_frozen",
+                  "sucker_frozen": true,
+                  "pick_tuning": {
+                    "pick_approach_z_mm": 130.0,
+                    "pick_descend_z_mm": 85.0,
+                    "pick_pre_suction_sec": 0.25,
+                    "pick_bottom_hold_sec": 0.15000000596046448,
+                    "pick_lift_sec": 0.800000011920929,
+                    "z_carry_floor_mm": 160.0
+                  },
+                  "sucker_rotation_supported": true
+                },
+                "packet_frame_id": 81,
+                "settle_sec": 1.2,
+                "drain_frames": 16,
+                "captured_frames": 10,
+                "processed_frames": 3,
+                "camera_transport": {
+                  "open_count": 1,
+                  "bytes_read": 13561856,
+                  "content_length_payloads": 704,
+                  "jpeg_marker_payloads": 0,
+                  "frames_accepted": 702,
+                  "frames_rejected": 2,
+                  "buffer_resets": 0,
+                  "reopen_count": 0,
+                  "last_reject_reason": "temporal_splice:content_length",
+                  "buffer_bytes": 674,
+                  "consecutive_rejected_frames": 0,
+                  "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "reader": "http_multipart_mjpeg",
+                  "content_length_preferred": true,
+                  "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "capture_backend": "http",
+                  "open": true
+                },
+                "repeat_index": 1
+              },
+              {
+                "slot_id": 1,
+                "frame_id": 84,
+                "pose_cyl": [
+                  7.632999897003174,
+                  175.64599609375,
+                  120.0
+                ],
+                "pose_xy": [
+                  -23.330577387860846,
+                  -174.0896323808936
+                ],
+                "pixel": [
+                  321.4548645019531,
+                  249.11900329589844
+                ],
+                "pixel_center": [
+                  321,
+                  249
+                ],
+                "pixel_center_f": [
+                  321.47342048540156,
+                  249.4599837639616
+                ],
+                "geometry_center": [
+                  321,
+                  249
+                ],
+                "geometry_center_f": [
+                  321.4548645019531,
+                  249.11900329589844
+                ],
+                "grasp_pixel": [
+                  320,
+                  250
+                ],
+                "grasp_pixel_f": [
+                  320.0,
+                  250.0
+                ],
+                "center_distance_px": 9.234330069347202,
+                "confidence": 0.55,
+                "area_px": 35377,
+                "bbox": [
+                  209,
+                  125,
+                  434,
+                  375
+                ],
+                "snapshot": {
+                  "state": "IDLE",
+                  "state_seq": 4249,
+                  "robot_ts": 1745895398.5256119,
+                  "_local_receive_ts": 404282.5223189,
+                  "busy": false,
+                  "busy_action": "",
+                  "carrying": false,
+                  "robot_xy": [
+                    -23.33099937438965,
+                    -174.08999633789062
+                  ],
+                  "robot_z": 120.0,
+                  "robot_cyl": {
+                    "theta_deg": 7.632999897003174,
+                    "radius_mm": 175.64599609375,
+                    "z_mm": 120.0
+                  },
+                  "limits_cyl": {
+                    "theta_deg": [
+                      -120.0,
+                      120.0
+                    ],
+                    "radius_mm": [
+                      50.0,
+                      280.0
+                    ]
+                  },
+                  "limits_cyl_auto": {
+                    "radius_mm": [
+                      80.0,
+                      260.0
+                    ]
+                  },
+                  "calibration_ready": true,
+                  "last_ack": "MOVE",
+                  "last_error_code": "",
+                  "last_error": "",
+                  "release_mode_effective": "sucker_frozen",
+                  "sucker_frozen": true,
+                  "pick_tuning": {
+                    "pick_approach_z_mm": 130.0,
+                    "pick_descend_z_mm": 85.0,
+                    "pick_pre_suction_sec": 0.25,
+                    "pick_bottom_hold_sec": 0.15000000596046448,
+                    "pick_lift_sec": 0.800000011920929,
+                    "z_carry_floor_mm": 160.0
+                  },
+                  "sucker_rotation_supported": true
+                },
+                "packet_frame_id": 84,
+                "settle_sec": 1.2,
+                "drain_frames": 16,
+                "captured_frames": 10,
+                "processed_frames": 3,
+                "camera_transport": {
+                  "open_count": 1,
+                  "bytes_read": 14065664,
+                  "content_length_payloads": 730,
+                  "jpeg_marker_payloads": 0,
+                  "frames_accepted": 728,
+                  "frames_rejected": 2,
+                  "buffer_resets": 0,
+                  "reopen_count": 0,
+                  "last_reject_reason": "temporal_splice:content_length",
+                  "buffer_bytes": 1656,
+                  "consecutive_rejected_frames": 0,
+                  "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "reader": "http_multipart_mjpeg",
+                  "content_length_preferred": true,
+                  "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "capture_backend": "http",
+                  "open": true
+                },
+                "repeat_index": 2
+              }
+            ],
+            "label": "iter_03_candidate_03",
+            "packet_frame_id": 84,
+            "pose_cyl": [
+              7.633000183105469,
+              175.6459991455078,
+              120.0
+            ]
+          }
+        },
+        {
+          "label": "iter_03_candidate_04",
+          "offset": [
+            0.0,
+            -0.6
+          ],
+          "pose_cyl": [
+            7.458000183105469,
+            175.0459991455078,
+            120.0
+          ],
+          "skipped": false,
+          "measurement": {
+            "median_center_distance_px": 9.3299048182984,
+            "min_center_distance_px": 9.246380853536774,
+            "max_center_distance_px": 9.413428783060027,
+            "repeat_spread_px": 0.2750890463692667,
+            "stable": true,
+            "sample_count": 2,
+            "captured_frames": 20,
+            "processed_frames": 6,
+            "camera_transport_last": {
+              "open_count": 1,
+              "bytes_read": 15073280,
+              "content_length_payloads": 782,
+              "jpeg_marker_payloads": 0,
+              "frames_accepted": 780,
+              "frames_rejected": 2,
+              "buffer_resets": 0,
+              "reopen_count": 0,
+              "last_reject_reason": "temporal_splice:content_length",
+              "buffer_bytes": 3487,
+              "consecutive_rejected_frames": 0,
+              "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+              "reader": "http_multipart_mjpeg",
+              "content_length_preferred": true,
+              "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+              "capture_backend": "http",
+              "open": true
+            },
+            "samples": [
+              {
+                "slot_id": 1,
+                "frame_id": 87,
+                "pose_cyl": [
+                  7.458000183105469,
+                  175.04600524902344,
+                  120.0
+                ],
+                "pose_xy": [
+                  -22.720865288510193,
+                  -173.56516422998743
+                ],
+                "pixel": [
+                  321.444091796875,
+                  249.302001953125
+                ],
+                "pixel_center": [
+                  322,
+                  250
+                ],
+                "pixel_center_f": [
+                  321.5178486435031,
+                  249.52316823921382
+                ],
+                "geometry_center": [
+                  321,
+                  249
+                ],
+                "geometry_center_f": [
+                  321.444091796875,
+                  249.302001953125
+                ],
+                "grasp_pixel": [
+                  320,
+                  250
+                ],
+                "grasp_pixel_f": [
+                  320.0,
+                  250.0
+                ],
+                "center_distance_px": 9.413428783060027,
+                "confidence": 0.55,
+                "area_px": 35372,
+                "bbox": [
+                  210,
+                  125,
+                  435,
+                  375
+                ],
+                "snapshot": {
+                  "state": "IDLE",
+                  "state_seq": 4251,
+                  "robot_ts": 1745895404.3253648,
+                  "_local_receive_ts": 404288.3224927,
+                  "busy": false,
+                  "busy_action": "",
+                  "carrying": false,
+                  "robot_xy": [
+                    -22.72100067138672,
+                    -173.56500244140625
+                  ],
+                  "robot_z": 120.0,
+                  "robot_cyl": {
+                    "theta_deg": 7.458000183105469,
+                    "radius_mm": 175.04600524902344,
+                    "z_mm": 120.0
+                  },
+                  "limits_cyl": {
+                    "theta_deg": [
+                      -120.0,
+                      120.0
+                    ],
+                    "radius_mm": [
+                      50.0,
+                      280.0
+                    ]
+                  },
+                  "limits_cyl_auto": {
+                    "radius_mm": [
+                      80.0,
+                      260.0
+                    ]
+                  },
+                  "calibration_ready": true,
+                  "last_ack": "MOVE",
+                  "last_error_code": "",
+                  "last_error": "",
+                  "release_mode_effective": "sucker_frozen",
+                  "sucker_frozen": true,
+                  "pick_tuning": {
+                    "pick_approach_z_mm": 130.0,
+                    "pick_descend_z_mm": 85.0,
+                    "pick_pre_suction_sec": 0.25,
+                    "pick_bottom_hold_sec": 0.15000000596046448,
+                    "pick_lift_sec": 0.800000011920929,
+                    "z_carry_floor_mm": 160.0
+                  },
+                  "sucker_rotation_supported": true
+                },
+                "packet_frame_id": 87,
+                "settle_sec": 1.2,
+                "drain_frames": 16,
+                "captured_frames": 10,
+                "processed_frames": 3,
+                "camera_transport": {
+                  "open_count": 1,
+                  "bytes_read": 14569472,
+                  "content_length_payloads": 756,
+                  "jpeg_marker_payloads": 0,
+                  "frames_accepted": 754,
+                  "frames_rejected": 2,
+                  "buffer_resets": 0,
+                  "reopen_count": 0,
+                  "last_reject_reason": "temporal_splice:content_length",
+                  "buffer_bytes": 2448,
+                  "consecutive_rejected_frames": 0,
+                  "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "reader": "http_multipart_mjpeg",
+                  "content_length_preferred": true,
+                  "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "capture_backend": "http",
+                  "open": true
+                },
+                "repeat_index": 1
+              },
+              {
+                "slot_id": 1,
+                "frame_id": 90,
+                "pose_cyl": [
+                  7.458000183105469,
+                  175.04600524902344,
+                  120.0
+                ],
+                "pose_xy": [
+                  -22.720865288510193,
+                  -173.56516422998743
+                ],
+                "pixel": [
+                  321.6321105957031,
+                  249.1011962890625
+                ],
+                "pixel_center": [
+                  322,
+                  250
+                ],
+                "pixel_center_f": [
+                  321.51075027995523,
+                  249.56892497200448
+                ],
+                "geometry_center": [
+                  322,
+                  249
+                ],
+                "geometry_center_f": [
+                  321.6321105957031,
+                  249.1011962890625
+                ],
+                "grasp_pixel": [
+                  320,
+                  250
+                ],
+                "grasp_pixel_f": [
+                  320.0,
+                  250.0
+                ],
+                "center_distance_px": 9.246380853536774,
+                "confidence": 0.55,
+                "area_px": 35374,
+                "bbox": [
+                  210,
+                  125,
+                  434,
+                  375
+                ],
+                "snapshot": {
+                  "state": "IDLE",
+                  "state_seq": 4251,
+                  "robot_ts": 1745895406.7927194,
+                  "_local_receive_ts": 404290.788898,
+                  "busy": false,
+                  "busy_action": "",
+                  "carrying": false,
+                  "robot_xy": [
+                    -22.72100067138672,
+                    -173.56500244140625
+                  ],
+                  "robot_z": 120.0,
+                  "robot_cyl": {
+                    "theta_deg": 7.458000183105469,
+                    "radius_mm": 175.04600524902344,
+                    "z_mm": 120.0
+                  },
+                  "limits_cyl": {
+                    "theta_deg": [
+                      -120.0,
+                      120.0
+                    ],
+                    "radius_mm": [
+                      50.0,
+                      280.0
+                    ]
+                  },
+                  "limits_cyl_auto": {
+                    "radius_mm": [
+                      80.0,
+                      260.0
+                    ]
+                  },
+                  "calibration_ready": true,
+                  "last_ack": "MOVE",
+                  "last_error_code": "",
+                  "last_error": "",
+                  "release_mode_effective": "sucker_frozen",
+                  "sucker_frozen": true,
+                  "pick_tuning": {
+                    "pick_approach_z_mm": 130.0,
+                    "pick_descend_z_mm": 85.0,
+                    "pick_pre_suction_sec": 0.25,
+                    "pick_bottom_hold_sec": 0.15000000596046448,
+                    "pick_lift_sec": 0.800000011920929,
+                    "z_carry_floor_mm": 160.0
+                  },
+                  "sucker_rotation_supported": true
+                },
+                "packet_frame_id": 90,
+                "settle_sec": 1.2,
+                "drain_frames": 16,
+                "captured_frames": 10,
+                "processed_frames": 3,
+                "camera_transport": {
+                  "open_count": 1,
+                  "bytes_read": 15073280,
+                  "content_length_payloads": 782,
+                  "jpeg_marker_payloads": 0,
+                  "frames_accepted": 780,
+                  "frames_rejected": 2,
+                  "buffer_resets": 0,
+                  "reopen_count": 0,
+                  "last_reject_reason": "temporal_splice:content_length",
+                  "buffer_bytes": 3487,
+                  "consecutive_rejected_frames": 0,
+                  "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "reader": "http_multipart_mjpeg",
+                  "content_length_preferred": true,
+                  "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "capture_backend": "http",
+                  "open": true
+                },
+                "repeat_index": 2
+              }
+            ],
+            "label": "iter_03_candidate_04",
+            "packet_frame_id": 90,
+            "pose_cyl": [
+              7.458000183105469,
+              175.0459991455078,
+              120.0
+            ]
+          }
+        },
+        {
+          "label": "iter_03_candidate_05",
+          "offset": [
+            0.0,
+            0.6
+          ],
+          "pose_cyl": [
+            7.458000183105469,
+            176.2459991455078,
+            120.0
+          ],
+          "skipped": false,
+          "measurement": {
+            "median_center_distance_px": 9.364144047912818,
+            "min_center_distance_px": 9.272408880057,
+            "max_center_distance_px": 9.455879215768636,
+            "repeat_spread_px": 0.22174503186777172,
+            "stable": true,
+            "sample_count": 2,
+            "captured_frames": 20,
+            "processed_frames": 6,
+            "camera_transport_last": {
+              "open_count": 1,
+              "bytes_read": 16076800,
+              "content_length_payloads": 834,
+              "jpeg_marker_payloads": 0,
+              "frames_accepted": 832,
+              "frames_rejected": 2,
+              "buffer_resets": 0,
+              "reopen_count": 0,
+              "last_reject_reason": "temporal_splice:content_length",
+              "buffer_bytes": 638,
+              "consecutive_rejected_frames": 0,
+              "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+              "reader": "http_multipart_mjpeg",
+              "content_length_preferred": true,
+              "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+              "capture_backend": "http",
+              "open": true
+            },
+            "samples": [
+              {
+                "slot_id": 1,
+                "frame_id": 93,
+                "pose_cyl": [
+                  7.458000183105469,
+                  176.24600219726562,
+                  120.0
+                ],
+                "pose_xy": [
+                  -22.87662416440597,
+                  -174.75500953437378
+                ],
+                "pixel": [
+                  321.5285339355469,
+                  249.1455535888672
+                ],
+                "pixel_center": [
+                  321,
+                  250
+                ],
+                "pixel_center_f": [
+                  321.4356835986859,
+                  249.84480386375762
+                ],
+                "geometry_center": [
+                  322,
+                  249
+                ],
+                "geometry_center_f": [
+                  321.5285339355469,
+                  249.1455535888672
+                ],
+                "grasp_pixel": [
+                  320,
+                  250
+                ],
+                "grasp_pixel_f": [
+                  320.0,
+                  250.0
+                ],
+                "center_distance_px": 9.272408880057,
+                "confidence": 0.55,
+                "area_px": 35260,
+                "bbox": [
+                  210,
+                  125,
+                  435,
+                  375
+                ],
+                "snapshot": {
+                  "state": "IDLE",
+                  "state_seq": 4253,
+                  "robot_ts": 1745895412.5924897,
+                  "_local_receive_ts": 404296.5888474,
+                  "busy": false,
+                  "busy_action": "",
+                  "carrying": false,
+                  "robot_xy": [
+                    -22.87700080871582,
+                    -174.7550048828125
+                  ],
+                  "robot_z": 120.0,
+                  "robot_cyl": {
+                    "theta_deg": 7.458000183105469,
+                    "radius_mm": 176.24600219726562,
+                    "z_mm": 120.0
+                  },
+                  "limits_cyl": {
+                    "theta_deg": [
+                      -120.0,
+                      120.0
+                    ],
+                    "radius_mm": [
+                      50.0,
+                      280.0
+                    ]
+                  },
+                  "limits_cyl_auto": {
+                    "radius_mm": [
+                      80.0,
+                      260.0
+                    ]
+                  },
+                  "calibration_ready": true,
+                  "last_ack": "MOVE",
+                  "last_error_code": "",
+                  "last_error": "",
+                  "release_mode_effective": "sucker_frozen",
+                  "sucker_frozen": true,
+                  "pick_tuning": {
+                    "pick_approach_z_mm": 130.0,
+                    "pick_descend_z_mm": 85.0,
+                    "pick_pre_suction_sec": 0.25,
+                    "pick_bottom_hold_sec": 0.15000000596046448,
+                    "pick_lift_sec": 0.800000011920929,
+                    "z_carry_floor_mm": 160.0
+                  },
+                  "sucker_rotation_supported": true
+                },
+                "packet_frame_id": 93,
+                "settle_sec": 1.2,
+                "drain_frames": 16,
+                "captured_frames": 10,
+                "processed_frames": 3,
+                "camera_transport": {
+                  "open_count": 1,
+                  "bytes_read": 15577088,
+                  "content_length_payloads": 808,
+                  "jpeg_marker_payloads": 0,
+                  "frames_accepted": 806,
+                  "frames_rejected": 2,
+                  "buffer_resets": 0,
+                  "reopen_count": 0,
+                  "last_reject_reason": "temporal_splice:content_length",
+                  "buffer_bytes": 3516,
+                  "consecutive_rejected_frames": 0,
+                  "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "reader": "http_multipart_mjpeg",
+                  "content_length_preferred": true,
+                  "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "capture_backend": "http",
+                  "open": true
+                },
+                "repeat_index": 1
+              },
+              {
+                "slot_id": 1,
+                "frame_id": 96,
+                "pose_cyl": [
+                  7.458000183105469,
+                  176.24600219726562,
+                  120.0
+                ],
+                "pose_xy": [
+                  -22.87662416440597,
+                  -174.75500953437378
+                ],
+                "pixel": [
+                  321.4346008300781,
+                  249.34642028808594
+                ],
+                "pixel_center": [
+                  321,
+                  250
+                ],
+                "pixel_center_f": [
+                  321.4878513044452,
+                  249.52790840891277
+                ],
+                "geometry_center": [
+                  321,
+                  249
+                ],
+                "geometry_center_f": [
+                  321.4346008300781,
+                  249.34642028808594
+                ],
+                "grasp_pixel": [
+                  320,
+                  250
+                ],
+                "grasp_pixel_f": [
+                  320.0,
+                  250.0
+                ],
+                "center_distance_px": 9.455879215768636,
+                "confidence": 0.55,
+                "area_px": 35378,
+                "bbox": [
+                  210,
+                  125,
+                  435,
+                  375
+                ],
+                "snapshot": {
+                  "state": "IDLE",
+                  "state_seq": 4253,
+                  "robot_ts": 1745895415.0588608,
+                  "_local_receive_ts": 404299.0553378,
+                  "busy": false,
+                  "busy_action": "",
+                  "carrying": false,
+                  "robot_xy": [
+                    -22.87700080871582,
+                    -174.7550048828125
+                  ],
+                  "robot_z": 120.0,
+                  "robot_cyl": {
+                    "theta_deg": 7.458000183105469,
+                    "radius_mm": 176.24600219726562,
+                    "z_mm": 120.0
+                  },
+                  "limits_cyl": {
+                    "theta_deg": [
+                      -120.0,
+                      120.0
+                    ],
+                    "radius_mm": [
+                      50.0,
+                      280.0
+                    ]
+                  },
+                  "limits_cyl_auto": {
+                    "radius_mm": [
+                      80.0,
+                      260.0
+                    ]
+                  },
+                  "calibration_ready": true,
+                  "last_ack": "MOVE",
+                  "last_error_code": "",
+                  "last_error": "",
+                  "release_mode_effective": "sucker_frozen",
+                  "sucker_frozen": true,
+                  "pick_tuning": {
+                    "pick_approach_z_mm": 130.0,
+                    "pick_descend_z_mm": 85.0,
+                    "pick_pre_suction_sec": 0.25,
+                    "pick_bottom_hold_sec": 0.15000000596046448,
+                    "pick_lift_sec": 0.800000011920929,
+                    "z_carry_floor_mm": 160.0
+                  },
+                  "sucker_rotation_supported": true
+                },
+                "packet_frame_id": 96,
+                "settle_sec": 1.2,
+                "drain_frames": 16,
+                "captured_frames": 10,
+                "processed_frames": 3,
+                "camera_transport": {
+                  "open_count": 1,
+                  "bytes_read": 16076800,
+                  "content_length_payloads": 834,
+                  "jpeg_marker_payloads": 0,
+                  "frames_accepted": 832,
+                  "frames_rejected": 2,
+                  "buffer_resets": 0,
+                  "reopen_count": 0,
+                  "last_reject_reason": "temporal_splice:content_length",
+                  "buffer_bytes": 638,
+                  "consecutive_rejected_frames": 0,
+                  "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "reader": "http_multipart_mjpeg",
+                  "content_length_preferred": true,
+                  "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+                  "capture_backend": "http",
+                  "open": true
+                },
+                "repeat_index": 2
+              }
+            ],
+            "label": "iter_03_candidate_05",
+            "packet_frame_id": 96,
+            "pose_cyl": [
+              7.458000183105469,
+              176.2459991455078,
+              120.0
+            ]
+          }
+        }
+      ],
+      "best_candidate": {
+        "pose_cyl": [
+          7.633000183105469,
+          175.6459991455078,
+          120.0
+        ],
+        "median_center_distance_px": 9.255846010553578,
+        "improvement_px": -5.823338229466554
+      },
+      "step_shrunk": true
+    }
+  ],
+  "start_pose_cyl": [
+    7.458000183105469,
+    174.4459991455078,
+    120.0
+  ],
+  "baseline": {
+    "median_center_distance_px": 4.315183680730215,
+    "min_center_distance_px": 4.314200148455489,
+    "max_center_distance_px": 4.316167213004941,
+    "repeat_spread_px": 0.16425190222105343,
+    "stable": true,
+    "sample_count": 2,
+    "captured_frames": 20,
+    "processed_frames": 6,
+    "camera_transport_last": {
+      "open_count": 1,
+      "bytes_read": 1003520,
+      "content_length_payloads": 52,
+      "jpeg_marker_payloads": 0,
+      "frames_accepted": 52,
+      "frames_rejected": 0,
+      "buffer_resets": 0,
+      "reopen_count": 0,
+      "last_reject_reason": "",
+      "buffer_bytes": 221,
+      "consecutive_rejected_frames": 0,
+      "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+      "reader": "http_multipart_mjpeg",
+      "content_length_preferred": true,
+      "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+      "capture_backend": "http",
+      "open": true
+    },
+    "samples": [
+      {
+        "slot_id": 1,
+        "frame_id": 3,
+        "pose_cyl": [
+          7.458000183105469,
+          174.4459991455078,
+          120.0
+        ],
+        "pose_xy": [
+          -22.642984860271522,
+          -172.9702340129423
+        ],
+        "pixel": [
+          317.8885192871094,
+          243.76217651367188
+        ],
+        "pixel_center": [
+          318,
+          245
+        ],
+        "pixel_center_f": [
+          317.8484726918448,
+          244.9623760673964
+        ],
+        "geometry_center": [
+          318,
+          244
+        ],
+        "geometry_center_f": [
+          317.8885192871094,
+          243.76217651367188
+        ],
+        "grasp_pixel": [
+          317,
+          245
+        ],
+        "grasp_pixel_f": [
+          317.0,
+          245.0
+        ],
+        "center_distance_px": 4.314200148455489,
+        "confidence": 0.55,
+        "area_px": 34544,
+        "bbox": [
+          208,
+          121,
+          430,
+          369
+        ],
+        "snapshot": {
+          "state": "IDLE",
+          "state_seq": 4223,
+          "robot_ts": 1745895283.6588492,
+          "_local_receive_ts": 404167.6552558,
+          "busy": false,
+          "busy_action": "",
+          "carrying": false,
+          "robot_xy": [
+            -22.64299964904785,
+            -172.97000122070312
+          ],
+          "robot_z": 120.0,
+          "robot_cyl": {
+            "theta_deg": 7.458000183105469,
+            "radius_mm": 174.4459991455078,
+            "z_mm": 120.0
+          },
+          "limits_cyl": {
+            "theta_deg": [
+              -120.0,
+              120.0
+            ],
+            "radius_mm": [
+              50.0,
+              280.0
+            ]
+          },
+          "limits_cyl_auto": {
+            "radius_mm": [
+              80.0,
+              260.0
+            ]
+          },
+          "calibration_ready": true,
+          "last_ack": "MOVE",
+          "last_error_code": "",
+          "last_error": "",
+          "release_mode_effective": "sucker_frozen",
+          "sucker_frozen": true,
+          "pick_tuning": {
+            "pick_approach_z_mm": 130.0,
+            "pick_descend_z_mm": 85.0,
+            "pick_pre_suction_sec": 0.25,
+            "pick_bottom_hold_sec": 0.15000000596046448,
+            "pick_lift_sec": 0.800000011920929,
+            "z_carry_floor_mm": 160.0
+          },
+          "sucker_rotation_supported": true
+        },
+        "packet_frame_id": 3,
+        "settle_sec": 1.2,
+        "drain_frames": 16,
+        "captured_frames": 10,
+        "processed_frames": 3,
+        "camera_transport": {
+          "open_count": 1,
+          "bytes_read": 503808,
+          "content_length_payloads": 26,
+          "jpeg_marker_payloads": 0,
+          "frames_accepted": 26,
+          "frames_rejected": 0,
+          "buffer_resets": 0,
+          "reopen_count": 0,
+          "last_reject_reason": "",
+          "buffer_bytes": 1883,
+          "consecutive_rejected_frames": 0,
+          "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+          "reader": "http_multipart_mjpeg",
+          "content_length_preferred": true,
+          "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+          "capture_backend": "http",
+          "open": true
+        },
+        "repeat_index": 1
+      },
+      {
+        "slot_id": 1,
+        "frame_id": 6,
+        "pose_cyl": [
+          7.458000183105469,
+          174.4459991455078,
+          120.0
+        ],
+        "pose_xy": [
+          -22.642984860271522,
+          -172.9702340129423
+        ],
+        "pixel": [
+          318.0323181152344,
+          243.841552734375
+        ],
+        "pixel_center": [
+          318,
+          245
+        ],
+        "pixel_center_f": [
+          317.91163762268576,
+          244.8227029501817
+        ],
+        "geometry_center": [
+          318,
+          244
+        ],
+        "geometry_center_f": [
+          318.0323181152344,
+          243.841552734375
+        ],
+        "grasp_pixel": [
+          316,
+          245
+        ],
+        "grasp_pixel_f": [
+          316.0,
+          245.0
+        ],
+        "center_distance_px": 4.316167213004941,
+        "confidence": 0.55,
+        "area_px": 34586,
+        "bbox": [
+          209,
+          121,
+          431,
+          368
+        ],
+        "snapshot": {
+          "state": "IDLE",
+          "state_seq": 4223,
+          "robot_ts": 1745895289.5255806,
+          "_local_receive_ts": 404173.5214832,
+          "busy": false,
+          "busy_action": "",
+          "carrying": false,
+          "robot_xy": [
+            -22.64299964904785,
+            -172.97000122070312
+          ],
+          "robot_z": 120.0,
+          "robot_cyl": {
+            "theta_deg": 7.458000183105469,
+            "radius_mm": 174.4459991455078,
+            "z_mm": 120.0
+          },
+          "limits_cyl": {
+            "theta_deg": [
+              -120.0,
+              120.0
+            ],
+            "radius_mm": [
+              50.0,
+              280.0
+            ]
+          },
+          "limits_cyl_auto": {
+            "radius_mm": [
+              80.0,
+              260.0
+            ]
+          },
+          "calibration_ready": true,
+          "last_ack": "MOVE",
+          "last_error_code": "",
+          "last_error": "",
+          "release_mode_effective": "sucker_frozen",
+          "sucker_frozen": true,
+          "pick_tuning": {
+            "pick_approach_z_mm": 130.0,
+            "pick_descend_z_mm": 85.0,
+            "pick_pre_suction_sec": 0.25,
+            "pick_bottom_hold_sec": 0.15000000596046448,
+            "pick_lift_sec": 0.800000011920929,
+            "z_carry_floor_mm": 160.0
+          },
+          "sucker_rotation_supported": true
+        },
+        "packet_frame_id": 6,
+        "settle_sec": 1.2,
+        "drain_frames": 16,
+        "captured_frames": 10,
+        "processed_frames": 3,
+        "camera_transport": {
+          "open_count": 1,
+          "bytes_read": 1003520,
+          "content_length_payloads": 52,
+          "jpeg_marker_payloads": 0,
+          "frames_accepted": 52,
+          "frames_rejected": 0,
+          "buffer_resets": 0,
+          "reopen_count": 0,
+          "last_reject_reason": "",
+          "buffer_bytes": 221,
+          "consecutive_rejected_frames": 0,
+          "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+          "reader": "http_multipart_mjpeg",
+          "content_length_preferred": true,
+          "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+          "capture_backend": "http",
+          "open": true
+        },
+        "repeat_index": 2
+      }
+    ],
+    "label": "baseline",
+    "packet_frame_id": 6,
+    "pose_cyl": [
+      7.458000183105469,
+      174.4459991455078,
+      120.0
+    ]
+  },
+  "stop_reason": "iteration_limit",
+  "left_pose_cyl": [
+    7.458000183105469,
+    175.6459991455078,
+    120.0
+  ],
+  "best_pose_cyl": [
+    7.458000183105469,
+    175.6459991455078,
+    120.0
+  ],
+  "best_measurement": {
+    "median_center_distance_px": 3.4325077810870237,
+    "min_center_distance_px": 3.2843840646346467,
+    "max_center_distance_px": 3.5806314975394002,
+    "repeat_spread_px": 0.3142108946818485,
+    "stable": true,
+    "sample_count": 2,
+    "captured_frames": 20,
+    "processed_frames": 6,
+    "camera_transport_last": {
+      "open_count": 1,
+      "bytes_read": 6025216,
+      "content_length_payloads": 313,
+      "jpeg_marker_payloads": 0,
+      "frames_accepted": 312,
+      "frames_rejected": 1,
+      "buffer_resets": 0,
+      "reopen_count": 0,
+      "last_reject_reason": "temporal_splice:content_length",
+      "buffer_bytes": 2086,
+      "consecutive_rejected_frames": 0,
+      "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+      "reader": "http_multipart_mjpeg",
+      "content_length_preferred": true,
+      "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+      "capture_backend": "http",
+      "open": true
+    },
+    "samples": [
+      {
+        "slot_id": 1,
+        "frame_id": 33,
+        "pose_cyl": [
+          7.458000183105469,
+          175.64599609375,
+          120.0
+        ],
+        "pose_xy": [
+          -22.7987437361673,
+          -174.16007931732867
+        ],
+        "pixel": [
+          321.7069396972656,
+          243.1475830078125
+        ],
+        "pixel_center": [
+          321,
+          244
+        ],
+        "pixel_center_f": [
+          321.45819226720533,
+          244.1552533500242
+        ],
+        "geometry_center": [
+          322,
+          243
+        ],
+        "geometry_center_f": [
+          321.7069396972656,
+          243.1475830078125
+        ],
+        "grasp_pixel": [
+          320,
+          244
+        ],
+        "grasp_pixel_f": [
+          320.0,
+          244.0
+        ],
+        "center_distance_px": 3.5806314975394002,
+        "confidence": 0.55,
+        "area_px": 34788,
+        "bbox": [
+          211,
+          119,
+          434,
+          368
+        ],
+        "snapshot": {
+          "state": "IDLE",
+          "state_seq": 4233,
+          "robot_ts": 1745895329.525298,
+          "_local_receive_ts": 404213.5213102,
+          "busy": false,
+          "busy_action": "",
+          "carrying": false,
+          "robot_xy": [
+            -22.798999786376953,
+            -174.16000366210938
+          ],
+          "robot_z": 120.0,
+          "robot_cyl": {
+            "theta_deg": 7.458000183105469,
+            "radius_mm": 175.64599609375,
+            "z_mm": 120.0
+          },
+          "limits_cyl": {
+            "theta_deg": [
+              -120.0,
+              120.0
+            ],
+            "radius_mm": [
+              50.0,
+              280.0
+            ]
+          },
+          "limits_cyl_auto": {
+            "radius_mm": [
+              80.0,
+              260.0
+            ]
+          },
+          "calibration_ready": true,
+          "last_ack": "MOVE",
+          "last_error_code": "",
+          "last_error": "",
+          "release_mode_effective": "sucker_frozen",
+          "sucker_frozen": true,
+          "pick_tuning": {
+            "pick_approach_z_mm": 130.0,
+            "pick_descend_z_mm": 85.0,
+            "pick_pre_suction_sec": 0.25,
+            "pick_bottom_hold_sec": 0.15000000596046448,
+            "pick_lift_sec": 0.800000011920929,
+            "z_carry_floor_mm": 160.0
+          },
+          "sucker_rotation_supported": true
+        },
+        "packet_frame_id": 33,
+        "settle_sec": 1.2,
+        "drain_frames": 16,
+        "captured_frames": 10,
+        "processed_frames": 3,
+        "camera_transport": {
+          "open_count": 1,
+          "bytes_read": 5525504,
+          "content_length_payloads": 287,
+          "jpeg_marker_payloads": 0,
+          "frames_accepted": 286,
+          "frames_rejected": 1,
+          "buffer_resets": 0,
+          "reopen_count": 0,
+          "last_reject_reason": "temporal_splice:content_length",
+          "buffer_bytes": 1343,
+          "consecutive_rejected_frames": 0,
+          "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+          "reader": "http_multipart_mjpeg",
+          "content_length_preferred": true,
+          "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+          "capture_backend": "http",
+          "open": true
+        },
+        "repeat_index": 1
+      },
+      {
+        "slot_id": 1,
+        "frame_id": 36,
+        "pose_cyl": [
+          7.458000183105469,
+          175.64599609375,
+          120.0
+        ],
+        "pose_xy": [
+          -22.7987437361673,
+          -174.16007931732867
+        ],
+        "pixel": [
+          321.65313720703125,
+          242.8380126953125
+        ],
+        "pixel_center": [
+          321,
+          244
+        ],
+        "pixel_center_f": [
+          321.12947729220224,
+          244.41642387889175
+        ],
+        "geometry_center": [
+          322,
+          243
+        ],
+        "geometry_center_f": [
+          321.65313720703125,
+          242.8380126953125
+        ],
+        "grasp_pixel": [
+          320,
+          244
+        ],
+        "grasp_pixel_f": [
+          320.0,
+          244.0
+        ],
+        "center_distance_px": 3.2843840646346467,
+        "confidence": 0.55,
+        "area_px": 34665,
+        "bbox": [
+          211,
+          128,
+          434,
+          368
+        ],
+        "snapshot": {
+          "state": "IDLE",
+          "state_seq": 4233,
+          "robot_ts": 1745895332.0587487,
+          "_local_receive_ts": 404216.0551449,
+          "busy": false,
+          "busy_action": "",
+          "carrying": false,
+          "robot_xy": [
+            -22.798999786376953,
+            -174.16000366210938
+          ],
+          "robot_z": 120.0,
+          "robot_cyl": {
+            "theta_deg": 7.458000183105469,
+            "radius_mm": 175.64599609375,
+            "z_mm": 120.0
+          },
+          "limits_cyl": {
+            "theta_deg": [
+              -120.0,
+              120.0
+            ],
+            "radius_mm": [
+              50.0,
+              280.0
+            ]
+          },
+          "limits_cyl_auto": {
+            "radius_mm": [
+              80.0,
+              260.0
+            ]
+          },
+          "calibration_ready": true,
+          "last_ack": "MOVE",
+          "last_error_code": "",
+          "last_error": "",
+          "release_mode_effective": "sucker_frozen",
+          "sucker_frozen": true,
+          "pick_tuning": {
+            "pick_approach_z_mm": 130.0,
+            "pick_descend_z_mm": 85.0,
+            "pick_pre_suction_sec": 0.25,
+            "pick_bottom_hold_sec": 0.15000000596046448,
+            "pick_lift_sec": 0.800000011920929,
+            "z_carry_floor_mm": 160.0
+          },
+          "sucker_rotation_supported": true
+        },
+        "packet_frame_id": 36,
+        "settle_sec": 1.2,
+        "drain_frames": 16,
+        "captured_frames": 10,
+        "processed_frames": 3,
+        "camera_transport": {
+          "open_count": 1,
+          "bytes_read": 6025216,
+          "content_length_payloads": 313,
+          "jpeg_marker_payloads": 0,
+          "frames_accepted": 312,
+          "frames_rejected": 1,
+          "buffer_resets": 0,
+          "reopen_count": 0,
+          "last_reject_reason": "temporal_splice:content_length",
+          "buffer_bytes": 2086,
+          "consecutive_rejected_frames": 0,
+          "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+          "reader": "http_multipart_mjpeg",
+          "content_length_preferred": true,
+          "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+          "capture_backend": "http",
+          "open": true
+        },
+        "repeat_index": 2
+      }
+    ],
+    "label": "iter_01_candidate_05",
+    "packet_frame_id": 36,
+    "pose_cyl": [
+      7.458000183105469,
+      175.6459991455078,
+      120.0
+    ]
+  }
+}

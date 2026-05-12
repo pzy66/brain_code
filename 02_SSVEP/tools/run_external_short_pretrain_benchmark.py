@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import argparse
+import csv
 from collections import defaultdict
 from dataclasses import asdict, dataclass
 from dataclasses import replace
 from datetime import datetime
 from itertools import combinations, product
 import json
-from pathlib import Path
+import os
+from pathlib import Path, PurePosixPath
 import random
 import re
 import sys
+import traceback
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
 import numpy as np
@@ -61,6 +64,27 @@ from ssvep_core.external_ysuan_dataset import (
 )
 from ssvep_core.fast_fbcca_pretrain import FastFBCCAPretrainConfig, run_fast_fbcca_personalization
 from ssvep_core.fbcca_threshold_pretrain import FBCCAThresholdPretrainConfig, run_fbcca_threshold_pretrain
+from ssvep_core.score_classifier_runtime import (
+    CLASSIFIER_DERIVED_FEATURE_NAMES as RUNTIME_CLASSIFIER_DERIVED_FEATURE_NAMES,
+    CLASSIFIER_GATE_VARIANTS as RUNTIME_CLASSIFIER_GATE_VARIANTS,
+    CLASSIFIER_GATE_VARIANT_BASELINE_LRTMW,
+    CLASSIFIER_GATE_VARIANT_FREQUENCY_SPECIFIC_LOGISTIC,
+    CLASSIFIER_GATE_VARIANT_FREQUENCY_SPECIFIC_THRESHOLD,
+    CLASSIFIER_GATE_VARIANT_LRTMW_ENTROPY,
+    CLASSIFIER_GATE_VARIANT_LRTMW_MARGIN,
+    CLASSIFIER_GATE_VARIANT_NS2_AWARE,
+    CLASSIFIER_GATE_VARIANT_SUBJECT_FLOOR_NS2_AWARE,
+    CLASSIFIER_GATE_VARIANT_SUBJECT_THRESHOLD_FLOOR,
+    CLASSIFIER_GATE_VARIANT_WEAK_SUBJECT_GUARD,
+    FULL_REFERENCE_BANK_FEATURE_NAMES as RUNTIME_FULL_REFERENCE_BANK_FEATURE_NAMES,
+    classifier_feature_names as runtime_classifier_feature_names,
+    lrt_window_evidence_from_state,
+    normalize_frequency_specific_control_state_gates,
+    parse_classifier_gate_variant,
+    ridge5_predict_windows_from_state,
+    score_matrices_to_features as runtime_score_matrices_to_features,
+    smooth_classifier_probabilities as runtime_smooth_classifier_probabilities,
+)
 from ssvep_core.stimulus_profiles import frame_lock_frequency_report
 
 
@@ -109,28 +133,111 @@ IDLE_EVAL_MODES = ("hard_noncommand", "clean_idle_proxy", "both")
 DEFAULT_PRETRAIN_BUDGET_SEC = 120.0
 DEFAULT_PERSONALIZED_CANDIDATE_COUNT = (8, 12, 40)
 DEFAULT_FRAME_LOCKED_240_FREQS = (8.0, 9.6, 10.0, 12.0, 15.0)
+PROJECT_POSTERIOR_8_CHANNELS = ("Oz", "O1", "O2", "PO3", "POz", "PO7", "PO8", "PO4")
 WEAK_SUBJECT_AUDIT_SUBJECTS = ("S2", "S11", "S65", "S33", "S44", "S55", "S59", "S6")
 DEFAULT_CLASSIFIER_THRESHOLD_MIN_CONTROL_RECALL = 0.80
 DEFAULT_CLASSIFIER_IDLE_FP_BUDGET_PER_MIN = 1.0
 DEFAULT_CLASSIFIER_IDLE_SELECTED_WINDOWS_BUDGET_PER_MIN = 6.0
+DEFAULT_DEPLOYABLE_MIN_CONTROL_RECALL_AT_2P5S = 0.75
+DEFAULT_DEPLOYABLE_MAX_DETECTION_LATENCY_SEC = 2.5
 DEFAULT_RIDGE_L2_CANDIDATES = (0.03, 0.1, 0.3, 1.0, 3.0)
 DEFAULT_MAX_SPLITS_PER_SUBJECT = 6
 DEFAULT_STEP_SEC = 0.25
-CLASSIFIER_DERIVED_FEATURE_NAMES = (
+DEFAULT_DECISION_START_SEC = 0.5
+DEFAULT_DECISION_DEADLINE_SEC = 2.5
+DEFAULT_MIN_RELEASE_WINDOWS = 2
+DEFAULT_TIMEOUT_SEC = 86400.0
+DEFAULT_CASE_LIMIT = 0
+DEPLOYABLE_CANDIDATE_PROFILE_SCHEMA_VERSION = "external_fbcca_classifier_candidate_profile_v1"
+DEPLOYABLE_CANDIDATE_PROFILE_FILENAME = "external_fbcca_classifier_candidate_v1.json"
+SERVER_SSVEP_WRITABLE_ROOT = PurePosixPath("/data1/zkx/brain/ssvep")
+SERVER_SSVEP_LOG_ROOT = SERVER_SSVEP_WRITABLE_ROOT / "logs"
+CLASSIFIER_DERIVED_FEATURE_NAMES = tuple(RUNTIME_CLASSIFIER_DERIVED_FEATURE_NAMES)
+FULL_REFERENCE_BANK_FEATURE_NAMES = tuple(RUNTIME_FULL_REFERENCE_BANK_FEATURE_NAMES)
+CLASSIFIER_GATE_VARIANTS = tuple(RUNTIME_CLASSIFIER_GATE_VARIANTS)
+DEFAULT_CLASSIFIER_GATE_VARIANTS = (CLASSIFIER_GATE_VARIANT_BASELINE_LRTMW,)
+DEFAULT_MARGIN_CONTROL_QUANTILES = (0.05, 0.10, 0.15)
+DEFAULT_MARGIN_IDLE_QUANTILES = (0.90, 0.95, 0.975)
+DEFAULT_RATIO_IDLE_QUANTILES = (0.90, 0.95, 0.975)
+DEFAULT_ENTROPY_CONTROL_QUANTILES = (0.80, 0.85, 0.90)
+DEFAULT_ENTROPY_IDLE_QUANTILES = (0.05, 0.10, 0.15)
+DEFAULT_GLOBAL_FLOOR_QUANTILES = (0.90, 0.95, 0.975)
+DEFAULT_SUBJECT_IDLE_QUANTILES = (0.90, 0.95, 0.975)
+DEFAULT_NS2_SAFETY_FACTORS = (1.0, 1.1, 1.2, 1.3)
+DEFAULT_FREQSPEC_MARGIN_IDLE_QUANTILES = (0.90, 0.95, 0.975)
+DEFAULT_FREQSPEC_RATIO_IDLE_QUANTILES = (0.90, 0.95, 0.975)
+DEFAULT_FREQSPEC_ENTROPY_CONTROL_QUANTILES = (0.80, 0.85, 0.90)
+DEFAULT_FREQSPEC_LOGISTIC_PROB_THRESHOLDS = (0.5, 0.6, 0.7, 0.8)
+DEFAULT_FREQSPEC_LOGISTIC_NS2_WEIGHTS = (1.0, 2.0, 3.0, 5.0)
+FREQSPEC_THRESHOLD_COMBO_SET_NONE = ""
+FREQSPEC_THRESHOLD_COMBO_SET_PRIORITY6 = "priority6"
+FREQSPEC_THRESHOLD_COMBO_SETS = (
+    FREQSPEC_THRESHOLD_COMBO_SET_NONE,
+    FREQSPEC_THRESHOLD_COMBO_SET_PRIORITY6,
+)
+FREQSPEC_THRESHOLD_PRIORITY6_COMBOS = (
+    {
+        "combo_name": "mild",
+        "margin_idle_quantile": 0.90,
+        "ratio_idle_quantile": 0.90,
+        "entropy_control_quantile": 0.90,
+        "ns2_safety_factor": 1.0,
+    },
+    {
+        "combo_name": "balanced",
+        "margin_idle_quantile": 0.95,
+        "ratio_idle_quantile": 0.90,
+        "entropy_control_quantile": 0.90,
+        "ns2_safety_factor": 1.1,
+    },
+    {
+        "combo_name": "ns2_strict",
+        "margin_idle_quantile": 0.95,
+        "ratio_idle_quantile": 0.95,
+        "entropy_control_quantile": 0.85,
+        "ns2_safety_factor": 1.2,
+    },
+    {
+        "combo_name": "recall_safe",
+        "margin_idle_quantile": 0.90,
+        "ratio_idle_quantile": 0.90,
+        "entropy_control_quantile": 0.85,
+        "ns2_safety_factor": 1.1,
+    },
+    {
+        "combo_name": "margin_only-ish",
+        "margin_idle_quantile": 0.95,
+        "ratio_idle_quantile": 0.90,
+        "entropy_control_quantile": 0.90,
+        "ns2_safety_factor": 1.0,
+    },
+    {
+        "combo_name": "ratio_ns2",
+        "margin_idle_quantile": 0.90,
+        "ratio_idle_quantile": 0.95,
+        "entropy_control_quantile": 0.90,
+        "ns2_safety_factor": 1.1,
+    },
+)
+HIGH_FP_SUBGROUP_SUBJECTS = ("S22", "S19", "S24", "S12", "S14", "S06")
+LOW_RECALL_SUBGROUP_SUBJECTS = ("S11", "S01", "S18")
+OVERLAP_WATCH_SUBJECTS = ("S22", "S14")
+HIGH_RISK_VALIDATION_SUBJECTS = tuple(
+    dict.fromkeys(HIGH_FP_SUBGROUP_SUBJECTS + LOW_RECALL_SUBGROUP_SUBJECTS)
+)
+FREQSPEC_GRID_SELECTION_POLICY = "calibration_internal_validation_first"
+FREQUENCY_SPECIFIC_GATE_FEATURE_NAMES = (
+    "selected_freq_score",
     "top1_score",
     "top2_score",
     "margin",
     "ratio",
     "normalized_top1",
     "score_entropy",
-)
-FULL_REFERENCE_BANK_FEATURE_NAMES = (
-    "top_command_score",
-    "top_all_score",
-    "command_rank_in_all",
-    "top_command_to_top_all_ratio",
-    "nearest_noncommand_margin",
-    "all_bank_entropy",
+    "lrt_evidence",
+    "multiwindow_same_freq_count",
+    "multiwindow_margin_mean",
+    "multiwindow_entropy_mean",
 )
 ADAPTIVE_EVIDENCE_FEATURE_NAMES = (
     "command_probability",
@@ -264,6 +371,171 @@ class FrequencyEvalCase:
 
 
 @dataclass(frozen=True)
+class CaseContext:
+    dataset: str
+    subject: str
+    frequency_profile: str
+    frequency_set_id: str
+    selected_freqs: tuple[float, float, float, float]
+    method: str
+    calibration_blocks: tuple[int, ...]
+    holdout_blocks: tuple[int, ...]
+    split_index: int
+    window_length_s: float
+    min_enter_windows: int
+    reject_gate: str
+    implementation_level: str
+
+
+@dataclass
+class CaseTracker:
+    expected_subject_count: int
+    entries: list[dict[str, Any]]
+    failed_cases: list[dict[str, Any]]
+
+    def __init__(self, *, expected_subject_count: int) -> None:
+        self.expected_subject_count = int(expected_subject_count)
+        self.entries = []
+        self.failed_cases = []
+
+    def planned(self, ctx: CaseContext) -> None:
+        self.entries.append({**asdict(ctx), "status": "planned"})
+
+    def completed(self, ctx: CaseContext, *, row: Mapping[str, Any]) -> None:
+        self.entries.append(
+            {
+                **asdict(ctx),
+                "status": "completed",
+                "recipe_id": str(row.get("recipe_id", "")),
+                "artifact_paths": _artifact_paths_from_row(row),
+            }
+        )
+
+    def skipped(self, ctx: CaseContext, *, reason: str, detail: str = "") -> dict[str, Any]:
+        payload = _case_failure_payload(ctx, skip_or_fail="skip", reason=reason, detail=detail)
+        self.entries.append({**asdict(ctx), "status": "skipped", "skip_reason": str(reason), "detail": str(detail)})
+        self.failed_cases.append(payload)
+        return payload
+
+    def skipped_cases(self) -> list[dict[str, Any]]:
+        return [dict(item) for item in self.failed_cases if str(item.get("skip_or_fail", "")) == "skip"]
+
+    def failed_cases_only(self) -> list[dict[str, Any]]:
+        return [dict(item) for item in self.failed_cases if str(item.get("skip_or_fail", "")) == "fail"]
+
+    def status_count(self, status: str) -> int:
+        normalized = str(status).strip().lower()
+        return int(sum(1 for item in self.entries if str(item.get("status", "")).strip().lower() == normalized))
+
+    def failed(self, ctx: CaseContext, *, exc: BaseException) -> dict[str, Any]:
+        payload = _case_failure_payload(ctx, skip_or_fail="fail", reason=type(exc).__name__, detail=str(exc))
+        payload["traceback"] = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))[-4000:]
+        self.entries.append({**asdict(ctx), "status": "failed", "error_type": type(exc).__name__, "detail": str(exc)})
+        self.failed_cases.append(payload)
+        return payload
+
+    def report(self) -> dict[str, Any]:
+        grouped: dict[str, Any] = {}
+        for item in self.entries:
+            dataset = str(item.get("dataset", ""))
+            profile = str(item.get("frequency_profile", ""))
+            method = str(item.get("method", ""))
+            subject = str(item.get("subject", ""))
+            cal_key = ",".join(str(block) for block in item.get("calibration_blocks", []) or [])
+            split_key = f"split{int(item.get('split_index', 0)):02d}"
+            leaf = grouped.setdefault(dataset, {}).setdefault(profile, {}).setdefault(method, {}).setdefault(subject, {}).setdefault(cal_key, {}).setdefault(split_key, {})
+            status = str(item.get("status", "planned"))
+            leaf[status] = int(leaf.get(status, 0)) + 1
+            leaf["selected_freqs"] = [float(freq) for freq in item.get("selected_freqs", []) or []]
+            leaf["frequency_set_id"] = str(item.get("frequency_set_id", ""))
+        by_method: dict[str, dict[str, int]] = {}
+        subjects_completed_by_method: dict[str, set[str]] = {}
+        for item in self.entries:
+            key = f"{item.get('dataset','')}|{item.get('frequency_profile','')}|{item.get('method','')}"
+            status = str(item.get("status", "planned"))
+            by_method.setdefault(key, {"planned": 0, "completed": 0, "skipped": 0, "failed": 0})
+            if status in by_method[key]:
+                by_method[key][status] += 1
+            if status == "completed":
+                subjects_completed_by_method.setdefault(key, set()).add(f"{item.get('dataset','')}:{item.get('subject','')}")
+        flat = []
+        for key, counts in sorted(by_method.items()):
+            dataset, profile, method = key.split("|", 2)
+            completed_subjects = sorted(subjects_completed_by_method.get(key, set()))
+            flat.append(
+                {
+                    "dataset": dataset,
+                    "frequency_profile": profile,
+                    "method": method,
+                    **counts,
+                    "subjects_completed": len(completed_subjects),
+                    "subjects_expected": int(self.expected_subject_count),
+                    "shared_eligible": bool(
+                        self.expected_subject_count > 0 and len(completed_subjects) == int(self.expected_subject_count)
+                    ),
+                    "completed_subject_ids": completed_subjects,
+                }
+            )
+        return {
+            "schema_version": "ssvep_external_short_pretrain_coverage_v1",
+            "subjects_expected": int(self.expected_subject_count),
+            "event_count": int(len(self.entries)),
+            "case_count": int(self.status_count("planned")),
+            "planned_case_count": int(self.status_count("planned")),
+            "completed_case_count": int(self.status_count("completed")),
+            "skipped_case_count": int(self.status_count("skipped")),
+            "failed_case_count": int(len(self.failed_cases)),
+            "hard_failed_case_count": int(self.status_count("failed")),
+            "by_dataset_frequency_profile_method_subject": grouped,
+            "by_dataset_frequency_profile_method": flat,
+        }
+
+
+def _case_failure_payload(ctx: CaseContext, *, skip_or_fail: str, reason: str, detail: str = "") -> dict[str, Any]:
+    return {
+        "dataset": str(ctx.dataset),
+        "subject": str(ctx.subject),
+        "frequency_profile": str(ctx.frequency_profile),
+        "frequency_set_id": str(ctx.frequency_set_id),
+        "selected_freqs": [float(freq) for freq in ctx.selected_freqs],
+        "method": str(ctx.method),
+        "calibration_blocks": [int(block) for block in ctx.calibration_blocks],
+        "excluded_test_blocks": [int(block) for block in ctx.holdout_blocks],
+        "split_index": int(ctx.split_index),
+        "window_length_s": float(ctx.window_length_s),
+        "min_enter_windows": int(ctx.min_enter_windows),
+        "reject_gate": str(ctx.reject_gate),
+        "implementation_level": str(ctx.implementation_level),
+        "skip_or_fail": str(skip_or_fail),
+        "skip_reason": str(reason) if str(skip_or_fail) == "skip" else "",
+        "error_type": str(reason) if str(skip_or_fail) == "fail" else "",
+        "detail": str(detail),
+    }
+
+
+def _exception_is_insufficient_training(exc: BaseException) -> bool:
+    message = f"{type(exc).__name__}: {exc}".lower()
+    needles = (
+        "insufficient",
+        "not enough",
+        "too few",
+        "requires at least",
+        "requires >= ",
+        "no calibration",
+        "empty calibration",
+        "singular",
+        "not invertible",
+        "sample",
+        "trial",
+    )
+    return any(needle in message for needle in needles)
+
+
+def _is_tdca_insufficient_case(ctx: CaseContext, exc: BaseException) -> bool:
+    return str(ctx.method).strip().lower() == "tdca5" and _exception_is_insufficient_training(exc)
+
+
+@dataclass(frozen=True)
 class FBCCALDA5Model:
     freqs: tuple[float, float, float, float]
     labels: tuple[str, ...]
@@ -289,6 +561,17 @@ class FBCCALDA5Model:
     lrt_window_th: float = 0.0
     lrt_enter_th: float = 0.0
     lrt_decay: float = DEFAULT_LRT_MULTIWINDOW_DECAY
+    gate_variant: str = CLASSIFIER_GATE_VARIANT_BASELINE_LRTMW
+    score_shape_margin_index: Optional[int] = None
+    score_shape_ratio_index: Optional[int] = None
+    score_shape_entropy_index: Optional[int] = None
+    score_shape_margin_th: Optional[float] = None
+    score_shape_ratio_th: Optional[float] = None
+    score_shape_entropy_th: Optional[float] = None
+    lrt_window_floor_th: Optional[float] = None
+    weak_subject_guard_active: bool = False
+    weak_subject_guard_reasons: tuple[str, ...] = ()
+    frequency_specific_control_state_gates: Optional[dict[str, dict[str, Any]]] = None
 
 
 @dataclass(frozen=True)
@@ -317,11 +600,38 @@ class FBCCARidge5Model:
     lrt_window_th: float = 0.0
     lrt_enter_th: float = 0.0
     lrt_decay: float = DEFAULT_LRT_MULTIWINDOW_DECAY
+    gate_variant: str = CLASSIFIER_GATE_VARIANT_BASELINE_LRTMW
+    score_shape_margin_index: Optional[int] = None
+    score_shape_ratio_index: Optional[int] = None
+    score_shape_entropy_index: Optional[int] = None
+    score_shape_margin_th: Optional[float] = None
+    score_shape_ratio_th: Optional[float] = None
+    score_shape_entropy_th: Optional[float] = None
+    lrt_window_floor_th: Optional[float] = None
+    weak_subject_guard_active: bool = False
+    weak_subject_guard_reasons: tuple[str, ...] = ()
+    frequency_specific_control_state_gates: Optional[dict[str, dict[str, Any]]] = None
 
 
 def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json_dumps(json_safe(payload)) + "\n", encoding="utf-8")
+
+
+def _write_csv(path: Path, rows: Sequence[Mapping[str, Any]], fieldnames: Sequence[str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(fieldnames), extrasaction="ignore")
+        writer.writeheader()
+        for row in rows:
+            flattened = {}
+            for key, value in dict(row).items():
+                flattened[key] = (
+                    json.dumps(json_safe(value), ensure_ascii=False)
+                    if isinstance(value, (dict, list, tuple))
+                    else value
+                )
+            writer.writerow(flattened)
 
 
 def _safe_float(value: Any, default: float = float("nan")) -> float:
@@ -332,6 +642,579 @@ def _safe_float(value: Any, default: float = float("nan")) -> float:
         return result
     except Exception:
         return float(default)
+
+
+def _safe_mean(values: Sequence[Any], default: float = float("nan")) -> float:
+    parsed = [
+        float(value)
+        for value in (_safe_float(item, float("nan")) for item in values)
+        if np.isfinite(float(value))
+    ]
+    if not parsed:
+        return float(default)
+    return float(np.mean(np.asarray(parsed, dtype=np.float64)))
+
+
+def _finite_or_none(value: Any) -> Optional[float]:
+    parsed = _safe_float(value, float("nan"))
+    if not np.isfinite(parsed):
+        return None
+    return float(parsed)
+
+
+def _safe_quantile(values: Sequence[Any] | np.ndarray, quantile: float, default: float = 0.0) -> float:
+    arr = np.asarray(values, dtype=np.float64).reshape(-1)
+    arr = arr[np.isfinite(arr)]
+    if arr.size <= 0:
+        return float(default)
+    return float(np.quantile(arr, min(max(float(quantile), 0.0), 1.0)))
+
+
+def _first_finite_metric(metrics: Mapping[str, Any], keys: Sequence[str], default: float = float("nan")) -> float:
+    for key in keys:
+        value = _safe_float(metrics.get(key), float("nan"))
+        if np.isfinite(value):
+            return float(value)
+    return float(default)
+
+
+def _frequency_profile_name(freqs: Sequence[float]) -> str:
+    key = tuple(round(float(freq), 6) for freq in freqs)
+    if key == (8.0, 10.0, 12.0, 15.0):
+        return "deploy_current_profile"
+    if key == (9.8, 12.0, 14.8, 15.8):
+        return "exploratory_profile"
+    return "custom_" + "_".join(f"{float(freq):g}".replace(".", "p") for freq in freqs)
+
+
+def _method_implementation_level(method_name: str, calibration_block_count: int) -> str:
+    name = str(method_name).strip().lower()
+    cal_count = int(calibration_block_count)
+    if name in {"fbcca_lda5", "fbcca_ridge5", "zero_shot_default"}:
+        return "paper-faithful"
+    if name == "trca5":
+        return "paper-faithful" if cal_count >= 2 else "engineering-approx"
+    if name == "trca_r5":
+        return "paper-faithful" if cal_count >= 2 else "engineering-approx"
+    return "engineering-approx"
+
+
+def _idle_source_policy_for_dataset(dataset: str) -> dict[str, Any]:
+    normalized = str(dataset).strip().lower()
+    if normalized == "ysu_an":
+        return {
+            "primary_idle_source": "real_idle",
+            "idle_source_policy": "real_no_control_trials",
+            "real_idle_available": True,
+            "approx_idle_allowed": False,
+            "note": "YSU-an uses explicit NS1/NS2/NS3 no-control trials for reject evaluation.",
+        }
+    return {
+        "primary_idle_source": "engineering_approx",
+        "idle_source_policy": "engineering_approx_noncommand_targets",
+        "real_idle_available": False,
+        "approx_idle_allowed": True,
+        "note": "This external dataset path lacks reliable rest/blank holdout by default; non-command target trials are marked engineering-approx idle.",
+    }
+
+
+def _metric_definitions_payload(
+    *,
+    step_sec: float,
+    decision_start_sec: float,
+    decision_deadline_sec: float,
+    min_release_windows: int,
+) -> dict[str, Any]:
+    return {
+        "state_definition": "async5 means 4 command frequencies plus reject/no-control; classifiers train only command frequencies and reject is gate-derived.",
+        "step_size_s": float(step_sec),
+        "decision_start_s": float(decision_start_sec),
+        "decision_deadline_s": float(decision_deadline_sec),
+        "min_enter_definition": "A control output is emitted only after min_enter consecutive windows pass the enter gate.",
+        "min_release_windows": int(min_release_windows),
+        "min_release_definition": "Release requires consecutive windows below the control gate; replay support is metric-schema only in this benchmark.",
+        "detection_latency_s": "stimulus onset to the first correct control output; missed control trials use the trial duration plus window length as fallback in async decision metrics.",
+        "switch_latency_s": "target switch to first correct new-target output; unsupported external fixed-trial replay reports support=false.",
+        "release_latency_s": "entry into no-control to stable release; unsupported external fixed-trial replay reports support=false.",
+    }
+
+
+def _reject_gate_name(*, method_name: str, threshold_policy: str, score_bank_mode: str) -> str:
+    normalized = _parse_classifier_threshold_policy(threshold_policy)
+    if str(method_name).strip().lower() in {"zero_shot_default", "fast_fbcca", "threshold_pretrain"}:
+        return "profile_gate"
+    if normalized == "balanced":
+        return "confidence_threshold"
+    if normalized == "balanced_recall_guard":
+        return "confidence_threshold_recall_guard"
+    return f"{normalized}:{_parse_score_bank_mode(score_bank_mode)}"
+
+
+def _artifact_paths_from_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    calibration_profile = dict(row.get("calibration_profile", {}) or {})
+    paths: dict[str, Any] = {
+        "profile_path": str(calibration_profile.get("profile_path", "")),
+        "profile_v2_path": str(calibration_profile.get("profile_v2_path", "")),
+        "candidate_artifact_path": str(calibration_profile.get("candidate_artifact_path", "")),
+    }
+    return {key: value for key, value in paths.items() if value}
+
+
+def _candidate_artifact_paths_for_recipe(
+    rows: Sequence[Mapping[str, Any]],
+    recipe: Mapping[str, Any],
+) -> list[str]:
+    if not recipe:
+        return []
+    embedded = list(dict(dict(recipe).get("artifact_paths", {}) or {}).get("candidate_artifacts", []) or [])
+    row_paths = [
+        str(dict(row.get("calibration_profile", {}) or {}).get("candidate_artifact_path", ""))
+        for row in _deployable_recipe_rows(rows, recipe)
+        if str(dict(row.get("calibration_profile", {}) or {}).get("candidate_artifact_path", "")).strip()
+    ]
+    return sorted(dict.fromkeys(str(path) for path in [*embedded, *row_paths] if str(path).strip()))
+
+
+def _enrich_result_row(
+    row: Mapping[str, Any],
+    *,
+    frequency_profile: str,
+    frequency_case: FrequencyEvalCase,
+    step_sec: float,
+    decision_start_sec: float,
+    decision_deadline_sec: float,
+    min_release_windows: int,
+    threshold_policy: str,
+    score_bank_mode: str,
+) -> dict[str, Any]:
+    enriched = dict(row)
+    method_name = str(enriched.get("method", ""))
+    calibration_blocks = [int(block) for block in enriched.get("calibration_blocks", []) or []]
+    calibration_block_count = int(len(calibration_blocks))
+    summary_metrics = dict(enriched.get("summary_metrics", {}) or {})
+    idle_policy = _idle_source_policy_for_dataset(str(enriched.get("dataset", "")))
+    if not np.isfinite(_safe_float(summary_metrics.get("real_idle_fp_per_min"), float("nan"))):
+        if bool(idle_policy.get("real_idle_available", False)):
+            summary_metrics["real_idle_fp_per_min"] = _safe_float(summary_metrics.get("mixed_idle_fp_per_min"), float("nan"))
+        else:
+            summary_metrics["real_idle_fp_per_min"] = float("nan")
+    if not np.isfinite(_safe_float(summary_metrics.get("approx_idle_fp_per_min"), float("nan"))):
+        summary_metrics["approx_idle_fp_per_min"] = _safe_float(summary_metrics.get("idle_fp_per_min"), float("inf"))
+    if not np.isfinite(_safe_float(summary_metrics.get("mixed_idle_fp_per_min"), float("nan"))):
+        summary_metrics["mixed_idle_fp_per_min"] = _first_finite_metric(
+            summary_metrics,
+            ("real_idle_fp_per_min", "approx_idle_fp_per_min", "idle_fp_per_min"),
+            default=float("inf"),
+        )
+    implementation_level = _method_implementation_level(method_name, calibration_block_count)
+    reject_gate = _reject_gate_name(
+        method_name=method_name,
+        threshold_policy=threshold_policy,
+        score_bank_mode=score_bank_mode,
+    )
+    enriched["frequency_profile"] = str(frequency_profile)
+    enriched["frequency_set_id"] = str(frequency_case.frequency_set_id)
+    enriched["frequency_selection_mode"] = str(frequency_case.mode)
+    enriched["selected_freqs"] = [float(freq) for freq in frequency_case.freqs]
+    enriched["window_length_s"] = _safe_float(_window_length_from_row(enriched), 0.0)
+    enriched["step_size_s"] = float(step_sec)
+    enriched["decision_start_s"] = float(decision_start_sec)
+    enriched["decision_deadline_s"] = float(decision_deadline_sec)
+    enriched["min_release_windows"] = int(min_release_windows)
+    enriched["reject_gate"] = reject_gate
+    calibration_profile = dict(enriched.get("calibration_profile", {}) or {})
+    fit_summary = dict(calibration_profile.get("fit_summary", {}) or {})
+    gate_variant = parse_classifier_gate_variant(
+        calibration_profile.get("gate_variant", fit_summary.get("gate_variant", CLASSIFIER_GATE_VARIANT_BASELINE_LRTMW))
+    )
+    gate_variant_params = dict(
+        calibration_profile.get(
+            "gate_variant_params",
+            fit_summary.get("gate_variant_params", {"gate_variant": gate_variant}),
+        )
+        or {"gate_variant": gate_variant}
+    )
+    enriched["gate_variant"] = gate_variant
+    enriched["gate_variant_params"] = gate_variant_params
+    enriched["implementation_level"] = implementation_level
+    enriched["paper_faithful"] = bool(implementation_level == "paper-faithful")
+    enriched["engineering_approx"] = bool(implementation_level != "paper-faithful")
+    enriched["idle_source_policy"] = idle_policy
+    enriched["artifact_paths"] = _artifact_paths_from_row(enriched)
+    enriched["summary_metrics"] = summary_metrics
+    diagnostics = dict(enriched.get("ns2_selected_freq_diagnostics", {}) or {})
+    for diag_key in ("ns2_by_selected_freq", "ns2_by_subject_freq", "selected_freq_confusion"):
+        if diag_key in diagnostics:
+            diagnostics[diag_key] = [
+                {
+                    **dict(item),
+                    "frequency_profile": str(frequency_profile),
+                    "frequency_set_id": str(frequency_case.frequency_set_id),
+                    "selected_freqs": [float(freq) for freq in frequency_case.freqs],
+                    "method": method_name,
+                    "calibration_blocks": [int(block) for block in calibration_blocks],
+                    "holdout_blocks": [int(block) for block in enriched.get("holdout_blocks", []) or []],
+                    "win_sec": _safe_float(enriched.get("window_length_s"), 0.0),
+                    "step_sec": float(step_sec),
+                    "min_enter_windows": int(
+                        dict(enriched.get("calibration_profile", {}) or {}).get("min_enter_windows", 0) or 0
+                    ),
+                    "smoothing_windows": int(
+                        dict(enriched.get("calibration_profile", {}) or {}).get("smoothing_windows", 1) or 1
+                    ),
+                }
+                for item in list(diagnostics.get(diag_key, []) or [])
+            ]
+    enriched["ns2_selected_freq_diagnostics"] = diagnostics
+    trace_diagnostics = dict(enriched.get("logistic_trace_diagnostics", {}) or {})
+    for trace_key in (
+        "logistic_trace_windows",
+        "logistic_trace_trial_summary",
+        "logistic_transition_counts_by_subject",
+        "logistic_transition_counts_by_frequency",
+        "logistic_feature_summary_tp_fp",
+    ):
+        if trace_key in trace_diagnostics:
+            trace_diagnostics[trace_key] = [
+                {
+                    **dict(item),
+                    "dataset": str(enriched.get("dataset", "")) or str(dict(item).get("dataset", "")),
+                    "subject": str(enriched.get("subject", "")) or str(dict(item).get("subject", "")),
+                    "split_index": int(enriched.get("split_index", dict(item).get("split_id", 0)) or 0),
+                    "method": method_name,
+                    "recipe_id": str(enriched.get("recipe_id", dict(item).get("recipe_id", ""))),
+                    "gate_variant": gate_variant,
+                    "frequency_profile": str(frequency_profile),
+                    "frequency_set_id": str(frequency_case.frequency_set_id),
+                    "calibration_blocks": [int(block) for block in calibration_blocks],
+                    "holdout_blocks": [int(block) for block in enriched.get("holdout_blocks", []) or []],
+                    "win_sec": _safe_float(enriched.get("window_length_s"), 0.0),
+                    "step_sec": float(step_sec),
+                    "min_enter_windows": int(
+                        dict(enriched.get("calibration_profile", {}) or {}).get("min_enter_windows", 0) or 0
+                    ),
+                    "smoothing_windows": int(
+                        dict(enriched.get("calibration_profile", {}) or {}).get("smoothing_windows", 1) or 1
+                    ),
+                }
+                for item in list(trace_diagnostics.get(trace_key, []) or [])
+            ]
+    enriched["logistic_trace_diagnostics"] = trace_diagnostics
+    enriched["per_frequency_metrics"] = [
+        {
+            **dict(item),
+            "dataset": str(enriched.get("dataset", "")),
+            "subject": str(enriched.get("subject", "")),
+            "split_index": int(enriched.get("split_index", 0) or 0),
+            "method": method_name,
+            "recipe_id": str(enriched.get("recipe_id", "")),
+            "gate_variant": gate_variant,
+            "frequency_profile": str(frequency_profile),
+            "frequency_set_id": str(frequency_case.frequency_set_id),
+            "calibration_blocks": [int(block) for block in calibration_blocks],
+            "win_sec": _safe_float(enriched.get("window_length_s"), 0.0),
+            "step_sec": float(step_sec),
+            "min_enter_windows": int(dict(enriched.get("calibration_profile", {}) or {}).get("min_enter_windows", 0) or 0),
+            "smoothing_windows": int(dict(enriched.get("calibration_profile", {}) or {}).get("smoothing_windows", 1) or 1),
+        }
+        for item in list(enriched.get("per_frequency_metrics", []) or [])
+    ]
+    return enriched
+
+
+def _window_length_from_row(row: Mapping[str, Any]) -> float:
+    calibration_profile = dict(row.get("calibration_profile", {}) or {})
+    for key in ("win_sec", "window_length_s"):
+        if key in calibration_profile:
+            return _safe_float(calibration_profile.get(key), 0.0)
+        if key in row:
+            return _safe_float(row.get(key), 0.0)
+    fit_summary = dict(calibration_profile.get("fit_summary", {}) or {})
+    if "win_sec" in fit_summary:
+        return _safe_float(fit_summary.get("win_sec"), 0.0)
+    recipe = str(row.get("recipe_id", ""))
+    match = re.search(r"win([0-9]+(?:p[0-9]+)?)", recipe)
+    if match:
+        return float(match.group(1).replace("p", "."))
+    return 0.0
+
+
+def _resource_limits_payload(timeout_sec: float, *, case_limit: int = DEFAULT_CASE_LIMIT) -> dict[str, Any]:
+    cpu_count = int(os.cpu_count() or 1)
+    return {
+        "gpu_max_concurrent_tasks": 1,
+        "cpu_max_workers": int(min(8, max(1, cpu_count // 2))),
+        "timeout_sec": float(timeout_sec),
+        "timeout_enabled": bool(float(timeout_sec) > 0.0),
+        "case_limit": int(max(0, int(case_limit))),
+        "case_limit_enabled": bool(int(max(0, int(case_limit))) > 0),
+        "explicit_run_id_required": True,
+    }
+
+
+def _artifact_manifest_paths(
+    *,
+    report_root: Path,
+    run_id: str,
+    log_path: Path,
+    failed_cases_path: Path,
+    coverage_report_path: Path,
+    server_log_path: Optional[Path | PurePosixPath] = None,
+) -> dict[str, Any]:
+    resolved_server_log = server_log_path or (SERVER_SSVEP_LOG_ROOT / f"{run_id}.log")
+    return {
+        "summary_json": str(report_root / "summary.json"),
+        "summary_md": str(report_root / "summary.md"),
+        "partial_summary_json": str(report_root / "partial_summary.json"),
+        "failed_cases_json": str(failed_cases_path),
+        "coverage_report_json": str(coverage_report_path),
+        "subject_breakdown_csv": str(report_root / "subject_breakdown.csv"),
+        "subtype_breakdown_csv": str(report_root / "subtype_breakdown.csv"),
+        "ns2_by_selected_freq_csv": str(report_root / "ns2_by_selected_freq.csv"),
+        "ns2_by_subject_freq_csv": str(report_root / "ns2_by_subject_freq.csv"),
+        "selected_freq_confusion_csv": str(report_root / "selected_freq_confusion.csv"),
+        "per_frequency_metrics_csv": str(report_root / "per_frequency_metrics.csv"),
+        "candidate_comparison_csv": str(report_root / "candidate_comparison.csv"),
+        "gate_params_json": str(report_root / "gate_params.json"),
+        "gate_params_by_frequency_json": str(report_root / "gate_params_by_frequency.json"),
+        "logistic_trace_windows_csv": str(report_root / "logistic_trace_windows.csv"),
+        "logistic_trace_trial_summary_csv": str(report_root / "logistic_trace_trial_summary.csv"),
+        "logistic_transition_counts_by_subject_csv": str(report_root / "logistic_transition_counts_by_subject.csv"),
+        "logistic_transition_counts_by_frequency_csv": str(report_root / "logistic_transition_counts_by_frequency.csv"),
+        "logistic_feature_summary_tp_fp_csv": str(report_root / "logistic_feature_summary_tp_fp.csv"),
+        "run_log_copy": str(report_root / "logs" / f"{run_id}.log"),
+        "deployable_candidate_profile_json": str(report_root / DEPLOYABLE_CANDIDATE_PROFILE_FILENAME),
+        "local_log": str(log_path),
+        "server_log_contract": str(resolved_server_log),
+    }
+
+
+def _recipe_token_value(recipe_id: str, prefix: str, default: float) -> float:
+    match = re.search(rf"(?:^|_){re.escape(prefix)}([0-9]+(?:p[0-9]+)?)", str(recipe_id))
+    if not match:
+        return float(default)
+    return float(str(match.group(1)).replace("p", "."))
+
+
+def _recipe_has_token(recipe_id: str, token: str) -> bool:
+    return bool(re.search(rf"(?:^|_){re.escape(token)}(?:_|$)", str(recipe_id)))
+
+
+def _deployable_recipe_rows(rows: Sequence[Mapping[str, Any]], recipe: Mapping[str, Any]) -> list[dict[str, Any]]:
+    if not recipe:
+        return []
+    method = str(recipe.get("method", ""))
+    recipe_id = str(recipe.get("recipe_id", ""))
+    frequency_set_id = str(recipe.get("frequency_set_id", ""))
+    idle_multiplier = _safe_float(recipe.get("idle_multiplier"), float("nan"))
+    calibration_block_count = int(_safe_float(recipe.get("calibration_block_count"), -1.0))
+    matches: list[dict[str, Any]] = []
+    for row in rows:
+        row_recipe_id = str(row.get("aggregate_recipe_id") or row.get("recipe_id", ""))
+        if method and str(row.get("method", "")) != method:
+            continue
+        if recipe_id and row_recipe_id != recipe_id:
+            continue
+        if frequency_set_id and str(row.get("frequency_set_id", "")) != frequency_set_id:
+            continue
+        row_idle_multiplier = _safe_float(dict(row.get("split_summary", {}) or {}).get("idle_multiplier"), float("nan"))
+        if np.isfinite(idle_multiplier) and (
+            not np.isfinite(row_idle_multiplier) or abs(float(row_idle_multiplier) - float(idle_multiplier)) > 1e-9
+        ):
+            continue
+        calibration_blocks = [int(block) for block in row.get("calibration_blocks", []) or []]
+        if calibration_block_count >= 0 and len(calibration_blocks) != calibration_block_count:
+            continue
+        matches.append(dict(row))
+    return matches
+
+
+def _deployable_candidate_profile_payload(
+    *,
+    run_id: str,
+    best_deployable_shared_recipe: Mapping[str, Any],
+    rows: Sequence[Mapping[str, Any]],
+    channel_compatibility: Mapping[str, Any],
+    artifact_paths: Mapping[str, Any],
+) -> dict[str, Any]:
+    recipe = dict(best_deployable_shared_recipe or {})
+    candidate_rows = _deployable_recipe_rows(rows, recipe)
+    recipe_id = str(recipe.get("recipe_id", ""))
+    calibration_profile = dict(recipe.get("calibration_profile", {}) or {})
+    min_enter_windows = int(_recipe_token_value(recipe_id, "me", calibration_profile.get("min_enter_windows", 1)))
+    smoothing_windows = int(_recipe_token_value(recipe_id, "sm", 1.0))
+    max_gap_windows = int(_recipe_token_value(recipe_id, "gap", 0.0))
+    threshold_policy = (
+        CLASSIFIER_LRT_MULTIWINDOW_REJECT_GATE_POLICY
+        if _recipe_has_token(recipe_id, "lrtmw")
+        else CLASSIFIER_ADAPTIVE_EVIDENCE_GATE_POLICY
+        if _recipe_has_token(recipe_id, "aeg")
+        else CLASSIFIER_SUBJECT_ADAPTIVE_THRESHOLD_POLICY
+        if _recipe_has_token(recipe_id, "sat")
+        else DEFAULT_CLASSIFIER_THRESHOLD_POLICY
+    )
+    win_sec = _recipe_token_value(recipe_id, "win", recipe.get("mean_detection_latency_s", DEFAULT_CLASSIFIER_WIN_SEC_CANDIDATES[0]))
+    candidate_paths = [
+        str(dict(row.get("calibration_profile", {}) or {}).get("candidate_artifact_path", ""))
+        for row in candidate_rows
+        if str(dict(row.get("calibration_profile", {}) or {}).get("candidate_artifact_path", "")).strip()
+    ]
+    unique_candidate_paths = sorted(dict.fromkeys(candidate_paths))
+    return {
+        "schema_version": DEPLOYABLE_CANDIDATE_PROFILE_SCHEMA_VERSION,
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "run_id": str(run_id),
+        "status": "deployable_candidate_found" if recipe else "no_deployable_candidate",
+        "runtime_loadable": bool(recipe) and False,
+        "runtime_load_note": (
+            "Shared recipe manifest only. The runtime bridge exists for per-subject profiles that "
+            "include model_params.state; do not copy this JSON or recipe manifest over "
+            "datasets/profiles/ssvep/default_profile.json."
+        ),
+        "candidate_name": "external_fbcca_classifier_candidate_v1",
+        "recommended_short_pretrain_recipe": {
+            "method": str(recipe.get("method", "")),
+            "recipe_id": recipe_id,
+            "decoder": "fbcca_fixed_all8",
+            "classifier": "fbcca_score_ridge_5class",
+            "score_bank_mode": "full_reference_bank",
+            "threshold_policy": threshold_policy,
+            "win_sec": float(win_sec),
+            "step_sec": float(DEFAULT_STEP_SEC),
+            "min_enter_windows": int(min_enter_windows),
+            "max_gap_windows": int(max_gap_windows),
+            "smoothing_windows": int(smoothing_windows),
+            "idle_multiplier": _safe_float(recipe.get("idle_multiplier"), float("nan")),
+            "calibration_block_count": int(_safe_float(recipe.get("calibration_block_count"), 0.0)),
+            "selected_freqs": [float(freq) for freq in recipe.get("selected_freqs", []) or []],
+            "frequency_set_id": str(recipe.get("frequency_set_id", "")),
+            "channel_weight_mode": None,
+            "channel_weights": None,
+        },
+        "deployment_budget": dict(recipe.get("deployable_budget", {}) or {}),
+        "budget_checks": dict(recipe.get("deployable_budget_checks", {}) or {}),
+        "budget_pass": bool(recipe.get("deployable_budget_pass", False)),
+        "validation_metrics": {
+            "mean_idle_fp_per_min": _finite_or_none(recipe.get("mean_idle_fp_per_min")),
+            "mean_mixed_idle_fp_per_min": _finite_or_none(recipe.get("mean_mixed_idle_fp_per_min")),
+            "mean_control_recall": _finite_or_none(recipe.get("mean_control_recall")),
+            "mean_control_recall_at_2.5s": _finite_or_none(recipe.get("mean_control_recall_at_2.5s")),
+            "mean_detection_latency_s": _finite_or_none(recipe.get("mean_detection_latency_s")),
+            "mean_ns1_fp_per_min": _finite_or_none(recipe.get("mean_ns1_fp_per_min")),
+            "mean_ns2_fp_per_min": _finite_or_none(recipe.get("mean_ns2_fp_per_min")),
+            "mean_ns3_fp_per_min": _finite_or_none(recipe.get("mean_ns3_fp_per_min")),
+            "expected_subject_count": int(_safe_float(recipe.get("expected_subject_count"), 0.0)),
+            "coverage_subject_count": int(_safe_float(recipe.get("coverage_subject_count"), 0.0)),
+            "split_count": int(_safe_float(recipe.get("split_count"), 0.0)),
+        },
+        "channel_contract": {
+            "contract": "strict_required_8_posterior",
+            "project_channel_names": list(PROJECT_POSTERIOR_8_CHANNELS),
+            "all_loaded_subjects_match_project_channel_contract": bool(
+                dict(channel_compatibility or {}).get("all_loaded_subjects_match_project_channel_contract", False)
+            ),
+            "only_required_channels_used": True,
+        },
+        "candidate_artifacts": {
+            "matching_row_count": int(len(candidate_rows)),
+            "candidate_artifact_count": int(len(unique_candidate_paths)),
+            "candidate_artifact_paths": unique_candidate_paths,
+        },
+        "artifact_paths": dict(artifact_paths),
+        "next_steps": [
+            "Use this recipe as the short-pretrain default grid for live calibration.",
+            "Keep channel weights disabled for the first deployable candidate.",
+            "Tune NS2-specific LRT rejection before changing the decoder if no-control FP rises in live data.",
+            "Convert per-subject runtime_loadable candidate artifacts to ThresholdProfile JSON before online loading.",
+        ],
+    }
+
+
+def _run_metadata_payload(
+    *,
+    run_id: str,
+    datasets: Sequence[str],
+    freqs: Sequence[float],
+    methods: Sequence[str],
+    subjects_expected: int,
+    calibration_blocks: Sequence[int],
+    window_lengths: Sequence[float],
+    score_bank_mode: str,
+    classifier_gate_variants: Sequence[str] = DEFAULT_CLASSIFIER_GATE_VARIANTS,
+    idle_eval_mode: str,
+    timeout_sec: float,
+    artifact_paths: Mapping[str, Any],
+) -> dict[str, Any]:
+    frequency_profile = _frequency_profile_name(freqs)
+    return {
+        "run_id": str(run_id),
+        "dataset": ",".join(str(item) for item in datasets),
+        "frequency_profile": frequency_profile,
+        "selected_freqs": [float(freq) for freq in freqs],
+        "method": ",".join(str(item) for item in methods),
+        "subjects_expected": int(subjects_expected),
+        "calibration_blocks": [int(block) for block in calibration_blocks],
+        "window_length_s": [float(win_sec) for win_sec in window_lengths],
+        "score_bank_mode": str(score_bank_mode),
+        "classifier_gate_variants": [parse_classifier_gate_variant(item) for item in classifier_gate_variants],
+        "idle_eval_mode": str(idle_eval_mode),
+        "implementation_scope": "pseudo-online/offline replay only; no runtime profile writeback",
+        "candidate_artifacts_only": True,
+        "server_writable_root": str(SERVER_SSVEP_WRITABLE_ROOT),
+        "server_log_contract": str(SERVER_SSVEP_LOG_ROOT / f"{run_id}.log"),
+        "timeout_sec": float(timeout_sec),
+        "artifact_paths": dict(artifact_paths),
+    }
+
+
+def _evaluation_contract_payload(
+    *,
+    datasets: Sequence[str],
+    freqs: Sequence[float],
+    methods: Sequence[str],
+    subjects_expected: int,
+    subjects_completed: int,
+    calibration_blocks: Sequence[int],
+    window_lengths: Sequence[float],
+    step_sec: float,
+    decision_start_sec: float,
+    decision_deadline_sec: float,
+    min_release_windows: int,
+    reject_gate: str,
+    artifact_paths: Mapping[str, Any],
+    implementation_level: str,
+) -> dict[str, Any]:
+    payload = _metric_definitions_payload(
+        step_sec=float(step_sec),
+        decision_start_sec=float(decision_start_sec),
+        decision_deadline_sec=float(decision_deadline_sec),
+        min_release_windows=int(min_release_windows),
+    )
+    payload.update(
+        {
+            "dataset": ",".join(str(item) for item in datasets),
+            "frequency_profile": _frequency_profile_name(freqs),
+            "selected_freqs": [float(freq) for freq in freqs],
+            "method": ",".join(str(item) for item in methods),
+            "subjects_expected": int(subjects_expected),
+            "subjects_completed": int(subjects_completed),
+            "calibration_blocks": [int(block) for block in calibration_blocks],
+            "window_length_s": [float(win_sec) for win_sec in window_lengths],
+            "reject_gate": str(reject_gate),
+            "artifact_paths": dict(artifact_paths),
+            "implementation_level": str(implementation_level),
+            "paper_faithful": bool(str(implementation_level) == "paper-faithful"),
+            "engineering_approx": bool(str(implementation_level) != "paper-faithful"),
+            "trial_block_split_guard": (
+                "calibration, validation/threshold fitting, templates, reference banks, and LDA/Ridge fits "
+                "are block/trial split; test/holdout blocks are excluded from fitting."
+            ),
+            "no_control_policy": (
+                "4 command frequencies are trained as supervised classes; no-control is produced only by the reject gate."
+            ),
+        }
+    )
+    return payload
 
 
 def _parse_choice(raw: str | None, *, default: str, choices: Sequence[str], label: str) -> str:
@@ -356,7 +1239,11 @@ def _classifier_rank_key(metrics: Mapping[str, Any], *, tie_breaker: float = 0.0
     control_recall_at_2p5s = _safe_float(metrics.get("control_recall_at_2.5s"), 0.0)
     control_recall_at_3s = _safe_float(metrics.get("control_recall_at_3s"), 0.0)
     recall_shortfall = max(0.0, float(DEFAULT_CLASSIFIER_THRESHOLD_MIN_CONTROL_RECALL) - float(control_recall))
-    idle_fp = _safe_float(metrics.get("idle_fp_per_min"), float("inf"))
+    idle_fp = _first_finite_metric(
+        metrics,
+        ("mixed_idle_fp_per_min", "real_idle_fp_per_min", "approx_idle_fp_per_min", "idle_fp_per_min"),
+        float("inf"),
+    )
     idle_selected = _safe_float(metrics.get("idle_selected_windows_per_min"), float("inf"))
     idle_fp_excess = max(0.0, idle_fp - float(DEFAULT_CLASSIFIER_IDLE_FP_BUDGET_PER_MIN))
     idle_selected_excess = max(
@@ -383,6 +1270,52 @@ def _classifier_rank_key(metrics: Mapping[str, Any], *, tie_breaker: float = 0.0
         -_safe_float(metrics.get("fixed_acc_5class"), 0.0),
         float(tie_breaker),
     )
+
+
+def _deployable_budget_payload(summary: Mapping[str, Any]) -> dict[str, Any]:
+    expected_subject_count = int(_safe_float(summary.get("expected_subject_count"), 0.0))
+    coverage_subject_count = int(
+        _safe_float(
+            summary.get("coverage_subject_count", summary.get("subject_count", 0)),
+            0.0,
+        )
+    )
+    idle_fp = _first_finite_metric(
+        summary,
+        ("mean_mixed_idle_fp_per_min", "mean_real_idle_fp_per_min", "mean_approx_idle_fp_per_min", "mean_idle_fp_per_min"),
+        float("inf"),
+    )
+    control_recall = _safe_float(summary.get("mean_control_recall"), 0.0)
+    control_recall_at_2p5s = _safe_float(summary.get("mean_control_recall_at_2.5s"), 0.0)
+    detection_latency_s = _safe_float(summary.get("mean_detection_latency_s"), float("inf"))
+    checks = {
+        "full_subject_coverage": bool(
+            expected_subject_count > 0 and coverage_subject_count == expected_subject_count
+        ),
+        "idle_fp_budget": bool(idle_fp <= float(DEFAULT_CLASSIFIER_IDLE_FP_BUDGET_PER_MIN) + 1e-12),
+        "control_recall_budget": bool(
+            control_recall >= float(DEFAULT_CLASSIFIER_THRESHOLD_MIN_CONTROL_RECALL) - 1e-12
+        ),
+        "control_recall_at_2.5s_budget": bool(
+            control_recall_at_2p5s >= float(DEFAULT_DEPLOYABLE_MIN_CONTROL_RECALL_AT_2P5S) - 1e-12
+        ),
+        "detection_latency_budget": bool(
+            detection_latency_s <= float(DEFAULT_DEPLOYABLE_MAX_DETECTION_LATENCY_SEC) + 1e-12
+        ),
+    }
+    failed = [name for name, ok in checks.items() if not ok]
+    return {
+        "deployable_budget_pass": bool(not failed),
+        "deployable_budget_failed_reasons": failed,
+        "deployable_budget_checks": checks,
+        "deployable_budget": {
+            "max_idle_fp_per_min": float(DEFAULT_CLASSIFIER_IDLE_FP_BUDGET_PER_MIN),
+            "min_control_recall": float(DEFAULT_CLASSIFIER_THRESHOLD_MIN_CONTROL_RECALL),
+            "min_control_recall_at_2.5s": float(DEFAULT_DEPLOYABLE_MIN_CONTROL_RECALL_AT_2P5S),
+            "max_detection_latency_s": float(DEFAULT_DEPLOYABLE_MAX_DETECTION_LATENCY_SEC),
+            "require_full_subject_coverage": True,
+        },
+    }
 
 
 def _classifier_recall_guard_rank_key(metrics: Mapping[str, Any], *, tie_breaker: float = 0.0) -> tuple[float, ...]:
@@ -469,6 +1402,16 @@ def _csv_str_tuple(raw: str | None, *, default: Sequence[str]) -> tuple[str, ...
     return values
 
 
+def _csv_gate_variant_tuple(raw: str | None) -> tuple[str, ...]:
+    values = _csv_str_tuple(raw, default=DEFAULT_CLASSIFIER_GATE_VARIANTS)
+    parsed: list[str] = []
+    for item in values:
+        variant = parse_classifier_gate_variant(item)
+        if variant not in parsed:
+            parsed.append(variant)
+    return tuple(parsed)
+
+
 def _csv_dataset_tuple(raw: str | None) -> tuple[str, ...]:
     values = tuple(str(item).strip().lower() for item in str(raw or "").split(",") if str(item).strip())
     if not values:
@@ -539,6 +1482,17 @@ def _score_method_spec(method_name: str) -> ScoreMethodSpec:
     return spec
 
 
+def _method_score_bank_skip_reason(method_name: str, score_bank_mode: str) -> str:
+    normalized_method = str(method_name).strip().lower()
+    if normalized_method not in SCORE_METHOD_SPECS:
+        return ""
+    mode = _parse_score_bank_mode(score_bank_mode)
+    spec = _score_method_spec(normalized_method)
+    if mode == "full_reference_bank" and bool(spec.fit_decoder):
+        return "unsupported_score_bank_mode"
+    return ""
+
+
 def _score_method_cache_namespace(method_name: str) -> str:
     spec = _score_method_spec(method_name)
     if spec.fit_decoder:
@@ -576,6 +1530,8 @@ def _classifier_recipe_id_with_smoothing(
     max_gap_windows: int = 0,
     smoothing_windows: int = 1,
     gate_policy: str = CLASSIFIER_CONFIDENCE_GATE_POLICY,
+    gate_variant: str = CLASSIFIER_GATE_VARIANT_BASELINE_LRTMW,
+    variant_token: str = "",
 ) -> str:
     base = _classifier_recipe_id(
         win_sec=float(win_sec),
@@ -591,6 +1547,10 @@ def _classifier_recipe_id_with_smoothing(
         base = f"{base}_lrtmw"
     elif normalized_gate == CLASSIFIER_SUBJECT_ADAPTIVE_THRESHOLD_POLICY:
         base = f"{base}_sat"
+    resolved_variant = parse_classifier_gate_variant(gate_variant)
+    if resolved_variant != CLASSIFIER_GATE_VARIANT_BASELINE_LRTMW:
+        token = (str(variant_token).strip() or resolved_variant).replace(".", "p")
+        base = f"{base}_{token}"
     return base
 
 
@@ -1004,6 +1964,71 @@ def _evaluate_no_control_subtypes_from_cache(
     }
 
 
+def _no_control_subtype_by_frequency_from_cache(
+    model: FBCCALDA5Model | FBCCARidge5Model,
+    scored_trials: Sequence[ScoredTrial],
+    *,
+    win_sec: float,
+    step_sec: float,
+) -> dict[str, dict[str, dict[str, Any]]]:
+    result: dict[str, dict[str, dict[str, Any]]] = {
+        _freq_label(freq): {
+            subtype: {"fp_windows": 0, "duration_sec": 0.0, "fp_per_min": None}
+            for subtype in ("ns1", "ns2", "ns3")
+        }
+        for freq in model.freqs
+    }
+    cache = _build_classifier_probability_cache(model, scored_trials)
+    for item, probs, labels in cache:
+        subtype = _ysuan_ns_subtype_from_label(str(item.trial.label))
+        if subtype not in {"ns1", "ns2", "ns3"}:
+            continue
+        probs = _smooth_classifier_probabilities(probs, smoothing_windows=int(getattr(model, "smoothing_windows", 1)))
+        lrt_evidence = (
+            _lrt_window_evidence_from_features(model, item.feature_matrix)
+            if str(getattr(model, "gate_policy", "")) == CLASSIFIER_LRT_MULTIWINDOW_REJECT_GATE_POLICY
+            else np.zeros(int(probs.shape[0]), dtype=np.float64)
+        )
+        label_values = np.asarray(labels, dtype=object)
+        idle_index = int(np.where(label_values == "idle")[0][0])
+        pred_indices = np.argmax(probs, axis=1)
+        if str(getattr(model, "gate_policy", "")) == CLASSIFIER_LRT_MULTIWINDOW_REJECT_GATE_POLICY:
+            floor_th = getattr(model, "lrt_window_floor_th", None)
+            effective_window_th = max(
+                float(getattr(model, "lrt_window_th", 0.0)),
+                float(floor_th) if floor_th is not None else float(getattr(model, "lrt_window_th", 0.0)),
+            )
+            gate_mask = (lrt_evidence >= effective_window_th) & _score_shape_gate_mask_for_model(model, item.feature_matrix)
+            if getattr(model, "frequency_specific_control_state_gates", None):
+                gate_mask &= _frequency_specific_gate_mask_for_model(
+                    model,
+                    probs=probs,
+                    labels=labels,
+                    feature_matrix=item.feature_matrix,
+                    lrt_evidence=lrt_evidence,
+                )
+        else:
+            gate_mask = (1.0 - probs[:, idle_index]) >= float(getattr(model, "command_confidence_th", 0.0))
+        for freq in model.freqs:
+            freq_key = _freq_label(freq)
+            result[freq_key][subtype]["duration_sec"] = float(result[freq_key][subtype]["duration_sec"]) + float(item.duration_sec)
+        for index, pred_index in enumerate(pred_indices):
+            if int(pred_index) == idle_index or not bool(gate_mask[index]):
+                continue
+            freq_key = _label_to_freq_key(str(label_values[int(pred_index)]))
+            if freq_key in result:
+                result[freq_key][subtype]["fp_windows"] = int(result[freq_key][subtype]["fp_windows"]) + 1
+    for freq_payload in result.values():
+        for subtype_payload in freq_payload.values():
+            minutes = float(subtype_payload["duration_sec"]) / 60.0
+            subtype_payload["fp_per_min"] = (
+                float(int(subtype_payload["fp_windows"]) / minutes)
+                if minutes > 1e-12
+                else None
+            )
+    return result
+
+
 def _ysuan_holdout_no_control_scored(
     scored_trials: Sequence[ScoredTrial],
     *,
@@ -1392,6 +2417,79 @@ def _required_channel_names(dataset: str) -> tuple[str, ...]:
     raise ValueError(f"unsupported dataset: {dataset}")
 
 
+def _normalized_channel_names(names: Sequence[Any]) -> tuple[str, ...]:
+    return tuple(str(name).strip().lower() for name in names)
+
+
+def _channel_compatibility_payload(dataset: str, source_metadata: Mapping[str, Any]) -> dict[str, Any]:
+    required = list(_required_channel_names(dataset))
+    selected = [
+        str(name)
+        for name in list(source_metadata.get("selected_channel_names", []) or [])
+    ]
+    selected_indices = [
+        int(index)
+        for index in list(source_metadata.get("selected_channel_indices_zero_based", []) or [])
+        if isinstance(index, (int, float, np.integer, np.floating))
+    ]
+    required_norm = _normalized_channel_names(required)
+    selected_norm = _normalized_channel_names(selected)
+    project_norm = _normalized_channel_names(PROJECT_POSTERIOR_8_CHANNELS)
+    dataset_matches_required = bool(selected_norm == required_norm)
+    matches_project = bool(dataset_matches_required and required_norm == project_norm)
+    only_required = bool(
+        source_metadata.get("only_required_channels_used", False)
+        or source_metadata.get("selected_channel_policy") == "strict_required_8_channels_only"
+        or dataset_matches_required
+    )
+    return {
+        "channel_contract": "strict_required_8_posterior",
+        "project_channel_names": list(PROJECT_POSTERIOR_8_CHANNELS),
+        "dataset_required_channel_names": required,
+        "dataset_selected_channel_names": selected,
+        "selected_channel_indices_zero_based": selected_indices,
+        "selected_channel_indices_one_based": [int(index) + 1 for index in selected_indices],
+        "source_channel_count": int(source_metadata.get("all_channel_count", len(selected)) or len(selected)),
+        "selected_channel_count": int(len(selected)),
+        "only_required_channels_used": only_required,
+        "dataset_matches_required_order": dataset_matches_required,
+        "matches_project_channel_contract": matches_project,
+        "online_mapping_assumption": (
+            "Deployed BrainFlow profiles store numeric board eeg_channels; they are compatible only if "
+            "those board channels are wired to Oz,O1,O2,PO3,POz,PO7,PO8,PO4 in this order."
+        ),
+    }
+
+
+def _channel_compatibility_summary(subject_manifest: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    subjects = list(subject_manifest)
+    mismatches: list[dict[str, Any]] = []
+    for item in subjects:
+        payload = dict(item.get("channel_compatibility", {}) or {})
+        if bool(payload.get("matches_project_channel_contract", False)):
+            continue
+        mismatches.append(
+            {
+                "dataset": str(item.get("dataset", "")),
+                "subject": str(item.get("subject", "")),
+                "dataset_selected_channel_names": list(payload.get("dataset_selected_channel_names", []) or []),
+                "dataset_required_channel_names": list(payload.get("dataset_required_channel_names", []) or []),
+            }
+        )
+    loaded_count = int(len(subjects))
+    return {
+        "channel_contract": "strict_required_8_posterior",
+        "project_channel_names": list(PROJECT_POSTERIOR_8_CHANNELS),
+        "loaded_subject_count": loaded_count,
+        "all_loaded_subjects_match_project_channel_contract": bool(loaded_count > 0 and not mismatches),
+        "mismatched_subjects": mismatches,
+        "note": (
+            "External datasets are evaluated after selecting only the posterior 8-channel subset. "
+            "This validates the algorithmic channel contract, not arbitrary 63/64-channel full-head input."
+        ),
+    }
+
+
 def enumerate_external_subjects(
     *,
     datasets: Sequence[str],
@@ -1491,6 +2589,9 @@ def load_external_subject_segments(spec: ExternalSubjectSpec) -> tuple[int, list
             "required_channel_names": list(WANG2016_REQUIRED_CHANNELS),
             "selected_channel_names": list(subject.selected_channel_names),
             "selected_channel_indices_zero_based": list(subject.selected_channel_indices),
+            "all_channel_count": int(len(subject.channel_names)),
+            "selected_channel_policy": "strict_required_8_channels_only",
+            "only_required_channels_used": True,
             "target_index_by_freq": {f"{float(freq):g}": int(index) for freq, index in target_index.items()},
             "all_target_frequencies": [float(freq) for freq in WANG2016_TARGET_FREQUENCIES],
             "idle_proxy_note": (
@@ -1515,6 +2616,9 @@ def load_external_subject_segments(spec: ExternalSubjectSpec) -> tuple[int, list
             "required_channel_names": list(BETA_REQUIRED_CHANNELS),
             "selected_channel_names": list(subject.selected_channel_names),
             "selected_channel_indices_zero_based": list(subject.selected_channel_indices),
+            "all_channel_count": int(len(subject.channel_names)),
+            "selected_channel_policy": "strict_required_8_channels_only",
+            "only_required_channels_used": True,
             "target_index_by_freq": {f"{float(freq):g}": int(index) for freq, index in target_index.items()},
             "all_target_frequencies": [float(freq) for freq in subject.target_frequencies],
             "idle_proxy_note": (
@@ -1540,6 +2644,9 @@ def load_external_subject_segments(spec: ExternalSubjectSpec) -> tuple[int, list
             "required_channel_names": list(YSUAN_REQUIRED_CHANNELS),
             "selected_channel_names": list(subject.selected_channel_names),
             "selected_channel_indices_zero_based": list(subject.selected_channel_indices),
+            "all_channel_count": int(len(subject.channel_names)),
+            "selected_channel_policy": "strict_required_8_channels_only",
+            "only_required_channels_used": True,
             "target_index_by_freq": {f"{float(freq):g}": int(index) for freq, index in target_index.items()},
             "all_target_frequencies": [float(freq) for freq in YSUAN_TARGET_FREQUENCIES],
             "no_control_subtypes": ["ns1", "ns2", "ns3"],
@@ -1892,19 +2999,13 @@ def _score_matrices_to_features(
     all_score_matrix: Optional[np.ndarray] = None,
     all_freqs: Sequence[float] = (),
 ) -> np.ndarray:
-    command_features = _score_matrix_to_features(command_score_matrix)
-    mode = _parse_score_bank_mode(score_bank_mode)
-    if mode == "command_only":
-        return command_features
-    if all_score_matrix is None:
-        raise ValueError("full_reference_bank mode requires all_score_matrix")
-    full_features = _full_reference_bank_features(
+    return runtime_score_matrices_to_features(
         command_score_matrix=command_score_matrix,
-        all_score_matrix=all_score_matrix,
         command_freqs=command_freqs,
         all_freqs=all_freqs,
+        score_bank_mode=score_bank_mode,
+        all_score_matrix=all_score_matrix,
     )
-    return np.column_stack([command_features, full_features]).astype(np.float64, copy=False)
 
 
 def _classifier_feature_names(
@@ -1913,11 +3014,11 @@ def _classifier_feature_names(
     score_source_name: str = "fbcca",
     score_bank_mode: str = DEFAULT_SCORE_BANK_MODE,
 ) -> list[str]:
-    names = [f"{str(score_source_name).strip().lower()}_score_{_freq_label(freq)}" for freq in freqs]
-    names.extend(CLASSIFIER_DERIVED_FEATURE_NAMES)
-    if _parse_score_bank_mode(score_bank_mode) == "full_reference_bank":
-        names.extend(FULL_REFERENCE_BANK_FEATURE_NAMES)
-    return names
+    return runtime_classifier_feature_names(
+        freqs,
+        score_source_name=score_source_name,
+        score_bank_mode=score_bank_mode,
+    )
 
 
 def _build_fbcca_decoder_for_scoring(
@@ -2100,6 +3201,14 @@ def _score_segment_subset_cached(
                 gpu_precision=str(gpu_precision),
             )
             decoder_cache[runtime_key] = decoder
+        scoreable_missing_segments = [
+            item
+            for item in missing_segments
+            if (
+                np.asarray(item[1]).ndim == 2
+                and np.asarray(item[1]).shape[0] >= int(getattr(decoder, "win_samples", 0))
+            )
+        ]
         full_bank_decoder = None
         if mode == "full_reference_bank":
             full_bank_key = runtime_key + ("full_reference_bank_decoder",)
@@ -2115,22 +3224,28 @@ def _score_segment_subset_cached(
                     gpu_precision=str(gpu_precision),
                 )
                 decoder_cache[full_bank_key] = full_bank_decoder
-        scored_missing = _score_trials_for_classifier(
-            trial_segments=missing_segments,
-            decoder=decoder,
-            freqs=freqs,
-            score_bank_mode=mode,
-            full_bank_decoder=full_bank_decoder,
-            full_bank_freqs=full_freqs,
-        )
-        if len(scored_missing) != len(missing_segments):
-            raise RuntimeError(
-                f"{context} scored {len(scored_missing)} of {len(missing_segments)} requested trial segments"
+        if scoreable_missing_segments:
+            scored_missing = _score_trials_for_classifier(
+                trial_segments=scoreable_missing_segments,
+                decoder=decoder,
+                freqs=freqs,
+                score_bank_mode=mode,
+                full_bank_decoder=full_bank_decoder,
+                full_bank_freqs=full_freqs,
             )
-        for item, scored in zip(missing_segments, scored_missing):
-            runtime_scored_cache[_trial_segment_cache_key(item)] = scored
+            if len(scored_missing) != len(scoreable_missing_segments):
+                raise RuntimeError(
+                    f"{context} scored {len(scored_missing)} of {len(scoreable_missing_segments)} "
+                    "scoreable trial segments"
+                )
+            for item, scored in zip(scoreable_missing_segments, scored_missing):
+                runtime_scored_cache[_trial_segment_cache_key(item)] = scored
 
-    scored_subset = [runtime_scored_cache[segment_key] for segment_key in segment_keys]
+    scored_subset = [
+        runtime_scored_cache[segment_key]
+        for segment_key in segment_keys
+        if segment_key in runtime_scored_cache
+    ]
     _validate_scored_trial_coverage(
         scored_subset,
         freqs=freqs,
@@ -2152,14 +3267,7 @@ def _fbcca_lda5_predict_windows(model: FBCCALDA5Model, feature_matrix: np.ndarra
 
 
 def _fbcca_ridge5_predict_windows(model: FBCCARidge5Model, feature_matrix: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    features = np.asarray(feature_matrix, dtype=np.float64)
-    z = (features - model.feature_mean) / model.feature_std
-    design = np.column_stack([np.ones(int(z.shape[0]), dtype=np.float64), z])
-    logits = design @ np.asarray(model.weights, dtype=np.float64)
-    logits = logits - np.max(logits, axis=1, keepdims=True)
-    probs = np.exp(logits)
-    probs = probs / np.maximum(np.sum(probs, axis=1, keepdims=True), 1e-12)
-    return probs, np.asarray(model.labels, dtype=object)
+    return ridge5_predict_windows_from_state(_classifier_state_payload(model), feature_matrix)
 
 
 def _softmax_2class_logit(logit: np.ndarray) -> np.ndarray:
@@ -2291,6 +3399,7 @@ def _fit_logistic_binary_ridge(
     *,
     l2: float = 1.0,
     max_iter: int = 80,
+    sample_weights: Optional[np.ndarray] = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     features = np.asarray(x, dtype=np.float64)
     target = np.asarray(y, dtype=np.float64).reshape(-1)
@@ -2306,15 +3415,21 @@ def _fit_logistic_binary_ridge(
     weights = np.zeros(int(design.shape[1]), dtype=np.float64)
     pos = max(float(np.sum(target >= 0.5)), 1.0)
     neg = max(float(np.sum(target < 0.5)), 1.0)
-    sample_weights = np.where(target >= 0.5, 0.5 / pos, 0.5 / neg)
-    sample_weights *= float(target.shape[0]) / max(float(np.sum(sample_weights)), 1e-12)
+    balanced_weights = np.where(target >= 0.5, 0.5 / pos, 0.5 / neg)
+    if sample_weights is None:
+        resolved_weights = balanced_weights
+    else:
+        resolved_weights = balanced_weights * np.asarray(sample_weights, dtype=np.float64).reshape(-1)
+        if resolved_weights.shape[0] != target.shape[0]:
+            raise ValueError("sample_weights must match y")
+    resolved_weights *= float(target.shape[0]) / max(float(np.sum(resolved_weights)), 1e-12)
     reg = np.eye(int(design.shape[1]), dtype=np.float64) * max(float(l2), 0.0)
     reg[0, 0] = 0.0
     for _ in range(max(1, int(max_iter))):
         logits = design @ weights
         probs = _softmax_2class_logit(logits)
-        grad = design.T @ ((probs - target) * sample_weights) + reg @ weights
-        curvature = np.maximum(probs * (1.0 - probs), 1e-6) * sample_weights
+        grad = design.T @ ((probs - target) * resolved_weights) + reg @ weights
+        curvature = np.maximum(probs * (1.0 - probs), 1e-6) * resolved_weights
         hessian = design.T @ (design * curvature[:, None]) + reg
         try:
             step = np.linalg.solve(hessian, grad)
@@ -2330,6 +3445,195 @@ def _command_confidence_from_probs(probs: np.ndarray, labels: np.ndarray) -> np.
     values = np.asarray(probs, dtype=np.float64)
     idle_index = int(np.where(np.asarray(labels, dtype=object) == "idle")[0][0])
     return 1.0 - values[:, idle_index]
+
+
+def _label_to_freq_key(label: Any) -> Optional[str]:
+    text = str(label)
+    if not text or text == "idle":
+        return None
+    try:
+        return _freq_label(float(text))
+    except Exception:
+        return None
+
+
+def _feature_name_indices(feature_names: Sequence[str]) -> dict[str, int]:
+    return {str(name): int(index) for index, name in enumerate(feature_names)}
+
+
+def _selected_freq_score_from_row(
+    row: np.ndarray,
+    pred_label: str,
+    feature_indices: Mapping[str, int],
+    *,
+    score_source_name: str = "fbcca",
+) -> float:
+    key = f"{str(score_source_name).strip().lower()}_score_{pred_label}"
+    if key in feature_indices:
+        return float(row[int(feature_indices[key])])
+    if "top1_score" in feature_indices:
+        return float(row[int(feature_indices["top1_score"])])
+    return 0.0
+
+
+def _frequency_specific_gate_features_for_trial(
+    *,
+    model: FBCCALDA5Model | FBCCARidge5Model,
+    item: ScoredTrial,
+    probs: np.ndarray,
+    labels: np.ndarray,
+    lrt_evidence: np.ndarray,
+    feature_names: Sequence[str],
+    smoothing_windows: int,
+    score_source_name: str = "fbcca",
+) -> tuple[np.ndarray, np.ndarray, list[dict[str, Any]]]:
+    probability = np.asarray(probs, dtype=np.float64)
+    features = np.asarray(item.feature_matrix, dtype=np.float64)
+    evidence = np.asarray(lrt_evidence, dtype=np.float64).reshape(-1)
+    if probability.ndim != 2 or features.ndim != 2:
+        raise ValueError("frequency-specific gate expects 2D probabilities and features")
+    if probability.shape[0] != features.shape[0] or evidence.shape[0] != probability.shape[0]:
+        raise ValueError("frequency-specific gate rows must align")
+    label_values = np.asarray(labels, dtype=object)
+    pred_indices = np.argmax(probability, axis=1)
+    pred_labels = [str(label_values[int(index)]) for index in pred_indices]
+    indices = _feature_name_indices(feature_names)
+    margin_index = _feature_index(feature_names, "margin")
+    ratio_index = _feature_index(feature_names, "ratio")
+    entropy_index = _feature_index(feature_names, "score_entropy")
+    top1_index = _feature_index(feature_names, "top1_score")
+    top2_index = _feature_index(feature_names, "top2_score")
+    normalized_top1_index = _feature_index(feature_names, "normalized_top1")
+    window_count = max(1, int(smoothing_windows))
+    gate_rows: list[list[float]] = []
+    meta_rows: list[dict[str, Any]] = []
+    for index, pred_label in enumerate(pred_labels):
+        freq_key = _label_to_freq_key(pred_label)
+        start = max(0, int(index) - window_count + 1)
+        window_slice = slice(start, int(index) + 1)
+        trailing_labels = pred_labels[window_slice]
+        same_freq_count = int(sum(1 for item_label in trailing_labels if item_label == pred_label and freq_key is not None))
+        margin_values = features[window_slice, margin_index]
+        entropy_values = features[window_slice, entropy_index]
+        selected_score = (
+            _selected_freq_score_from_row(
+                features[index],
+                pred_label,
+                indices,
+                score_source_name=score_source_name,
+            )
+            if freq_key is not None
+            else 0.0
+        )
+        gate_rows.append(
+            [
+                float(selected_score),
+                float(features[index, top1_index]),
+                float(features[index, top2_index]),
+                float(features[index, margin_index]),
+                float(features[index, ratio_index]),
+                float(features[index, normalized_top1_index]),
+                float(features[index, entropy_index]),
+                float(evidence[index]),
+                float(same_freq_count),
+                float(np.mean(margin_values)) if margin_values.size else 0.0,
+                float(np.mean(entropy_values)) if entropy_values.size else 0.0,
+            ]
+        )
+        meta_rows.append(
+            {
+                "pred_label": pred_label,
+                "freq_key": freq_key,
+                "window_index": int(index),
+                "true_label": _trial_true_label(item.trial),
+                "subtype": _ysuan_ns_subtype_from_label(str(item.trial.label)),
+            }
+        )
+    return (
+        np.asarray(gate_rows, dtype=np.float64),
+        pred_indices.astype(int, copy=False),
+        meta_rows,
+    )
+
+
+def _frequency_specific_gate_payload_for_freq(
+    model: FBCCALDA5Model | FBCCARidge5Model,
+    freq_key: str,
+) -> dict[str, Any]:
+    payloads = normalize_frequency_specific_control_state_gates(
+        getattr(model, "frequency_specific_control_state_gates", None)
+    )
+    return dict(payloads.get(str(freq_key), {}) or {})
+
+
+def _frequency_specific_gate_mask_for_model(
+    model: FBCCALDA5Model | FBCCARidge5Model,
+    *,
+    probs: np.ndarray,
+    labels: np.ndarray,
+    feature_matrix: np.ndarray,
+    lrt_evidence: np.ndarray,
+) -> np.ndarray:
+    payloads = normalize_frequency_specific_control_state_gates(
+        getattr(model, "frequency_specific_control_state_gates", None)
+    )
+    values = np.asarray(probs, dtype=np.float64)
+    if values.ndim != 2:
+        raise ValueError("probability matrix must be 2D")
+    if not payloads:
+        return np.ones(int(values.shape[0]), dtype=bool)
+    feature_names = _classifier_feature_names(
+        model.freqs,
+        score_bank_mode=str(getattr(model, "fit_summary", {}).get("score_bank_mode", "full_reference_bank")),
+    )
+    gate_features, pred_indices, meta_rows = _frequency_specific_gate_features_for_trial(
+        model=model,
+        item=ScoredTrial(
+            trial=TrialSpec(label="", expected_freq=None, trial_id=0, block_index=0),
+            score_matrix=np.zeros((int(values.shape[0]), len(model.freqs)), dtype=np.float64),
+            feature_matrix=feature_matrix,
+            duration_sec=0.0,
+        ),
+        probs=values,
+        labels=labels,
+        lrt_evidence=lrt_evidence,
+        feature_names=feature_names,
+        smoothing_windows=int(getattr(model, "smoothing_windows", 1)),
+    )
+    mask = np.zeros(int(values.shape[0]), dtype=bool)
+    name_to_index = {name: int(index) for index, name in enumerate(FREQUENCY_SPECIFIC_GATE_FEATURE_NAMES)}
+    idle_index = int(np.where(np.asarray(labels, dtype=object) == "idle")[0][0])
+    for row_index, meta in enumerate(meta_rows):
+        pred_index = int(pred_indices[row_index])
+        if pred_index == idle_index:
+            continue
+        freq_key = meta.get("freq_key")
+        payload = dict(payloads.get(str(freq_key), {}) or {})
+        if not payload:
+            continue
+        row = gate_features[row_index]
+        gate_type = str(payload.get("type", "threshold"))
+        if gate_type == "logistic":
+            weights = np.asarray(payload.get("weights", []), dtype=np.float64).reshape(-1)
+            mean = np.asarray(payload.get("feature_mean", []), dtype=np.float64).reshape(-1)
+            std = np.asarray(payload.get("feature_std", []), dtype=np.float64).reshape(-1)
+            if weights.size != row.size + 1 or mean.size != row.size or std.size != row.size:
+                continue
+            z = (row - mean) / np.maximum(std, 1e-9)
+            prob = float(_softmax_2class_logit(np.asarray([weights[0] + z @ weights[1:]], dtype=np.float64))[0])
+            mask[row_index] = bool(prob + 1e-12 >= float(payload.get("prob_threshold", 0.5)))
+            continue
+        checks = (
+            row[name_to_index["lrt_evidence"]] + 1e-12 >= float(payload.get("theta_lrt_f", payload.get("theta_lrt", 0.0)))
+            and row[name_to_index["selected_freq_score"]] + 1e-12 >= float(payload.get("theta_score_f", payload.get("theta_score", 0.0)))
+            and row[name_to_index["margin"]] + 1e-12 >= float(payload.get("theta_margin_f", payload.get("theta_margin", 0.0)))
+            and row[name_to_index["ratio"]] + 1e-12 >= float(payload.get("theta_ratio_f", payload.get("theta_ratio", 0.0)))
+            and row[name_to_index["score_entropy"]] <= float(payload.get("theta_entropy_f", payload.get("theta_entropy", 1.0))) + 1e-12
+            and row[name_to_index["multiwindow_same_freq_count"]] + 1e-12
+            >= float(payload.get("theta_multiwindow_same_freq_count", 1.0))
+        )
+        mask[row_index] = bool(checks)
+    return mask
 
 
 def _predict_fbcca_lda5_trial(
@@ -2364,6 +3668,7 @@ def _predict_fbcca_lda5_trial(
             window_evidence,
             min_enter_windows=min_enter_windows,
             max_gap_windows=max(0, int(max_gap_windows)),
+            feature_matrix=item.feature_matrix,
         )
     return _predict_fbcca_lda5_trial_from_probs(
         model,
@@ -2375,49 +3680,828 @@ def _predict_fbcca_lda5_trial(
 
 
 def _smooth_classifier_probabilities(probs: np.ndarray, smoothing_windows: int = 1) -> np.ndarray:
-    values = np.asarray(probs, dtype=np.float64)
-    width = max(1, int(smoothing_windows))
-    if values.ndim != 2 or width <= 1 or values.shape[0] <= 1:
-        return values
-    smoothed = np.empty_like(values, dtype=np.float64)
-    cumulative = np.cumsum(values, axis=0)
-    for index in range(int(values.shape[0])):
-        start = max(0, int(index) - width + 1)
-        total = cumulative[index] - (cumulative[start - 1] if start > 0 else 0.0)
-        smoothed[index] = total / float(index - start + 1)
-    row_sum = np.sum(smoothed, axis=1, keepdims=True)
-    return smoothed / np.maximum(row_sum, 1e-12)
+    return runtime_smooth_classifier_probabilities(probs, smoothing_windows=smoothing_windows)
+
+
+def _feature_index(feature_names: Sequence[str], name: str) -> int:
+    if name not in feature_names:
+        raise ValueError(f"missing classifier feature for gate variant: {name}")
+    return int(list(feature_names).index(name))
+
+
+def _classifier_gate_variant_token(
+    variant: str,
+    params: Optional[Mapping[str, Any]] = None,
+) -> str:
+    resolved = parse_classifier_gate_variant(variant)
+    payload = dict(params or {})
+    if resolved == CLASSIFIER_GATE_VARIANT_BASELINE_LRTMW:
+        return "base"
+    if resolved == CLASSIFIER_GATE_VARIANT_LRTMW_MARGIN:
+        return "mg" + "_".join(
+            str(payload.get(key, "")).replace(".", "p")
+            for key in ("margin_control_quantile", "margin_idle_quantile", "ratio_idle_quantile")
+        )
+    if resolved == CLASSIFIER_GATE_VARIANT_LRTMW_ENTROPY:
+        return "ent" + "_".join(
+            str(payload.get(key, "")).replace(".", "p")
+            for key in ("entropy_control_quantile", "entropy_idle_quantile")
+        )
+    if resolved == CLASSIFIER_GATE_VARIANT_SUBJECT_THRESHOLD_FLOOR:
+        return "floor" + "_".join(
+            str(payload.get(key, "")).replace(".", "p")
+            for key in ("global_floor_quantile", "subject_idle_quantile")
+        )
+    if resolved == CLASSIFIER_GATE_VARIANT_NS2_AWARE:
+        return f"ns2sf{str(payload.get('ns2_safety_factor', '')).replace('.', 'p')}"
+    if resolved == CLASSIFIER_GATE_VARIANT_SUBJECT_FLOOR_NS2_AWARE:
+        return "floorns2" + "_".join(
+            str(payload.get(key, "")).replace(".", "p")
+            for key in ("global_floor_quantile", "subject_idle_quantile", "ns2_safety_factor")
+        )
+    if resolved == CLASSIFIER_GATE_VARIANT_WEAK_SUBJECT_GUARD:
+        return "weakguard"
+    if resolved == CLASSIFIER_GATE_VARIANT_FREQUENCY_SPECIFIC_THRESHOLD:
+        return "fsth" + "_".join(
+            str(payload.get(key, "")).replace(".", "p")
+            for key in (
+                "margin_idle_quantile",
+                "ratio_idle_quantile",
+                "entropy_control_quantile",
+                "ns2_safety_factor",
+            )
+        )
+    if resolved == CLASSIFIER_GATE_VARIANT_FREQUENCY_SPECIFIC_LOGISTIC:
+        return "fslog" + "_".join(
+            str(payload.get(key, "")).replace(".", "p")
+            for key in ("prob_threshold", "ns2_sample_weight")
+        )
+    return resolved
+
+
+def _gate_variant_param_grid(
+    variant: str,
+    *,
+    freqspec_threshold_combo_set: str = FREQSPEC_THRESHOLD_COMBO_SET_NONE,
+    freqspec_margin_idle_quantiles: Sequence[float] = DEFAULT_FREQSPEC_MARGIN_IDLE_QUANTILES,
+    freqspec_ratio_idle_quantiles: Sequence[float] = DEFAULT_FREQSPEC_RATIO_IDLE_QUANTILES,
+    freqspec_entropy_control_quantiles: Sequence[float] = DEFAULT_FREQSPEC_ENTROPY_CONTROL_QUANTILES,
+    ns2_safety_factors: Sequence[float] = DEFAULT_NS2_SAFETY_FACTORS,
+    subject_floor_global_quantiles: Sequence[float] = DEFAULT_GLOBAL_FLOOR_QUANTILES,
+    subject_floor_idle_quantiles: Sequence[float] = DEFAULT_SUBJECT_IDLE_QUANTILES,
+    freqspec_ns2_safety_factors: Sequence[float] = DEFAULT_NS2_SAFETY_FACTORS,
+    freqspec_logistic_prob_thresholds: Sequence[float] = DEFAULT_FREQSPEC_LOGISTIC_PROB_THRESHOLDS,
+    freqspec_logistic_ns2_weights: Sequence[float] = DEFAULT_FREQSPEC_LOGISTIC_NS2_WEIGHTS,
+) -> list[dict[str, Any]]:
+    resolved = parse_classifier_gate_variant(variant)
+    if resolved == CLASSIFIER_GATE_VARIANT_BASELINE_LRTMW:
+        return [{"gate_variant": resolved}]
+    if resolved == CLASSIFIER_GATE_VARIANT_LRTMW_MARGIN:
+        return [
+            {
+                "gate_variant": resolved,
+                "margin_control_quantile": float(mc),
+                "margin_idle_quantile": float(mi),
+                "ratio_idle_quantile": float(ri),
+            }
+            for mc, mi, ri in product(
+                DEFAULT_MARGIN_CONTROL_QUANTILES,
+                DEFAULT_MARGIN_IDLE_QUANTILES,
+                DEFAULT_RATIO_IDLE_QUANTILES,
+            )
+        ]
+    if resolved == CLASSIFIER_GATE_VARIANT_LRTMW_ENTROPY:
+        return [
+            {
+                "gate_variant": resolved,
+                "entropy_control_quantile": float(ec),
+                "entropy_idle_quantile": float(ei),
+            }
+            for ec, ei in product(DEFAULT_ENTROPY_CONTROL_QUANTILES, DEFAULT_ENTROPY_IDLE_QUANTILES)
+        ]
+    if resolved == CLASSIFIER_GATE_VARIANT_SUBJECT_THRESHOLD_FLOOR:
+        return [
+            {
+                "gate_variant": resolved,
+                "global_floor_quantile": float(gq),
+                "subject_idle_quantile": float(sq),
+            }
+            for gq, sq in product(
+                tuple(float(value) for value in subject_floor_global_quantiles),
+                tuple(float(value) for value in subject_floor_idle_quantiles),
+            )
+        ]
+    if resolved == CLASSIFIER_GATE_VARIANT_NS2_AWARE:
+        return [
+            {
+                "gate_variant": resolved,
+                "ns2_safety_factor": float(value),
+            }
+            for value in tuple(float(value) for value in ns2_safety_factors)
+        ]
+    if resolved == CLASSIFIER_GATE_VARIANT_SUBJECT_FLOOR_NS2_AWARE:
+        return [
+            {
+                "gate_variant": resolved,
+                "global_floor_quantile": float(gq),
+                "subject_idle_quantile": float(sq),
+                "ns2_safety_factor": float(sf),
+            }
+            for gq, sq, sf in product(
+                tuple(float(value) for value in subject_floor_global_quantiles),
+                tuple(float(value) for value in subject_floor_idle_quantiles),
+                tuple(float(value) for value in ns2_safety_factors),
+            )
+        ]
+    if resolved == CLASSIFIER_GATE_VARIANT_WEAK_SUBJECT_GUARD:
+        return [{"gate_variant": resolved}]
+    if resolved == CLASSIFIER_GATE_VARIANT_FREQUENCY_SPECIFIC_THRESHOLD:
+        combo_set = str(freqspec_threshold_combo_set or "").strip().lower()
+        if combo_set == FREQSPEC_THRESHOLD_COMBO_SET_PRIORITY6:
+            return [
+                {
+                    "gate_variant": resolved,
+                    **{
+                        key: (str(value) if key == "combo_name" else float(value))
+                        for key, value in combo.items()
+                    },
+                }
+                for combo in FREQSPEC_THRESHOLD_PRIORITY6_COMBOS
+            ]
+        if combo_set:
+            raise ValueError(
+                "unsupported frequency-specific threshold combo set "
+                f"{freqspec_threshold_combo_set!r}"
+            )
+        return [
+            {
+                "gate_variant": resolved,
+                "margin_idle_quantile": float(mq),
+                "ratio_idle_quantile": float(rq),
+                "entropy_control_quantile": float(eq),
+                "ns2_safety_factor": float(sf),
+            }
+            for mq, rq, eq, sf in product(
+                tuple(float(value) for value in freqspec_margin_idle_quantiles),
+                tuple(float(value) for value in freqspec_ratio_idle_quantiles),
+                tuple(float(value) for value in freqspec_entropy_control_quantiles),
+                tuple(float(value) for value in freqspec_ns2_safety_factors),
+            )
+        ]
+    if resolved == CLASSIFIER_GATE_VARIANT_FREQUENCY_SPECIFIC_LOGISTIC:
+        return [
+            {
+                "gate_variant": resolved,
+                "prob_threshold": float(th),
+                "ns2_sample_weight": float(weight),
+            }
+            for th, weight in product(
+                tuple(float(value) for value in freqspec_logistic_prob_thresholds),
+                tuple(float(value) for value in freqspec_logistic_ns2_weights),
+            )
+        ]
+    return [{"gate_variant": resolved}]
+
+
+def _trial_group_arrays_for_gate(
+    base_model: FBCCALDA5Model | FBCCARidge5Model,
+    scored_trials: Sequence[ScoredTrial],
+    *,
+    smoothing_windows: int,
+) -> dict[str, np.ndarray]:
+    probability_cache = _build_classifier_probability_cache(base_model, scored_trials)
+    rows: dict[str, list[np.ndarray]] = defaultdict(list)
+    for item, probs, labels in probability_cache:
+        if item.feature_matrix.shape[0] <= 0:
+            continue
+        smoothed = _smooth_classifier_probabilities(probs, smoothing_windows=max(1, int(smoothing_windows)))
+        pred_indices = np.argmax(smoothed, axis=1)
+        true_label = _trial_true_label(item.trial)
+        features = np.asarray(item.feature_matrix, dtype=np.float64)
+        if true_label == "idle":
+            rows["idle"].append(features)
+            subtype = _ysuan_ns_subtype_from_label(str(item.trial.label))
+            if subtype:
+                rows[subtype].append(features)
+            continue
+        command_rows = [
+            features[row_index : row_index + 1]
+            for row_index, pred_index in enumerate(pred_indices)
+            if str(base_model.labels[int(pred_index)]) == true_label
+        ]
+        if command_rows:
+            rows["control"].append(np.vstack(command_rows).astype(np.float64, copy=False))
+    return {
+        key: np.vstack(value).astype(np.float64, copy=False) if value else np.zeros((0, 0), dtype=np.float64)
+        for key, value in rows.items()
+    }
+
+
+def _trial_frequency_specific_rows_for_gate(
+    base_model: FBCCALDA5Model | FBCCARidge5Model,
+    scored_trials: Sequence[ScoredTrial],
+    *,
+    feature_names: Sequence[str],
+    smoothing_windows: int,
+) -> dict[str, list[dict[str, Any]]]:
+    probability_cache = _build_classifier_probability_cache(base_model, scored_trials)
+    rows_by_freq: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    baseline_model = replace(
+        base_model,
+        gate_variant=CLASSIFIER_GATE_VARIANT_BASELINE_LRTMW,
+        frequency_specific_control_state_gates=None,
+    )
+    for item, probs, labels in probability_cache:
+        if item.feature_matrix.shape[0] <= 0:
+            continue
+        smoothed = _smooth_classifier_probabilities(probs, smoothing_windows=max(1, int(smoothing_windows)))
+        evidence = _lrt_window_evidence_from_features(base_model, item.feature_matrix)
+        baseline_label, _baseline_conf, _baseline_index = _predict_lrt_multiwindow_reject_trial_from_probs(
+            baseline_model,
+            smoothed,
+            labels,
+            evidence,
+            min_enter_windows=max(1, int(base_model.fit_summary.get("min_enter_windows", 1))),
+            max_gap_windows=0,
+            feature_matrix=item.feature_matrix,
+        )
+        gate_features, pred_indices, meta_rows = _frequency_specific_gate_features_for_trial(
+            model=base_model,
+            item=item,
+            probs=smoothed,
+            labels=labels,
+            lrt_evidence=evidence,
+            feature_names=feature_names,
+            smoothing_windows=max(1, int(smoothing_windows)),
+        )
+        true_label = _trial_true_label(item.trial)
+        subtype = _ysuan_ns_subtype_from_label(str(item.trial.label))
+        for row_index, meta in enumerate(meta_rows):
+            freq_key = meta.get("freq_key")
+            if freq_key is None:
+                continue
+            pred_label = str(meta.get("pred_label", ""))
+            is_positive = bool(true_label != "idle" and true_label == pred_label)
+            is_idle_negative = bool(true_label == "idle")
+            is_optional_negative = bool(true_label != "idle" and true_label != pred_label)
+            is_hard_negative = bool(subtype == "ns2" and baseline_label == pred_label)
+            rows_by_freq[str(freq_key)].append(
+                {
+                    "x": gate_features[row_index].astype(np.float64, copy=False),
+                    "true_label": true_label,
+                    "pred_label": pred_label,
+                    "subtype": subtype,
+                    "positive": is_positive,
+                    "negative": bool(is_idle_negative or is_optional_negative),
+                    "idle_negative": is_idle_negative,
+                    "optional_negative": is_optional_negative,
+                    "hard_negative": is_hard_negative,
+                    "trial_id": int(item.trial.trial_id),
+                    "block_index": int(item.trial.block_index),
+                    "window_index": int(row_index),
+                }
+            )
+    return {key: list(value) for key, value in rows_by_freq.items()}
+
+
+def _split_gate_fit_validation_trials(
+    scored_trials: Sequence[ScoredTrial],
+) -> tuple[list[ScoredTrial], list[ScoredTrial], dict[str, Any]]:
+    trials = sorted(list(scored_trials), key=lambda item: (int(item.trial.block_index), int(item.trial.trial_id)))
+    if len(trials) <= 1:
+        return trials, [], {
+            "policy": "all_fit_no_validation",
+            "fit_trial_ids": [int(item.trial.trial_id) for item in trials],
+            "validation_trial_ids": [],
+            "fit_blocks": sorted({int(item.trial.block_index) for item in trials}),
+            "validation_blocks": [],
+        }
+    blocks = sorted({int(item.trial.block_index) for item in trials})
+    if len(blocks) >= 2:
+        validation_blocks = {int(blocks[-1])}
+        fit_trials = [item for item in trials if int(item.trial.block_index) not in validation_blocks]
+        validation_trials = [item for item in trials if int(item.trial.block_index) in validation_blocks]
+        policy = "calibration_block_holdout_last_block"
+    else:
+        fit_trials = [item for index, item in enumerate(trials) if index % 2 == 0]
+        validation_trials = [item for index, item in enumerate(trials) if index % 2 == 1]
+        policy = "calibration_trial_holdout_alternating"
+    if not fit_trials:
+        fit_trials, validation_trials = trials, []
+        policy = "all_fit_no_validation_fallback"
+    return fit_trials, validation_trials, {
+        "policy": policy,
+        "fit_trial_ids": [int(item.trial.trial_id) for item in fit_trials],
+        "validation_trial_ids": [int(item.trial.trial_id) for item in validation_trials],
+        "fit_blocks": sorted({int(item.trial.block_index) for item in fit_trials}),
+        "validation_blocks": sorted({int(item.trial.block_index) for item in validation_trials}),
+    }
+
+
+def _fit_frequency_specific_threshold_gate_payload(
+    model: FBCCALDA5Model | FBCCARidge5Model,
+    *,
+    feature_names: Sequence[str],
+    scored_trials: Sequence[ScoredTrial],
+    params: Mapping[str, Any],
+    smoothing_windows: int,
+) -> dict[str, dict[str, Any]]:
+    fit_trials, validation_trials, split_payload = _split_gate_fit_validation_trials(scored_trials)
+    rows_by_freq = _trial_frequency_specific_rows_for_gate(
+        model,
+        fit_trials,
+        feature_names=feature_names,
+        smoothing_windows=max(1, int(smoothing_windows)),
+    )
+    feature_index = {name: int(index) for index, name in enumerate(FREQUENCY_SPECIFIC_GATE_FEATURE_NAMES)}
+    payloads: dict[str, dict[str, Any]] = {}
+    for freq in model.freqs:
+        freq_key = _freq_label(freq)
+        freq_rows = rows_by_freq.get(freq_key, [])
+        positives = [row["x"] for row in freq_rows if bool(row.get("positive"))]
+        idle_negatives = [row["x"] for row in freq_rows if bool(row.get("idle_negative"))]
+        hard_negatives = [row["x"] for row in freq_rows if bool(row.get("hard_negative"))]
+        negatives = [row["x"] for row in freq_rows if bool(row.get("negative"))]
+        if not positives or not negatives:
+            payloads[freq_key] = {
+                "type": "threshold",
+                "status": "fallback_global_lrt",
+                "theta_lrt_f": float(model.lrt_window_floor_th or model.lrt_window_th),
+                "theta_score_f": 0.0,
+                "theta_margin_f": 0.0,
+                "theta_ratio_f": 0.0,
+                "theta_entropy_f": 1.0,
+                "theta_multiwindow_same_freq_count": 1.0,
+                "positive_windows": int(len(positives)),
+                "negative_windows": int(len(negatives)),
+                "hard_negative_windows": int(len(hard_negatives)),
+                "fit_split": "calibration_gate_fit_trials",
+                "validation_split": "calibration_gate_validation_trials",
+                "gate_fit_validation": dict(split_payload),
+            }
+            continue
+        positive = np.vstack(positives).astype(np.float64, copy=False)
+        negative = np.vstack(negatives).astype(np.float64, copy=False)
+        idle_negative = np.vstack(idle_negatives).astype(np.float64, copy=False) if idle_negatives else negative
+        hard_negative = np.vstack(hard_negatives).astype(np.float64, copy=False) if hard_negatives else idle_negative
+        margin_q = float(params.get("margin_idle_quantile", 0.95))
+        ratio_q = float(params.get("ratio_idle_quantile", 0.95))
+        entropy_q = float(params.get("entropy_control_quantile", 0.85))
+        ns2_factor = float(params.get("ns2_safety_factor", 1.0))
+        theta_general_idle = max(
+            float(model.lrt_window_th),
+            _safe_quantile(idle_negative[:, feature_index["lrt_evidence"]], 0.95, float(model.lrt_window_th)),
+        )
+        theta_ns2 = _safe_quantile(
+            hard_negative[:, feature_index["lrt_evidence"]],
+            0.95,
+            theta_general_idle,
+        )
+        theta_lrt = max(theta_general_idle, theta_ns2 * ns2_factor)
+        theta_score = max(
+            _safe_quantile(positive[:, feature_index["selected_freq_score"]], 0.05, 0.0),
+            _safe_quantile(idle_negative[:, feature_index["selected_freq_score"]], 0.90, 0.0),
+        )
+        theta_margin = max(
+            _safe_quantile(positive[:, feature_index["margin"]], 0.05, 0.0),
+            _safe_quantile(idle_negative[:, feature_index["margin"]], margin_q, 0.0),
+        )
+        theta_ratio = max(
+            1.0,
+            _safe_quantile(idle_negative[:, feature_index["ratio"]], ratio_q, 1.0),
+        )
+        theta_entropy = min(
+            _safe_quantile(positive[:, feature_index["score_entropy"]], entropy_q, 1.0),
+            _safe_quantile(idle_negative[:, feature_index["score_entropy"]], 0.50, 1.0),
+        )
+        payloads[freq_key] = {
+            "type": "threshold",
+            "status": "ok",
+            "feature_names": list(FREQUENCY_SPECIFIC_GATE_FEATURE_NAMES),
+            "theta_lrt_f": float(theta_lrt),
+            "theta_general_idle_f": float(theta_general_idle),
+            "theta_ns2_f": float(theta_ns2),
+            "theta_score_f": float(theta_score),
+            "theta_margin_f": float(theta_margin),
+            "theta_ratio_f": float(theta_ratio),
+            "theta_entropy_f": float(theta_entropy),
+            "theta_multiwindow_same_freq_count": 1.0,
+            "margin_idle_quantile": margin_q,
+            "ratio_idle_quantile": ratio_q,
+            "entropy_control_quantile": entropy_q,
+            "ns2_safety_factor": ns2_factor,
+            "positive_windows": int(len(positives)),
+            "negative_windows": int(len(negatives)),
+            "idle_negative_windows": int(len(idle_negatives)),
+            "hard_negative_windows": int(len(hard_negatives)),
+            "fit_split": "calibration_gate_fit_trials",
+            "validation_split": "calibration_gate_validation_trials",
+            "gate_fit_validation": dict(split_payload),
+        }
+    return payloads
+
+
+def _frequency_specific_validation_metrics_payload(
+    model: FBCCALDA5Model | FBCCARidge5Model,
+    scored_trials: Sequence[ScoredTrial],
+    *,
+    win_sec: float,
+    step_sec: float,
+    min_enter_windows: int,
+    max_gap_windows: int,
+) -> dict[str, Any]:
+    if not scored_trials:
+        return {
+            "supported": False,
+            "reason": "no_calibration_gate_validation_trials",
+            "rank_key": [],
+        }
+    bundle = _evaluate_fbcca_lda5_model(
+        model,
+        scored_trials,
+        win_sec=float(win_sec),
+        step_sec=float(step_sec),
+        min_enter_windows=max(1, int(min_enter_windows)),
+        max_gap_windows=max(0, int(max_gap_windows)),
+    )
+    payload = _evaluation_payload(bundle)
+    payload["no_control_subtype_metrics"] = _evaluate_no_control_subtypes_from_cache(
+        model,
+        scored_trials,
+        win_sec=float(win_sec),
+        step_sec=float(step_sec),
+        min_enter_windows=max(1, int(min_enter_windows)),
+        max_gap_windows=max(0, int(max_gap_windows)),
+    )
+    metrics = _extract_row_metrics(payload)
+    rank_key = _classifier_threshold_rank_key(
+        metrics,
+        policy=str(getattr(model, "gate_policy", DEFAULT_CLASSIFIER_THRESHOLD_POLICY)),
+    )
+    return {
+        "supported": True,
+        "split": "calibration_gate_validation_trials",
+        "trial_count": int(len(scored_trials)),
+        "metrics": metrics,
+        "rank_key": [float(value) for value in rank_key],
+    }
+
+
+def _fit_frequency_specific_logistic_gate_payload(
+    model: FBCCALDA5Model | FBCCARidge5Model,
+    *,
+    feature_names: Sequence[str],
+    scored_trials: Sequence[ScoredTrial],
+    params: Mapping[str, Any],
+    smoothing_windows: int,
+) -> dict[str, dict[str, Any]]:
+    fit_trials, validation_trials, split_payload = _split_gate_fit_validation_trials(scored_trials)
+    rows_by_freq = _trial_frequency_specific_rows_for_gate(
+        model,
+        fit_trials,
+        feature_names=feature_names,
+        smoothing_windows=max(1, int(smoothing_windows)),
+    )
+    payloads: dict[str, dict[str, Any]] = {}
+    for freq in model.freqs:
+        freq_key = _freq_label(freq)
+        freq_rows = rows_by_freq.get(freq_key, [])
+        usable = [row for row in freq_rows if bool(row.get("positive")) or bool(row.get("negative"))]
+        positive_count = int(sum(1 for row in usable if bool(row.get("positive"))))
+        negative_count = int(sum(1 for row in usable if bool(row.get("negative"))))
+        if positive_count <= 0 or negative_count <= 0:
+            payloads[freq_key] = {
+                "type": "logistic",
+                "status": "fallback_global_lrt",
+                "prob_threshold": float(params.get("prob_threshold", 0.5)),
+                "positive_windows": positive_count,
+                "negative_windows": negative_count,
+                "fit_split": "calibration_gate_fit_trials",
+                "validation_split": "calibration_gate_validation_trials",
+                "gate_fit_validation": dict(split_payload),
+            }
+            continue
+        x = np.vstack([np.asarray(row["x"], dtype=np.float64) for row in usable])
+        y = np.asarray([1.0 if bool(row.get("positive")) else 0.0 for row in usable], dtype=np.float64)
+        sample_weights = np.ones(int(y.shape[0]), dtype=np.float64)
+        ns2_weight = float(params.get("ns2_sample_weight", 1.0))
+        for index, row in enumerate(usable):
+            if row.get("subtype") == "ns2":
+                sample_weights[index] *= ns2_weight
+            if bool(row.get("hard_negative")):
+                sample_weights[index] *= max(ns2_weight, 1.0)
+        weights, mean, std = _fit_logistic_binary_ridge(
+            x,
+            y,
+            l2=1.0,
+            max_iter=100,
+            sample_weights=sample_weights,
+        )
+        payloads[freq_key] = {
+            "type": "logistic",
+            "status": "ok",
+            "feature_names": list(FREQUENCY_SPECIFIC_GATE_FEATURE_NAMES),
+            "weights": _array_payload(weights),
+            "feature_mean": _array_payload(mean),
+            "feature_std": _array_payload(std),
+            "prob_threshold": float(params.get("prob_threshold", 0.5)),
+            "ns2_sample_weight": ns2_weight,
+            "positive_windows": positive_count,
+            "negative_windows": negative_count,
+            "hard_negative_windows": int(sum(1 for row in usable if bool(row.get("hard_negative")))),
+            "fit_split": "calibration_gate_fit_trials",
+            "validation_split": "calibration_gate_validation_trials",
+            "gate_fit_validation": dict(split_payload),
+        }
+    return payloads
+
+
+def _apply_gate_variant_to_model(
+    model: FBCCALDA5Model | FBCCARidge5Model,
+    *,
+    feature_names: Sequence[str],
+    grouped_features: Mapping[str, np.ndarray],
+    scored_trials: Sequence[ScoredTrial] = (),
+    params: Mapping[str, Any],
+    win_sec: float = DEFAULT_CLASSIFIER_WIN_SEC_CANDIDATES[0],
+    step_sec: float = DEFAULT_STEP_SEC,
+    min_enter_windows: int = 1,
+    max_gap_windows: int = 0,
+) -> FBCCALDA5Model | FBCCARidge5Model:
+    variant = parse_classifier_gate_variant(params.get("gate_variant"))
+    if variant == CLASSIFIER_GATE_VARIANT_BASELINE_LRTMW:
+        return replace(model, gate_variant=variant)
+    control = np.asarray(grouped_features.get("control", np.zeros((0, 0))), dtype=np.float64)
+    idle = np.asarray(grouped_features.get("idle", np.zeros((0, 0))), dtype=np.float64)
+    if control.size <= 0 or idle.size <= 0:
+        raise ValueError(f"{variant} requires calibration control and idle features")
+    if variant == CLASSIFIER_GATE_VARIANT_LRTMW_MARGIN:
+        margin_index = _feature_index(feature_names, "margin")
+        ratio_index = _feature_index(feature_names, "ratio")
+        margin_th = max(
+            float(np.quantile(control[:, margin_index], float(params["margin_control_quantile"]))),
+            float(np.quantile(idle[:, margin_index], float(params["margin_idle_quantile"]))),
+        )
+        ratio_th = float(np.quantile(idle[:, ratio_index], float(params["ratio_idle_quantile"])))
+        return replace(
+            model,
+            gate_variant=variant,
+            score_shape_margin_index=margin_index,
+            score_shape_ratio_index=ratio_index,
+            score_shape_margin_th=float(margin_th),
+            score_shape_ratio_th=float(ratio_th),
+            fit_summary={
+                **model.fit_summary,
+                "gate_variant": variant,
+                "gate_variant_params": dict(params),
+                "score_shape_margin_th": float(margin_th),
+                "score_shape_ratio_th": float(ratio_th),
+            },
+        )
+    if variant == CLASSIFIER_GATE_VARIANT_LRTMW_ENTROPY:
+        entropy_index = _feature_index(feature_names, "score_entropy")
+        entropy_th = min(
+            float(np.quantile(control[:, entropy_index], float(params["entropy_control_quantile"]))),
+            float(np.quantile(idle[:, entropy_index], float(params["entropy_idle_quantile"]))),
+        )
+        return replace(
+            model,
+            gate_variant=variant,
+            score_shape_entropy_index=entropy_index,
+            score_shape_entropy_th=float(entropy_th),
+            fit_summary={
+                **model.fit_summary,
+                "gate_variant": variant,
+                "gate_variant_params": dict(params),
+                "score_shape_entropy_th": float(entropy_th),
+            },
+        )
+    if variant == CLASSIFIER_GATE_VARIANT_SUBJECT_THRESHOLD_FLOOR:
+        evidence = _lrt_window_evidence_from_features(model, idle)
+        global_floor = float(np.quantile(evidence, float(params["global_floor_quantile"])))
+        subject_floor = float(np.quantile(evidence, float(params["subject_idle_quantile"])))
+        floor_th = max(global_floor, subject_floor, float(model.lrt_window_th))
+        return replace(
+            model,
+            gate_variant=variant,
+            lrt_window_floor_th=float(floor_th),
+            fit_summary={
+                **model.fit_summary,
+                "gate_variant": variant,
+                "gate_variant_params": dict(params),
+                "subject_floor_global_lrt_quantile": float(params["global_floor_quantile"]),
+                "subject_floor_idle_lrt_quantile": float(params["subject_idle_quantile"]),
+                "subject_floor_global_lrt_th": float(global_floor),
+                "subject_floor_idle_lrt_th": float(subject_floor),
+                "lrt_window_floor_th": float(floor_th),
+                "fit_split": "calibration_blocks",
+                "threshold_fit_split": "calibration_blocks",
+                "test_split": "holdout_blocks",
+            },
+        )
+    if variant == CLASSIFIER_GATE_VARIANT_SUBJECT_FLOOR_NS2_AWARE:
+        idle_evidence = _lrt_window_evidence_from_features(model, idle)
+        global_floor = float(np.quantile(idle_evidence, float(params["global_floor_quantile"])))
+        subject_floor = float(np.quantile(idle_evidence, float(params["subject_idle_quantile"])))
+        ns2 = np.asarray(grouped_features.get("ns2", np.zeros((0, 0))), dtype=np.float64)
+        ns2_source = ns2 if ns2.size > 0 else idle
+        ns2_scores = _lrt_window_evidence_from_features(model, ns2_source)
+        ns2_threshold = float(np.quantile(ns2_scores, 0.95)) if ns2_scores.size else float(model.lrt_window_th)
+        ns2_floor = ns2_threshold * float(params["ns2_safety_factor"])
+        floor_th = max(float(model.lrt_window_th), global_floor, subject_floor, ns2_floor)
+        return replace(
+            model,
+            gate_variant=variant,
+            lrt_window_floor_th=float(floor_th),
+            fit_summary={
+                **model.fit_summary,
+                "gate_variant": variant,
+                "gate_variant_params": dict(params),
+                "subject_floor_global_lrt_quantile": float(params["global_floor_quantile"]),
+                "subject_floor_idle_lrt_quantile": float(params["subject_idle_quantile"]),
+                "subject_floor_global_lrt_th": float(global_floor),
+                "subject_floor_idle_lrt_th": float(subject_floor),
+                "ns2_threshold_source": "calibration_ns2" if ns2.size > 0 else "calibration_idle",
+                "ns2_lrt_window_p95": float(ns2_threshold),
+                "ns2_safety_factor": float(params["ns2_safety_factor"]),
+                "ns2_lrt_window_floor_th": float(ns2_floor),
+                "lrt_window_floor_th": float(floor_th),
+                "fit_split": "calibration_blocks",
+                "threshold_fit_split": "calibration_blocks",
+                "test_split": "holdout_blocks",
+            },
+        )
+    if variant == CLASSIFIER_GATE_VARIANT_NS2_AWARE:
+        ns2 = np.asarray(grouped_features.get("ns2", np.zeros((0, 0))), dtype=np.float64)
+        source = ns2 if ns2.size > 0 else idle
+        ns2_scores = _lrt_window_evidence_from_features(model, source)
+        ns2_threshold = float(np.quantile(ns2_scores, 0.95)) if ns2_scores.size else float(model.lrt_window_th)
+        floor_th = max(float(model.lrt_window_th), ns2_threshold * float(params["ns2_safety_factor"]))
+        return replace(
+            model,
+            gate_variant=variant,
+            lrt_window_floor_th=float(floor_th),
+            fit_summary={
+                **model.fit_summary,
+                "gate_variant": variant,
+                "gate_variant_params": dict(params),
+                "ns2_threshold_source": "calibration_ns2" if ns2.size > 0 else "calibration_idle",
+                "ns2_lrt_window_p95": float(ns2_threshold),
+                "lrt_window_floor_th": float(floor_th),
+                "fit_split": "calibration_blocks",
+                "threshold_fit_split": "calibration_blocks",
+                "test_split": "holdout_blocks",
+            },
+        )
+    if variant == CLASSIFIER_GATE_VARIANT_WEAK_SUBJECT_GUARD:
+        control_scores = _lrt_window_evidence_from_features(model, control)
+        idle_scores = _lrt_window_evidence_from_features(model, idle)
+        reasons: list[str] = []
+        separation = float(np.median(control_scores) - np.quantile(idle_scores, 0.95))
+        if separation < 0.25:
+            reasons.append("poor_lrt_separation")
+        if float(np.mean(idle_scores >= float(model.lrt_window_th))) > 0.10:
+            reasons.append("calibration_idle_fp_estimate_high")
+        margin_index = _feature_index(feature_names, "margin")
+        if float(np.quantile(control[:, margin_index], 0.10)) <= float(np.quantile(idle[:, margin_index], 0.95)):
+            reasons.append("margin_overlap")
+        if not reasons:
+            return replace(
+                model,
+                gate_variant=variant,
+                weak_subject_guard_active=False,
+                weak_subject_guard_reasons=(),
+                fit_summary={**model.fit_summary, "gate_variant": variant, "weak_subject_guard_active": False},
+            )
+        floor_th = max(float(model.lrt_window_th), float(np.quantile(idle_scores, 0.975)))
+        margin_th = max(
+            float(np.quantile(control[:, margin_index], 0.15)),
+            float(np.quantile(idle[:, margin_index], 0.95)),
+        )
+        return replace(
+            model,
+            gate_variant=variant,
+            lrt_window_floor_th=float(floor_th),
+            score_shape_margin_index=margin_index,
+            score_shape_margin_th=float(margin_th),
+            weak_subject_guard_active=True,
+            weak_subject_guard_reasons=tuple(reasons),
+            fit_summary={
+                **model.fit_summary,
+                "gate_variant": variant,
+                "weak_subject_guard_active": True,
+                "weak_subject_guard_reasons": list(reasons),
+                "lrt_window_floor_th": float(floor_th),
+                "score_shape_margin_th": float(margin_th),
+            },
+        )
+    if variant == CLASSIFIER_GATE_VARIANT_FREQUENCY_SPECIFIC_THRESHOLD:
+        _fit_trials, validation_trials, validation_split = _split_gate_fit_validation_trials(scored_trials)
+        payloads = _fit_frequency_specific_threshold_gate_payload(
+            model,
+            feature_names=feature_names,
+            scored_trials=scored_trials,
+            params=params,
+            smoothing_windows=int(getattr(model, "smoothing_windows", 1)),
+        )
+        updated = replace(
+            model,
+            gate_variant=variant,
+            frequency_specific_control_state_gates=payloads,
+        )
+        validation_metrics = _frequency_specific_validation_metrics_payload(
+            updated,
+            validation_trials,
+            win_sec=float(win_sec),
+            step_sec=float(step_sec),
+            min_enter_windows=max(1, int(min_enter_windows)),
+            max_gap_windows=max(0, int(max_gap_windows)),
+        )
+        return replace(
+            updated,
+            fit_summary={
+                **model.fit_summary,
+                "gate_variant": variant,
+                "gate_variant_params": dict(params),
+                "frequency_specific_control_state_gates": payloads,
+                "frequency_specific_gate_feature_names": list(FREQUENCY_SPECIFIC_GATE_FEATURE_NAMES),
+                "frequency_specific_fit_policy": "calibration_only_selected_freq_windows",
+                "frequency_specific_grid_selection_policy": FREQSPEC_GRID_SELECTION_POLICY,
+                "fit_split": "calibration_blocks",
+                "validation_split": "calibration_gate_validation_trials",
+                "gate_fit_validation": dict(validation_split),
+                "gate_validation_metrics": validation_metrics,
+            },
+        )
+    if variant == CLASSIFIER_GATE_VARIANT_FREQUENCY_SPECIFIC_LOGISTIC:
+        _fit_trials, validation_trials, validation_split = _split_gate_fit_validation_trials(scored_trials)
+        payloads = _fit_frequency_specific_logistic_gate_payload(
+            model,
+            feature_names=feature_names,
+            scored_trials=scored_trials,
+            params=params,
+            smoothing_windows=int(getattr(model, "smoothing_windows", 1)),
+        )
+        updated = replace(
+            model,
+            gate_variant=variant,
+            frequency_specific_control_state_gates=payloads,
+        )
+        validation_metrics = _frequency_specific_validation_metrics_payload(
+            updated,
+            validation_trials,
+            win_sec=float(win_sec),
+            step_sec=float(step_sec),
+            min_enter_windows=max(1, int(min_enter_windows)),
+            max_gap_windows=max(0, int(max_gap_windows)),
+        )
+        return replace(
+            updated,
+            fit_summary={
+                **model.fit_summary,
+                "gate_variant": variant,
+                "gate_variant_params": dict(params),
+                "frequency_specific_control_state_gates": payloads,
+                "frequency_specific_gate_feature_names": list(FREQUENCY_SPECIFIC_GATE_FEATURE_NAMES),
+                "frequency_specific_fit_policy": "calibration_only_selected_freq_windows",
+                "frequency_specific_grid_selection_policy": FREQSPEC_GRID_SELECTION_POLICY,
+                "fit_split": "calibration_blocks",
+                "validation_split": "calibration_gate_validation_trials",
+                "gate_fit_validation": dict(validation_split),
+                "gate_validation_metrics": validation_metrics,
+            },
+        )
+    return replace(model, gate_variant=variant)
 
 
 def _lrt_window_evidence_from_features(
     model: FBCCALDA5Model | FBCCARidge5Model,
     feature_matrix: np.ndarray,
 ) -> np.ndarray:
+    return lrt_window_evidence_from_state(_classifier_state_payload(model), feature_matrix)
+
+
+def _score_shape_gate_mask_for_model(
+    model: FBCCALDA5Model | FBCCARidge5Model,
+    feature_matrix: np.ndarray,
+) -> np.ndarray:
     features = np.asarray(feature_matrix, dtype=np.float64)
-    if features.ndim != 2 or features.shape[0] <= 0:
-        return np.zeros(0, dtype=np.float64)
-    indices = tuple(int(index) for index in getattr(model, "lrt_feature_indices", ()) or ())
-    if not indices:
-        raise ValueError("lrt multi-window gate requires configured feature indices")
-    selected = features[:, np.asarray(indices, dtype=int)]
-    control_mean = np.asarray(getattr(model, "lrt_feature_mean_control", None), dtype=np.float64)
-    control_std = np.asarray(getattr(model, "lrt_feature_std_control", None), dtype=np.float64)
-    idle_mean = np.asarray(getattr(model, "lrt_feature_mean_idle", None), dtype=np.float64)
-    idle_std = np.asarray(getattr(model, "lrt_feature_std_idle", None), dtype=np.float64)
-    if (
-        control_mean.shape != selected.shape[1:]
-        or control_std.shape != selected.shape[1:]
-        or idle_mean.shape != selected.shape[1:]
-        or idle_std.shape != selected.shape[1:]
-    ):
-        raise ValueError("lrt multi-window gate feature statistics do not match feature indices")
-    control_std = np.maximum(control_std, 1e-6)
-    idle_std = np.maximum(idle_std, 1e-6)
-    control_z = (selected - control_mean) / control_std
-    idle_z = (selected - idle_mean) / idle_std
-    log_control = -0.5 * np.sum(control_z * control_z, axis=1) - np.sum(np.log(control_std))
-    log_idle = -0.5 * np.sum(idle_z * idle_z, axis=1) - np.sum(np.log(idle_std))
-    return (log_control - log_idle).astype(np.float64, copy=False)
+    if features.ndim != 2:
+        raise ValueError("feature_matrix must be 2D")
+    mask = np.ones(int(features.shape[0]), dtype=bool)
+    margin_index = getattr(model, "score_shape_margin_index", None)
+    margin_th = getattr(model, "score_shape_margin_th", None)
+    if margin_index is not None and margin_th is not None:
+        mask &= features[:, int(margin_index)] + 1e-12 >= float(margin_th)
+    ratio_index = getattr(model, "score_shape_ratio_index", None)
+    ratio_th = getattr(model, "score_shape_ratio_th", None)
+    if ratio_index is not None and ratio_th is not None:
+        mask &= features[:, int(ratio_index)] + 1e-12 >= float(ratio_th)
+    entropy_index = getattr(model, "score_shape_entropy_index", None)
+    entropy_th = getattr(model, "score_shape_entropy_th", None)
+    if entropy_index is not None and entropy_th is not None:
+        mask &= features[:, int(entropy_index)] <= float(entropy_th) + 1e-12
+    return mask
 
 
 def _predict_lrt_multiwindow_reject_trial_from_probs(
@@ -2428,6 +4512,7 @@ def _predict_lrt_multiwindow_reject_trial_from_probs(
     *,
     min_enter_windows: int,
     max_gap_windows: int = 0,
+    feature_matrix: Optional[np.ndarray] = None,
 ) -> tuple[str, float, float]:
     if probs.size <= 0:
         return "idle", 0.0, float("inf")
@@ -2440,8 +4525,21 @@ def _predict_lrt_multiwindow_reject_trial_from_probs(
     needed = max(1, int(min_enter_windows))
     max_gap = max(0, int(max_gap_windows))
     window_th = float(getattr(model, "lrt_window_th", 0.0))
+    floor_th = getattr(model, "lrt_window_floor_th", None)
+    effective_window_th = max(window_th, float(floor_th) if floor_th is not None else window_th)
     enter_th = float(getattr(model, "lrt_enter_th", 0.0))
     decay = min(max(float(getattr(model, "lrt_decay", DEFAULT_LRT_MULTIWINDOW_DECAY)), 0.0), 0.99)
+    shape_mask = np.ones(int(values.shape[0]), dtype=bool)
+    if feature_matrix is not None:
+        shape_mask = _score_shape_gate_mask_for_model(model, feature_matrix)
+        if getattr(model, "frequency_specific_control_state_gates", None):
+            shape_mask &= _frequency_specific_gate_mask_for_model(
+                model,
+                probs=values,
+                labels=label_values,
+                feature_matrix=feature_matrix,
+                lrt_evidence=evidence,
+            )
     accumulated_by_label = {str(label): 0.0 for label in label_values if str(label) != "idle"}
     streak_label = ""
     streak_count = 0
@@ -2458,7 +4556,7 @@ def _predict_lrt_multiwindow_reject_trial_from_probs(
             pred_label != "idle"
             and command_confidence + 1e-12 >= float(model.command_confidence_th)
         )
-        passes_lrt = evidence_value + 1e-12 >= window_th
+        passes_lrt = evidence_value + 1e-12 >= effective_window_th and bool(shape_mask[index])
         if passes_command and passes_lrt:
             for label in list(accumulated_by_label):
                 if label != pred_label:
@@ -2491,9 +4589,327 @@ def _predict_lrt_multiwindow_reject_trial_from_probs(
             streak_label = ""
             streak_count = 0
             gap_count = 0
-    if needed <= 1 and best_label != "idle" and best_score + 1e-12 >= window_th:
+    if needed <= 1 and best_label != "idle" and best_score + 1e-12 >= effective_window_th:
         return best_label, best_score, float(best_index)
     return "idle", 0.0, 0.0
+
+
+def _window_pass_mask_for_lrt_model(
+    model: FBCCALDA5Model | FBCCARidge5Model,
+    *,
+    probs: np.ndarray,
+    labels: np.ndarray,
+    lrt_evidence: np.ndarray,
+    feature_matrix: np.ndarray,
+) -> np.ndarray:
+    values = np.asarray(probs, dtype=np.float64)
+    label_values = np.asarray(labels, dtype=object)
+    if values.ndim != 2:
+        return np.zeros(0, dtype=bool)
+    idle_index = int(np.where(label_values == "idle")[0][0])
+    window_th = float(getattr(model, "lrt_window_th", 0.0))
+    floor_th = getattr(model, "lrt_window_floor_th", None)
+    effective_window_th = max(window_th, float(floor_th) if floor_th is not None else window_th)
+    shape_mask = _score_shape_gate_mask_for_model(model, feature_matrix)
+    if getattr(model, "frequency_specific_control_state_gates", None):
+        shape_mask &= _frequency_specific_gate_mask_for_model(
+            model,
+            probs=values,
+            labels=label_values,
+            feature_matrix=feature_matrix,
+            lrt_evidence=lrt_evidence,
+        )
+    return (
+        (np.argmax(values, axis=1) != idle_index)
+        & (np.asarray(lrt_evidence, dtype=np.float64).reshape(-1) >= effective_window_th)
+        & shape_mask
+    )
+
+
+def _window_output_labels_from_pass_mask(
+    probs: np.ndarray,
+    labels: np.ndarray,
+    pass_mask: np.ndarray,
+) -> list[str]:
+    label_values = np.asarray(labels, dtype=object)
+    pred_indices = np.argmax(np.asarray(probs, dtype=np.float64), axis=1)
+    mask = np.asarray(pass_mask, dtype=bool).reshape(-1)
+    return [
+        str(label_values[int(index)]) if row_index < mask.shape[0] and bool(mask[row_index]) else "idle"
+        for row_index, index in enumerate(pred_indices)
+    ]
+
+
+def _cs_probability_for_frequency_specific_row(
+    payload: Mapping[str, Any],
+    row: np.ndarray,
+) -> Optional[float]:
+    if str(dict(payload).get("type", "")) != "logistic":
+        return None
+    weights = np.asarray(dict(payload).get("weights", []), dtype=np.float64).reshape(-1)
+    mean = np.asarray(dict(payload).get("feature_mean", []), dtype=np.float64).reshape(-1)
+    std = np.asarray(dict(payload).get("feature_std", []), dtype=np.float64).reshape(-1)
+    values = np.asarray(row, dtype=np.float64).reshape(-1)
+    if weights.size != values.size + 1 or mean.size != values.size or std.size != values.size:
+        return None
+    z = (values - mean) / np.maximum(std, 1e-9)
+    return float(_softmax_2class_logit(np.asarray([weights[0] + z @ weights[1:]], dtype=np.float64))[0])
+
+
+def _transition_type_for_trace(true_label: str, baseline_pred: str, candidate_pred: str) -> str:
+    true_label = str(true_label)
+    baseline_pred = str(baseline_pred)
+    candidate_pred = str(candidate_pred)
+    if true_label != "idle" and baseline_pred == true_label and candidate_pred == true_label:
+        return "baseline_TP_candidate_TP"
+    if true_label != "idle" and baseline_pred == true_label and candidate_pred == "idle":
+        return "baseline_TP_candidate_idle"
+    if true_label == "idle" and baseline_pred != "idle" and candidate_pred == "idle":
+        return "baseline_FP_candidate_idle"
+    if true_label == "idle" and baseline_pred != "idle" and candidate_pred != "idle":
+        return "baseline_FP_candidate_FP"
+    if true_label == "idle" and baseline_pred == "idle" and candidate_pred != "idle":
+        return "baseline_idle_candidate_command"
+    if true_label != "idle" and baseline_pred != true_label and candidate_pred == true_label:
+        return "baseline_miss_candidate_TP"
+    if true_label != "idle" and candidate_pred == "idle":
+        return "candidate_idle_command_miss"
+    if true_label != "idle" and candidate_pred != true_label:
+        return "candidate_wrong_command"
+    return "unchanged_or_other"
+
+
+def _trace_rows_for_frequency_specific_logistic_case(
+    *,
+    baseline_model: FBCCARidge5Model,
+    candidate_model: FBCCARidge5Model,
+    scored_trials: Sequence[ScoredTrial],
+    dataset: str,
+    subject: str,
+    split_index: int,
+    recipe_id: str,
+    frequency_profile: str,
+    frequency_set_id: str,
+    win_sec: float,
+    step_sec: float,
+    min_enter_windows: int,
+    max_gap_windows: int = 0,
+) -> dict[str, list[dict[str, Any]]]:
+    if (
+        parse_classifier_gate_variant(getattr(candidate_model, "gate_variant", CLASSIFIER_GATE_VARIANT_BASELINE_LRTMW))
+        != CLASSIFIER_GATE_VARIANT_FREQUENCY_SPECIFIC_LOGISTIC
+    ):
+        return {}
+    feature_names = _classifier_feature_names(
+        candidate_model.freqs,
+        score_source_name=str(dict(candidate_model.fit_summary).get("score_source_name", "fbcca")),
+        score_bank_mode=str(dict(candidate_model.fit_summary).get("score_bank_mode", "full_reference_bank")),
+    )
+    name_to_index = {name: int(index) for index, name in enumerate(FREQUENCY_SPECIFIC_GATE_FEATURE_NAMES)}
+    gates = normalize_frequency_specific_control_state_gates(
+        getattr(candidate_model, "frequency_specific_control_state_gates", None)
+    )
+    window_rows: list[dict[str, Any]] = []
+    trial_rows: list[dict[str, Any]] = []
+    transition_counts_by_subject: dict[tuple[str, str], int] = defaultdict(int)
+    transition_counts_by_frequency: dict[tuple[str, str], int] = defaultdict(int)
+    feature_groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+
+    for item in scored_trials:
+        true_label = _trial_true_label(item.trial)
+        true_freq = "" if true_label == "idle" else true_label
+        subtype = _ysuan_ns_subtype_from_label(str(item.trial.label))
+        candidate_probs, labels = _predict_classifier_windows(candidate_model, item.feature_matrix)
+        candidate_probs = _smooth_classifier_probabilities(
+            candidate_probs,
+            smoothing_windows=int(getattr(candidate_model, "smoothing_windows", 1)),
+        )
+        baseline_probs, baseline_labels = _predict_classifier_windows(baseline_model, item.feature_matrix)
+        baseline_probs = _smooth_classifier_probabilities(
+            baseline_probs,
+            smoothing_windows=int(getattr(baseline_model, "smoothing_windows", 1)),
+        )
+        lrt_evidence = _lrt_window_evidence_from_features(candidate_model, item.feature_matrix)
+        baseline_lrt_evidence = _lrt_window_evidence_from_features(baseline_model, item.feature_matrix)
+        baseline_pass = _window_pass_mask_for_lrt_model(
+            baseline_model,
+            probs=baseline_probs,
+            labels=baseline_labels,
+            lrt_evidence=baseline_lrt_evidence,
+            feature_matrix=item.feature_matrix,
+        )
+        candidate_pass = _window_pass_mask_for_lrt_model(
+            candidate_model,
+            probs=candidate_probs,
+            labels=labels,
+            lrt_evidence=lrt_evidence,
+            feature_matrix=item.feature_matrix,
+        )
+        baseline_window_preds = _window_output_labels_from_pass_mask(baseline_probs, baseline_labels, baseline_pass)
+        candidate_window_preds = _window_output_labels_from_pass_mask(candidate_probs, labels, candidate_pass)
+        gate_features, pred_indices, meta_rows = _frequency_specific_gate_features_for_trial(
+            model=candidate_model,
+            item=item,
+            probs=candidate_probs,
+            labels=labels,
+            lrt_evidence=lrt_evidence,
+            feature_names=feature_names,
+            smoothing_windows=int(getattr(candidate_model, "smoothing_windows", 1)),
+            score_source_name=str(dict(candidate_model.fit_summary).get("score_source_name", "fbcca")),
+        )
+        label_values = np.asarray(labels, dtype=object)
+        baseline_trial_pred, _base_conf, baseline_first_index = _predict_lrt_multiwindow_reject_trial_from_probs(
+            baseline_model,
+            baseline_probs,
+            baseline_labels,
+            baseline_lrt_evidence,
+            min_enter_windows=max(1, int(min_enter_windows)),
+            max_gap_windows=max(0, int(max_gap_windows)),
+            feature_matrix=item.feature_matrix,
+        )
+        candidate_trial_pred, _cand_conf, candidate_first_index = _predict_lrt_multiwindow_reject_trial_from_probs(
+            candidate_model,
+            candidate_probs,
+            labels,
+            lrt_evidence,
+            min_enter_windows=max(1, int(min_enter_windows)),
+            max_gap_windows=max(0, int(max_gap_windows)),
+            feature_matrix=item.feature_matrix,
+        )
+        trial_transition = _transition_type_for_trace(true_label, baseline_trial_pred, candidate_trial_pred)
+        baseline_decision_time = (
+            float(win_sec) + float(baseline_first_index) * float(step_sec)
+            if baseline_trial_pred != "idle"
+            else float(item.duration_sec + win_sec)
+            if true_label != "idle"
+            else float(win_sec)
+        )
+        candidate_decision_time = (
+            float(win_sec) + float(candidate_first_index) * float(step_sec)
+            if candidate_trial_pred != "idle"
+            else float(item.duration_sec + win_sec)
+            if true_label != "idle"
+            else float(win_sec)
+        )
+        trial_rows.append(
+            {
+                "dataset": str(dataset),
+                "subject": str(subject),
+                "split_id": int(split_index),
+                "trial_id": int(item.trial.trial_id),
+                "block_index": int(item.trial.block_index),
+                "true_state": subtype or true_label,
+                "true_freq": true_freq,
+                "baseline_pred": baseline_trial_pred,
+                "candidate_pred": candidate_trial_pred,
+                "baseline_decision_time_s": float(baseline_decision_time),
+                "candidate_decision_time_s": float(candidate_decision_time),
+                "transition_type": trial_transition,
+                "recipe_id": str(recipe_id),
+                "frequency_profile": str(frequency_profile),
+                "frequency_set_id": str(frequency_set_id),
+            }
+        )
+        transition_counts_by_subject[(str(subject), trial_transition)] += 1
+        transition_counts_by_frequency[(true_label if true_label != "idle" else subtype or "idle", trial_transition)] += 1
+
+        for row_index, row in enumerate(gate_features):
+            pred_label = str(label_values[int(pred_indices[row_index])])
+            freq_key = _label_to_freq_key(pred_label)
+            payload = dict(gates.get(str(freq_key), {}) or {})
+            cs_probability = _cs_probability_for_frequency_specific_row(payload, row)
+            selected_scores = np.sort(np.asarray(item.score_matrix[row_index], dtype=np.float64))[::-1]
+            top3_score = float(selected_scores[2]) if selected_scores.size >= 3 else None
+            baseline_pred = baseline_window_preds[row_index] if row_index < len(baseline_window_preds) else "idle"
+            candidate_pred = candidate_window_preds[row_index] if row_index < len(candidate_window_preds) else "idle"
+            transition_type = _transition_type_for_trace(true_label, baseline_pred, candidate_pred)
+            payload_row = {
+                "dataset": str(dataset),
+                "subject": str(subject),
+                "split_id": int(split_index),
+                "trial_id": int(item.trial.trial_id),
+                "block_index": int(item.trial.block_index),
+                "window_idx": int(row_index),
+                "time_from_onset": float(row_index) * float(step_sec),
+                "true_state": subtype or true_label,
+                "true_freq": true_freq,
+                "selected_freq": str(freq_key or "idle"),
+                "baseline_pred": baseline_pred,
+                "candidate_pred": candidate_pred,
+                "top1_score": float(row[name_to_index["top1_score"]]),
+                "top2_score": float(row[name_to_index["top2_score"]]),
+                "top3_score": top3_score,
+                "selected_freq_score": float(row[name_to_index["selected_freq_score"]]),
+                "margin": float(row[name_to_index["margin"]]),
+                "ratio": float(row[name_to_index["ratio"]]),
+                "normalized_top1": float(row[name_to_index["normalized_top1"]]),
+                "score_entropy": float(row[name_to_index["score_entropy"]]),
+                "lrt_evidence": float(row[name_to_index["lrt_evidence"]]),
+                "multiwindow_same_freq_count": float(row[name_to_index["multiwindow_same_freq_count"]]),
+                "multiwindow_margin_mean": float(row[name_to_index["multiwindow_margin_mean"]]),
+                "multiwindow_entropy_mean": float(row[name_to_index["multiwindow_entropy_mean"]]),
+                "cs_probability": cs_probability,
+                "gate_pass": bool(row_index < candidate_pass.shape[0] and candidate_pass[row_index]),
+                "transition_type": transition_type,
+                "recipe_id": str(recipe_id),
+                "frequency_profile": str(frequency_profile),
+                "frequency_set_id": str(frequency_set_id),
+            }
+            window_rows.append(payload_row)
+            if transition_type in {
+                "baseline_TP_candidate_TP",
+                "baseline_TP_candidate_idle",
+                "baseline_FP_candidate_idle",
+                "baseline_FP_candidate_FP",
+                "baseline_idle_candidate_command",
+                "baseline_miss_candidate_TP",
+            }:
+                feature_groups[(transition_type, str(freq_key or "idle"))].append(payload_row)
+
+    subject_rows = [
+        {"subject": subject_key, "transition_type": transition, "count": count}
+        for (subject_key, transition), count in sorted(transition_counts_by_subject.items())
+    ]
+    frequency_rows = [
+        {"frequency_or_state": freq, "transition_type": transition, "count": count}
+        for (freq, transition), count in sorted(transition_counts_by_frequency.items())
+    ]
+    feature_summary_rows: list[dict[str, Any]] = []
+    for (transition, freq), items in sorted(feature_groups.items()):
+        feature_summary_rows.append(
+            {
+                "transition_type": transition,
+                "selected_freq": freq,
+                "count": int(len(items)),
+                "mean_selected_freq_score": _safe_mean([item.get("selected_freq_score") for item in items]),
+                "mean_top1_score": _safe_mean([item.get("top1_score") for item in items]),
+                "mean_top2_score": _safe_mean([item.get("top2_score") for item in items]),
+                "mean_top3_score": _safe_mean([item.get("top3_score") for item in items]),
+                "mean_margin": _safe_mean([item.get("margin") for item in items]),
+                "mean_ratio": _safe_mean([item.get("ratio") for item in items]),
+                "mean_normalized_top1": _safe_mean([item.get("normalized_top1") for item in items]),
+                "mean_score_entropy": _safe_mean([item.get("score_entropy") for item in items]),
+                "mean_lrt_evidence": _safe_mean([item.get("lrt_evidence") for item in items]),
+                "mean_multiwindow_same_freq_count": _safe_mean(
+                    [item.get("multiwindow_same_freq_count") for item in items]
+                ),
+                "mean_multiwindow_margin_mean": _safe_mean(
+                    [item.get("multiwindow_margin_mean") for item in items]
+                ),
+                "mean_multiwindow_entropy_mean": _safe_mean(
+                    [item.get("multiwindow_entropy_mean") for item in items]
+                ),
+                "mean_cs_probability": _safe_mean([item.get("cs_probability") for item in items]),
+                "gate_pass_rate": _safe_mean([1.0 if item.get("gate_pass") else 0.0 for item in items]),
+            }
+        )
+    return {
+        "logistic_trace_windows": window_rows,
+        "logistic_trace_trial_summary": trial_rows,
+        "logistic_transition_counts_by_subject": subject_rows,
+        "logistic_transition_counts_by_frequency": frequency_rows,
+        "logistic_feature_summary_tp_fp": feature_summary_rows,
+    }
 
 
 def _predict_adaptive_evidence_trial_from_probs(
@@ -2701,8 +5117,53 @@ def _score_split_once(
     score_bank_mode: str = DEFAULT_SCORE_BANK_MODE,
     full_bank_freqs: Sequence[float] = (),
     validate_holdout_control: bool = True,
+    decoder_cache: Optional[dict[tuple[Any, ...], Any]] = None,
+    scored_cache: Optional[dict[tuple[Any, ...], dict[tuple[Any, ...], ScoredTrial]]] = None,
 ) -> tuple[list[ScoredTrial], list[ScoredTrial]]:
     mode = _parse_score_bank_mode(score_bank_mode)
+    if decoder_cache is not None and scored_cache is not None:
+        calibration_scored = _score_segment_subset_cached(
+            freqs=freqs,
+            sampling_rate=int(sampling_rate),
+            step_sec=float(step_sec),
+            compute_backend=str(compute_backend),
+            gpu_device=int(gpu_device),
+            gpu_precision=str(gpu_precision),
+            win_sec=float(win_sec),
+            score_bank_mode=mode,
+            full_bank_freqs=full_bank_freqs,
+            segments=calibration_segments,
+            context=f"{context} calibration",
+            decoder_cache=decoder_cache,
+            scored_cache=scored_cache,
+        )
+        holdout_scored = _score_segment_subset_cached(
+            freqs=freqs,
+            sampling_rate=int(sampling_rate),
+            step_sec=float(step_sec),
+            compute_backend=str(compute_backend),
+            gpu_device=int(gpu_device),
+            gpu_precision=str(gpu_precision),
+            win_sec=float(win_sec),
+            score_bank_mode=mode,
+            full_bank_freqs=full_bank_freqs,
+            segments=holdout_segments,
+            context=f"{context} holdout",
+            decoder_cache=decoder_cache,
+            scored_cache=scored_cache,
+        )
+        _validate_scored_trial_coverage(
+            calibration_scored,
+            freqs=freqs,
+            context=f"{context} calibration",
+        )
+        _validate_scored_trial_coverage(
+            holdout_scored,
+            freqs=freqs,
+            context=f"{context} holdout",
+            require_control=bool(validate_holdout_control),
+        )
+        return calibration_scored, holdout_scored
     decoder = _build_fbcca_decoder_for_scoring(
         freqs=freqs,
         sampling_rate=int(sampling_rate),
@@ -2770,6 +5231,8 @@ def _score_split_once_for_method(
     score_bank_mode: str = DEFAULT_SCORE_BANK_MODE,
     full_bank_freqs: Sequence[float] = (),
     validate_holdout_control: bool = True,
+    decoder_cache: Optional[dict[tuple[Any, ...], Any]] = None,
+    scored_cache: Optional[dict[tuple[Any, ...], dict[tuple[Any, ...], ScoredTrial]]] = None,
 ) -> tuple[list[ScoredTrial], list[ScoredTrial]]:
     spec = _score_method_spec(method_name)
     mode = _parse_score_bank_mode(score_bank_mode)
@@ -2788,6 +5251,8 @@ def _score_split_once_for_method(
             score_bank_mode=score_bank_mode,
             full_bank_freqs=full_bank_freqs,
             validate_holdout_control=bool(validate_holdout_control),
+            decoder_cache=decoder_cache,
+            scored_cache=scored_cache,
         )
     if mode != DEFAULT_SCORE_BANK_MODE:
         raise ValueError(
@@ -3658,6 +6123,7 @@ def _fit_fbcca_lda5_model(
             "smoothing_windows": max(1, int(smoothing_windows)),
             "threshold_policy": _parse_classifier_threshold_policy(threshold_policy),
             "threshold_selection": dict(threshold_selection),
+            "score_bank_mode": DEFAULT_SCORE_BANK_MODE,
         },
     )
 
@@ -3764,6 +6230,8 @@ def _fit_fbcca_ridge5_model(
     l2_candidates: Sequence[float] = DEFAULT_RIDGE_L2_CANDIDATES,
     base_models: Optional[Sequence[FBCCARidge5Model]] = None,
     score_source_name: str = "fbcca",
+    score_bank_mode: str = DEFAULT_SCORE_BANK_MODE,
+    gate_variant_params: Optional[Mapping[str, Any]] = None,
 ) -> FBCCARidge5Model:
     best_model: Optional[FBCCARidge5Model] = None
     best_rank: Optional[tuple[float, ...]] = None
@@ -3870,9 +6338,57 @@ def _fit_fbcca_ridge5_model(
                 "smoothing_windows": max(1, int(smoothing_windows)),
                 "threshold_policy": _parse_classifier_threshold_policy(threshold_policy),
                 "threshold_selection": dict(threshold_selection),
+                "score_bank_mode": _parse_score_bank_mode(score_bank_mode),
             },
         )
-        selected = dict(threshold_selection.get("selected_metrics") or {})
+        resolved_variant_params = dict(gate_variant_params or {"gate_variant": CLASSIFIER_GATE_VARIANT_BASELINE_LRTMW})
+        resolved_variant = parse_classifier_gate_variant(resolved_variant_params.get("gate_variant"))
+        if resolved_variant != CLASSIFIER_GATE_VARIANT_BASELINE_LRTMW:
+            grouped_features = _trial_group_arrays_for_gate(
+                model,
+                scored_trials,
+                smoothing_windows=max(1, int(smoothing_windows)),
+            )
+            feature_names = _classifier_feature_names(
+                freqs,
+                score_source_name=score_source_name,
+                score_bank_mode=score_bank_mode,
+            )
+            model = _apply_gate_variant_to_model(
+                model,
+                feature_names=feature_names,
+                grouped_features=grouped_features,
+                scored_trials=scored_trials,
+                params=resolved_variant_params,
+                win_sec=float(win_sec),
+                step_sec=float(step_sec),
+                min_enter_windows=max(1, int(min_enter_windows)),
+                max_gap_windows=max(0, int(max_gap_windows)),
+            )
+            fit_summary = dict(getattr(model, "fit_summary", {}) or {})
+            validation_payload = dict(fit_summary.get("gate_validation_metrics", {}) or {})
+            selected = dict(validation_payload.get("metrics", {}) or {})
+            if not selected:
+                selected_eval = _evaluate_fbcca_lda5_model(
+                    model,
+                    scored_trials,
+                    win_sec=float(win_sec),
+                    step_sec=float(step_sec),
+                    min_enter_windows=max(1, int(min_enter_windows)),
+                    max_gap_windows=max(0, int(max_gap_windows)),
+                )
+                selected = _extract_row_metrics(_evaluation_payload(selected_eval))
+        else:
+            model = replace(
+                model,
+                gate_variant=resolved_variant,
+                fit_summary={
+                    **model.fit_summary,
+                    "gate_variant": resolved_variant,
+                    "gate_variant_params": resolved_variant_params,
+                },
+            )
+            selected = dict(threshold_selection.get("selected_metrics") or {})
         rank = _classifier_threshold_rank_key(
             selected,
             policy=str(threshold_policy),
@@ -3920,6 +6436,10 @@ def _evaluate_fbcca_lda5_model(
     idle_selected_windows = 0
     per_freq_total = {_freq_label(freq): 0 for freq in model.freqs}
     per_freq_correct = {_freq_label(freq): 0 for freq in model.freqs}
+    per_freq_correct_2p5 = {_freq_label(freq): 0 for freq in model.freqs}
+    per_freq_latencies: dict[str, list[float]] = {_freq_label(freq): [] for freq in model.freqs}
+    per_freq_gate_windows = {_freq_label(freq): 0 for freq in model.freqs}
+    per_freq_total_windows = {_freq_label(freq): 0 for freq in model.freqs}
     command_labels = list(labels5[1:])
     cache = (
         tuple(probability_cache)
@@ -3971,6 +6491,7 @@ def _evaluate_fbcca_lda5_model(
                 lrt_evidence,
                 min_enter_windows=max(1, int(min_enter_windows)),
                 max_gap_windows=max(0, int(max_gap_windows)),
+                feature_matrix=item.feature_matrix,
             )
         else:
             gate_probs = np.asarray([], dtype=np.float64)
@@ -4000,8 +6521,24 @@ def _evaluate_fbcca_lda5_model(
                     gate_probs >= float(getattr(model, "evidence_decision_th", 0.5))
                 )
             elif use_lrt_gate:
+                floor_th = getattr(model, "lrt_window_floor_th", None)
+                effective_window_th = max(
+                    float(getattr(model, "lrt_window_th", 0.0)),
+                    float(floor_th) if floor_th is not None else float(getattr(model, "lrt_window_th", 0.0)),
+                )
+                shape_mask = _score_shape_gate_mask_for_model(model, item.feature_matrix)
+                if getattr(model, "frequency_specific_control_state_gates", None):
+                    shape_mask &= _frequency_specific_gate_mask_for_model(
+                        model,
+                        probs=probs,
+                        labels=labels,
+                        feature_matrix=item.feature_matrix,
+                        lrt_evidence=lrt_evidence,
+                    )
                 selected_mask = (np.argmax(probs, axis=1) != idle_index) & (
-                    lrt_evidence >= float(getattr(model, "lrt_window_th", 0.0))
+                    lrt_evidence >= effective_window_th
+                ) & (
+                    shape_mask
                 )
             else:
                 command_conf = 1.0 - probs[:, idle_index]
@@ -4018,14 +6555,37 @@ def _evaluate_fbcca_lda5_model(
             async_times4.append(float(async_latency))
             control_total += 1
             per_freq_total[true_label] += 1
+            pred_labels_for_gate = [str(labels[int(index)]) for index in np.argmax(probs, axis=1)]
+            for freq_label_value in per_freq_total_windows:
+                per_freq_total_windows[freq_label_value] += int(sum(1 for label in pred_labels_for_gate if label == freq_label_value))
+            if use_lrt_gate:
+                gate_mask_for_trial = _score_shape_gate_mask_for_model(model, item.feature_matrix)
+                if getattr(model, "frequency_specific_control_state_gates", None):
+                    gate_mask_for_trial &= _frequency_specific_gate_mask_for_model(
+                        model,
+                        probs=probs,
+                        labels=labels,
+                        feature_matrix=item.feature_matrix,
+                        lrt_evidence=lrt_evidence,
+                    )
+                for freq_label_value in per_freq_gate_windows:
+                    per_freq_gate_windows[freq_label_value] += int(
+                        sum(
+                            1
+                            for idx, label in enumerate(pred_labels_for_gate)
+                            if label == freq_label_value and bool(gate_mask_for_trial[idx])
+                        )
+                    )
             if async_pred_label == true_label:
                 control_correct += 1
                 per_freq_correct[true_label] += 1
                 detection_latencies.append(float(async_latency))
+                per_freq_latencies[true_label].append(float(async_latency))
                 if float(async_latency) <= 2.0:
                     control_correct_at_2s += 1
                 if float(async_latency) <= 2.5:
                     control_correct_at_2p5s += 1
+                    per_freq_correct_2p5[true_label] += 1
                 if float(async_latency) <= 3.0:
                     control_correct_at_3s += 1
     fixed_metrics5 = compute_classification_metrics(
@@ -4086,6 +6646,20 @@ def _evaluate_fbcca_lda5_model(
         "idle_fp_trials": float(idle_selected_events),
         "idle_selected_windows": float(idle_selected_windows),
         "control_trials": float(control_total),
+        "per_frequency_recall_at_2.5s": {
+            label: float(per_freq_correct_2p5[label] / per_freq_total[label]) if per_freq_total[label] else 0.0
+            for label in per_freq_total
+        },
+        "per_frequency_detection_latency_s": {
+            label: float(np.mean(values)) if values else float("inf")
+            for label, values in per_freq_latencies.items()
+        },
+        "per_frequency_gate_pass_rate": {
+            label: float(per_freq_gate_windows[label] / per_freq_total_windows[label])
+            if per_freq_total_windows[label]
+            else 0.0
+            for label in per_freq_total_windows
+        },
     }
     return {
         "metric_scope": "5class",
@@ -4121,6 +6695,9 @@ def _evaluation_payload(bundle: dict[str, Any]) -> dict[str, Any]:
             "async_lens_metrics_4class": dict(bundle.get("async_lens_metrics_4class") or {}),
             "async_metrics": dict(bundle.get("async_metrics") or {}),
             "clean_idle_proxy_metrics": dict(bundle.get("clean_idle_proxy_metrics") or {}),
+            "no_control_subtype_metrics": dict(bundle.get("no_control_subtype_metrics") or {}),
+            "no_control_subtype_by_frequency": dict(bundle.get("no_control_subtype_by_frequency") or {}),
+            "per_frequency_recall": dict(bundle.get("per_frequency_recall") or {}),
         }
     return {
         "metric_scope": str(bundle.get("metric_scope", "")),
@@ -4130,6 +6707,7 @@ def _evaluation_payload(bundle: dict[str, Any]) -> dict[str, Any]:
         "async_lens_metrics_4class": dict(bundle.get("async_lens_metrics_4class") or {}),
         "async_metrics": dict(bundle.get("async_metrics") or {}),
         "clean_idle_proxy_metrics": dict(bundle.get("clean_idle_proxy_metrics") or {}),
+        "no_control_subtype_metrics": dict(bundle.get("no_control_subtype_metrics") or {}),
     }
 
 
@@ -4164,6 +6742,47 @@ def _classifier_state_payload(model: FBCCALDA5Model | FBCCARidge5Model) -> dict[
         "lrt_window_th": float(getattr(model, "lrt_window_th", 0.0)),
         "lrt_enter_th": float(getattr(model, "lrt_enter_th", 0.0)),
         "lrt_decay": float(getattr(model, "lrt_decay", DEFAULT_LRT_MULTIWINDOW_DECAY)),
+        "gate_variant": parse_classifier_gate_variant(getattr(model, "gate_variant", CLASSIFIER_GATE_VARIANT_BASELINE_LRTMW)),
+        "score_shape_margin_index": (
+            None
+            if getattr(model, "score_shape_margin_index", None) is None
+            else int(getattr(model, "score_shape_margin_index"))
+        ),
+        "score_shape_ratio_index": (
+            None
+            if getattr(model, "score_shape_ratio_index", None) is None
+            else int(getattr(model, "score_shape_ratio_index"))
+        ),
+        "score_shape_entropy_index": (
+            None
+            if getattr(model, "score_shape_entropy_index", None) is None
+            else int(getattr(model, "score_shape_entropy_index"))
+        ),
+        "score_shape_margin_th": (
+            None
+            if getattr(model, "score_shape_margin_th", None) is None
+            else float(getattr(model, "score_shape_margin_th"))
+        ),
+        "score_shape_ratio_th": (
+            None
+            if getattr(model, "score_shape_ratio_th", None) is None
+            else float(getattr(model, "score_shape_ratio_th"))
+        ),
+        "score_shape_entropy_th": (
+            None
+            if getattr(model, "score_shape_entropy_th", None) is None
+            else float(getattr(model, "score_shape_entropy_th"))
+        ),
+        "lrt_window_floor_th": (
+            None
+            if getattr(model, "lrt_window_floor_th", None) is None
+            else float(getattr(model, "lrt_window_floor_th"))
+        ),
+        "weak_subject_guard_active": bool(getattr(model, "weak_subject_guard_active", False)),
+        "weak_subject_guard_reasons": list(getattr(model, "weak_subject_guard_reasons", ()) or ()),
+        "frequency_specific_control_state_gates": normalize_frequency_specific_control_state_gates(
+            getattr(model, "frequency_specific_control_state_gates", None)
+        ),
         "fit_summary": dict(model.fit_summary),
     }
     if getattr(model, "evidence_weights", None) is not None:
@@ -4205,6 +6824,18 @@ def _classifier_state_payload(model: FBCCALDA5Model | FBCCARidge5Model) -> dict[
     return payload
 
 
+def _full_reference_bank_freqs_from_scored(
+    scored_trials: Sequence[ScoredTrial],
+    *,
+    fallback_freqs: Sequence[float],
+) -> list[float]:
+    for item in scored_trials:
+        values = tuple(float(freq) for freq in getattr(item, "all_freqs", ()) or ())
+        if values:
+            return [float(freq) for freq in values]
+    return [float(freq) for freq in fallback_freqs]
+
+
 def _classifier_candidate_artifact(
     *,
     model: FBCCALDA5Model | FBCCARidge5Model,
@@ -4221,8 +6852,12 @@ def _classifier_candidate_artifact(
     score_bank_mode: str = DEFAULT_SCORE_BANK_MODE,
     decoder_name: Optional[str] = None,
     decoder_model_params: Optional[Mapping[str, Any]] = None,
+    full_reference_bank_freqs: Sequence[float] = (),
 ) -> dict[str, Any]:
     normalized_source_name = str(score_source_name).strip().lower()
+    full_bank_freqs = [float(freq) for freq in full_reference_bank_freqs]
+    classifier_name = _classifier_name_for_model(model, score_source_name=normalized_source_name)
+    runtime_loadable = False
     feature_names = _classifier_feature_names(
         freqs,
         score_source_name=normalized_source_name,
@@ -4231,12 +6866,12 @@ def _classifier_candidate_artifact(
     return {
         "artifact_schema_version": "external_fbcca_classifier_candidate_v1",
         "status": "candidate_only",
-        "runtime_loadable": False,
+        "runtime_loadable": runtime_loadable,
         "runtime_load_note": (
-            "Benchmark artifact only; realtime loading still needs a registered decoder "
-            "that restores this state through load_decoder_from_profile()."
+            "Pseudo-online/offline replay candidate only; this run must not be loaded directly "
+            "or written back to deployed/default runtime profiles."
         ),
-        "model_name": _classifier_name_for_model(model, score_source_name=normalized_source_name),
+        "model_name": classifier_name,
         "model_family": f"{normalized_source_name}_score_classifier_5class",
         "feature_contract": {
             "feature_source": f"{normalized_source_name}_score_matrix",
@@ -4256,16 +6891,35 @@ def _classifier_candidate_artifact(
             "win_sec": float(win_sec),
             "step_sec": float(step_sec),
             "min_enter_windows": int(min_enter_windows),
+            "smoothing_windows": int(getattr(model, "smoothing_windows", 1)),
+        },
+        "gate": {
+            "policy": str(getattr(model, "gate_policy", CLASSIFIER_CONFIDENCE_GATE_POLICY)),
+            "variant": parse_classifier_gate_variant(getattr(model, "gate_variant", CLASSIFIER_GATE_VARIANT_BASELINE_LRTMW)),
+            "params": dict(dict(model.fit_summary).get("gate_variant_params", {}) or {}),
+            "frequency_specific_control_state_gates": normalize_frequency_specific_control_state_gates(
+                getattr(model, "frequency_specific_control_state_gates", None)
+            ),
+            "lrt_window_th": _finite_or_none(getattr(model, "lrt_window_th", None)),
+            "lrt_window_floor_th": _finite_or_none(getattr(model, "lrt_window_floor_th", None)),
+            "score_shape_margin_th": _finite_or_none(getattr(model, "score_shape_margin_th", None)),
+            "score_shape_ratio_th": _finite_or_none(getattr(model, "score_shape_ratio_th", None)),
+            "score_shape_entropy_th": _finite_or_none(getattr(model, "score_shape_entropy_th", None)),
+            "weak_subject_guard_active": bool(getattr(model, "weak_subject_guard_active", False)),
+            "weak_subject_guard_reasons": list(getattr(model, "weak_subject_guard_reasons", ()) or ()),
         },
         "training_provenance": {
             "dataset": str(spec.dataset),
             "subject": str(spec.subject),
+            "source_subjects": [str(spec.subject)],
+            "target_subject": str(spec.subject),
             "source_mat_path": str(spec.mat_path),
             "channel_loc_path": "" if spec.channel_loc_path is None else str(spec.channel_loc_path),
             "sampling_rate": int(sampling_rate),
             "score_source_name": normalized_source_name,
             "decoder_name": str(decoder_name or normalized_source_name),
             "decoder_model_params": json_safe(dict(decoder_model_params or {})),
+            "full_reference_bank_freqs": list(full_bank_freqs),
             "required_channel_names": list(_required_channel_names(spec.dataset)),
             "only_required_channels_used": True,
             "command_freqs": [float(freq) for freq in freqs],
@@ -4273,12 +6927,28 @@ def _classifier_candidate_artifact(
             "seed": int(split_plan.seed),
             "calibration_blocks": [int(block) for block in split_plan.calibration_blocks],
             "holdout_blocks": [int(block) for block in split_plan.holdout_blocks],
+            "excluded_test_blocks": [int(block) for block in split_plan.holdout_blocks],
+            "fit_split": [int(block) for block in split_plan.calibration_blocks],
+            "test_split": [int(block) for block in split_plan.holdout_blocks],
+            "ysu_an_ns_calibration_counts": dict(dict(split_summary).get("ysu_an_ns_calibration_counts", {}) or {}),
+            "ysu_an_ns_holdout_counts": dict(dict(split_summary).get("ysu_an_ns_holdout_counts", {}) or {}),
             "idle_multiplier": _safe_float(dict(split_summary).get("idle_multiplier"), 1.0),
+            "data_leakage_guard": "reference bank, threshold fitting, templates, and LDA/Ridge models use calibration blocks only; holdout/test blocks are excluded from fitting.",
             "idle_proxy_note": (
                 "Idle/no-control is proxied with non-command target stimulus trials from external benchmarks."
             ),
         },
         "state": _classifier_state_payload(model),
+        "runtime_profile_model_params": {
+            "state": _classifier_state_payload(model),
+            "score_source_name": normalized_source_name,
+            "score_bank_mode": _parse_score_bank_mode(score_bank_mode),
+            "feature_names": feature_names,
+            "decoder_name": str(decoder_name or normalized_source_name),
+            "decoder_model_params": json_safe(dict(decoder_model_params or {})),
+            "full_reference_bank_freqs": list(full_bank_freqs),
+            "max_gap_windows": int(dict(model.fit_summary).get("max_gap_windows", 0) or 0),
+        },
         "holdout_eval": dict(eval_payload),
         "summary_metrics": _extract_row_metrics(dict(eval_payload)),
     }
@@ -4308,7 +6978,13 @@ def _extract_row_metrics(eval_payload: dict[str, Any]) -> dict[str, float]:
     ns1 = dict(subtype_metrics.get("ns1") or {})
     ns2 = dict(subtype_metrics.get("ns2") or {})
     ns3 = dict(subtype_metrics.get("ns3") or {})
-    return {
+    real_idle_fp = _safe_float(subtype_metrics.get("ns_all_fp_per_min"), float("nan"))
+    clean_idle_fp = _safe_float(clean_idle.get("idle_fp_per_min"), float("nan"))
+    approx_idle_fp = _safe_float(async_metrics.get("idle_fp_per_min"), float("inf"))
+    real_candidates = [value for value in (real_idle_fp, clean_idle_fp) if np.isfinite(value)]
+    real_idle_fp = float(real_candidates[0]) if real_candidates else float("nan")
+    mixed_idle_fp = float(real_candidates[0]) if real_candidates else approx_idle_fp
+    metrics = {
         "fixed_acc_4class": _safe_float(fixed_4.get("acc"), 0.0),
         "fixed_macro_f1_4class": _safe_float(fixed_4.get("macro_f1"), 0.0),
         "fixed_acc_5class": _safe_float(fixed_5.get("acc"), 0.0),
@@ -4341,6 +7017,14 @@ def _extract_row_metrics(eval_payload: dict[str, Any]) -> dict[str, float]:
         "ns_all_fp_per_min": _safe_float(subtype_metrics.get("ns_all_fp_per_min"), float("nan")),
         "cs_control_recall": _safe_float(async_metrics.get("control_recall"), 0.0),
     }
+    metrics.update(
+        {
+            "real_idle_fp_per_min": real_idle_fp,
+            "approx_idle_fp_per_min": approx_idle_fp,
+            "mixed_idle_fp_per_min": mixed_idle_fp,
+        }
+    )
+    return metrics
 
 
 def _evaluate_profile(
@@ -4369,6 +7053,241 @@ def _evaluate_profile(
         async_decision_time_mode="first-correct",
         paper_decision_time_mode="fixed-window",
     )
+
+
+def _per_frequency_metrics_from_eval(eval_payload: Mapping[str, Any], model: FBCCALDA5Model | FBCCARidge5Model) -> list[dict[str, Any]]:
+    async_metrics = dict(eval_payload.get("async_metrics", {}) or {})
+    per_freq_recall = dict(eval_payload.get("per_frequency_recall", {}) or {})
+    per_freq_latency = dict(async_metrics.get("per_frequency_detection_latency_s", {}) or {})
+    gate_pass_rates = dict(async_metrics.get("per_frequency_gate_pass_rate", {}) or {})
+    subtype_by_freq = dict(eval_payload.get("no_control_subtype_by_frequency", {}) or {})
+    rows: list[dict[str, Any]] = []
+    for freq in model.freqs:
+        key = _freq_label(freq)
+        ns_payload = dict(subtype_by_freq.get(key, {}) or {})
+        rows.append(
+            {
+                "freq": float(freq),
+                "command_recall": _finite_or_none(per_freq_recall.get(key)),
+                "recall_at_2.5s": _finite_or_none(dict(async_metrics.get("per_frequency_recall_at_2.5s", {}) or {}).get(key)),
+                "fp_per_min_ns1": _finite_or_none(dict(ns_payload.get("ns1", {}) or {}).get("fp_per_min")),
+                "fp_per_min_ns2": _finite_or_none(dict(ns_payload.get("ns2", {}) or {}).get("fp_per_min")),
+                "fp_per_min_ns3": _finite_or_none(dict(ns_payload.get("ns3", {}) or {}).get("fp_per_min")),
+                "gate_pass_rate": _finite_or_none(gate_pass_rates.get(key)),
+                "mean_latency": _finite_or_none(per_freq_latency.get(key)),
+            }
+        )
+    return rows
+
+
+def _ns2_selected_freq_diagnostic_rows(
+    model: FBCCALDA5Model | FBCCARidge5Model,
+    scored_trials: Sequence[ScoredTrial],
+    *,
+    dataset: str,
+    subject: str,
+    split_index: int,
+    recipe_id: str,
+    gate_variant: str,
+    win_sec: float,
+    step_sec: float,
+    min_enter_windows: int,
+    max_gap_windows: int = 0,
+) -> dict[str, list[dict[str, Any]]]:
+    feature_names = _classifier_feature_names(
+        model.freqs,
+        score_source_name=str(dict(model.fit_summary).get("score_source_name", "fbcca")),
+        score_bank_mode=str(dict(model.fit_summary).get("score_bank_mode", DEFAULT_SCORE_BANK_MODE)),
+    )
+    name_to_index = {name: int(index) for index, name in enumerate(FREQUENCY_SPECIFIC_GATE_FEATURE_NAMES)}
+    by_freq: dict[str, dict[str, Any]] = {}
+    by_subject_freq: dict[str, dict[str, Any]] = {}
+    ns2_event_fp_by_freq: dict[str, int] = defaultdict(int)
+    ns2_duration_total_sec = 0.0
+    confusion: dict[tuple[str, str, str], int] = defaultdict(int)
+    command_trials_by_label: dict[str, list[ScoredTrial]] = defaultdict(list)
+    cache = _build_classifier_probability_cache(model, scored_trials)
+    for item, probs, labels in cache:
+        true_label = _trial_true_label(item.trial)
+        subtype = _ysuan_ns_subtype_from_label(str(item.trial.label))
+        if true_label != "idle":
+            command_trials_by_label[true_label].append(item)
+        smoothed = _smooth_classifier_probabilities(probs, smoothing_windows=int(getattr(model, "smoothing_windows", 1)))
+        lrt_evidence = (
+            _lrt_window_evidence_from_features(model, item.feature_matrix)
+            if str(getattr(model, "gate_policy", "")) == CLASSIFIER_LRT_MULTIWINDOW_REJECT_GATE_POLICY
+            else np.zeros(int(smoothed.shape[0]), dtype=np.float64)
+        )
+        gate_features, pred_indices, meta_rows = _frequency_specific_gate_features_for_trial(
+            model=model,
+            item=item,
+            probs=smoothed,
+            labels=labels,
+            lrt_evidence=lrt_evidence,
+            feature_names=feature_names,
+            smoothing_windows=int(getattr(model, "smoothing_windows", 1)),
+            score_source_name=str(dict(model.fit_summary).get("score_source_name", "fbcca")),
+        )
+        label_values = np.asarray(labels, dtype=object)
+        idle_index = int(np.where(label_values == "idle")[0][0])
+        if str(getattr(model, "gate_policy", "")) == CLASSIFIER_LRT_MULTIWINDOW_REJECT_GATE_POLICY:
+            floor_th = getattr(model, "lrt_window_floor_th", None)
+            effective_window_th = max(
+                float(getattr(model, "lrt_window_th", 0.0)),
+                float(floor_th) if floor_th is not None else float(getattr(model, "lrt_window_th", 0.0)),
+            )
+            gate_mask = (lrt_evidence >= effective_window_th) & _score_shape_gate_mask_for_model(model, item.feature_matrix)
+            if getattr(model, "frequency_specific_control_state_gates", None):
+                gate_mask &= _frequency_specific_gate_mask_for_model(
+                    model,
+                    probs=smoothed,
+                    labels=labels,
+                    feature_matrix=item.feature_matrix,
+                    lrt_evidence=lrt_evidence,
+                )
+        else:
+            gate_mask = (1.0 - smoothed[:, idle_index]) >= float(getattr(model, "command_confidence_th", 0.0))
+        subtype_or_true = subtype if subtype else true_label
+        if subtype == "ns2":
+            ns2_duration_total_sec += float(item.duration_sec)
+            if str(getattr(model, "gate_policy", "")) == CLASSIFIER_LRT_MULTIWINDOW_REJECT_GATE_POLICY:
+                async_pred_label, _confidence, _first_index = _predict_lrt_multiwindow_reject_trial_from_probs(
+                    model,
+                    smoothed,
+                    labels,
+                    lrt_evidence,
+                    min_enter_windows=max(1, int(min_enter_windows)),
+                    max_gap_windows=max(0, int(max_gap_windows)),
+                    feature_matrix=item.feature_matrix,
+                )
+            else:
+                async_pred_label, _confidence, _first_index = _predict_fbcca_lda5_trial_from_probs(
+                    model,
+                    smoothed,
+                    labels,
+                    min_enter_windows=max(1, int(min_enter_windows)),
+                    max_gap_windows=max(0, int(max_gap_windows)),
+                )
+            if async_pred_label != "idle":
+                event_freq_key = _label_to_freq_key(async_pred_label)
+                if event_freq_key is not None:
+                    ns2_event_fp_by_freq[event_freq_key] += 1
+        for row_index, pred_index in enumerate(pred_indices):
+            pred_label = str(label_values[int(pred_index)])
+            selected_freq = _label_to_freq_key(pred_label)
+            confusion[(subtype_or_true, selected_freq or "idle", "window")] += 1
+            if subtype != "ns2" or selected_freq is None:
+                continue
+            payload = by_freq.setdefault(
+                selected_freq,
+                {
+                    "dataset": str(dataset),
+                    "subject": "ALL",
+                    "split_index": int(split_index),
+                    "recipe_id": str(recipe_id),
+                    "gate_variant": parse_classifier_gate_variant(gate_variant),
+                    "freq": selected_freq,
+                    "NS2_total_windows": 0,
+                    "NS2_FP_windows": 0,
+                    "_top1": [],
+                    "_margin": [],
+                    "_ratio": [],
+                    "_entropy": [],
+                    "_lrt": [],
+                },
+            )
+            subject_payload = by_subject_freq.setdefault(
+                selected_freq,
+                {
+                    "dataset": str(dataset),
+                    "subject": str(subject),
+                    "split_index": int(split_index),
+                    "recipe_id": str(recipe_id),
+                    "gate_variant": parse_classifier_gate_variant(gate_variant),
+                    "freq": selected_freq,
+                    "NS2_total_windows": 0,
+                    "NS2_FP_windows": 0,
+                },
+            )
+            payload["NS2_total_windows"] = int(payload["NS2_total_windows"]) + 1
+            subject_payload["NS2_total_windows"] = int(subject_payload["NS2_total_windows"]) + 1
+            if bool(gate_mask[row_index]):
+                payload["NS2_FP_windows"] = int(payload["NS2_FP_windows"]) + 1
+                subject_payload["NS2_FP_windows"] = int(subject_payload["NS2_FP_windows"]) + 1
+            feature_row = gate_features[row_index]
+            payload["_top1"].append(float(feature_row[name_to_index["top1_score"]]))
+            payload["_margin"].append(float(feature_row[name_to_index["margin"]]))
+            payload["_ratio"].append(float(feature_row[name_to_index["ratio"]]))
+            payload["_entropy"].append(float(feature_row[name_to_index["score_entropy"]]))
+            payload["_lrt"].append(float(feature_row[name_to_index["lrt_evidence"]]))
+
+    per_freq_eval = _evaluate_fbcca_lda5_model(
+        model,
+        scored_trials,
+        win_sec=float(win_sec),
+        step_sec=float(step_sec),
+        min_enter_windows=max(1, int(min_enter_windows)),
+        max_gap_windows=max(0, int(max_gap_windows)),
+        probability_cache=cache,
+    )
+    eval_payload = _evaluation_payload(per_freq_eval)
+    per_freq_recall = dict(eval_payload.get("per_frequency_recall", {}) or {})
+    async_metrics = dict(eval_payload.get("async_metrics", {}) or {})
+    per_freq_recall_2p5 = dict(async_metrics.get("per_frequency_recall_at_2.5s", {}) or {})
+    per_freq_latency = dict(async_metrics.get("per_frequency_detection_latency_s", {}) or {})
+
+    by_freq_rows: list[dict[str, Any]] = []
+    ns2_minutes = float(ns2_duration_total_sec) / 60.0
+    for freq_key, payload in sorted(by_freq.items()):
+        total = int(payload.get("NS2_total_windows", 0) or 0)
+        fp = int(payload.get("NS2_FP_windows", 0) or 0)
+        event_fp = int(ns2_event_fp_by_freq.get(freq_key, 0))
+        row = {
+            **payload,
+            "NS2_FP_events": int(event_fp),
+            "NS2_FP_per_min": float(event_fp / ns2_minutes) if ns2_minutes > 1e-12 else None,
+            "FP_share": float(fp / total) if total else None,
+            "mean_top1_score": _finite_or_none(np.mean(payload.pop("_top1")) if payload.get("_top1") else float("nan")),
+            "mean_margin": _finite_or_none(np.mean(payload.pop("_margin")) if payload.get("_margin") else float("nan")),
+            "mean_ratio": _finite_or_none(np.mean(payload.pop("_ratio")) if payload.get("_ratio") else float("nan")),
+            "mean_entropy": _finite_or_none(np.mean(payload.pop("_entropy")) if payload.get("_entropy") else float("nan")),
+            "mean_lrt_evidence": _finite_or_none(np.mean(payload.pop("_lrt")) if payload.get("_lrt") else float("nan")),
+        }
+        by_freq_rows.append(row)
+
+    by_subject_rows: list[dict[str, Any]] = []
+    for freq_key, payload in sorted(by_subject_freq.items()):
+        event_fp = int(ns2_event_fp_by_freq.get(freq_key, 0))
+        by_subject_rows.append(
+            {
+                **payload,
+                "NS2_FP_events": int(event_fp),
+                "NS2_FP_per_min": float(event_fp / ns2_minutes) if ns2_minutes > 1e-12 else None,
+                "command_recall_for_freq": _finite_or_none(per_freq_recall.get(freq_key)),
+                "recall_at_2.5_for_freq": _finite_or_none(per_freq_recall_2p5.get(freq_key)),
+                "detection_latency_for_freq": _finite_or_none(per_freq_latency.get(freq_key)),
+            }
+        )
+
+    confusion_rows = [
+        {
+            "dataset": str(dataset),
+            "subject": str(subject),
+            "split_index": int(split_index),
+            "recipe_id": str(recipe_id),
+            "gate_variant": parse_classifier_gate_variant(gate_variant),
+            "true_state": str(true_state),
+            "selected_freq": str(selected_freq),
+            "unit": str(unit),
+            "count": int(count),
+        }
+        for (true_state, selected_freq, unit), count in sorted(confusion.items())
+    ]
+    return {
+        "ns2_by_selected_freq": by_freq_rows,
+        "ns2_by_subject_freq": by_subject_rows,
+        "selected_freq_confusion": confusion_rows,
+    }
 
 
 def run_zero_shot_default(
@@ -4527,13 +7446,19 @@ def run_fbcca_lda5_method(
     base_model: Optional[FBCCALDA5Model] = None,
     clean_idle_scored: Optional[Sequence[ScoredTrial]] = None,
     clean_idle_support: Optional[Mapping[str, Any]] = None,
+    gate_variant_params: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
+    resolved_gate_variant_params = dict(gate_variant_params or {"gate_variant": CLASSIFIER_GATE_VARIANT_BASELINE_LRTMW})
+    resolved_gate_variant = parse_classifier_gate_variant(resolved_gate_variant_params.get("gate_variant"))
+    gate_variant_token = _classifier_gate_variant_token(resolved_gate_variant, resolved_gate_variant_params)
     recipe_id = _classifier_recipe_id_with_smoothing(
         win_sec=float(win_sec),
         min_enter_windows=int(min_enter_windows),
         max_gap_windows=max(0, int(max_gap_windows)),
         smoothing_windows=max(1, int(smoothing_windows)),
         gate_policy=str(threshold_policy),
+        gate_variant=resolved_gate_variant,
+        variant_token=gate_variant_token,
     )
     if calibration_scored is None or holdout_scored is None:
         full_bank_freqs = _full_bank_freqs_for_dataset(
@@ -4597,12 +7522,62 @@ def run_fbcca_lda5_method(
                 min_enter_windows=max(1, int(min_enter_windows)),
                 max_gap_windows=max(0, int(max_gap_windows)),
             )
+            eval_payload["no_control_subtype_by_frequency"] = _no_control_subtype_by_frequency_from_cache(
+                model,
+                list(clean_idle_scored),
+                win_sec=float(win_sec),
+                step_sec=float(step_sec),
+            )
         else:
             eval_payload["clean_idle_proxy_metrics"] = {
                 **support_payload,
                 "idle_fp_per_min": None,
                 "idle_trial_fp_rate": None,
             }
+    diagnostics = _ns2_selected_freq_diagnostic_rows(
+        model,
+        list(holdout_scored),
+        dataset=str(spec.dataset),
+        subject=str(spec.subject),
+        split_index=int(split_plan.split_index),
+        recipe_id=recipe_id,
+        gate_variant=resolved_gate_variant,
+        win_sec=float(win_sec),
+        step_sec=float(step_sec),
+        min_enter_windows=max(1, int(min_enter_windows)),
+        max_gap_windows=max(0, int(max_gap_windows)),
+    )
+    logistic_trace_diagnostics: dict[str, list[dict[str, Any]]] = {}
+    if resolved_gate_variant == CLASSIFIER_GATE_VARIANT_FREQUENCY_SPECIFIC_LOGISTIC:
+        baseline_trace_model = _fit_fbcca_ridge5_model(
+            calibration_scored,
+            freqs=freqs,
+            win_sec=float(latency_win_sec),
+            step_sec=float(step_sec),
+            min_enter_windows=max(1, int(min_enter_windows)),
+            max_gap_windows=max(0, int(max_gap_windows)),
+            smoothing_windows=max(1, int(smoothing_windows)),
+            threshold_policy=str(threshold_policy),
+            base_models=base_models,
+            score_source_name=str(score_source_name),
+            score_bank_mode=score_bank_mode,
+            gate_variant_params={"gate_variant": CLASSIFIER_GATE_VARIANT_BASELINE_LRTMW},
+        )
+        logistic_trace_diagnostics = _trace_rows_for_frequency_specific_logistic_case(
+            baseline_model=baseline_trace_model,
+            candidate_model=model,
+            scored_trials=list(holdout_scored),
+            dataset=str(spec.dataset),
+            subject=str(spec.subject),
+            split_index=int(split_plan.split_index),
+            recipe_id=recipe_id,
+            frequency_profile=_frequency_profile_name(freqs),
+            frequency_set_id="",
+            win_sec=float(latency_win_sec),
+            step_sec=float(step_sec),
+            min_enter_windows=max(1, int(min_enter_windows)),
+            max_gap_windows=max(0, int(max_gap_windows)),
+        )
     candidate_artifact = _classifier_candidate_artifact(
         model=model,
         spec=spec,
@@ -4618,6 +7593,11 @@ def run_fbcca_lda5_method(
         score_bank_mode=score_bank_mode,
         decoder_name="fbcca",
         decoder_model_params={"Nh": 5, "subband_weight_mode": "chen_fixed"},
+        full_reference_bank_freqs=(
+            _full_reference_bank_freqs_from_scored(calibration_scored, fallback_freqs=freqs)
+            if _parse_score_bank_mode(score_bank_mode) == "full_reference_bank"
+            else ()
+        ),
     )
     candidate_artifact_path = _write_classifier_candidate_artifact(
         artifact_dir,
@@ -4652,11 +7632,17 @@ def run_fbcca_lda5_method(
             "adaptive_gate_feature_names": list(ADAPTIVE_EVIDENCE_FEATURE_NAMES)
             if str(getattr(model, "gate_policy", "")) == CLASSIFIER_ADAPTIVE_EVIDENCE_GATE_POLICY
             else [],
+            "frequency_specific_control_state_gates": normalize_frequency_specific_control_state_gates(
+                getattr(model, "frequency_specific_control_state_gates", None)
+            ),
             "score_bank_mode": _parse_score_bank_mode(score_bank_mode),
             "candidate_artifact": candidate_artifact,
             "candidate_artifact_path": candidate_artifact_path,
         },
         "holdout_eval": eval_payload,
+        "per_frequency_metrics": _per_frequency_metrics_from_eval(eval_payload, model),
+        "ns2_selected_freq_diagnostics": diagnostics,
+        "logistic_trace_diagnostics": logistic_trace_diagnostics,
         "summary_metrics": _extract_row_metrics(eval_payload),
     }
 
@@ -4690,13 +7676,19 @@ def run_fbcca_ridge5_method(
     decoder_model_params: Optional[Mapping[str, Any]] = None,
     clean_idle_scored: Optional[Sequence[ScoredTrial]] = None,
     clean_idle_support: Optional[Mapping[str, Any]] = None,
+    gate_variant_params: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
+    resolved_gate_variant_params = dict(gate_variant_params or {"gate_variant": CLASSIFIER_GATE_VARIANT_BASELINE_LRTMW})
+    resolved_gate_variant = parse_classifier_gate_variant(resolved_gate_variant_params.get("gate_variant"))
+    gate_variant_token = _classifier_gate_variant_token(resolved_gate_variant, resolved_gate_variant_params)
     recipe_id = _classifier_recipe_id_with_smoothing(
         win_sec=float(win_sec),
         min_enter_windows=int(min_enter_windows),
         max_gap_windows=max(0, int(max_gap_windows)),
         smoothing_windows=max(1, int(smoothing_windows)),
         gate_policy=str(threshold_policy),
+        gate_variant=resolved_gate_variant,
+        variant_token=gate_variant_token,
     )
     latency_win_sec = _method_latency_window_sec(
         method_name=str(method_name),
@@ -4738,6 +7730,8 @@ def run_fbcca_ridge5_method(
         threshold_policy=str(threshold_policy),
         base_models=base_models,
         score_source_name=str(score_source_name),
+        score_bank_mode=score_bank_mode,
+        gate_variant_params=resolved_gate_variant_params,
     )
     bundle = _evaluate_fbcca_lda5_model(
         model,
@@ -4767,12 +7761,31 @@ def run_fbcca_ridge5_method(
                 min_enter_windows=max(1, int(min_enter_windows)),
                 max_gap_windows=max(0, int(max_gap_windows)),
             )
+            eval_payload["no_control_subtype_by_frequency"] = _no_control_subtype_by_frequency_from_cache(
+                model,
+                list(clean_idle_scored),
+                win_sec=float(latency_win_sec),
+                step_sec=float(step_sec),
+            )
         else:
             eval_payload["clean_idle_proxy_metrics"] = {
                 **support_payload,
                 "idle_fp_per_min": None,
                 "idle_trial_fp_rate": None,
             }
+    diagnostics = _ns2_selected_freq_diagnostic_rows(
+        model,
+        list(holdout_scored),
+        dataset=str(spec.dataset),
+        subject=str(spec.subject),
+        split_index=int(split_plan.split_index),
+        recipe_id=recipe_id,
+        gate_variant=resolved_gate_variant,
+        win_sec=float(latency_win_sec),
+        step_sec=float(step_sec),
+        min_enter_windows=max(1, int(min_enter_windows)),
+        max_gap_windows=max(0, int(max_gap_windows)),
+    )
     candidate_artifact = _classifier_candidate_artifact(
         model=model,
         spec=spec,
@@ -4788,6 +7801,11 @@ def run_fbcca_ridge5_method(
         score_bank_mode=score_bank_mode,
         decoder_name=str(decoder_name or _score_method_spec(method_name).decoder_name),
         decoder_model_params=dict(decoder_model_params or _score_method_spec(method_name).decoder_model_params),
+        full_reference_bank_freqs=(
+            _full_reference_bank_freqs_from_scored(calibration_scored, fallback_freqs=freqs)
+            if _parse_score_bank_mode(score_bank_mode) == "full_reference_bank"
+            else ()
+        ),
     )
     candidate_artifact_path = _write_classifier_candidate_artifact(
         artifact_dir,
@@ -4803,6 +7821,8 @@ def run_fbcca_ridge5_method(
         "calibration_blocks": [int(block) for block in split_plan.calibration_blocks],
         "holdout_blocks": [int(block) for block in split_plan.holdout_blocks],
         "selected_freqs": [float(freq) for freq in freqs],
+        "gate_variant": resolved_gate_variant,
+        "gate_variant_params": resolved_gate_variant_params,
         "split_summary": dict(split_summary),
         "calibration_profile": {
             "status": "ok",
@@ -4813,6 +7833,31 @@ def run_fbcca_ridge5_method(
             "max_gap_windows": max(0, int(max_gap_windows)),
             "smoothing_windows": max(1, int(smoothing_windows)),
             "gate_policy": str(getattr(model, "gate_policy", CLASSIFIER_CONFIDENCE_GATE_POLICY)),
+            "gate_variant": resolved_gate_variant,
+            "gate_variant_params": resolved_gate_variant_params,
+            "lrt_window_th": float(getattr(model, "lrt_window_th", 0.0)),
+            "lrt_window_floor_th": (
+                None
+                if getattr(model, "lrt_window_floor_th", None) is None
+                else float(getattr(model, "lrt_window_floor_th"))
+            ),
+            "score_shape_margin_th": (
+                None
+                if getattr(model, "score_shape_margin_th", None) is None
+                else float(getattr(model, "score_shape_margin_th"))
+            ),
+            "score_shape_ratio_th": (
+                None
+                if getattr(model, "score_shape_ratio_th", None) is None
+                else float(getattr(model, "score_shape_ratio_th"))
+            ),
+            "score_shape_entropy_th": (
+                None
+                if getattr(model, "score_shape_entropy_th", None) is None
+                else float(getattr(model, "score_shape_entropy_th"))
+            ),
+            "weak_subject_guard_active": bool(getattr(model, "weak_subject_guard_active", False)),
+            "weak_subject_guard_reasons": list(getattr(model, "weak_subject_guard_reasons", ()) or ()),
             "evidence_decision_th": float(getattr(model, "evidence_decision_th", 0.0)),
             "evidence_enter_th": float(getattr(model, "evidence_enter_th", 0.0)),
             "evidence_decay": float(getattr(model, "evidence_decay", DEFAULT_ADAPTIVE_EVIDENCE_DECAY)),
@@ -4826,6 +7871,9 @@ def run_fbcca_ridge5_method(
             "adaptive_gate_feature_names": list(ADAPTIVE_EVIDENCE_FEATURE_NAMES)
             if str(getattr(model, "gate_policy", "")) == CLASSIFIER_ADAPTIVE_EVIDENCE_GATE_POLICY
             else [],
+            "frequency_specific_control_state_gates": normalize_frequency_specific_control_state_gates(
+                getattr(model, "frequency_specific_control_state_gates", None)
+            ),
             "score_source_name": str(score_source_name).strip().lower(),
             "score_bank_mode": _parse_score_bank_mode(score_bank_mode),
             "decoder_name": str(decoder_name or _score_method_spec(method_name).decoder_name),
@@ -4835,6 +7883,8 @@ def run_fbcca_ridge5_method(
             "candidate_artifact_path": candidate_artifact_path,
         },
         "holdout_eval": eval_payload,
+        "per_frequency_metrics": _per_frequency_metrics_from_eval(eval_payload, model),
+        "ns2_selected_freq_diagnostics": diagnostics,
         "summary_metrics": _extract_row_metrics(eval_payload),
     }
 
@@ -4964,12 +8014,14 @@ def aggregate_recipe_rows(
         frequency_set_id = str(row.get("frequency_set_id") or "")
         if not frequency_set_id:
             frequency_set_id = f"freqs_{_freq_token(selected_freqs)}" if selected_freqs else ""
+        gate_variant = parse_classifier_gate_variant(row.get("gate_variant", CLASSIFIER_GATE_VARIANT_BASELINE_LRTMW))
         key = (
             str(row.get("method", "")),
             aggregate_recipe_id,
             int(len(calibration_blocks)),
             float(dict(row.get("split_summary", {}) or {}).get("idle_multiplier", 0.0)),
             frequency_set_id,
+            gate_variant,
         )
         grouped[key].append(dict(row))
 
@@ -5012,12 +8064,30 @@ def aggregate_recipe_rows(
                     "mean_async_macro_f1_5class": float(
                         np.mean([_safe_float(m.get("async_macro_f1_5class"), 0.0) for m in metrics])
                     ),
-                    "mean_idle_fp_per_min": float(
-                        np.mean([_safe_float(m.get("idle_fp_per_min"), float("inf")) for m in metrics])
+            "mean_idle_fp_per_min": float(
+                np.mean([_safe_float(m.get("idle_fp_per_min"), float("inf")) for m in metrics])
+            ),
+                    "mean_real_idle_fp_per_min": _safe_mean(
+                        [m.get("real_idle_fp_per_min") for m in metrics],
+                        default=float("nan"),
                     ),
-                    "mean_idle_selected_windows_per_min": float(
-                        np.mean([_safe_float(m.get("idle_selected_windows_per_min"), float("inf")) for m in metrics])
+                    "mean_approx_idle_fp_per_min": _safe_mean(
+                        [_first_finite_metric(m, ("approx_idle_fp_per_min", "idle_fp_per_min")) for m in metrics],
+                        default=float("nan"),
                     ),
+                    "mean_mixed_idle_fp_per_min": _safe_mean(
+                        [
+                            _first_finite_metric(
+                                m,
+                                ("mixed_idle_fp_per_min", "real_idle_fp_per_min", "approx_idle_fp_per_min", "idle_fp_per_min"),
+                            )
+                            for m in metrics
+                        ],
+                        default=float("inf"),
+                    ),
+            "mean_idle_selected_windows_per_min": float(
+                np.mean([_safe_float(m.get("idle_selected_windows_per_min"), float("inf")) for m in metrics])
+            ),
                     "mean_control_recall": float(np.mean([_safe_float(m.get("control_recall"), 0.0) for m in metrics])),
                     "mean_control_recall_at_2s": float(
                         np.mean([_safe_float(m.get("control_recall_at_2s"), 0.0) for m in metrics])
@@ -5067,9 +8137,15 @@ def aggregate_recipe_rows(
                 }
             )
 
-        subject_metric = lambda field: float(
-            np.mean([_safe_float(item.get(field), 0.0) for item in subject_summaries])
-        ) if subject_summaries else 0.0
+        def subject_metric(field: str, *, default: float = 0.0, missing_default: Optional[float] = None) -> float:
+            if not subject_summaries:
+                return float(default)
+            if missing_default is None:
+                return float(np.mean([_safe_float(item.get(field), default) for item in subject_summaries]))
+            return _safe_mean(
+                [item.get(field) for item in subject_summaries],
+                default=float(missing_default),
+            )
         calibration_patterns = sorted(
             {
                 tuple(int(item) for item in row.get("calibration_blocks", []))
@@ -5096,11 +8172,85 @@ def aggregate_recipe_rows(
             }
         )
         selected_recipe_counts: dict[str, int] = {}
+        gate_param_rows: list[dict[str, Any]] = []
+        validation_metrics_by_row: list[dict[str, Any]] = []
+        weak_guard_subjects: set[str] = set()
         for row in key_rows:
             selected_recipe = str(row.get("selected_recipe_id") or row.get("recipe_id", ""))
             if not selected_recipe:
                 continue
             selected_recipe_counts[selected_recipe] = int(selected_recipe_counts.get(selected_recipe, 0)) + 1
+            calibration_profile = dict(row.get("calibration_profile", {}) or {})
+            fit_summary = dict(calibration_profile.get("fit_summary", {}) or {})
+            validation_payload = dict(fit_summary.get("gate_validation_metrics", {}) or {})
+            validation_metrics = dict(validation_payload.get("metrics", {}) or {})
+            if validation_metrics:
+                validation_metrics_by_row.append(validation_metrics)
+            gate_param_rows.append(
+                {
+                    "subject": f"{row.get('dataset','')}:{row.get('subject','')}",
+                    "split_index": int(row.get("split_index", 0) or 0),
+                    "gate_variant": parse_classifier_gate_variant(row.get("gate_variant", calibration_profile.get("gate_variant", fit_summary.get("gate_variant")))),
+                    "gate_variant_params": dict(row.get("gate_variant_params", calibration_profile.get("gate_variant_params", fit_summary.get("gate_variant_params", {}))) or {}),
+                    "fit_split": str(fit_summary.get("threshold_fit_split", fit_summary.get("fit_split", "calibration_blocks"))),
+                    "test_split": str(fit_summary.get("test_split", "holdout_blocks")),
+                    "lrt_window_th": _finite_or_none(calibration_profile.get("lrt_window_th", fit_summary.get("lrt_window_th"))),
+                    "lrt_window_floor_th": _finite_or_none(calibration_profile.get("lrt_window_floor_th", fit_summary.get("lrt_window_floor_th"))),
+                    "subject_floor_global_lrt_th": _finite_or_none(fit_summary.get("subject_floor_global_lrt_th")),
+                    "subject_floor_idle_lrt_th": _finite_or_none(fit_summary.get("subject_floor_idle_lrt_th")),
+                    "ns2_lrt_window_p95": _finite_or_none(fit_summary.get("ns2_lrt_window_p95")),
+                    "ns2_lrt_window_floor_th": _finite_or_none(fit_summary.get("ns2_lrt_window_floor_th")),
+                    "ns2_threshold_source": str(fit_summary.get("ns2_threshold_source", "")),
+                    "score_shape_margin_th": _finite_or_none(calibration_profile.get("score_shape_margin_th", fit_summary.get("score_shape_margin_th"))),
+                    "score_shape_ratio_th": _finite_or_none(calibration_profile.get("score_shape_ratio_th", fit_summary.get("score_shape_ratio_th"))),
+                    "score_shape_entropy_th": _finite_or_none(calibration_profile.get("score_shape_entropy_th", fit_summary.get("score_shape_entropy_th"))),
+                    "frequency_specific_control_state_gates": normalize_frequency_specific_control_state_gates(
+                        calibration_profile.get(
+                            "frequency_specific_control_state_gates",
+                            fit_summary.get("frequency_specific_control_state_gates"),
+                        )
+                    ),
+                    "frequency_specific_grid_selection_policy": str(
+                        fit_summary.get("frequency_specific_grid_selection_policy", "")
+                    ),
+                    "gate_validation_metrics": validation_payload,
+                    "weak_subject_guard_active": bool(calibration_profile.get("weak_subject_guard_active", fit_summary.get("weak_subject_guard_active", False))),
+                    "weak_subject_guard_reasons": list(calibration_profile.get("weak_subject_guard_reasons", fit_summary.get("weak_subject_guard_reasons", [])) or []),
+                }
+            )
+            if bool(gate_param_rows[-1].get("weak_subject_guard_active", False)):
+                weak_guard_subjects.add(f"{row.get('dataset','')}:{row.get('subject','')}")
+        validation_summary = {}
+        if validation_metrics_by_row:
+            validation_summary = {
+                "supported": True,
+                "split": "calibration_gate_validation_trials",
+                "mean_idle_fp_per_min": _safe_mean(
+                    [_first_finite_metric(item, ("mixed_idle_fp_per_min", "idle_fp_per_min")) for item in validation_metrics_by_row],
+                    default=float("inf"),
+                ),
+                "mean_ns2_fp_per_min": _safe_mean(
+                    [item.get("ns2_fp_per_min") for item in validation_metrics_by_row],
+                    default=float("nan"),
+                ),
+                "mean_control_recall": _safe_mean(
+                    [item.get("control_recall") for item in validation_metrics_by_row],
+                    default=0.0,
+                ),
+                "mean_control_recall_at_2.5s": _safe_mean(
+                    [item.get("control_recall_at_2.5s") for item in validation_metrics_by_row],
+                    default=0.0,
+                ),
+                "mean_async_macro_f1_5class": _safe_mean(
+                    [item.get("async_macro_f1_5class") for item in validation_metrics_by_row],
+                    default=0.0,
+                ),
+                "mean_detection_latency_s": _safe_mean(
+                    [item.get("detection_latency_s") for item in validation_metrics_by_row],
+                    default=float("inf"),
+                ),
+                "row_count": int(len(validation_metrics_by_row)),
+            }
         summary = {
             "method": key[0],
             "recipe_id": key[1],
@@ -5113,6 +8263,7 @@ def aggregate_recipe_rows(
             "calibration_block_count": int(key[2]),
             "idle_multiplier": float(key[3]),
             "frequency_set_id": str(key[4]),
+            "gate_variant": str(key[5]),
             "selected_freqs": (
                 [float(freq) for freq in selected_freq_patterns[0]]
                 if len(selected_freq_patterns) == 1
@@ -5143,6 +8294,29 @@ def aggregate_recipe_rows(
             "mean_async_acc_5class": subject_metric("mean_async_acc_5class"),
             "mean_async_macro_f1_5class": subject_metric("mean_async_macro_f1_5class"),
             "mean_idle_fp_per_min": subject_metric("mean_idle_fp_per_min"),
+            "mean_real_idle_fp_per_min": subject_metric("mean_real_idle_fp_per_min", missing_default=float("nan")),
+            "mean_approx_idle_fp_per_min": _safe_mean(
+                [
+                    _first_finite_metric(item, ("mean_approx_idle_fp_per_min", "mean_idle_fp_per_min"))
+                    for item in subject_summaries
+                ],
+                default=float("nan"),
+            ),
+            "mean_mixed_idle_fp_per_min": _safe_mean(
+                [
+                    _first_finite_metric(
+                        item,
+                        (
+                            "mean_mixed_idle_fp_per_min",
+                            "mean_real_idle_fp_per_min",
+                            "mean_approx_idle_fp_per_min",
+                            "mean_idle_fp_per_min",
+                        ),
+                    )
+                    for item in subject_summaries
+                ],
+                default=float("inf"),
+            ),
             "mean_idle_selected_windows_per_min": subject_metric("mean_idle_selected_windows_per_min"),
             "mean_control_recall": subject_metric("mean_control_recall"),
             "mean_control_recall_at_2s": subject_metric("mean_control_recall_at_2s"),
@@ -5165,17 +8339,71 @@ def aggregate_recipe_rows(
             "mean_ns_all_fp_per_min": subject_metric("mean_ns_all_fp_per_min"),
             "mean_cs_control_recall": subject_metric("mean_cs_control_recall"),
             "selected_recipe_counts": selected_recipe_counts,
+            "gate_params": gate_param_rows,
+            "gate_validation_summary": validation_summary,
+            "per_frequency_summary": _per_frequency_summary_from_recipe_rows(key_rows),
+            "weak_guard_subjects": sorted(weak_guard_subjects),
+            "frequency_profile": (
+                str(key_rows[0].get("frequency_profile", ""))
+                if key_rows
+                and len({str(row.get("frequency_profile", "")) for row in key_rows}) == 1
+                else "mixed"
+            ),
+            "reject_gate": (
+                str(key_rows[0].get("reject_gate", ""))
+                if key_rows
+                and len({str(row.get("reject_gate", "")) for row in key_rows}) == 1
+                else "mixed"
+            ),
+            "implementation_level": (
+                str(key_rows[0].get("implementation_level", ""))
+                if key_rows
+                and len({str(row.get("implementation_level", "")) for row in key_rows}) == 1
+                else "mixed"
+            ),
+            "paper_faithful": bool(
+                key_rows
+                and all(bool(row.get("paper_faithful", False)) for row in key_rows)
+            ),
+            "engineering_approx": bool(
+                key_rows
+                and any(bool(row.get("engineering_approx", False)) for row in key_rows)
+            ),
             "subjects": subject_summaries,
         }
+        summary.update(_deployable_budget_payload(summary))
         summaries.append(summary)
     summaries.sort(key=_summary_rank_key)
     return summaries
 
 
 def _summary_rank_key(summary: dict[str, Any]) -> tuple[float, ...]:
+    gate_variant = parse_classifier_gate_variant(summary.get("gate_variant", CLASSIFIER_GATE_VARIANT_BASELINE_LRTMW))
+    validation_summary = dict(summary.get("gate_validation_summary", {}) or {})
+    if (
+        gate_variant
+        in {
+            CLASSIFIER_GATE_VARIANT_FREQUENCY_SPECIFIC_THRESHOLD,
+            CLASSIFIER_GATE_VARIANT_FREQUENCY_SPECIFIC_LOGISTIC,
+        }
+        and bool(validation_summary.get("supported", False))
+    ):
+        return _classifier_rank_key(
+            {
+                "idle_fp_per_min": validation_summary.get("mean_idle_fp_per_min"),
+                "mixed_idle_fp_per_min": validation_summary.get("mean_idle_fp_per_min"),
+                "control_recall": validation_summary.get("mean_control_recall"),
+                "control_recall_at_2.5s": validation_summary.get("mean_control_recall_at_2.5s"),
+                "async_macro_f1_5class": validation_summary.get("mean_async_macro_f1_5class"),
+                "detection_latency_s": validation_summary.get("mean_detection_latency_s"),
+            },
+            tie_breaker=_safe_float(summary.get("mean_idle_fp_per_min"), float("inf")),
+        )
     return _classifier_rank_key(
         {
             "idle_fp_per_min": summary.get("mean_idle_fp_per_min"),
+            "real_idle_fp_per_min": summary.get("mean_real_idle_fp_per_min"),
+            "mixed_idle_fp_per_min": summary.get("mean_mixed_idle_fp_per_min"),
             "idle_selected_windows_per_min": summary.get("mean_idle_selected_windows_per_min"),
             "control_recall": summary.get("mean_control_recall"),
             "control_recall_at_2s": summary.get("mean_control_recall_at_2s"),
@@ -5195,6 +8423,582 @@ def _shared_recipe_summaries(summaries: Sequence[dict[str, Any]]) -> list[dict[s
     return [dict(summary) for summary in summaries if bool(summary.get("shared_eligible", False))]
 
 
+def _deployable_recipe_summaries(summaries: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [dict(summary) for summary in summaries if bool(summary.get("deployable_budget_pass", False))]
+
+
+def _ns2_safety_label(summary: Mapping[str, Any]) -> str:
+    ns2 = _safe_float(summary.get("mean_ns2_fp_per_min"), float("inf"))
+    if ns2 <= 1.0 + 1e-12:
+        return "ns2_safe"
+    if ns2 <= 1.25 + 1e-12:
+        return "ns2_reduced_tradeoff"
+    return "ns2_risk"
+
+
+def _subject_id_token(subject: Any) -> str:
+    text = str(subject or "").strip()
+    if ":" in text:
+        text = text.rsplit(":", 1)[-1]
+    match = re.search(r"(\d+)$", text)
+    if not match:
+        return text.upper()
+    return f"S{int(match.group(1)):02d}"
+
+
+def _subgroup_definitions_payload() -> dict[str, Any]:
+    return {
+        "high_fp_group": list(HIGH_FP_SUBGROUP_SUBJECTS),
+        "low_recall_group": list(LOW_RECALL_SUBGROUP_SUBJECTS),
+        "overlap_watch": list(OVERLAP_WATCH_SUBJECTS),
+        "high_risk_validation_subjects": list(HIGH_RISK_VALIDATION_SUBJECTS),
+        "comparison_baseline": "high-risk subset baseline_lrtmw within the same run when available",
+        "ns2_improved_rule": "high-risk NS2 FP/min reduction >= 25% vs high-risk baseline",
+        "recall_degraded_rule": "low-recall recall@2.5s drop > 0.03; relaxed to > 0.05 when high-risk NS2 reduction >= 40%",
+        "full24_candidate_eligible_rule": "failed=0, hard_failed=0, ns2_improved=true, recall_degraded=false, control_recall_delta>=-0.03",
+    }
+
+
+def _subject_subgroup_metric_payload(
+    summary: Mapping[str, Any],
+    subjects: Sequence[str],
+) -> dict[str, Any]:
+    wanted = {_subject_id_token(subject) for subject in subjects}
+    matched_by_subject: dict[str, Mapping[str, Any]] = {}
+    for item in list(summary.get("subjects", []) or []):
+        row = dict(item)
+        subject_token = _subject_id_token(row.get("subject", ""))
+        if subject_token in wanted and subject_token not in matched_by_subject:
+            matched_by_subject[subject_token] = row
+    matched = list(matched_by_subject.values())
+    return {
+        "subjects_expected": list(subjects),
+        "subjects_completed": sorted(matched_by_subject),
+        "subject_count": int(len(matched_by_subject)),
+        "idle_fp_per_min": _finite_or_none(
+            _safe_mean(
+                [
+                    _first_finite_metric(
+                        item,
+                        (
+                            "mean_mixed_idle_fp_per_min",
+                            "mean_real_idle_fp_per_min",
+                            "mean_approx_idle_fp_per_min",
+                            "mean_idle_fp_per_min",
+                        ),
+                    )
+                    for item in matched
+                ],
+                default=float("nan"),
+            )
+        ),
+        "ns2_fp_per_min": _finite_or_none(
+            _safe_mean([item.get("mean_ns2_fp_per_min") for item in matched], default=float("nan"))
+        ),
+        "control_recall": _finite_or_none(
+            _safe_mean([item.get("mean_control_recall") for item in matched], default=float("nan"))
+        ),
+        "control_recall_at_2.5s": _finite_or_none(
+            _safe_mean([item.get("mean_control_recall_at_2.5s") for item in matched], default=float("nan"))
+        ),
+        "detection_latency_s": _finite_or_none(
+            _safe_mean([item.get("mean_detection_latency_s") for item in matched], default=float("nan"))
+        ),
+    }
+
+
+def _candidate_subgroup_comparison_payload(
+    summary: Mapping[str, Any],
+    baseline: Mapping[str, Any],
+) -> dict[str, Any]:
+    item = dict(summary)
+    base = dict(baseline)
+    high_risk = _subject_subgroup_metric_payload(item, HIGH_FP_SUBGROUP_SUBJECTS)
+    high_risk_base = _subject_subgroup_metric_payload(base, HIGH_FP_SUBGROUP_SUBJECTS)
+    low_recall = _subject_subgroup_metric_payload(item, LOW_RECALL_SUBGROUP_SUBJECTS)
+    low_recall_base = _subject_subgroup_metric_payload(base, LOW_RECALL_SUBGROUP_SUBJECTS)
+    high_ns2 = _safe_float(high_risk.get("ns2_fp_per_min"), float("nan"))
+    base_high_ns2 = _safe_float(high_risk_base.get("ns2_fp_per_min"), float("nan"))
+    low_recall_2p5 = _safe_float(low_recall.get("control_recall_at_2.5s"), float("nan"))
+    base_low_recall_2p5 = _safe_float(low_recall_base.get("control_recall_at_2.5s"), float("nan"))
+    control_recall = _safe_float(item.get("mean_control_recall"), float("nan"))
+    base_control_recall = _safe_float(base.get("mean_control_recall"), float("nan"))
+    high_delta = (
+        float(high_ns2 - base_high_ns2)
+        if np.isfinite(high_ns2) and np.isfinite(base_high_ns2)
+        else float("nan")
+    )
+    reduction_ratio = (
+        max(0.0, float((base_high_ns2 - high_ns2) / base_high_ns2))
+        if np.isfinite(high_ns2) and np.isfinite(base_high_ns2) and base_high_ns2 > 1e-12
+        else float("nan")
+    )
+    low_delta = (
+        float(low_recall_2p5 - base_low_recall_2p5)
+        if np.isfinite(low_recall_2p5) and np.isfinite(base_low_recall_2p5)
+        else float("nan")
+    )
+    control_delta = (
+        float(control_recall - base_control_recall)
+        if np.isfinite(control_recall) and np.isfinite(base_control_recall)
+        else float("nan")
+    )
+    ns2_improved = bool(np.isfinite(reduction_ratio) and reduction_ratio >= 0.25 - 1e-12)
+    allowed_recall_drop = 0.05 if np.isfinite(reduction_ratio) and reduction_ratio >= 0.40 - 1e-12 else 0.03
+    recall_degraded = bool(np.isfinite(low_delta) and low_delta < -float(allowed_recall_drop) - 1e-12)
+    failed_count = int(item.get("failed_case_count", item.get("failed_count", 0)) or 0)
+    hard_failed_count = int(item.get("hard_failed_case_count", item.get("hard_failed_count", 0)) or 0)
+    full24_candidate_eligible = bool(
+        failed_count == 0
+        and hard_failed_count == 0
+        and ns2_improved
+        and not recall_degraded
+        and (not np.isfinite(control_delta) or control_delta >= -0.03 - 1e-12)
+    )
+    return {
+        "high_fp_group": high_risk,
+        "high_fp_baseline": high_risk_base,
+        "low_recall_group": low_recall,
+        "low_recall_baseline": low_recall_base,
+        "high_risk_ns2_fp_per_min": _finite_or_none(high_ns2),
+        "high_risk_delta_ns2_fp_per_min": _finite_or_none(high_delta),
+        "high_risk_ns2_reduction_ratio": _finite_or_none(reduction_ratio),
+        "low_recall_recall_at_2.5s": _finite_or_none(low_recall_2p5),
+        "low_recall_delta_recall_at_2.5s": _finite_or_none(low_delta),
+        "control_recall_delta": _finite_or_none(control_delta),
+        "allowed_low_recall_drop": float(allowed_recall_drop),
+        "ns2_improved": ns2_improved,
+        "recall_degraded": recall_degraded,
+        "full24_candidate_eligible": full24_candidate_eligible,
+    }
+
+
+def _gate_params_first_value(summary: Mapping[str, Any], key: str, default: Any = None) -> Any:
+    for item in list(summary.get("gate_params", []) or []):
+        row = dict(item)
+        if key in row and row.get(key) not in (None, ""):
+            return row.get(key)
+        params = dict(row.get("gate_variant_params", {}) or {})
+        if key in params and params.get(key) not in (None, ""):
+            return params.get(key)
+    return default
+
+
+def _gate_combo_name_for_summary(summary: Mapping[str, Any]) -> str:
+    value = _gate_params_first_value(summary, "combo_name", "")
+    return str(value or "")
+
+
+def _subject_risk_payload(summary: Mapping[str, Any]) -> dict[str, Any]:
+    high_fp_focus = set(HIGH_FP_SUBGROUP_SUBJECTS)
+    low_recall_focus = set(LOW_RECALL_SUBGROUP_SUBJECTS) | set(OVERLAP_WATCH_SUBJECTS)
+    high_idle_fp_subjects: list[dict[str, Any]] = []
+    low_recall_subjects: list[dict[str, Any]] = []
+    for item in list(summary.get("subjects", []) or []):
+        row = dict(item)
+        subject = str(row.get("subject", ""))
+        idle_fp = _first_finite_metric(
+            row,
+            ("mean_mixed_idle_fp_per_min", "mean_real_idle_fp_per_min", "mean_approx_idle_fp_per_min", "mean_idle_fp_per_min"),
+            float("nan"),
+        )
+        recall = _safe_float(row.get("mean_control_recall"), float("nan"))
+        if subject in high_fp_focus or (np.isfinite(idle_fp) and idle_fp > float(DEFAULT_CLASSIFIER_IDLE_FP_BUDGET_PER_MIN)):
+            high_idle_fp_subjects.append(
+                {
+                    "dataset": str(row.get("dataset", "")),
+                    "subject": subject,
+                    "idle_fp_per_min": _finite_or_none(idle_fp),
+                    "ns2_fp_per_min": _finite_or_none(row.get("mean_ns2_fp_per_min")),
+                }
+            )
+        if subject in low_recall_focus or (np.isfinite(recall) and recall < 0.80):
+            low_recall_subjects.append(
+                {
+                    "dataset": str(row.get("dataset", "")),
+                    "subject": subject,
+                    "control_recall": _finite_or_none(recall),
+                    "control_recall_at_2.5s": _finite_or_none(row.get("mean_control_recall_at_2.5s")),
+                }
+            )
+    return {
+        "high_idle_fp_subjects": high_idle_fp_subjects,
+        "low_recall_subjects": low_recall_subjects,
+        "weak_guard_subjects": list(summary.get("weak_guard_subjects", []) or []),
+    }
+
+
+def _subject_watch_metric_map(summary: Mapping[str, Any]) -> dict[str, dict[str, float]]:
+    payload: dict[str, dict[str, float]] = {}
+    for item in list(summary.get("subjects", []) or []):
+        row = dict(item)
+        subject = _subject_id_token(row.get("subject", ""))
+        if not subject:
+            continue
+        payload[subject] = {
+            "ns2_fp_per_min": _safe_float(row.get("mean_ns2_fp_per_min"), float("nan")),
+            "control_recall": _safe_float(row.get("mean_control_recall"), float("nan")),
+            "control_recall_at_2.5s": _safe_float(row.get("mean_control_recall_at_2.5s"), float("nan")),
+        }
+    return payload
+
+
+def _candidate_subject_watch_risk(summary: Mapping[str, Any], baseline: Mapping[str, Any]) -> bool:
+    current = _subject_watch_metric_map(summary)
+    base = _subject_watch_metric_map(baseline)
+    for subject in LOW_RECALL_SUBGROUP_SUBJECTS:
+        now = current.get(_subject_id_token(subject), {})
+        before = base.get(_subject_id_token(subject), {})
+        for key in ("control_recall", "control_recall_at_2.5s"):
+            now_value = _safe_float(now.get(key), float("nan"))
+            before_value = _safe_float(before.get(key), float("nan"))
+            if np.isfinite(now_value) and np.isfinite(before_value) and now_value < before_value - 0.05:
+                return True
+    for subject in ("S22", "S24"):
+        now_ns2 = _safe_float(current.get(_subject_id_token(subject), {}).get("ns2_fp_per_min"), float("nan"))
+        before_ns2 = _safe_float(base.get(_subject_id_token(subject), {}).get("ns2_fp_per_min"), float("nan"))
+        if np.isfinite(now_ns2) and np.isfinite(before_ns2) and now_ns2 >= before_ns2 - 1e-12:
+            return True
+    return False
+
+
+def _summary_metric_payload(summary: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "idle_fp_per_min": _finite_or_none(
+            _first_finite_metric(
+                summary,
+                ("mean_mixed_idle_fp_per_min", "mean_real_idle_fp_per_min", "mean_approx_idle_fp_per_min", "mean_idle_fp_per_min"),
+                float("nan"),
+            )
+        ),
+        "ns1_fp_per_min": _finite_or_none(summary.get("mean_ns1_fp_per_min")),
+        "ns2_fp_per_min": _finite_or_none(summary.get("mean_ns2_fp_per_min")),
+        "ns3_fp_per_min": _finite_or_none(summary.get("mean_ns3_fp_per_min")),
+        "control_recall": _finite_or_none(summary.get("mean_control_recall")),
+        "control_recall_at_2.5s": _finite_or_none(summary.get("mean_control_recall_at_2.5s")),
+        "detection_latency_s": _finite_or_none(summary.get("mean_detection_latency_s")),
+        "async_macro_f1_5state": _finite_or_none(summary.get("mean_async_macro_f1_5class")),
+        "async_macro_f1_5class": _finite_or_none(summary.get("mean_async_macro_f1_5class")),
+    }
+
+
+def _summary_frequency_metric(summary: Mapping[str, Any], freq: str, key: str) -> Optional[float]:
+    target = _freq_label(_safe_float(freq, float("nan")))
+    for item in list(dict(summary).get("per_frequency_summary", []) or []):
+        row = dict(item)
+        if _freq_label(_safe_float(row.get("freq"), float("nan"))) == target:
+            return _finite_or_none(row.get(key))
+    return None
+
+
+def _comparison_baseline_summary(summaries: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    for summary in summaries:
+        if (
+            parse_classifier_gate_variant(summary.get("gate_variant", CLASSIFIER_GATE_VARIANT_BASELINE_LRTMW))
+            == CLASSIFIER_GATE_VARIANT_BASELINE_LRTMW
+            and str(summary.get("recipe_id", "")) == "win2_me2_sm3_lrtmw"
+        ):
+            return dict(summary)
+    for summary in summaries:
+        if parse_classifier_gate_variant(summary.get("gate_variant", CLASSIFIER_GATE_VARIANT_BASELINE_LRTMW)) == CLASSIFIER_GATE_VARIANT_BASELINE_LRTMW:
+            return dict(summary)
+    return dict(summaries[0]) if summaries else {}
+
+
+def _decision_table_rows(summaries: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    baseline = _comparison_baseline_summary(summaries)
+    base_metrics = _summary_metric_payload(baseline)
+    rows: list[dict[str, Any]] = []
+    for summary in summaries:
+        item = dict(summary)
+        metrics = _summary_metric_payload(item)
+        freq_10p5_recall = _summary_frequency_metric(item, "10.5", "command_recall")
+        base_10p5_recall = _summary_frequency_metric(baseline, "10.5", "command_recall")
+        freq_10p5_recall_2p5 = _summary_frequency_metric(item, "10.5", "recall_at_2.5s")
+        base_10p5_recall_2p5 = _summary_frequency_metric(baseline, "10.5", "recall_at_2.5s")
+        freq_10p5_ns2 = _summary_frequency_metric(item, "10.5", "fp_per_min_ns2")
+        base_10p5_ns2 = _summary_frequency_metric(baseline, "10.5", "fp_per_min_ns2")
+        freq_8_recall = _summary_frequency_metric(item, "8", "command_recall")
+        base_8_recall = _summary_frequency_metric(baseline, "8", "command_recall")
+        freq_8_recall_2p5 = _summary_frequency_metric(item, "8", "recall_at_2.5s")
+        base_8_recall_2p5 = _summary_frequency_metric(baseline, "8", "recall_at_2.5s")
+        freq_8_ns2 = _summary_frequency_metric(item, "8", "fp_per_min_ns2")
+        base_8_ns2 = _summary_frequency_metric(baseline, "8", "fp_per_min_ns2")
+        ns2_label = _ns2_safety_label(item)
+        subject_risk = _subject_risk_payload(item)
+        validation_summary = dict(item.get("gate_validation_summary", {}) or {})
+        subgroup_comparison = _candidate_subgroup_comparison_payload(item, baseline)
+        risk_flag = bool(
+            _candidate_subject_watch_risk(item, baseline)
+            or subgroup_comparison["recall_degraded"]
+        )
+        row = {
+            "method": str(item.get("method", "")),
+            "recipe_id": str(item.get("recipe_id", "")),
+            "gate_variant": parse_classifier_gate_variant(item.get("gate_variant", CLASSIFIER_GATE_VARIANT_BASELINE_LRTMW)),
+            "combo_name": _gate_combo_name_for_summary(item),
+            "coverage_subject_count": int(item.get("coverage_subject_count", 0) or 0),
+            "expected_subject_count": int(item.get("expected_subject_count", 0) or 0),
+            "split_count": int(item.get("split_count", 0) or 0),
+            "idle_fp_per_min": metrics["idle_fp_per_min"],
+            "delta_idle_fp_per_min": None if metrics["idle_fp_per_min"] is None or base_metrics["idle_fp_per_min"] is None else float(metrics["idle_fp_per_min"] - base_metrics["idle_fp_per_min"]),
+            "ns1_fp_per_min": metrics["ns1_fp_per_min"],
+            "ns2_fp_per_min": metrics["ns2_fp_per_min"],
+            "delta_ns2_fp_per_min": None if metrics["ns2_fp_per_min"] is None or base_metrics["ns2_fp_per_min"] is None else float(metrics["ns2_fp_per_min"] - base_metrics["ns2_fp_per_min"]),
+            "ns3_fp_per_min": metrics["ns3_fp_per_min"],
+            "control_recall": metrics["control_recall"],
+            "delta_control_recall": None if metrics["control_recall"] is None or base_metrics["control_recall"] is None else float(metrics["control_recall"] - base_metrics["control_recall"]),
+            "control_recall_at_2.5s": metrics["control_recall_at_2.5s"],
+            "delta_control_recall_at_2.5s": None if metrics["control_recall_at_2.5s"] is None or base_metrics["control_recall_at_2.5s"] is None else float(metrics["control_recall_at_2.5s"] - base_metrics["control_recall_at_2.5s"]),
+            "detection_latency_s": metrics["detection_latency_s"],
+            "delta_detection_latency_s": None if metrics["detection_latency_s"] is None or base_metrics["detection_latency_s"] is None else float(metrics["detection_latency_s"] - base_metrics["detection_latency_s"]),
+            "deployable": bool(item.get("deployable_budget_pass", False)),
+            "ns2_safe": ns2_label == "ns2_safe",
+            "ns2_status": ns2_label,
+            "subject_risk": risk_flag,
+            "gate_validation_supported": bool(validation_summary.get("supported", False)),
+            "gate_validation_idle_fp_per_min": _finite_or_none(validation_summary.get("mean_idle_fp_per_min")),
+            "gate_validation_ns2_fp_per_min": _finite_or_none(validation_summary.get("mean_ns2_fp_per_min")),
+            "gate_validation_control_recall": _finite_or_none(validation_summary.get("mean_control_recall")),
+            "gate_validation_control_recall_at_2.5s": _finite_or_none(
+                validation_summary.get("mean_control_recall_at_2.5s")
+            ),
+            "frequency_specific_grid_selection_policy": str(
+                item.get("frequency_specific_grid_selection_policy", "")
+                or _gate_params_first_value(item, "frequency_specific_grid_selection_policy", "")
+                or (FREQSPEC_GRID_SELECTION_POLICY if validation_summary else "")
+            ),
+            "high_risk_ns2_fp_per_min": subgroup_comparison["high_risk_ns2_fp_per_min"],
+            "high_risk_delta_ns2_fp_per_min": subgroup_comparison["high_risk_delta_ns2_fp_per_min"],
+            "high_risk_ns2_reduction_ratio": subgroup_comparison["high_risk_ns2_reduction_ratio"],
+            "low_recall_recall_at_2.5s": subgroup_comparison["low_recall_recall_at_2.5s"],
+            "low_recall_delta_recall_at_2.5s": subgroup_comparison["low_recall_delta_recall_at_2.5s"],
+            "control_recall_delta_for_eligibility": subgroup_comparison["control_recall_delta"],
+            "ns2_improved": subgroup_comparison["ns2_improved"],
+            "recall_degraded": subgroup_comparison["recall_degraded"],
+            "full24_candidate_eligible": subgroup_comparison["full24_candidate_eligible"],
+            "freq_10p5_command_recall": freq_10p5_recall,
+            "freq_10p5_delta_command_recall": None
+            if freq_10p5_recall is None or base_10p5_recall is None
+            else float(freq_10p5_recall - base_10p5_recall),
+            "freq_10p5_recall_at_2.5s": freq_10p5_recall_2p5,
+            "freq_10p5_delta_recall_at_2.5s": None
+            if freq_10p5_recall_2p5 is None or base_10p5_recall_2p5 is None
+            else float(freq_10p5_recall_2p5 - base_10p5_recall_2p5),
+            "freq_10p5_ns2_fp_per_min": freq_10p5_ns2,
+            "freq_10p5_delta_ns2_fp_per_min": None
+            if freq_10p5_ns2 is None or base_10p5_ns2 is None
+            else float(freq_10p5_ns2 - base_10p5_ns2),
+            "freq_8_command_recall": freq_8_recall,
+            "freq_8_delta_command_recall": None
+            if freq_8_recall is None or base_8_recall is None
+            else float(freq_8_recall - base_8_recall),
+            "freq_8_recall_at_2.5s": freq_8_recall_2p5,
+            "freq_8_delta_recall_at_2.5s": None
+            if freq_8_recall_2p5 is None or base_8_recall_2p5 is None
+            else float(freq_8_recall_2p5 - base_8_recall_2p5),
+            "freq_8_ns2_fp_per_min": freq_8_ns2,
+            "freq_8_delta_ns2_fp_per_min": None
+            if freq_8_ns2 is None or base_8_ns2 is None
+            else float(freq_8_ns2 - base_8_ns2),
+            "recommended_profile_export": bool(
+                item.get("deployable_budget_pass", False)
+                and ns2_label in {"ns2_safe", "ns2_reduced_tradeoff"}
+                and not risk_flag
+            ),
+        }
+        rows.append(row)
+    return rows
+
+
+def _subject_breakdown_rows(summaries: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for summary in summaries:
+        gate_variant = parse_classifier_gate_variant(summary.get("gate_variant", CLASSIFIER_GATE_VARIANT_BASELINE_LRTMW))
+        for subject in list(summary.get("subjects", []) or []):
+            item = dict(subject)
+            rows.append(
+                {
+                    "method": str(summary.get("method", "")),
+                    "recipe_id": str(summary.get("recipe_id", "")),
+                    "gate_variant": gate_variant,
+                    "dataset": str(item.get("dataset", "")),
+                    "subject": str(item.get("subject", "")),
+                    "split_count": int(item.get("split_count", 0) or 0),
+                    "idle_fp_per_min": _finite_or_none(_first_finite_metric(item, ("mean_mixed_idle_fp_per_min", "mean_real_idle_fp_per_min", "mean_approx_idle_fp_per_min", "mean_idle_fp_per_min"), float("nan"))),
+                    "ns1_fp_per_min": _finite_or_none(item.get("mean_ns1_fp_per_min")),
+                    "ns2_fp_per_min": _finite_or_none(item.get("mean_ns2_fp_per_min")),
+                    "ns3_fp_per_min": _finite_or_none(item.get("mean_ns3_fp_per_min")),
+                    "control_recall": _finite_or_none(item.get("mean_control_recall")),
+                    "control_recall_at_2.5s": _finite_or_none(item.get("mean_control_recall_at_2.5s")),
+                    "detection_latency_s": _finite_or_none(item.get("mean_detection_latency_s")),
+                    "async_macro_f1_5state": _finite_or_none(item.get("mean_async_macro_f1_5class")),
+                }
+            )
+    return rows
+
+
+def _subtype_breakdown_rows(summaries: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for summary in summaries:
+        rows.append(
+            {
+                "method": str(summary.get("method", "")),
+                "recipe_id": str(summary.get("recipe_id", "")),
+                "gate_variant": parse_classifier_gate_variant(summary.get("gate_variant", CLASSIFIER_GATE_VARIANT_BASELINE_LRTMW)),
+                "coverage_subject_count": int(summary.get("coverage_subject_count", 0) or 0),
+                "split_count": int(summary.get("split_count", 0) or 0),
+                "overall_idle_fp_per_min": _finite_or_none(_first_finite_metric(summary, ("mean_mixed_idle_fp_per_min", "mean_real_idle_fp_per_min", "mean_approx_idle_fp_per_min", "mean_idle_fp_per_min"), float("nan"))),
+                "ns1_fp_per_min": _finite_or_none(summary.get("mean_ns1_fp_per_min")),
+                "ns2_fp_per_min": _finite_or_none(summary.get("mean_ns2_fp_per_min")),
+                "ns3_fp_per_min": _finite_or_none(summary.get("mean_ns3_fp_per_min")),
+                "ns_all_fp_per_min": _finite_or_none(summary.get("mean_ns_all_fp_per_min")),
+                "control_recall": _finite_or_none(summary.get("mean_control_recall")),
+                "control_recall_at_2.5s": _finite_or_none(summary.get("mean_control_recall_at_2.5s")),
+                "detection_latency_s": _finite_or_none(summary.get("mean_detection_latency_s")),
+            }
+        )
+    return rows
+
+
+def _flatten_split_diagnostic_rows(rows: Sequence[Mapping[str, Any]], key: str) -> list[dict[str, Any]]:
+    flattened: list[dict[str, Any]] = []
+    for row in rows:
+        diagnostics = dict(row.get("ns2_selected_freq_diagnostics", {}) or {})
+        for item in list(diagnostics.get(key, []) or []):
+            flattened.append(dict(item))
+    return flattened
+
+
+def _flatten_logistic_trace_rows(rows: Sequence[Mapping[str, Any]], key: str) -> list[dict[str, Any]]:
+    flattened: list[dict[str, Any]] = []
+    for row in rows:
+        diagnostics = dict(row.get("logistic_trace_diagnostics", {}) or {})
+        for item in list(diagnostics.get(key, []) or []):
+            flattened.append(dict(item))
+    return flattened
+
+
+def _split_per_frequency_rows(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    flattened: list[dict[str, Any]] = []
+    for row in rows:
+        for item in list(row.get("per_frequency_metrics", []) or []):
+            flattened.append(dict(item))
+    return flattened
+
+
+def _per_frequency_summary_from_recipe_rows(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        for item in list(dict(row).get("per_frequency_metrics", []) or []):
+            freq = _freq_label(_safe_float(dict(item).get("freq"), 0.0))
+            grouped[freq].append(dict(item))
+    summary_rows: list[dict[str, Any]] = []
+    for freq, items in sorted(grouped.items(), key=lambda item: _safe_float(item[0], float("inf"))):
+        summary_rows.append(
+            {
+                "freq": str(freq),
+                "command_recall": _mean_field(items, "command_recall"),
+                "recall_at_2.5s": _mean_field(items, "recall_at_2.5s"),
+                "fp_per_min_ns1": _mean_field(items, "fp_per_min_ns1"),
+                "fp_per_min_ns2": _mean_field(items, "fp_per_min_ns2"),
+                "fp_per_min_ns3": _mean_field(items, "fp_per_min_ns3"),
+                "gate_pass_rate": _mean_field(items, "gate_pass_rate"),
+                "mean_latency": _mean_field(items, "mean_latency"),
+                "row_count": int(len(items)),
+            }
+        )
+    return summary_rows
+
+
+def _mean_field(items: Sequence[Mapping[str, Any]], key: str) -> Any:
+    values = [_safe_float(dict(item).get(key), float("nan")) for item in items]
+    finite = [float(value) for value in values if np.isfinite(value)]
+    return float(np.mean(finite)) if finite else None
+
+
+def _per_frequency_summary_payload(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[tuple[str, str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    for item in _split_per_frequency_rows(rows):
+        grouped[
+            (
+                str(item.get("method", "")),
+                str(item.get("recipe_id", "")),
+                str(item.get("gate_variant", "")),
+                _freq_label(_safe_float(item.get("freq"), 0.0)),
+            )
+        ].append(item)
+    payload: list[dict[str, Any]] = []
+    for (method, recipe_id, gate_variant, freq), items in sorted(grouped.items()):
+        payload.append(
+            {
+                "method": method,
+                "recipe_id": recipe_id,
+                "gate_variant": gate_variant,
+                "freq": freq,
+                "split_count": int(len(items)),
+                "command_recall": _mean_field(items, "command_recall"),
+                "recall_at_2.5s": _mean_field(items, "recall_at_2.5s"),
+                "fp_per_min_ns1": _mean_field(items, "fp_per_min_ns1"),
+                "fp_per_min_ns2": _mean_field(items, "fp_per_min_ns2"),
+                "fp_per_min_ns3": _mean_field(items, "fp_per_min_ns3"),
+                "gate_pass_rate": _mean_field(items, "gate_pass_rate"),
+                "mean_latency": _mean_field(items, "mean_latency"),
+            }
+        )
+    return payload
+
+
+def _gate_params_by_frequency_payload(summaries: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    recipes: list[dict[str, Any]] = []
+    for summary in summaries:
+        per_freq: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for item in list(summary.get("gate_params", []) or []):
+            gates = normalize_frequency_specific_control_state_gates(
+                dict(item).get("frequency_specific_control_state_gates")
+            )
+            for freq, payload in gates.items():
+                per_freq[str(freq)].append(
+                    {
+                        "subject": str(dict(item).get("subject", "")),
+                        "split_index": int(dict(item).get("split_index", 0) or 0),
+                        **dict(payload),
+                    }
+                )
+        recipes.append(
+            {
+                "method": str(summary.get("method", "")),
+                "recipe_id": str(summary.get("recipe_id", "")),
+                "gate_variant": parse_classifier_gate_variant(summary.get("gate_variant", CLASSIFIER_GATE_VARIANT_BASELINE_LRTMW)),
+                "frequency_specific_control_state_gates": {
+                    freq: values for freq, values in sorted(per_freq.items())
+                },
+            }
+        )
+    return {
+        "schema_version": "ssvep_frequency_specific_gate_params_v1",
+        "recipes": recipes,
+    }
+
+
+def _gate_params_payload(summaries: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    recipes = []
+    for summary in summaries:
+        recipes.append(
+            {
+                "method": str(summary.get("method", "")),
+                "recipe_id": str(summary.get("recipe_id", "")),
+                "gate_variant": parse_classifier_gate_variant(summary.get("gate_variant", CLASSIFIER_GATE_VARIANT_BASELINE_LRTMW)),
+                "gate_params": list(summary.get("gate_params", []) or []),
+                "weak_guard_subjects": list(summary.get("weak_guard_subjects", []) or []),
+            }
+        )
+    return {
+        "schema_version": "ssvep_gate_params_v1",
+        "recipes": recipes,
+    }
+
+
 def render_markdown_summary(
     *,
     run_id: str,
@@ -5208,6 +9012,7 @@ def render_markdown_summary(
     idle_eval_mode: str = DEFAULT_IDLE_EVAL_MODE,
     budget: Optional[Mapping[str, Any]] = None,
     weak_subject_audit: Optional[Mapping[str, Any]] = None,
+    metric_definitions: Optional[Mapping[str, Any]] = None,
 ) -> str:
     resolved_shared_summaries = (
         [dict(summary) for summary in shared_summaries]
@@ -5229,8 +9034,15 @@ def render_markdown_summary(
         f"- pretrain_budget_sec: `{float(dict(budget or {}).get('pretrain_budget_sec', DEFAULT_PRETRAIN_BUDGET_SEC)):.1f}`",
         f"- estimated_pretrain_duration_sec: `{float(dict(budget or {}).get('estimated_pretrain_duration_sec', 0.0)):.1f}`",
         f"- pretrain_budget_pass: `{bool(dict(budget or {}).get('pretrain_budget_pass', True))}`",
+        f"- channel_contract: `strict_required_8_posterior`",
+        f"- project_channel_names: `{','.join(PROJECT_POSTERIOR_8_CHANNELS)}`",
+        f"- decision_start_s: `{_safe_float(dict(metric_definitions or {}).get('decision_start_s'), DEFAULT_DECISION_START_SEC):.3f}`",
+        f"- decision_deadline_s: `{_safe_float(dict(metric_definitions or {}).get('decision_deadline_s'), DEFAULT_DECISION_DEADLINE_SEC):.3f}`",
+        f"- min_release_windows: `{int(_safe_float(dict(metric_definitions or {}).get('min_release_windows'), DEFAULT_MIN_RELEASE_WINDOWS))}`",
         "",
         "> Idle/no-control is proxied with non-command target stimulus trials for Wang/BETA; YSU-an uses explicit NS1/NS2/NS3 no-control trials.",
+        "> External datasets are evaluated after selecting only this posterior 8-channel subset; deployed numeric board channels must be wired to the same electrode order.",
+        "> Metric definitions: detection_latency_s is stimulus onset to first correct control output; switch/release latency are reported only when replay supports those transitions.",
         "",
     ]
 
@@ -5239,12 +9051,12 @@ def render_markdown_summary(
             [
                 f"## {title}",
                 "",
-                "| Rank | Method | Recipe | Freqs | Coverage | Cal Blocks | Idle Mult | Mean Fixed 5c Acc | Mean Fixed 5c Macro-F1 | Mean Async 5c Acc | Mean Async 5c Macro-F1 | Mean Idle FP/min | Mean Control Recall | Recall <=2.5s | Recall <=3s | Mean Detection Latency s |",
-                "|---:|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+                "| Rank | Deployable | Profile | Method | Recipe | Freqs | Coverage | Cal Blocks | Idle Mult | Mixed Idle FP/min | Real Idle FP/min | Approx Idle FP/min | Mean Async 5c Macro-F1 | Mean Control Recall | Recall <=2.5s | Mean Detection Latency s |",
+                "|---:|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
             ]
         )
         if not table_summaries:
-            lines.append("| - | - | - | - | 0/0 | - | - | - | - | - | - | - | - | - | - | - |")
+            lines.append("| - | - | - | - | - | - | 0/0 | - | - | - | - | - | - | - | - | - |")
             return
         for index, summary in enumerate(list(table_summaries)[:10], start=1):
             expected_subjects = int(summary.get("expected_subject_count", 0) or 0)
@@ -5260,22 +9072,22 @@ def render_markdown_summary(
             if not freq_text and summary.get("frequency_selection_mode") == "personalized_upper_bound":
                 freq_text = "per-subject"
             lines.append(
-                "| {rank} | {method} | `{recipe}` | `{freqs}` | {coverage} | {cal_blocks} | {idle_mult:.2f} | {acc:.4f} | {f1:.4f} | {async_acc:.4f} | {async_f1:.4f} | {idle:.4f} | {recall:.4f} | {recall_2p5:.4f} | {recall_3:.4f} | {latency:.4f} |".format(
+                "| {rank} | {deployable} | {profile} | {method} | `{recipe}` | `{freqs}` | {coverage} | {cal_blocks} | {idle_mult:.2f} | {mixed_idle:.4f} | {real_idle:.4f} | {approx_idle:.4f} | {async_f1:.4f} | {recall:.4f} | {recall_2p5:.4f} | {latency:.4f} |".format(
                     rank=index,
+                    deployable="yes" if bool(summary.get("deployable_budget_pass", False)) else "no",
+                    profile=str(summary.get("frequency_profile", "")),
                     method=str(summary.get("method", "")),
                     recipe=str(summary.get("recipe_id", "")),
                     freqs=freq_text,
                     coverage=coverage,
                     cal_blocks=int(summary.get("calibration_block_count", 0)),
                     idle_mult=float(summary.get("idle_multiplier", 0.0)),
-                    acc=float(summary.get("mean_fixed_acc_5class", 0.0)),
-                    f1=float(summary.get("mean_fixed_macro_f1_5class", 0.0)),
-                    async_acc=float(summary.get("mean_async_acc_5class", 0.0)),
                     async_f1=float(summary.get("mean_async_macro_f1_5class", 0.0)),
-                    idle=float(summary.get("mean_idle_fp_per_min", float("inf"))),
+                    mixed_idle=_safe_float(summary.get("mean_mixed_idle_fp_per_min"), float("inf")),
+                    real_idle=_safe_float(summary.get("mean_real_idle_fp_per_min"), float("nan")),
+                    approx_idle=_safe_float(summary.get("mean_approx_idle_fp_per_min"), float("nan")),
                     recall=float(summary.get("mean_control_recall", 0.0)),
                     recall_2p5=float(summary.get("mean_control_recall_at_2.5s", 0.0)),
-                    recall_3=float(summary.get("mean_control_recall_at_3s", 0.0)),
                     latency=float(summary.get("mean_detection_latency_s", float("inf"))),
                 )
             )
@@ -5306,6 +9118,42 @@ def render_markdown_summary(
                 )
             )
     lines.append("")
+    decision_rows = _decision_table_rows(resolved_shared_summaries)
+    if decision_rows:
+        lines.extend(
+            [
+                "",
+                "## Decision Table",
+                "",
+                "| Method | Recipe | Gate Variant | Deployable | NS2 Status | Subject Risk | Idle FP/min | NS2 FP/min | Recall <=2.5s | Control Recall | Latency s |",
+                "|---|---|---|---|---|---|---:|---:|---:|---:|---:|",
+            ]
+        )
+        for row in decision_rows[:12]:
+            lines.append(
+                "| {method} | `{recipe}` | `{variant}` | {deployable} | {ns2_status} | {risk} | {idle:.4f} | {ns2:.4f} | {recall2p5:.4f} | {recall:.4f} | {latency:.4f} |".format(
+                    method=str(row.get("method", "")),
+                    recipe=str(row.get("recipe_id", "")),
+                    variant=str(row.get("gate_variant", "")),
+                    deployable="yes" if bool(row.get("deployable", False)) else "no",
+                    ns2_status=str(row.get("ns2_status", "")),
+                    risk="yes" if bool(row.get("subject_risk", False)) else "no",
+                    idle=_safe_float(row.get("idle_fp_per_min"), float("nan")),
+                    ns2=_safe_float(row.get("ns2_fp_per_min"), float("nan")),
+                    recall2p5=_safe_float(row.get("control_recall_at_2.5s"), float("nan")),
+                    recall=_safe_float(row.get("control_recall"), float("nan")),
+                    latency=_safe_float(row.get("detection_latency_s"), float("nan")),
+                )
+            )
+    lines.extend(
+        [
+            "",
+            "## Metric Note",
+            "",
+            "`async_macro_f1_5class` is kept for historical compatibility; here `5class` means the five output states `idle + 4 command`, not five ordinary SSVEP frequency classes. New summaries also expose `async_macro_f1_5state`.",
+            "",
+        ]
+    )
     append_recipe_table("Top Recipes", summaries)
     if weak_subject_audit:
         lines.extend(["", "## Weak Subject Audit", ""])
@@ -5343,20 +9191,35 @@ def render_markdown_summary(
 
 def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
     run_id = str(args.run_id or f"external_short_pretrain_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+    if not str(args.run_id or "").strip():
+        raise ValueError("--run-id is required for pseudo-online recipe screening; nohup/server runs must be traceable")
     output_root = Path(args.output_root).expanduser().resolve() / run_id
     report_root = output_root / "reports"
     dataset_root = Path(args.dataset_root).expanduser().resolve() / run_id
     report_root.mkdir(parents=True, exist_ok=True)
     dataset_root.mkdir(parents=True, exist_ok=True)
     log_path = report_root / "benchmark.log"
+    server_log_contract_path = SERVER_SSVEP_LOG_ROOT / f"{run_id}.log"
+    server_log_path = Path(str(server_log_contract_path))
+    mirror_server_log = bool(
+        os.name != "nt"
+        and str(output_root).startswith(str(SERVER_SSVEP_WRITABLE_ROOT))
+    )
+    if mirror_server_log:
+        server_log_path.parent.mkdir(parents=True, exist_ok=True)
     progress_path = report_root / "progress_snapshot.json"
     partial_summary_path = report_root / "partial_summary.json"
+    failed_cases_path = report_root / "failed_cases.json"
+    coverage_report_path = report_root / "coverage_report.json"
 
     def log(message: str) -> None:
         line = f"[{datetime.now().isoformat(timespec='seconds')}] {message}"
         print(line, flush=True)
         with log_path.open("a", encoding="utf-8") as handle:
             handle.write(line + "\n")
+        if mirror_server_log:
+            with server_log_path.open("a", encoding="utf-8") as handle:
+                handle.write(line + "\n")
 
     datasets = _csv_dataset_tuple(args.datasets)
     methods = _csv_method_tuple(args.methods)
@@ -5404,6 +9267,67 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
         getattr(args, "classifier_smoothing_windows_candidates", ""),
         default=DEFAULT_CLASSIFIER_SMOOTHING_WINDOWS_CANDIDATES,
     )
+    classifier_gate_variants = _csv_gate_variant_tuple(
+        getattr(args, "classifier_gate_variants", ",".join(DEFAULT_CLASSIFIER_GATE_VARIANTS))
+    )
+    freqspec_threshold_combo_set = str(
+        getattr(args, "freqspec_threshold_combo_set", FREQSPEC_THRESHOLD_COMBO_SET_NONE) or ""
+    ).strip().lower()
+    if freqspec_threshold_combo_set not in FREQSPEC_THRESHOLD_COMBO_SETS:
+        raise ValueError(f"unsupported --freqspec-threshold-combo-set {freqspec_threshold_combo_set!r}")
+    freqspec_margin_idle_quantiles = _csv_float_tuple(
+        getattr(args, "freqspec_margin_idle_quantiles", ""),
+        default=DEFAULT_FREQSPEC_MARGIN_IDLE_QUANTILES,
+    )
+    ns2_safety_factors = _csv_float_tuple(
+        getattr(args, "ns2_safety_factors", ""),
+        default=DEFAULT_NS2_SAFETY_FACTORS,
+    )
+    subject_floor_global_quantiles = _csv_float_tuple(
+        getattr(args, "subject-floor-global-quantiles", getattr(args, "subject_floor_global_quantiles", "")),
+        default=DEFAULT_GLOBAL_FLOOR_QUANTILES,
+    )
+    subject_floor_idle_quantiles = _csv_float_tuple(
+        getattr(args, "subject-floor-idle-quantiles", getattr(args, "subject_floor_idle_quantiles", "")),
+        default=DEFAULT_SUBJECT_IDLE_QUANTILES,
+    )
+    freqspec_ratio_idle_quantiles = _csv_float_tuple(
+        getattr(args, "freqspec_ratio_idle_quantiles", ""),
+        default=DEFAULT_FREQSPEC_RATIO_IDLE_QUANTILES,
+    )
+    freqspec_entropy_control_quantiles = _csv_float_tuple(
+        getattr(args, "freqspec_entropy_control_quantiles", ""),
+        default=DEFAULT_FREQSPEC_ENTROPY_CONTROL_QUANTILES,
+    )
+    freqspec_ns2_safety_factors = _csv_float_tuple(
+        getattr(args, "freqspec_ns2_safety_factors", ""),
+        default=DEFAULT_NS2_SAFETY_FACTORS,
+    )
+    freqspec_logistic_prob_thresholds = _csv_float_tuple(
+        getattr(args, "freqspec_logistic_prob_thresholds", ""),
+        default=DEFAULT_FREQSPEC_LOGISTIC_PROB_THRESHOLDS,
+    )
+    freqspec_logistic_ns2_weights = _csv_float_tuple(
+        getattr(args, "freqspec_logistic_ns2_weights", ""),
+        default=DEFAULT_FREQSPEC_LOGISTIC_NS2_WEIGHTS,
+    )
+    classifier_gate_variant_param_grid = [
+        params
+        for variant in classifier_gate_variants
+        for params in _gate_variant_param_grid(
+            variant,
+            freqspec_threshold_combo_set=freqspec_threshold_combo_set,
+            freqspec_margin_idle_quantiles=freqspec_margin_idle_quantiles,
+            freqspec_ratio_idle_quantiles=freqspec_ratio_idle_quantiles,
+            freqspec_entropy_control_quantiles=freqspec_entropy_control_quantiles,
+            ns2_safety_factors=ns2_safety_factors,
+            subject_floor_global_quantiles=subject_floor_global_quantiles,
+            subject_floor_idle_quantiles=subject_floor_idle_quantiles,
+            freqspec_ns2_safety_factors=freqspec_ns2_safety_factors,
+            freqspec_logistic_prob_thresholds=freqspec_logistic_prob_thresholds,
+            freqspec_logistic_ns2_weights=freqspec_logistic_ns2_weights,
+        )
+    ]
     classifier_threshold_policy = _parse_classifier_threshold_policy(args.classifier_threshold_policy)
     score_bank_mode = _parse_score_bank_mode(getattr(args, "score_bank_mode", DEFAULT_SCORE_BANK_MODE))
     freq_search_mode = _parse_freq_search_mode(getattr(args, "freq_search_mode", DEFAULT_FREQ_SEARCH_MODE))
@@ -5417,6 +9341,12 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
     )
     personalized_candidate_count = int(personalized_candidate_counts[0]) if personalized_candidate_counts else 0
     pretrain_budget_sec = float(getattr(args, "pretrain_budget_sec", DEFAULT_PRETRAIN_BUDGET_SEC))
+    decision_start_sec = float(getattr(args, "decision_start_sec", DEFAULT_DECISION_START_SEC))
+    decision_deadline_sec = float(getattr(args, "decision_deadline_sec", DEFAULT_DECISION_DEADLINE_SEC))
+    min_release_windows = int(getattr(args, "min_release_windows", DEFAULT_MIN_RELEASE_WINDOWS))
+    timeout_sec = float(getattr(args, "timeout_sec", DEFAULT_TIMEOUT_SEC))
+    case_limit = max(0, int(getattr(args, "case_limit", DEFAULT_CASE_LIMIT)))
+    started_monotonic = __import__("time").monotonic()
     freq_plan = _frequency_search_plan(
         mode=freq_search_mode,
         candidate_source=freq_candidate_source,
@@ -5448,6 +9378,19 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
     subject_manifest: list[dict[str, Any]] = []
     completed_rows_total = 0
     subject_count_total = int(len(subjects))
+    case_tracker = CaseTracker(expected_subject_count=len(subjects))
+    metric_definitions = _metric_definitions_payload(
+        step_sec=float(args.step_sec),
+        decision_start_sec=decision_start_sec,
+        decision_deadline_sec=decision_deadline_sec,
+        min_release_windows=min_release_windows,
+    )
+
+    def timeout_exceeded() -> bool:
+        return bool(timeout_sec > 0.0 and (__import__("time").monotonic() - started_monotonic) >= timeout_sec)
+
+    def case_limit_reached() -> bool:
+        return bool(case_limit > 0 and case_tracker.status_count("planned") >= case_limit)
 
     def emit_progress(
         *,
@@ -5482,6 +9425,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
     def emit_partial(stage: str, detail: str) -> None:
         partial_summaries = aggregate_recipe_rows(rows, expected_subject_count=len(subjects))
         partial_shared_summaries = _shared_recipe_summaries(partial_summaries)
+        partial_deployable_shared_summaries = _deployable_recipe_summaries(partial_shared_summaries)
         _write_json(
             partial_summary_path,
             {
@@ -5507,20 +9451,37 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                 "current_detail": str(detail),
                 "best_recipe": dict(partial_summaries[0]) if partial_summaries else {},
                 "best_shared_recipe": dict(partial_shared_summaries[0]) if partial_shared_summaries else {},
+                "best_deployable_shared_recipe": (
+                    dict(partial_deployable_shared_summaries[0])
+                    if partial_deployable_shared_summaries
+                    else {}
+                ),
                 "recipe_summaries": partial_summaries,
                 "shared_recipe_summaries": partial_shared_summaries,
+                "deployable_shared_recipe_summaries": partial_deployable_shared_summaries,
                 "subjects": subject_manifest,
+                "evaluation_contract": metric_definitions,
+                "resource_limits": _resource_limits_payload(timeout_sec, case_limit=case_limit),
+                "case_limit": int(case_limit),
+                "failed_cases_path": str(failed_cases_path),
+                "coverage_report_path": str(coverage_report_path),
+                "failed_case_count": int(len(case_tracker.failed_cases)),
                 "idle_proxy_note": (
                     "Idle/no-control is proxied with non-command target stimulus trials for Wang/BETA; "
                     "YSU-an rows use explicit NS1/NS2/NS3 no-control trials."
                 ),
             },
         )
+        _write_json(failed_cases_path, {"failed_cases": case_tracker.failed_cases})
+        _write_json(coverage_report_path, case_tracker.report())
 
     emit_progress(stage="start", detail="benchmark initialized", percent=0.0)
     emit_partial("start", "benchmark initialized")
 
     for subject_index, spec in enumerate(subjects, start=1):
+        if timeout_exceeded():
+            log(f"timeout reached before loading subject dataset={spec.dataset} subject={spec.subject}")
+            break
         log(f"load subject dataset={spec.dataset} subject={spec.subject} path={spec.mat_path}")
         sampling_rate, segments, source_metadata = load_external_subject_segments(spec)
         available_freqs = _available_freqs_for_subject(spec, source_metadata)
@@ -5542,6 +9503,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
         planning_counts = _count_segments(active_segments_for_window, freqs)
         max_supported_win_sec = _max_supported_win_sec(segments, sampling_rate)
         planning_max_supported_win_sec = _max_supported_win_sec(active_segments_for_window, sampling_rate)
+        channel_compatibility = _channel_compatibility_payload(spec.dataset, source_metadata)
         subject_manifest.append(
             {
                 "dataset": str(spec.dataset),
@@ -5557,6 +9519,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                 "shared_frequency_set_count": int(len(subject_shared_frequency_sets)),
                 "personalized_candidate_freqs": [float(freq) for freq in personalized_subject_candidates],
                 "source_metadata": source_metadata,
+                "channel_compatibility": channel_compatibility,
             }
         )
         blocks = list(planning_counts["blocks"])
@@ -5603,6 +9566,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                 len(candidate_pairs)
                 * len(classifier_max_gap_candidates)
                 * len(classifier_smoothing_candidates)
+                * (len(classifier_gate_variant_param_grid) if str(method_name) == "fbcca_ridge5" else 1)
             )
         if "threshold_pretrain" in methods and threshold_supported_wins:
             rows_per_split += 1
@@ -5621,42 +9585,6 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             )
         subject_completed_rows = 0
 
-        def append_row(row_payload: dict[str, Any], *, method_name: str, detail: str) -> None:
-            nonlocal completed_rows_total, subject_completed_rows
-            row = dict(row_payload)
-            split_payload = dict(row.get("split_summary", {}) or {})
-            selected_freqs = split_payload.get("selected_freqs", row.get("selected_freqs", []))
-            if selected_freqs:
-                row["selected_freqs"] = [float(freq) for freq in selected_freqs]
-                row["frequency_selection_mode"] = str(
-                    split_payload.get("frequency_selection_mode", row.get("frequency_selection_mode", ""))
-                )
-                row["frequency_set_id"] = str(split_payload.get("frequency_set_id", row.get("frequency_set_id", "")))
-                row["frequency_case"] = {
-                    "frequency_selection_mode": row["frequency_selection_mode"],
-                    "frequency_set_id": row["frequency_set_id"],
-                    "selected_freqs": row["selected_freqs"],
-                    "candidate_freqs": [float(freq) for freq in split_payload.get("candidate_freqs", []) or []],
-                    "personalized_candidate_count": int(split_payload.get("personalized_candidate_count", 0) or 0),
-                    "selected_by_calibration": bool(split_payload.get("selected_by_calibration", False)),
-                }
-            rows.append(row)
-            completed_rows_total += 1
-            subject_completed_rows += 1
-            subject_fraction = float(subject_completed_rows) / float(max(subject_planned_rows, 1))
-            percent = 100.0 * (
-                (float(subject_index - 1) + min(max(subject_fraction, 0.0), 1.0)) / float(max(subject_count_total, 1))
-            )
-            emit_progress(
-                stage="evaluate_recipe",
-                detail=detail,
-                percent=percent,
-                current_dataset=str(spec.dataset),
-                current_subject=str(spec.subject),
-                current_method=str(method_name),
-            )
-            emit_partial("evaluate_recipe", detail)
-
         emit_progress(
             stage="load_subject",
             detail=f"loaded dataset={spec.dataset} subject={spec.subject}",
@@ -5665,6 +9593,8 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             current_subject=str(spec.subject),
         )
         emit_partial("load_subject", f"loaded dataset={spec.dataset} subject={spec.subject}")
+        subject_decoder_cache: dict[tuple[Any, ...], Any] = {}
+        subject_scored_cache: dict[tuple[Any, ...], dict[tuple[Any, ...], ScoredTrial]] = {}
         for calibration_block_count, plans in plans_by_calibration:
             if not plans:
                 log(
@@ -5769,6 +9699,111 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                             namespace = _score_method_cache_namespace(method_name)
                             return (namespace, round(float(win_sec), 9), score_bank_mode)
 
+                        def make_case_context(
+                            *,
+                            method_name: str,
+                            win_sec: float,
+                            min_enter: int = 1,
+                        ) -> CaseContext:
+                            return CaseContext(
+                                dataset=str(spec.dataset),
+                                subject=str(spec.subject),
+                                frequency_profile=_frequency_profile_name(case_freqs),
+                                frequency_set_id=str(frequency_case.frequency_set_id),
+                                selected_freqs=_canonical_freq_tuple(case_freqs),
+                                method=str(method_name),
+                                calibration_blocks=tuple(int(block) for block in plan.calibration_blocks),
+                                holdout_blocks=tuple(int(block) for block in plan.holdout_blocks),
+                                split_index=int(plan.split_index),
+                                window_length_s=float(win_sec),
+                                min_enter_windows=max(1, int(min_enter)),
+                                reject_gate=_reject_gate_name(
+                                    method_name=str(method_name),
+                                    threshold_policy=classifier_threshold_policy,
+                                    score_bank_mode=score_bank_mode,
+                                ),
+                                implementation_level=_method_implementation_level(
+                                    str(method_name),
+                                    len(plan.calibration_blocks),
+                                ),
+                            )
+
+                        def run_case(
+                            ctx: CaseContext,
+                            *,
+                            fn: Any,
+                            method_name: str,
+                            detail: str,
+                        ) -> None:
+                            nonlocal completed_rows_total, subject_completed_rows
+                            skip_reason = _method_score_bank_skip_reason(ctx.method, score_bank_mode)
+                            if skip_reason:
+                                skip_case(
+                                    ctx,
+                                    reason=skip_reason,
+                                    detail=(
+                                        f"{ctx.method} is incompatible with score_bank_mode={score_bank_mode}; "
+                                        "use command_only for template/spatial decoders"
+                                    ),
+                                )
+                                return
+                            if case_limit_reached():
+                                return
+                            case_tracker.planned(ctx)
+                            if timeout_exceeded():
+                                case_tracker.skipped(ctx, reason="timeout", detail="run timeout reached before case start")
+                                emit_partial("timeout", detail)
+                                return
+                            try:
+                                raw_row = fn()
+                                row = _enrich_result_row(
+                                    raw_row,
+                                    frequency_profile=ctx.frequency_profile,
+                                    frequency_case=frequency_case,
+                                    step_sec=float(args.step_sec),
+                                    decision_start_sec=decision_start_sec,
+                                    decision_deadline_sec=decision_deadline_sec,
+                                    min_release_windows=min_release_windows,
+                                    threshold_policy=classifier_threshold_policy,
+                                    score_bank_mode=score_bank_mode,
+                                )
+                            except Exception as exc:
+                                log(f"case {ctx.method} dataset={ctx.dataset} subject={ctx.subject} failed: {exc}")
+                                if _is_tdca_insufficient_case(ctx, exc):
+                                    case_tracker.skipped(
+                                        ctx,
+                                        reason="insufficient_training_trials",
+                                        detail=str(exc),
+                                    )
+                                    emit_partial("case_skipped", detail)
+                                else:
+                                    case_tracker.failed(ctx, exc=exc)
+                                    emit_partial("case_failed", detail)
+                                return
+                            rows.append(row)
+                            case_tracker.completed(ctx, row=row)
+                            completed_rows_total += 1
+                            subject_completed_rows += 1
+                            subject_fraction = float(subject_completed_rows) / float(max(subject_planned_rows, 1))
+                            percent = 100.0 * (
+                                (float(subject_index - 1) + min(max(subject_fraction, 0.0), 1.0))
+                                / float(max(subject_count_total, 1))
+                            )
+                            emit_progress(
+                                stage="evaluate_recipe",
+                                detail=detail,
+                                percent=percent,
+                                current_dataset=str(spec.dataset),
+                                current_subject=str(spec.subject),
+                                current_method=str(method_name),
+                            )
+                            emit_partial("evaluate_recipe", detail)
+
+                        def skip_case(ctx: CaseContext, *, reason: str, detail: str) -> None:
+                            case_tracker.planned(ctx)
+                            case_tracker.skipped(ctx, reason=reason, detail=detail)
+                            emit_partial("case_skipped", detail)
+
                         def scored_for_method_win(method_name: str, win_sec: float) -> tuple[list[ScoredTrial], list[ScoredTrial]]:
                             cache_key = _method_cache_key(method_name, float(win_sec))
                             if cache_key not in score_bundle_cache:
@@ -5794,6 +9829,8 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                                     ),
                                     score_bank_mode=score_bank_mode,
                                     full_bank_freqs=full_bank_freqs,
+                                    decoder_cache=subject_decoder_cache,
+                                    scored_cache=subject_scored_cache,
                                 )
                             return score_bundle_cache[cache_key]
 
@@ -5830,19 +9867,21 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                                     score_bank_mode=score_bank_mode,
                                     full_bank_freqs=full_bank_freqs,
                                     validate_holdout_control=False,
+                                    decoder_cache=subject_decoder_cache,
+                                    scored_cache=subject_scored_cache,
                                 )
                                 clean_idle_score_cache[cache_key] = clean_scored
                             return clean_idle_score_cache[cache_key], support
 
                         def clean_idle_payload_for(method_name: str, win_sec: float) -> tuple[Optional[list[ScoredTrial]], Optional[dict[str, Any]]]:
-                            if idle_eval_mode not in {"clean_idle_proxy", "both"}:
-                                return None, None
                             if str(spec.dataset).strip().lower() == "ysu_an":
                                 _calibration_scored, holdout_scored = scored_for_method_win(method_name, float(win_sec))
                                 return _ysuan_holdout_no_control_scored(
                                     holdout_scored,
                                     win_sec=float(win_sec),
                                 )
+                            if idle_eval_mode not in {"clean_idle_proxy", "both"}:
+                                return None, None
                             clean_scored, support = clean_idle_for_method_win(method_name, float(win_sec))
                             return clean_scored, support
 
@@ -5897,8 +9936,10 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                                 f"cal_blocks={len(plan.calibration_blocks)} idle_mult={float(idle_multiplier):g}"
                             )
                             log(detail)
-                            append_row(
-                                run_zero_shot_default(
+                            ctx = make_case_context(method_name="zero_shot_default", win_sec=max_supported_win_sec, min_enter=1)
+                            run_case(
+                                ctx,
+                                fn=lambda: run_zero_shot_default(
                                     spec=spec,
                                     split_plan=plan,
                                     split_summary=split_summary,
@@ -5914,10 +9955,13 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                             )
                         if "fast_fbcca" in methods:
                             if not fast_candidates:
-                                log(
+                                detail = (
                                     f"skip fast_fbcca dataset={spec.dataset} subject={spec.subject} "
                                     f"because no win candidate fits max_supported_win_sec={float(planning_max_supported_win_sec):g}s"
                                 )
+                                log(detail)
+                                ctx = make_case_context(method_name="fast_fbcca", win_sec=0.0, min_enter=1)
+                                skip_case(ctx, reason="insufficient_window_length", detail=detail)
                             for win_sec, template_weight in fast_candidates:
                                 detail = (
                                     "fast_fbcca "
@@ -5926,8 +9970,10 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                                     f"win={float(win_sec):g} tw={float(template_weight):g}"
                                 )
                                 log(detail)
-                                append_row(
-                                    run_fast_fbcca_method(
+                                ctx = make_case_context(method_name="fast_fbcca", win_sec=float(win_sec), min_enter=1)
+                                run_case(
+                                    ctx,
+                                    fn=lambda win_sec=win_sec, template_weight=template_weight: run_fast_fbcca_method(
                                         method_dir=method_root / "fast_fbcca",
                                         spec=spec,
                                         split_plan=plan,
@@ -5949,14 +9995,14 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                         if "fbcca_lda5" in methods:
                             lda_candidates = score_method_candidate_pairs_by_method.get("fbcca_lda5", [])
                             if not lda_candidates:
-                                log(
+                                detail = (
                                     f"skip fbcca_lda5 dataset={spec.dataset} subject={spec.subject} "
                                     f"because no win candidate fits max_supported_win_sec={float(planning_max_supported_win_sec):g}s"
                                 )
+                                log(detail)
+                                ctx = make_case_context(method_name="fbcca_lda5", win_sec=0.0, min_enter=1)
+                                skip_case(ctx, reason="insufficient_window_length", detail=detail)
                             for win_sec, min_enter in lda_candidates:
-                                calibration_scored, holdout_scored = scored_for_method_win("fbcca_lda5", float(win_sec))
-                                lda_base_model = lda_base_for_win("fbcca_lda5", float(win_sec))
-                                clean_idle_scored, clean_idle_support = clean_idle_payload_for("fbcca_lda5", float(win_sec))
                                 for max_gap in classifier_max_gap_candidates:
                                     for smoothing_windows in classifier_smoothing_candidates:
                                         detail = (
@@ -5967,8 +10013,14 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                                             f"smooth={int(smoothing_windows)} threshold_policy={classifier_threshold_policy}"
                                         )
                                         log(detail)
-                                        append_row(
-                                            run_fbcca_lda5_method(
+                                        ctx = make_case_context(
+                                            method_name="fbcca_lda5",
+                                            win_sec=float(win_sec),
+                                            min_enter=int(min_enter),
+                                        )
+                                        run_case(
+                                            ctx,
+                                            fn=lambda win_sec=win_sec, min_enter=min_enter, max_gap=max_gap, smoothing_windows=smoothing_windows: run_fbcca_lda5_method(
                                                 artifact_dir=method_root / "fbcca_lda5",
                                                 spec=spec,
                                                 split_plan=plan,
@@ -5987,11 +10039,11 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                                                 smoothing_windows=int(smoothing_windows),
                                                 threshold_policy=classifier_threshold_policy,
                                                 score_bank_mode=score_bank_mode,
-                                                calibration_scored=calibration_scored,
-                                                holdout_scored=holdout_scored,
-                                                base_model=lda_base_model,
-                                                clean_idle_scored=clean_idle_scored,
-                                                clean_idle_support=clean_idle_support,
+                                                calibration_scored=scored_for_method_win("fbcca_lda5", float(win_sec))[0],
+                                                holdout_scored=scored_for_method_win("fbcca_lda5", float(win_sec))[1],
+                                                base_model=lda_base_for_win("fbcca_lda5", float(win_sec)),
+                                                clean_idle_scored=clean_idle_payload_for("fbcca_lda5", float(win_sec))[0],
+                                                clean_idle_support=clean_idle_payload_for("fbcca_lda5", float(win_sec))[1],
                                             ),
                                             method_name="fbcca_lda5",
                                             detail=detail,
@@ -5999,68 +10051,84 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                         if "fbcca_ridge5" in methods:
                             ridge_candidates = score_method_candidate_pairs_by_method.get("fbcca_ridge5", [])
                             if not ridge_candidates:
-                                log(
+                                detail = (
                                     f"skip fbcca_ridge5 dataset={spec.dataset} subject={spec.subject} "
                                     f"because no win candidate fits max_supported_win_sec={float(planning_max_supported_win_sec):g}s"
                                 )
+                                log(detail)
+                                ctx = make_case_context(method_name="fbcca_ridge5", win_sec=0.0, min_enter=1)
+                                skip_case(ctx, reason="insufficient_window_length", detail=detail)
                             for win_sec, min_enter in ridge_candidates:
-                                calibration_scored, holdout_scored = scored_for_method_win("fbcca_ridge5", float(win_sec))
-                                ridge_base_models = ridge_bases_for_win("fbcca_ridge5", float(win_sec))
-                                clean_idle_scored, clean_idle_support = clean_idle_payload_for("fbcca_ridge5", float(win_sec))
                                 for max_gap in classifier_max_gap_candidates:
                                     for smoothing_windows in classifier_smoothing_candidates:
-                                        detail = (
-                                            "fbcca_ridge5 "
-                                            f"dataset={spec.dataset} subject={spec.subject} split={int(plan.split_index)} "
-                                            f"cal_blocks={len(plan.calibration_blocks)} idle_mult={float(idle_multiplier):g} "
-                                            f"win={float(win_sec):g} min_enter={int(min_enter)} max_gap={int(max_gap)} "
-                                            f"smooth={int(smoothing_windows)} threshold_policy={classifier_threshold_policy}"
-                                        )
-                                        log(detail)
-                                        append_row(
-                                            run_fbcca_ridge5_method(
-                                                artifact_dir=method_root / "fbcca_ridge5",
-                                                spec=spec,
-                                                split_plan=plan,
-                                                split_summary=split_summary,
-                                                sampling_rate=sampling_rate,
-                                                freqs=case_freqs,
-                                                calibration_segments=calibration_segments,
-                                                holdout_segments=holdout_segments,
-                                                compute_backend=str(args.compute_backend),
-                                                gpu_device=int(args.gpu_device),
-                                                gpu_precision=str(args.gpu_precision),
-                                                step_sec=float(args.step_sec),
+                                        for gate_variant_params in classifier_gate_variant_param_grid:
+                                            gate_variant = parse_classifier_gate_variant(gate_variant_params.get("gate_variant"))
+                                            gate_token = _classifier_gate_variant_token(gate_variant, gate_variant_params)
+                                            detail = (
+                                                "fbcca_ridge5 "
+                                                f"dataset={spec.dataset} subject={spec.subject} split={int(plan.split_index)} "
+                                                f"cal_blocks={len(plan.calibration_blocks)} idle_mult={float(idle_multiplier):g} "
+                                                f"win={float(win_sec):g} min_enter={int(min_enter)} max_gap={int(max_gap)} "
+                                                f"smooth={int(smoothing_windows)} threshold_policy={classifier_threshold_policy} "
+                                                f"gate_variant={gate_variant} gate_token={gate_token}"
+                                            )
+                                            log(detail)
+                                            ctx = make_case_context(
+                                                method_name="fbcca_ridge5",
                                                 win_sec=float(win_sec),
-                                                min_enter_windows=int(min_enter),
-                                                max_gap_windows=int(max_gap),
-                                                smoothing_windows=int(smoothing_windows),
-                                                threshold_policy=classifier_threshold_policy,
-                                                score_bank_mode=score_bank_mode,
-                                                calibration_scored=calibration_scored,
-                                                holdout_scored=holdout_scored,
-                                                base_models=ridge_base_models,
-                                                clean_idle_scored=clean_idle_scored,
-                                                clean_idle_support=clean_idle_support,
-                                            ),
-                                            method_name="fbcca_ridge5",
-                                            detail=detail,
-                                        )
+                                                min_enter=int(min_enter),
+                                            )
+                                            run_case(
+                                                ctx,
+                                                fn=lambda win_sec=win_sec, min_enter=min_enter, max_gap=max_gap, smoothing_windows=smoothing_windows, gate_variant_params=gate_variant_params: run_fbcca_ridge5_method(
+                                                    artifact_dir=method_root / "fbcca_ridge5",
+                                                    spec=spec,
+                                                    split_plan=plan,
+                                                    split_summary=split_summary,
+                                                    sampling_rate=sampling_rate,
+                                                    freqs=case_freqs,
+                                                    calibration_segments=calibration_segments,
+                                                    holdout_segments=holdout_segments,
+                                                    compute_backend=str(args.compute_backend),
+                                                    gpu_device=int(args.gpu_device),
+                                                    gpu_precision=str(args.gpu_precision),
+                                                    step_sec=float(args.step_sec),
+                                                    win_sec=float(win_sec),
+                                                    min_enter_windows=int(min_enter),
+                                                    max_gap_windows=int(max_gap),
+                                                    smoothing_windows=int(smoothing_windows),
+                                                    threshold_policy=classifier_threshold_policy,
+                                                    score_bank_mode=score_bank_mode,
+                                                    calibration_scored=scored_for_method_win("fbcca_ridge5", float(win_sec))[0],
+                                                    holdout_scored=scored_for_method_win("fbcca_ridge5", float(win_sec))[1],
+                                                    base_models=ridge_bases_for_win("fbcca_ridge5", float(win_sec)),
+                                                    clean_idle_scored=clean_idle_payload_for("fbcca_ridge5", float(win_sec))[0],
+                                                    clean_idle_support=clean_idle_payload_for("fbcca_ridge5", float(win_sec))[1],
+                                                    gate_variant_params=gate_variant_params,
+                                                ),
+                                                method_name="fbcca_ridge5",
+                                                detail=detail,
+                                            )
                         for method_name in SUPPORTED_SHORT_PRETRAIN_METHODS:
                             if method_name not in methods or method_name in {"fbcca_lda5", "fbcca_ridge5"}:
                                 continue
                             method_candidates = score_method_candidate_pairs_by_method.get(method_name, [])
                             if not method_candidates:
-                                log(
+                                detail = (
                                     f"skip {method_name} dataset={spec.dataset} subject={spec.subject} "
                                     f"because no win candidate fits max_supported_win_sec={float(planning_max_supported_win_sec):g}s"
                                 )
+                                log(detail)
+                                ctx = make_case_context(method_name=method_name, win_sec=0.0, min_enter=1)
+                                reason = (
+                                    "insufficient_training_trials"
+                                    if str(method_name) == "tdca5"
+                                    else "insufficient_window_length"
+                                )
+                                skip_case(ctx, reason=reason, detail=detail)
                                 continue
                             method_spec = _score_method_spec(method_name)
                             for win_sec, min_enter in method_candidates:
-                                calibration_scored, holdout_scored = scored_for_method_win(method_name, float(win_sec))
-                                ridge_base_models = ridge_bases_for_win(method_name, float(win_sec))
-                                clean_idle_scored, clean_idle_support = clean_idle_payload_for(method_name, float(win_sec))
                                 for max_gap in classifier_max_gap_candidates:
                                     for smoothing_windows in classifier_smoothing_candidates:
                                         detail = (
@@ -6071,8 +10139,14 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                                             f"smooth={int(smoothing_windows)} threshold_policy={classifier_threshold_policy}"
                                         )
                                         log(detail)
-                                        append_row(
-                                            run_fbcca_ridge5_method(
+                                        ctx = make_case_context(
+                                            method_name=str(method_name),
+                                            win_sec=float(win_sec),
+                                            min_enter=int(min_enter),
+                                        )
+                                        run_case(
+                                            ctx,
+                                            fn=lambda method_name=method_name, method_spec=method_spec, win_sec=win_sec, min_enter=min_enter, max_gap=max_gap, smoothing_windows=smoothing_windows: run_fbcca_ridge5_method(
                                                 artifact_dir=method_root / method_name,
                                                 spec=spec,
                                                 split_plan=plan,
@@ -6090,62 +10164,77 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                                                 max_gap_windows=int(max_gap),
                                                 smoothing_windows=int(smoothing_windows),
                                                 threshold_policy=classifier_threshold_policy,
-                                                calibration_scored=calibration_scored,
-                                                holdout_scored=holdout_scored,
-                                                base_models=ridge_base_models,
+                                                calibration_scored=scored_for_method_win(method_name, float(win_sec))[0],
+                                                holdout_scored=scored_for_method_win(method_name, float(win_sec))[1],
+                                                base_models=ridge_bases_for_win(method_name, float(win_sec)),
                                                 method_name=str(method_name),
                                                 score_source_name=str(method_spec.score_source_name),
                                                 score_bank_mode=score_bank_mode,
                                                 decoder_name=str(method_spec.decoder_name),
                                                 decoder_model_params=dict(method_spec.decoder_model_params),
-                                                clean_idle_scored=clean_idle_scored,
-                                                clean_idle_support=clean_idle_support,
+                                                clean_idle_scored=clean_idle_payload_for(method_name, float(win_sec))[0],
+                                                clean_idle_support=clean_idle_payload_for(method_name, float(win_sec))[1],
                                             ),
                                             method_name=str(method_name),
                                             detail=detail,
                                         )
                         if "threshold_pretrain" in methods:
                             if not threshold_supported_wins:
-                                log(
+                                detail = (
                                     f"skip threshold_pretrain dataset={spec.dataset} subject={spec.subject} "
                                     f"because no win candidate fits max_supported_win_sec={float(planning_max_supported_win_sec):g}s"
                                 )
-                                continue
-                            detail = (
-                                "threshold_pretrain "
-                                f"dataset={spec.dataset} subject={spec.subject} split={int(plan.split_index)} "
-                                f"cal_blocks={len(plan.calibration_blocks)} idle_mult={float(idle_multiplier):g}"
-                            )
-                            log(detail)
-                            append_row(
-                                run_threshold_pretrain_method(
-                                    method_dir=method_root / "threshold_pretrain",
-                                    dataset_root=dataset_root / "threshold_pretrain",
-                                    spec=spec,
-                                    split_plan=plan,
-                                    split_summary=split_summary,
-                                    sampling_rate=sampling_rate,
-                                    freqs=case_freqs,
-                                    calibration_segments=calibration_segments,
-                                    holdout_segments=holdout_segments,
-                                    compute_backend=str(args.compute_backend),
-                                    gpu_device=int(args.gpu_device),
-                                    gpu_precision=str(args.gpu_precision),
-                                    step_sec=float(args.step_sec),
-                                    win_sec_candidates=threshold_supported_wins,
-                                    gate_policies=threshold_gate_policies,
-                                    min_enter_candidates=threshold_min_enter_candidates,
-                                    min_exit_candidates=threshold_min_exit_candidates,
-                                    control_state_modes=threshold_control_state_modes,
-                                ),
-                                method_name="threshold_pretrain",
-                                detail=detail,
-                            )
+                                log(detail)
+                                ctx = make_case_context(method_name="threshold_pretrain", win_sec=0.0, min_enter=1)
+                                skip_case(ctx, reason="insufficient_window_length", detail=detail)
+                            else:
+                                detail = (
+                                    "threshold_pretrain "
+                                    f"dataset={spec.dataset} subject={spec.subject} split={int(plan.split_index)} "
+                                    f"cal_blocks={len(plan.calibration_blocks)} idle_mult={float(idle_multiplier):g}"
+                                )
+                                log(detail)
+                                ctx = make_case_context(
+                                    method_name="threshold_pretrain",
+                                    win_sec=float(max(threshold_supported_wins)),
+                                    min_enter=int(threshold_min_enter_candidates[0] if threshold_min_enter_candidates else 1),
+                                )
+                                run_case(
+                                    ctx,
+                                    fn=lambda: run_threshold_pretrain_method(
+                                        method_dir=method_root / "threshold_pretrain",
+                                        dataset_root=dataset_root / "threshold_pretrain",
+                                        spec=spec,
+                                        split_plan=plan,
+                                        split_summary=split_summary,
+                                        sampling_rate=sampling_rate,
+                                        freqs=case_freqs,
+                                        calibration_segments=calibration_segments,
+                                        holdout_segments=holdout_segments,
+                                        compute_backend=str(args.compute_backend),
+                                        gpu_device=int(args.gpu_device),
+                                        gpu_precision=str(args.gpu_precision),
+                                        step_sec=float(args.step_sec),
+                                        win_sec_candidates=threshold_supported_wins,
+                                        gate_policies=threshold_gate_policies,
+                                        min_enter_candidates=threshold_min_enter_candidates,
+                                        min_exit_candidates=threshold_min_exit_candidates,
+                                        control_state_modes=threshold_control_state_modes,
+                                    ),
+                                    method_name="threshold_pretrain",
+                                    detail=detail,
+                                )
 
     summaries = aggregate_recipe_rows(rows, expected_subject_count=len(subjects))
     shared_summaries = _shared_recipe_summaries(summaries)
+    deployable_shared_summaries = _deployable_recipe_summaries(shared_summaries)
     best_recipe = dict(summaries[0]) if summaries else {}
     best_shared_recipe = dict(shared_summaries[0]) if shared_summaries else {}
+    best_deployable_shared_recipe = (
+        dict(deployable_shared_summaries[0])
+        if deployable_shared_summaries
+        else {}
+    )
     weak_audit = _weak_subject_audit(best_shared_recipe or best_recipe)
     frequency_set_coverage_subject_count = int(
         (best_shared_recipe or best_recipe).get("coverage_subject_count", 0)
@@ -6153,12 +10242,189 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
         else 0
     )
     per_subject_selected_freqs = dict((best_shared_recipe or best_recipe).get("per_subject_selected_freqs", {}) or {})
+    candidate_comparison_rows = _decision_table_rows(shared_summaries or summaries)
+    subject_breakdown_rows = _subject_breakdown_rows(shared_summaries or summaries)
+    subtype_breakdown_rows = _subtype_breakdown_rows(shared_summaries or summaries)
+    comparison_baseline_recipe = _comparison_baseline_summary(shared_summaries or summaries)
+    recipe_subgroup_comparisons = [
+        {
+            "method": str(item.get("method", "")),
+            "recipe_id": str(item.get("recipe_id", "")),
+            "gate_variant": parse_classifier_gate_variant(
+                item.get("gate_variant", CLASSIFIER_GATE_VARIANT_BASELINE_LRTMW)
+            ),
+            "combo_name": _gate_combo_name_for_summary(item),
+            **_candidate_subgroup_comparison_payload(item, comparison_baseline_recipe),
+        }
+        for item in (shared_summaries or summaries)
+    ]
+    ns2_by_selected_freq_rows = _flatten_split_diagnostic_rows(rows, "ns2_by_selected_freq")
+    ns2_by_subject_freq_rows = _flatten_split_diagnostic_rows(rows, "ns2_by_subject_freq")
+    selected_freq_confusion_rows = _flatten_split_diagnostic_rows(rows, "selected_freq_confusion")
+    logistic_trace_window_rows = _flatten_logistic_trace_rows(rows, "logistic_trace_windows")
+    logistic_trace_trial_rows = _flatten_logistic_trace_rows(rows, "logistic_trace_trial_summary")
+    logistic_transition_subject_rows = _flatten_logistic_trace_rows(rows, "logistic_transition_counts_by_subject")
+    logistic_transition_frequency_rows = _flatten_logistic_trace_rows(rows, "logistic_transition_counts_by_frequency")
+    logistic_feature_summary_rows = _flatten_logistic_trace_rows(rows, "logistic_feature_summary_tp_fp")
+    per_frequency_metric_rows = _split_per_frequency_rows(rows)
+    per_frequency_summary = _per_frequency_summary_payload(rows)
+    gate_params_payload = _gate_params_payload(shared_summaries or summaries)
+    gate_params_by_frequency_payload = _gate_params_by_frequency_payload(shared_summaries or summaries)
+    chosen_recipe_for_fields = best_deployable_shared_recipe or best_shared_recipe or best_recipe
+    chosen_metrics_for_fields = _summary_metric_payload(chosen_recipe_for_fields)
+    chosen_subject_risk = _subject_risk_payload(chosen_recipe_for_fields)
+    chosen_subgroup_comparison = (
+        _candidate_subgroup_comparison_payload(chosen_recipe_for_fields, comparison_baseline_recipe)
+        if chosen_recipe_for_fields
+        else {}
+    )
+    chosen_gate_variant = (
+        parse_classifier_gate_variant(chosen_recipe_for_fields.get("gate_variant", CLASSIFIER_GATE_VARIANT_BASELINE_LRTMW))
+        if chosen_recipe_for_fields
+        else CLASSIFIER_GATE_VARIANT_BASELINE_LRTMW
+    )
+    chosen_ns2_label = _ns2_safety_label(chosen_recipe_for_fields) if chosen_recipe_for_fields else "not_run"
+    chosen_coverage_subject_count = int(
+        chosen_recipe_for_fields.get(
+            "coverage_subject_count",
+            chosen_recipe_for_fields.get("subject_count", 0),
+        )
+        or 0
+    )
+    chosen_subject_count = int(
+        chosen_recipe_for_fields.get("subject_count", chosen_coverage_subject_count)
+        or chosen_coverage_subject_count
+    )
+    chosen_split_count = int(
+        chosen_recipe_for_fields.get("split_count", len(rows))
+        if chosen_recipe_for_fields
+        else len(rows)
+    )
+    chosen_calibration_block_count = int(
+        chosen_recipe_for_fields.get("calibration_block_count", len(calibration_blocks))
+        if chosen_recipe_for_fields
+        else len(calibration_blocks)
+    )
+    chosen_idle_multiplier = _safe_float(
+        chosen_recipe_for_fields.get("idle_multiplier"),
+        float(idle_multipliers[0]) if idle_multipliers else 1.0,
+    )
+    chosen_candidate_artifact_paths = _candidate_artifact_paths_for_recipe(rows, chosen_recipe_for_fields)
+    channel_compatibility = _channel_compatibility_summary(subject_manifest)
+    coverage_report = case_tracker.report()
+    failure_payload = {
+        "schema_version": "ssvep_external_short_pretrain_failed_cases_v1",
+        "run_id": run_id,
+        "failed_cases": case_tracker.failed_cases,
+        "skipped_cases": case_tracker.skipped_cases(),
+        "hard_failed_cases": case_tracker.failed_cases_only(),
+    }
+    artifact_paths = _artifact_manifest_paths(
+        report_root=report_root,
+        run_id=run_id,
+        log_path=log_path,
+        failed_cases_path=failed_cases_path,
+        coverage_report_path=coverage_report_path,
+        server_log_path=server_log_contract_path,
+    )
+    subjects_completed = len(
+        {
+            str(_subject)
+            for item in coverage_report.get("by_dataset_frequency_profile_method", [])
+            for _subject in item.get("completed_subject_ids", []) or []
+        }
+    )
+    if subjects_completed == 0:
+        subjects_completed = len({f"{row.get('dataset','')}:{row.get('subject','')}" for row in rows})
+    observed_implementation_levels = {str(row.get("implementation_level", "")) for row in rows if row.get("implementation_level")}
+    implementation_level = (
+        "paper-faithful"
+        if observed_implementation_levels == {"paper-faithful"}
+        else "engineering-approx"
+        if observed_implementation_levels
+        else "not-run"
+    )
+    observed_reject_gates = sorted({str(row.get("reject_gate", "")) for row in rows if row.get("reject_gate")})
+    reject_gate_contract = ",".join(observed_reject_gates) if observed_reject_gates else _reject_gate_name(
+        method_name=str(methods[0] if methods else ""),
+        threshold_policy=classifier_threshold_policy,
+        score_bank_mode=score_bank_mode,
+    )
+    run_metadata = _run_metadata_payload(
+        run_id=run_id,
+        datasets=datasets,
+        freqs=freqs,
+        methods=methods,
+        subjects_expected=len(subjects),
+        calibration_blocks=calibration_blocks,
+        window_lengths=classifier_win_sec_candidates,
+        score_bank_mode=score_bank_mode,
+        classifier_gate_variants=classifier_gate_variants,
+        idle_eval_mode=idle_eval_mode,
+        timeout_sec=timeout_sec,
+        artifact_paths=artifact_paths,
+    )
+    evaluation_contract = _evaluation_contract_payload(
+        datasets=datasets,
+        freqs=freqs,
+        methods=methods,
+        subjects_expected=len(subjects),
+        subjects_completed=subjects_completed,
+        calibration_blocks=calibration_blocks,
+        window_lengths=classifier_win_sec_candidates,
+        step_sec=float(args.step_sec),
+        decision_start_sec=decision_start_sec,
+        decision_deadline_sec=decision_deadline_sec,
+        min_release_windows=min_release_windows,
+        reject_gate=reject_gate_contract,
+        artifact_paths=artifact_paths,
+        implementation_level=implementation_level,
+    )
+    idle_source_policies = {
+        str(dataset): _idle_source_policy_for_dataset(str(dataset))
+        for dataset in datasets
+    }
     summary = {
         "task": "external-short-pretrain-benchmark",
         "status": "ok",
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "run_id": run_id,
+        "run_metadata": run_metadata,
+        "evaluation_contract": evaluation_contract,
+        "resource_limits": _resource_limits_payload(timeout_sec, case_limit=case_limit),
         "config": json_safe(vars(args)),
+        "dataset": ",".join(str(item) for item in datasets),
+        "frequency_profile": [float(freq) for freq in freqs],
+        "frequency_profile_id": _frequency_profile_name(freqs),
+        "frequency_profile_hz": [float(freq) for freq in freqs],
+        "method": ",".join(str(item) for item in methods),
+        "subjects_expected": int(len(subjects)),
+        "subjects_completed": int(subjects_completed),
+        "calibration_blocks": [int(block) for block in calibration_blocks],
+        "calibration_block_count": int(chosen_calibration_block_count),
+        "holdout_blocks": sorted(
+            {
+                int(block)
+                for row in rows
+                for block in (dict(row.get("split_summary", {}) or {}).get("holdout_blocks", []) or [])
+            }
+        ),
+        "window_length_s": [float(win_sec) for win_sec in classifier_win_sec_candidates],
+        "win_sec": (
+            float(classifier_win_sec_candidates[0])
+            if len(classifier_win_sec_candidates) == 1
+            else [float(win_sec) for win_sec in classifier_win_sec_candidates]
+        ),
+        "step_size_s": float(args.step_sec),
+        "step_sec": float(args.step_sec),
+        "decision_start_s": float(decision_start_sec),
+        "decision_deadline_s": float(decision_deadline_sec),
+        "reject_gate": reject_gate_contract,
+        "gate": str(classifier_threshold_policy),
+        "artifact_paths": artifact_paths,
+        "implementation_level": implementation_level,
+        "paper_faithful": bool(implementation_level == "paper-faithful"),
+        "engineering_approx": bool(implementation_level != "paper-faithful"),
         "freqs": [float(freq) for freq in freqs],
         "selected_freqs": [float(freq) for freq in freqs],
         "per_subject_selected_freqs": per_subject_selected_freqs,
@@ -6166,8 +10432,27 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
         "frequency_search_plan": freq_plan,
         "shared_frequency_sets": [[float(freq) for freq in item] for item in shared_frequency_sets],
         "frequency_set_coverage_subject_count": int(frequency_set_coverage_subject_count),
+        "coverage_subject_count": int(chosen_coverage_subject_count),
+        "subject_count": int(chosen_subject_count),
         "score_bank_mode": score_bank_mode,
+        "score_bank": score_bank_mode,
+        "scorer": "fbcca_fixed_all8" if "fbcca_ridge5" in methods else "",
+        "gate_variant": chosen_gate_variant,
+        "classifier_gate_variants": list(classifier_gate_variants),
+        "split_count": int(chosen_split_count),
+        "min_enter_windows": (
+            int(classifier_min_enter_candidates[0])
+            if len(classifier_min_enter_candidates) == 1
+            else [int(value) for value in classifier_min_enter_candidates]
+        ),
+        "smoothing_windows": (
+            int(classifier_smoothing_candidates[0])
+            if len(classifier_smoothing_candidates) == 1
+            else [int(value) for value in classifier_smoothing_candidates]
+        ),
+        "idle_multiplier": float(chosen_idle_multiplier),
         "idle_eval_mode": idle_eval_mode,
+        "case_limit": int(case_limit),
         "pretrain_budget_sec": float(pretrain_budget_sec),
         "estimated_pretrain_duration_sec": float(budget.get("estimated_pretrain_duration_sec", 0.0)),
         "pretrain_budget": budget,
@@ -6176,15 +10461,445 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
         "methods": list(methods),
         "subject_whitelist": [[dataset, subject] for dataset, subject in subject_whitelist],
         "subjects": subject_manifest,
+        "channel_compatibility": channel_compatibility,
         "expected_subject_count": int(len(subjects)),
         "row_count": int(len(rows)),
         "rows": rows,
+        "metrics": {
+            **chosen_metrics_for_fields,
+            "best_shared_recipe": dict(best_shared_recipe),
+            "best_deployable_shared_recipe": dict(best_deployable_shared_recipe),
+            "best_recipe_partial_coverage": dict(best_recipe),
+        },
+        "no_control_subtype_metrics": {
+            "ns1": {"fp_per_min": chosen_metrics_for_fields.get("ns1_fp_per_min")},
+            "ns2": {"fp_per_min": chosen_metrics_for_fields.get("ns2_fp_per_min")},
+            "ns3": {"fp_per_min": chosen_metrics_for_fields.get("ns3_fp_per_min")},
+            "mixed_idle_fp_per_min": chosen_metrics_for_fields.get("idle_fp_per_min"),
+        },
+        "per_frequency_summary": per_frequency_summary,
+        "subject_risk": chosen_subject_risk,
+        "subject_risk_summary": chosen_subject_risk,
+        "subgroup_definitions": _subgroup_definitions_payload(),
+        "subgroup_metrics": chosen_subgroup_comparison,
+        "recipe_subgroup_comparisons": recipe_subgroup_comparisons,
+        "frequency_specific_grid_selection_policy": FREQSPEC_GRID_SELECTION_POLICY,
+        "gate_params_by_frequency": gate_params_by_frequency_payload,
+        "subject_risk_flag": bool(
+            chosen_recipe_for_fields
+            and (
+                _candidate_subject_watch_risk(chosen_recipe_for_fields, comparison_baseline_recipe)
+                or chosen_subgroup_comparison.get("recall_degraded", False)
+            )
+        ),
+        "decision_table": candidate_comparison_rows,
+        "deployable": bool(chosen_recipe_for_fields.get("deployable_budget_pass", False)) if chosen_recipe_for_fields else False,
+        "ns2_safe": bool(chosen_ns2_label == "ns2_safe"),
+        "ns2_status": chosen_ns2_label,
+        "ns2_improved": bool(chosen_subgroup_comparison.get("ns2_improved", False)),
+        "recall_degraded": bool(chosen_subgroup_comparison.get("recall_degraded", False)),
+        "full24_candidate_eligible": bool(chosen_subgroup_comparison.get("full24_candidate_eligible", False)),
+        "runtime_loadable": False,
+        "candidate_artifact_paths": chosen_candidate_artifact_paths,
         "recipe_summaries": summaries,
         "shared_recipe_summaries": shared_summaries,
+        "deployable_shared_recipe_summaries": deployable_shared_summaries,
         "best_recipe": best_recipe,
         "best_shared_recipe": best_shared_recipe,
+        "best_deployable_shared_recipe": best_deployable_shared_recipe,
+        "deployable_budget": {
+            "max_idle_fp_per_min": float(DEFAULT_CLASSIFIER_IDLE_FP_BUDGET_PER_MIN),
+            "min_control_recall": float(DEFAULT_CLASSIFIER_THRESHOLD_MIN_CONTROL_RECALL),
+            "min_control_recall_at_2.5s": float(DEFAULT_DEPLOYABLE_MIN_CONTROL_RECALL_AT_2P5S),
+            "max_detection_latency_s": float(DEFAULT_DEPLOYABLE_MAX_DETECTION_LATENCY_SEC),
+            "require_full_subject_coverage": True,
+        },
+        "coverage_report_path": str(coverage_report_path),
+        "failed_cases_path": str(failed_cases_path),
+        "failed_case_count": int(len(case_tracker.failed_cases)),
+        "hard_failed_case_count": int(len(case_tracker.failed_cases_only())),
+        "skipped_case_count": int(len(case_tracker.skipped_cases())),
+        "coverage_report": coverage_report,
+        "idle_source_policy": idle_source_policies,
         "idle_proxy_note": "Idle/no-control is proxied with non-command target stimulus trials from external benchmarks.",
     }
+    deployable_candidate_profile = _deployable_candidate_profile_payload(
+        run_id=run_id,
+        best_deployable_shared_recipe=best_deployable_shared_recipe,
+        rows=rows,
+        channel_compatibility=channel_compatibility,
+        artifact_paths=artifact_paths,
+    )
+    summary["deployable_candidate_profile"] = deployable_candidate_profile
+    summary["deployable_candidate_profile_path"] = str(report_root / DEPLOYABLE_CANDIDATE_PROFILE_FILENAME)
+    _write_csv(
+        report_root / "subject_breakdown.csv",
+        subject_breakdown_rows,
+        (
+            "method",
+            "recipe_id",
+            "gate_variant",
+            "dataset",
+            "subject",
+            "split_count",
+            "idle_fp_per_min",
+            "ns1_fp_per_min",
+            "ns2_fp_per_min",
+            "ns3_fp_per_min",
+            "control_recall",
+            "control_recall_at_2.5s",
+            "detection_latency_s",
+            "async_macro_f1_5state",
+        ),
+    )
+    _write_csv(
+        report_root / "subtype_breakdown.csv",
+        subtype_breakdown_rows,
+        (
+            "method",
+            "recipe_id",
+            "gate_variant",
+            "coverage_subject_count",
+            "split_count",
+            "overall_idle_fp_per_min",
+            "ns1_fp_per_min",
+            "ns2_fp_per_min",
+            "ns3_fp_per_min",
+            "ns_all_fp_per_min",
+            "control_recall",
+            "control_recall_at_2.5s",
+            "detection_latency_s",
+        ),
+    )
+    _write_csv(
+        report_root / "ns2_by_selected_freq.csv",
+        ns2_by_selected_freq_rows,
+        (
+            "dataset",
+            "subject",
+            "split_index",
+            "method",
+            "recipe_id",
+            "gate_variant",
+            "frequency_profile",
+            "frequency_set_id",
+            "freq",
+            "NS2_total_windows",
+            "NS2_FP_windows",
+            "NS2_FP_events",
+            "NS2_FP_per_min",
+            "FP_share",
+            "mean_top1_score",
+            "mean_margin",
+            "mean_ratio",
+            "mean_entropy",
+            "mean_lrt_evidence",
+            "calibration_blocks",
+            "holdout_blocks",
+            "win_sec",
+            "step_sec",
+            "min_enter_windows",
+            "smoothing_windows",
+        ),
+    )
+    _write_csv(
+        report_root / "ns2_by_subject_freq.csv",
+        ns2_by_subject_freq_rows,
+        (
+            "dataset",
+            "subject",
+            "split_index",
+            "method",
+            "recipe_id",
+            "gate_variant",
+            "frequency_profile",
+            "frequency_set_id",
+            "freq",
+            "NS2_total_windows",
+            "NS2_FP_windows",
+            "NS2_FP_events",
+            "NS2_FP_per_min",
+            "command_recall_for_freq",
+            "recall_at_2.5_for_freq",
+            "detection_latency_for_freq",
+            "calibration_blocks",
+            "holdout_blocks",
+            "win_sec",
+            "step_sec",
+            "min_enter_windows",
+            "smoothing_windows",
+        ),
+    )
+    _write_csv(
+        report_root / "selected_freq_confusion.csv",
+        selected_freq_confusion_rows,
+        (
+            "dataset",
+            "subject",
+            "split_index",
+            "method",
+            "recipe_id",
+            "gate_variant",
+            "frequency_profile",
+            "frequency_set_id",
+            "true_state",
+            "selected_freq",
+            "unit",
+            "count",
+            "calibration_blocks",
+            "holdout_blocks",
+            "win_sec",
+            "step_sec",
+            "min_enter_windows",
+            "smoothing_windows",
+        ),
+    )
+    _write_csv(
+        report_root / "per_frequency_metrics.csv",
+        per_frequency_metric_rows,
+        (
+            "dataset",
+            "subject",
+            "split_index",
+            "method",
+            "recipe_id",
+            "gate_variant",
+            "frequency_profile",
+            "frequency_set_id",
+            "freq",
+            "command_recall",
+            "recall_at_2.5s",
+            "fp_per_min_ns1",
+            "fp_per_min_ns2",
+            "fp_per_min_ns3",
+            "gate_pass_rate",
+            "mean_latency",
+            "calibration_blocks",
+            "win_sec",
+            "step_sec",
+            "min_enter_windows",
+            "smoothing_windows",
+        ),
+    )
+    _write_csv(
+        report_root / "candidate_comparison.csv",
+        candidate_comparison_rows,
+        (
+            "method",
+            "recipe_id",
+            "gate_variant",
+            "combo_name",
+            "coverage_subject_count",
+            "expected_subject_count",
+            "split_count",
+            "idle_fp_per_min",
+            "delta_idle_fp_per_min",
+            "ns1_fp_per_min",
+            "ns2_fp_per_min",
+            "delta_ns2_fp_per_min",
+            "ns3_fp_per_min",
+            "control_recall",
+            "delta_control_recall",
+            "control_recall_at_2.5s",
+            "delta_control_recall_at_2.5s",
+            "detection_latency_s",
+            "delta_detection_latency_s",
+            "deployable",
+            "ns2_safe",
+            "ns2_status",
+            "subject_risk",
+            "gate_validation_supported",
+            "gate_validation_idle_fp_per_min",
+            "gate_validation_ns2_fp_per_min",
+            "gate_validation_control_recall",
+            "gate_validation_control_recall_at_2.5s",
+            "frequency_specific_grid_selection_policy",
+            "high_risk_ns2_fp_per_min",
+            "high_risk_delta_ns2_fp_per_min",
+            "high_risk_ns2_reduction_ratio",
+            "low_recall_recall_at_2.5s",
+            "low_recall_delta_recall_at_2.5s",
+            "control_recall_delta_for_eligibility",
+            "ns2_improved",
+            "recall_degraded",
+            "full24_candidate_eligible",
+            "freq_10p5_command_recall",
+            "freq_10p5_delta_command_recall",
+            "freq_10p5_recall_at_2.5s",
+            "freq_10p5_delta_recall_at_2.5s",
+            "freq_10p5_ns2_fp_per_min",
+            "freq_10p5_delta_ns2_fp_per_min",
+            "freq_8_command_recall",
+            "freq_8_delta_command_recall",
+            "freq_8_recall_at_2.5s",
+            "freq_8_delta_recall_at_2.5s",
+            "freq_8_ns2_fp_per_min",
+            "freq_8_delta_ns2_fp_per_min",
+            "recommended_profile_export",
+        ),
+    )
+    _write_csv(
+        report_root / "logistic_trace_windows.csv",
+        logistic_trace_window_rows,
+        (
+            "dataset",
+            "subject",
+            "split_id",
+            "split_index",
+            "trial_id",
+            "block_index",
+            "window_idx",
+            "time_from_onset",
+            "true_state",
+            "true_freq",
+            "selected_freq",
+            "baseline_pred",
+            "candidate_pred",
+            "top1_score",
+            "top2_score",
+            "top3_score",
+            "selected_freq_score",
+            "margin",
+            "ratio",
+            "normalized_top1",
+            "score_entropy",
+            "lrt_evidence",
+            "multiwindow_same_freq_count",
+            "multiwindow_margin_mean",
+            "multiwindow_entropy_mean",
+            "cs_probability",
+            "gate_pass",
+            "transition_type",
+            "method",
+            "recipe_id",
+            "gate_variant",
+            "frequency_profile",
+            "frequency_set_id",
+            "calibration_blocks",
+            "holdout_blocks",
+            "win_sec",
+            "step_sec",
+            "min_enter_windows",
+            "smoothing_windows",
+        ),
+    )
+    _write_csv(
+        report_root / "logistic_trace_trial_summary.csv",
+        logistic_trace_trial_rows,
+        (
+            "dataset",
+            "subject",
+            "split_id",
+            "split_index",
+            "trial_id",
+            "block_index",
+            "true_state",
+            "true_freq",
+            "baseline_pred",
+            "candidate_pred",
+            "baseline_decision_time_s",
+            "candidate_decision_time_s",
+            "transition_type",
+            "method",
+            "recipe_id",
+            "gate_variant",
+            "frequency_profile",
+            "frequency_set_id",
+            "calibration_blocks",
+            "holdout_blocks",
+            "win_sec",
+            "step_sec",
+            "min_enter_windows",
+            "smoothing_windows",
+        ),
+    )
+    _write_csv(
+        report_root / "logistic_transition_counts_by_subject.csv",
+        logistic_transition_subject_rows,
+        (
+            "dataset",
+            "subject",
+            "split_index",
+            "transition_type",
+            "count",
+            "method",
+            "recipe_id",
+            "gate_variant",
+            "frequency_profile",
+            "frequency_set_id",
+            "calibration_blocks",
+            "holdout_blocks",
+            "win_sec",
+            "step_sec",
+            "min_enter_windows",
+            "smoothing_windows",
+        ),
+    )
+    _write_csv(
+        report_root / "logistic_transition_counts_by_frequency.csv",
+        logistic_transition_frequency_rows,
+        (
+            "dataset",
+            "subject",
+            "split_index",
+            "frequency_or_state",
+            "transition_type",
+            "count",
+            "method",
+            "recipe_id",
+            "gate_variant",
+            "frequency_profile",
+            "frequency_set_id",
+            "calibration_blocks",
+            "holdout_blocks",
+            "win_sec",
+            "step_sec",
+            "min_enter_windows",
+            "smoothing_windows",
+        ),
+    )
+    _write_csv(
+        report_root / "logistic_feature_summary_tp_fp.csv",
+        logistic_feature_summary_rows,
+        (
+            "dataset",
+            "subject",
+            "split_index",
+            "transition_type",
+            "selected_freq",
+            "count",
+            "mean_selected_freq_score",
+            "mean_top1_score",
+            "mean_top2_score",
+            "mean_top3_score",
+            "mean_margin",
+            "mean_ratio",
+            "mean_normalized_top1",
+            "mean_score_entropy",
+            "mean_lrt_evidence",
+            "mean_multiwindow_same_freq_count",
+            "mean_multiwindow_margin_mean",
+            "mean_multiwindow_entropy_mean",
+            "mean_cs_probability",
+            "gate_pass_rate",
+            "method",
+            "recipe_id",
+            "gate_variant",
+            "frequency_profile",
+            "frequency_set_id",
+            "calibration_blocks",
+            "holdout_blocks",
+            "win_sec",
+            "step_sec",
+            "min_enter_windows",
+            "smoothing_windows",
+        ),
+    )
+    _write_json(report_root / "gate_params.json", gate_params_payload)
+    _write_json(report_root / "gate_params_by_frequency.json", gate_params_by_frequency_payload)
+    _write_json(failed_cases_path, failure_payload)
+    _write_json(coverage_report_path, coverage_report)
+    _write_json(report_root / DEPLOYABLE_CANDIDATE_PROFILE_FILENAME, deployable_candidate_profile)
     _write_json(report_root / "summary.json", summary)
     emit_progress(stage="complete", detail="benchmark complete", percent=100.0)
     (report_root / "summary.md").write_text(
@@ -6200,10 +10915,15 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             idle_eval_mode=idle_eval_mode,
             budget=budget,
             weak_subject_audit=weak_audit,
+            metric_definitions=metric_definitions,
         ),
         encoding="utf-8",
     )
     _write_json(partial_summary_path, {**summary, "status": "ok"})
+    logs_dir = report_root / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    if log_path.exists():
+        (logs_dir / f"{run_id}.log").write_text(log_path.read_text(encoding="utf-8"), encoding="utf-8")
     log(f"complete summary={report_root / 'summary.json'}")
     return summary
 
@@ -6231,6 +10951,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--idle-multipliers", type=str, default="1.0,2.0")
     parser.add_argument("--max-splits-per-subject", type=int, default=DEFAULT_MAX_SPLITS_PER_SUBJECT)
     parser.add_argument("--step-sec", type=float, default=DEFAULT_STEP_SEC)
+    parser.add_argument("--decision-start-sec", type=float, default=DEFAULT_DECISION_START_SEC)
+    parser.add_argument("--decision-deadline-sec", type=float, default=DEFAULT_DECISION_DEADLINE_SEC)
+    parser.add_argument("--min-release-windows", type=int, default=DEFAULT_MIN_RELEASE_WINDOWS)
+    parser.add_argument("--timeout-sec", type=float, default=DEFAULT_TIMEOUT_SEC)
+    parser.add_argument("--case-limit", type=int, default=DEFAULT_CASE_LIMIT)
     parser.add_argument("--compute-backend", type=str, default="cuda")
     parser.add_argument("--gpu-device", type=int, default=0)
     parser.add_argument("--gpu-precision", type=str, default="float32")
@@ -6244,6 +10969,73 @@ def build_parser() -> argparse.ArgumentParser:
         "--classifier-smoothing-windows-candidates",
         type=str,
         default=",".join(str(item) for item in DEFAULT_CLASSIFIER_SMOOTHING_WINDOWS_CANDIDATES),
+    )
+    parser.add_argument(
+        "--classifier-gate-variants",
+        type=str,
+        default=",".join(DEFAULT_CLASSIFIER_GATE_VARIANTS),
+        help="Comma-separated fbcca_ridge5 reject-gate variants to evaluate.",
+    )
+    parser.add_argument(
+        "--ns2-safety-factors",
+        type=str,
+        default=",".join(f"{value:g}" for value in DEFAULT_NS2_SAFETY_FACTORS),
+        help="Comma-separated NS2 safety factors for ns2_aware_gate and subject_floor_ns2_aware_gate.",
+    )
+    parser.add_argument(
+        "--subject-floor-global-quantiles",
+        type=str,
+        default=",".join(f"{value:g}" for value in DEFAULT_GLOBAL_FLOOR_QUANTILES),
+        help="Comma-separated pooled idle evidence quantiles for subject_threshold_floor variants.",
+    )
+    parser.add_argument(
+        "--subject-floor-idle-quantiles",
+        type=str,
+        default=",".join(f"{value:g}" for value in DEFAULT_SUBJECT_IDLE_QUANTILES),
+        help="Comma-separated per-subject idle evidence quantiles for subject_threshold_floor variants.",
+    )
+    parser.add_argument(
+        "--freqspec-margin-idle-quantiles",
+        type=str,
+        default=",".join(f"{value:g}" for value in DEFAULT_FREQSPEC_MARGIN_IDLE_QUANTILES),
+        help="Comma-separated margin idle quantiles for frequency-specific threshold gate.",
+    )
+    parser.add_argument(
+        "--freqspec-threshold-combo-set",
+        type=str,
+        default=FREQSPEC_THRESHOLD_COMBO_SET_NONE,
+        choices=FREQSPEC_THRESHOLD_COMBO_SETS,
+        help="Named exact parameter set for frequency-specific threshold gate, e.g. priority6.",
+    )
+    parser.add_argument(
+        "--freqspec-ratio-idle-quantiles",
+        type=str,
+        default=",".join(f"{value:g}" for value in DEFAULT_FREQSPEC_RATIO_IDLE_QUANTILES),
+        help="Comma-separated ratio idle quantiles for frequency-specific threshold gate.",
+    )
+    parser.add_argument(
+        "--freqspec-entropy-control-quantiles",
+        type=str,
+        default=",".join(f"{value:g}" for value in DEFAULT_FREQSPEC_ENTROPY_CONTROL_QUANTILES),
+        help="Comma-separated control entropy quantiles for frequency-specific threshold gate.",
+    )
+    parser.add_argument(
+        "--freqspec-ns2-safety-factors",
+        type=str,
+        default=",".join(f"{value:g}" for value in DEFAULT_NS2_SAFETY_FACTORS),
+        help="Comma-separated NS2 safety factors for frequency-specific threshold gate.",
+    )
+    parser.add_argument(
+        "--freqspec-logistic-prob-thresholds",
+        type=str,
+        default=",".join(f"{value:g}" for value in DEFAULT_FREQSPEC_LOGISTIC_PROB_THRESHOLDS),
+        help="Comma-separated probability thresholds for frequency-specific logistic gate.",
+    )
+    parser.add_argument(
+        "--freqspec-logistic-ns2-weights",
+        type=str,
+        default=",".join(f"{value:g}" for value in DEFAULT_FREQSPEC_LOGISTIC_NS2_WEIGHTS),
+        help="Comma-separated NS2 sample weights for frequency-specific logistic gate.",
     )
     parser.add_argument(
         "--classifier-threshold-policy",

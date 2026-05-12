@@ -6,7 +6,7 @@ from hybrid_controller.adapters.control_sim_slots import ControlSimSlotCatalog
 from hybrid_controller.adapters.robot_client import parse_robot_line
 from hybrid_controller.app import build_config_from_args
 from hybrid_controller.config import AppConfig
-from hybrid_controller.robot.tools import jetmax_start_ros_runtime
+from hybrid_controller.robot.tools import jetmax_start_ros_runtime, jetmax_start_runtime
 from hybrid_controller.controller.events import Event
 from hybrid_controller.controller.state_machine import TaskState
 from hybrid_controller.controller.task_controller import TaskController
@@ -141,6 +141,35 @@ def test_jetmax_camera_repair_defaults_keep_official_sender_settings() -> None:
     assert args.manage_web_video is False
     assert args.repair_camera_sender is False
     assert args.allow_camera_sender_mutation is False
+
+
+def test_legacy_tcp_start_runtime_is_deprecated_by_default(capsys) -> None:
+    assert jetmax_start_runtime.main([]) == 2
+    captured = capsys.readouterr()
+    assert "deprecated" in captured.err
+    assert "jetmax_start_ros_runtime.py" in captured.err
+    assert "--allow-legacy-tcp-start" in captured.err
+
+
+def test_legacy_tcp_start_runtime_explicit_opt_in_reaches_ssh(monkeypatch) -> None:
+    connects = []
+
+    class FakeSSH:
+        def set_missing_host_key_policy(self, _policy):
+            return None
+
+        def connect(self, *args, **kwargs):
+            connects.append((args, kwargs))
+            raise RuntimeError("stop before network side effects")
+
+    monkeypatch.setattr(jetmax_start_runtime.paramiko, "SSHClient", FakeSSH)
+
+    try:
+        jetmax_start_runtime.main(["--allow-legacy-tcp-start"])
+    except RuntimeError as error:
+        assert str(error) == "stop before network side effects"
+
+    assert connects
 
 
 def test_jetmax_start_camera_stream_check_requires_explicit_opt_in() -> None:

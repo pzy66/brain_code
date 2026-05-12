@@ -4,6 +4,7 @@ import types
 
 from hybrid_controller.app import HybridControllerApplication
 from hybrid_controller.config import AppConfig
+from hybrid_controller.controller.state_machine import TaskState
 
 
 def _make_app_stub(
@@ -61,6 +62,17 @@ def _make_manual_servo_stub(packet: dict[str, object]) -> HybridControllerApplic
     app._finish_pick_trace = types.MethodType(lambda self, response=None, **_: setattr(self, "_trace_response", response), app)
     app.dispatch_event = types.MethodType(lambda self, event: self.statuses.append(("event", getattr(event, "value", ""))), app)
     return app
+
+
+class _DummyContext:
+    def __init__(self, selected_target_id: int | None = None) -> None:
+        self.selected_target_id = selected_target_id
+
+
+class _DummyController:
+    def __init__(self, selected_target_id: int | None = None, state: object = None) -> None:
+        self.context = _DummyContext(selected_target_id)
+        self.state = state
 
 
 class _ContinuousRosClient:
@@ -171,6 +183,51 @@ def test_delta_servo_resolution_rejects_stale_robot_snapshot() -> None:
     assert slot["command_point"] is None
     assert slot["invalid_reason"] == "robot_snapshot_stale"
     assert app.runtime_info["vision_invalid_reason"] == "robot_snapshot_stale"
+
+
+def test_delta_servo_resolution_rejects_too_dark_frame_even_without_valid_slots() -> None:
+    config = AppConfig(vision_snapshot_max_age_ms=200.0)
+    app = _make_app_stub(config=config, snapshot=_snapshot((0.0, -120.0)), snapshot_age_ms=10.0)
+
+    resolved = app._resolve_vision_packet(
+        {
+            "mapping_mode": "delta_servo",
+            "calibration_ready": True,
+            "frame_block_reason": "frame_too_dark",
+            "frame_quality": {"too_dark": True, "gray_mean": 16.0, "gray_p95": 16.0},
+            "slots": [],
+        }
+    )
+
+    assert resolved["frame_block_reason"] == "frame_too_dark"
+    assert app.runtime_info["vision_invalid_reason"] == "frame_too_dark"
+
+
+def test_delta_servo_resolution_rejects_valid_slot_on_too_dark_frame() -> None:
+    config = AppConfig(vision_snapshot_max_age_ms=200.0)
+    app = _make_app_stub(config=config, snapshot=_snapshot((0.0, -120.0)), snapshot_age_ms=10.0)
+
+    resolved = app._resolve_vision_packet(
+        {
+            "mapping_mode": "delta_servo",
+            "calibration_ready": True,
+            "frame_block_reason": "frame_too_dark",
+            "slots": [
+                {
+                    "slot_id": 1,
+                    "valid": True,
+                    "camera_to_world_raw": [0.0, 0.0, 0.0],
+                    "grasp_quality": 1.0,
+                }
+            ],
+        }
+    )
+    slot = resolved["slots"][0]
+
+    assert slot["actionable"] is False
+    assert slot["command_point"] is None
+    assert slot["invalid_reason"] == "frame_too_dark"
+    assert app.runtime_info["vision_invalid_reason"] == "frame_too_dark"
 
 
 def test_absolute_base_resolution_does_not_depend_on_robot_pose() -> None:
@@ -442,7 +499,33 @@ def test_pending_servo_pick_keeps_waiting_for_unstable_fresh_frames() -> None:
     assert app._vision_servo_pick["stability_wait_frames"] == 1
 
 
-def test_continuous_servo_publishes_only_when_explicitly_enabled() -> None:
+def test_pending_discrete_servo_pick_cancels_on_too_dark_frame() -> None:
+    app = _make_manual_servo_stub({"frame_id": 10, "slots": []})
+    app._vision_servo_pick = {"slot_id": 1, "attempts": 1, "waiting_for_ack": False, "min_frame_id": 11}
+
+    app._pump_pending_vision_servo_pick(
+        {
+            "frame_id": 11,
+            "frame_block_reason": "frame_too_dark",
+            "frame_quality": {"too_dark": True, "gray_mean": 16.0, "gray_p95": 16.0},
+            "slots": [
+                {
+                    "slot_id": 1,
+                    "valid": True,
+                    "actionable": True,
+                    "command_mode": "world",
+                    "command_point": [42.0, -130.0],
+                }
+            ],
+        }
+    )
+
+    assert app.sent_commands == []
+    assert app._vision_servo_pick is None
+    assert app.runtime_info["vision_servo_status"] == "cancelled slot=1 reason=frame_too_dark"
+
+
+def test_continuous_servo_does_not_start_without_explicit_pick_intent() -> None:
     app = _make_manual_servo_stub({"frame_id": 1, "slots": []})
     app.config = AppConfig(
         robot_transport="ros",
@@ -476,9 +559,58 @@ def test_continuous_servo_publishes_only_when_explicitly_enabled() -> None:
         }
     )
 
+    assert app.ros_client.teleop_calls == []
+    assert app.ros_client.stop_calls == []
+    assert app._continuous_vision_servo_pick is None
+    assert app.runtime_info["vision_servo_status"] == "continuous_idle awaiting_pick"
+
+
+def test_continuous_servo_publishes_for_existing_pending_slot_only() -> None:
+    app = _make_manual_servo_stub({"frame_id": 1, "slots": []})
+    app.config = AppConfig(
+        robot_transport="ros",
+        vision_continuous_servo_enabled=True,
+        vision_continuous_servo_command_timeout_ms=250.0,
+    )
+    app.ros_client = _ContinuousRosClient()
+    app._continuous_vision_servo_controller = None
+    app._continuous_vision_servo_pick = {"slot_id": 2, "stable_frames": 0, "lost_frames": 0, "source": "manual_pick"}
+    app._teleop_cmd_seq = 0
+    app.runtime_info["state_age_ms"] = 0.0
+    app.controller = types.SimpleNamespace(state=None)
+    app._current_robot_cyl_pose = lambda: (0.0, 150.0, 190.0)
+    app._uses_ros_transport = types.MethodType(lambda self: True, app)
+
+    app._pump_continuous_vision_servo(
+        {
+            "frame_id": 2,
+            "queue_age_ms": 10.0,
+            "slots": [
+                {
+                    "slot_id": 1,
+                    "valid": True,
+                    "actionable": False,
+                    "invalid_reason": "vision_servo_required",
+                    "center_distance_px": 5.0,
+                    "servo_command_mode": "cyl",
+                    "servo_command_point": [0.0, 150.0],
+                },
+                {
+                    "slot_id": 2,
+                    "valid": True,
+                    "actionable": False,
+                    "invalid_reason": "vision_servo_required",
+                    "center_distance_px": 80.0,
+                    "servo_command_mode": "cyl",
+                    "servo_command_point": [10.0, 180.0],
+                },
+            ],
+        }
+    )
+
     assert app.ros_client.teleop_calls
     assert app.ros_client.teleop_calls[-1]["enabled"] is True
-    assert app._continuous_vision_servo_pick["slot_id"] == 1
+    assert app._continuous_vision_servo_pick["slot_id"] == 2
 
 
 def test_manual_pick_slot_prefers_continuous_servo_when_enabled() -> None:
@@ -520,6 +652,164 @@ def test_manual_pick_slot_prefers_continuous_servo_when_enabled() -> None:
     assert app.ros_client.teleop_calls
     assert app.sent_commands == []
     assert app._continuous_vision_servo_pick["slot_id"] == 1
+    assert app._continuous_vision_servo_pick["source"] == "manual_pick"
+
+
+def test_manual_pick_slot_blocks_when_continuous_enabled_and_slot_missing() -> None:
+    app = _make_manual_servo_stub(
+        {
+            "frame_id": 4,
+            "queue_age_ms": 10.0,
+            "slots": [],
+        }
+    )
+    app.config = AppConfig(
+        robot_transport="ros",
+        vision_continuous_servo_enabled=True,
+        vision_continuous_servo_command_timeout_ms=250.0,
+    )
+    app.ros_client = _ContinuousRosClient()
+    app._continuous_vision_servo_pick = None
+    app.controller = types.SimpleNamespace(
+        state=None,
+        context=types.SimpleNamespace(
+            latest_vision_targets=[
+                types.SimpleNamespace(
+                    id=1,
+                    slot_id=1,
+                    actionable=True,
+                    command_mode="world",
+                    command_point=[42.0, -130.0],
+                )
+            ]
+        ),
+    )
+    app._uses_ros_transport = types.MethodType(lambda self: True, app)
+
+    app._on_manual_pick_slot_requested(1)
+
+    assert app.sent_commands == []
+    assert app.ros_client.teleop_calls == []
+    assert app._continuous_vision_servo_pick is None
+    assert "continuous_start_blocked:slot_unavailable:1" in app.runtime_info["vision_servo_status"]
+    assert [status for status in app.statuses if status[0] == "event"] == []
+
+
+def test_task_pick_command_starts_continuous_servo_instead_of_direct_pick() -> None:
+    app = _make_manual_servo_stub(
+        {
+            "frame_id": 3,
+            "queue_age_ms": 10.0,
+            "slots": [
+                {
+                    "slot_id": 1,
+                    "valid": True,
+                    "actionable": False,
+                    "invalid_reason": "vision_servo_required",
+                    "center_distance_px": 80.0,
+                    "servo_command_mode": "cyl",
+                    "servo_command_point": [10.0, 180.0],
+                    "command": "PICK_WORLD 42.00 -130.00",
+                    "command_mode": "world",
+                    "command_point": [42.0, -130.0],
+                }
+            ],
+        }
+    )
+    app.config = AppConfig(
+        robot_transport="ros",
+        vision_continuous_servo_enabled=True,
+        vision_continuous_servo_command_timeout_ms=250.0,
+    )
+    app.ros_client = _ContinuousRosClient()
+    app._continuous_vision_servo_controller = None
+    app._continuous_vision_servo_pick = None
+    app._teleop_cmd_seq = 0
+    app.runtime_info["state_age_ms"] = 0.0
+    app.controller = _DummyController(selected_target_id=1, state=TaskState.S2_PICKING)
+    app._current_robot_cyl_pose = lambda: (0.0, 150.0, 190.0)
+    app._uses_ros_transport = types.MethodType(lambda self: True, app)
+
+    app._send_robot_command(types.SimpleNamespace(payload={"command": "PICK_WORLD 42.00 -130.00"}))
+
+    assert app.sent_commands == []
+    assert app.ros_client.teleop_calls
+    assert app._continuous_vision_servo_pick["slot_id"] == 1
+    assert app._continuous_vision_servo_pick["source"] == "task_confirm"
+
+
+def test_task_pick_command_blocked_without_selected_slot_does_not_fall_back_to_pick() -> None:
+    app = _make_manual_servo_stub(
+        {
+            "frame_id": 3,
+            "queue_age_ms": 10.0,
+            "slots": [
+                {
+                    "slot_id": 1,
+                    "valid": True,
+                    "actionable": True,
+                    "center_distance_px": 8.0,
+                    "command": "PICK_WORLD 42.00 -130.00",
+                    "command_mode": "world",
+                    "command_point": [42.0, -130.0],
+                }
+            ],
+        }
+    )
+    app.config = AppConfig(
+        robot_transport="ros",
+        vision_continuous_servo_enabled=True,
+        vision_continuous_servo_command_timeout_ms=250.0,
+    )
+    app.ros_client = _ContinuousRosClient()
+    app._continuous_vision_servo_pick = None
+    app.controller = _DummyController(selected_target_id=None, state=TaskState.S2_PICKING)
+    app._uses_ros_transport = types.MethodType(lambda self: True, app)
+
+    app._send_robot_command(types.SimpleNamespace(payload={"command": "PICK_WORLD 42.00 -130.00"}))
+
+    assert app.sent_commands == []
+    assert app.ros_client.teleop_calls == []
+    assert app._continuous_vision_servo_pick is None
+    assert "continuous_start_blocked:selected_slot_unavailable" in app.runtime_info["vision_servo_status"]
+
+
+def test_task_pick_command_blocked_on_stale_state_does_not_fall_back_to_pick() -> None:
+    app = _make_manual_servo_stub(
+        {
+            "frame_id": 3,
+            "queue_age_ms": 10.0,
+            "slots": [
+                {
+                    "slot_id": 1,
+                    "valid": True,
+                    "actionable": True,
+                    "center_distance_px": 8.0,
+                    "command": "PICK_WORLD 42.00 -130.00",
+                    "command_mode": "world",
+                    "command_point": [42.0, -130.0],
+                }
+            ],
+        }
+    )
+    app.config = AppConfig(
+        robot_transport="ros",
+        vision_continuous_servo_enabled=True,
+        vision_continuous_servo_command_timeout_ms=250.0,
+        robot_state_stale_threshold_ms=100.0,
+    )
+    app.ros_client = _ContinuousRosClient()
+    app._continuous_vision_servo_pick = None
+    app.runtime_info["state_age_ms"] = 250.0
+    app.controller = _DummyController(selected_target_id=1, state=TaskState.S2_PICKING)
+    app._uses_ros_transport = types.MethodType(lambda self: True, app)
+
+    app._send_robot_command(types.SimpleNamespace(payload={"command": "PICK_WORLD 42.00 -130.00"}))
+
+    assert app.sent_commands == []
+    assert app.ros_client.teleop_calls == []
+    assert app._continuous_vision_servo_pick is None
+    assert "continuous_start_blocked:robot_state_not_fresh" in app.runtime_info["vision_servo_status"]
 
 
 def test_continuous_servo_stops_on_stale_frame_in_app_integration() -> None:
@@ -559,6 +849,410 @@ def test_continuous_servo_stops_on_stale_frame_in_app_integration() -> None:
     assert app.ros_client.teleop_calls == []
     assert app.ros_client.stop_calls
     assert "frame_stale" in app.runtime_info["vision_servo_status"]
+    assert app._continuous_vision_servo_pick is None
+
+
+def test_continuous_servo_stops_on_too_dark_frame_in_app_integration() -> None:
+    app = _make_manual_servo_stub({"frame_id": 1, "slots": []})
+    app.config = AppConfig(
+        robot_transport="ros",
+        vision_continuous_servo_enabled=True,
+        vision_continuous_servo_command_timeout_ms=250.0,
+    )
+    app.ros_client = _ContinuousRosClient()
+    app._continuous_vision_servo_controller = None
+    app._continuous_vision_servo_pick = {"slot_id": 1, "stable_frames": 1}
+    app._teleop_cmd_seq = 0
+    app.runtime_info["state_age_ms"] = 0.0
+    app.controller = types.SimpleNamespace(state=None)
+    app._current_robot_cyl_pose = lambda: (0.0, 150.0, 190.0)
+    app._uses_ros_transport = types.MethodType(lambda self: True, app)
+
+    app._pump_continuous_vision_servo(
+        {
+            "frame_id": 3,
+            "queue_age_ms": 10.0,
+            "frame_block_reason": "frame_too_dark",
+            "frame_quality": {"too_dark": True, "gray_mean": 16.0, "gray_p95": 16.0},
+            "slots": [
+                {
+                    "slot_id": 1,
+                    "valid": True,
+                    "actionable": False,
+                    "invalid_reason": "vision_servo_required",
+                    "center_distance_px": 8.0,
+                    "servo_command_mode": "cyl",
+                    "servo_command_point": [0.0, 150.0],
+                }
+            ],
+        }
+    )
+
+    assert app.ros_client.teleop_calls == []
+    assert app.ros_client.stop_calls
+    assert "frame_too_dark" in app.runtime_info["vision_servo_status"]
+    assert app._continuous_vision_servo_pick is None
+
+
+def test_manual_pick_slot_blocks_on_too_dark_frame_without_legacy_pick_fallback() -> None:
+    app = _make_manual_servo_stub(
+        {
+            "frame_id": 3,
+            "queue_age_ms": 10.0,
+            "frame_block_reason": "frame_too_dark",
+            "frame_quality": {"too_dark": True, "gray_mean": 16.0, "gray_p95": 16.0},
+            "slots": [],
+        }
+    )
+    app.config = AppConfig(
+        robot_transport="ros",
+        vision_continuous_servo_enabled=True,
+        vision_continuous_servo_command_timeout_ms=250.0,
+    )
+    app.ros_client = _ContinuousRosClient()
+    app._continuous_vision_servo_controller = None
+    app._continuous_vision_servo_pick = None
+    app._teleop_cmd_seq = 0
+    app.runtime_info["state_age_ms"] = 0.0
+    app.controller = types.SimpleNamespace(state=None, context=types.SimpleNamespace(latest_vision_targets=[]))
+    app.slot_catalog = None
+    app._current_robot_cyl_pose = lambda: (0.0, 150.0, 190.0)
+    app._uses_ros_transport = types.MethodType(lambda self: True, app)
+
+    app._on_manual_pick_slot_requested(1)
+
+    assert app.sent_commands == []
+    assert app.ros_client.teleop_calls == []
+    assert app._continuous_vision_servo_pick is None
+    assert "continuous_start_blocked:frame_too_dark" in app.runtime_info["vision_servo_status"]
+
+
+def test_app_continuous_servo_keeps_pending_while_settling_near_center() -> None:
+    app = _make_manual_servo_stub({"frame_id": 1, "slots": []})
+    app.config = AppConfig(
+        robot_transport="ros",
+        vision_continuous_servo_enabled=True,
+        vision_pick_confirm_z_mm=120.0,
+        vision_continuous_servo_settle_stop_band_px=8.0,
+        vision_continuous_servo_command_timeout_ms=250.0,
+    )
+    app.ros_client = _ContinuousRosClient()
+    app._continuous_vision_servo_controller = None
+    app._continuous_vision_servo_pick = {"slot_id": 1, "stable_frames": 0, "lost_frames": 0}
+    app._teleop_cmd_seq = 0
+    app.runtime_info["state_age_ms"] = 0.0
+    app.controller = types.SimpleNamespace(state=None)
+    app._current_robot_cyl_pose = lambda: (0.0, 150.0, 123.0)
+    app._uses_ros_transport = types.MethodType(lambda self: True, app)
+
+    app._pump_continuous_vision_servo(
+        {
+            "frame_id": 3,
+            "queue_age_ms": 10.0,
+            "slots": [
+                {
+                    "slot_id": 1,
+                    "valid": True,
+                    "actionable": False,
+                    "invalid_reason": "vision_servo_required",
+                    "center_distance_px": 7.2,
+                    "servo_command_mode": "cyl",
+                    "servo_command_point": [1.0, 154.0],
+                }
+            ],
+        }
+    )
+
+    assert app.ros_client.teleop_calls == []
+    assert app.ros_client.stop_calls
+    assert app._continuous_vision_servo_pick is not None
+    assert app._continuous_vision_servo_pick["stable_frames"] == 1
+    assert "settling near center" in app.runtime_info["vision_servo_status"]
+
+
+def test_app_continuous_servo_sends_stop_after_fine_pulse() -> None:
+    app = _make_manual_servo_stub({"frame_id": 1, "slots": []})
+    app.config = AppConfig(
+        robot_transport="ros",
+        vision_continuous_servo_enabled=True,
+        vision_pick_confirm_z_mm=120.0,
+        vision_continuous_servo_settle_stop_band_px=1.0,
+        vision_continuous_servo_fine_pulse_center_px=8.0,
+        vision_continuous_servo_command_timeout_ms=250.0,
+    )
+    app.ros_client = _ContinuousRosClient()
+    app._continuous_vision_servo_controller = None
+    app._continuous_vision_servo_pick = {"slot_id": 1, "stable_frames": 0, "lost_frames": 0}
+    app._teleop_cmd_seq = 0
+    app.runtime_info["state_age_ms"] = 0.0
+    app.controller = types.SimpleNamespace(state=None)
+    app._current_robot_cyl_pose = lambda: (0.0, 150.0, 140.0)
+    app._uses_ros_transport = types.MethodType(lambda self: True, app)
+
+    app._pump_continuous_vision_servo(
+        {
+            "frame_id": 3,
+            "queue_age_ms": 10.0,
+            "slots": [
+                {
+                    "slot_id": 1,
+                    "valid": True,
+                    "actionable": False,
+                    "invalid_reason": "vision_servo_required",
+                    "center_distance_px": 7.2,
+                    "servo_command_mode": "cyl",
+                    "servo_command_point": [1.0, 154.0],
+                }
+            ],
+        }
+    )
+
+    assert app.ros_client.teleop_calls
+    assert app.ros_client.stop_calls
+    assert app.ros_client.stop_calls[-1]["cmd_seq"] > app.ros_client.teleop_calls[-1]["cmd_seq"]
+
+
+def test_app_continuous_servo_uses_low_height_discrete_refine_at_confirm_height() -> None:
+    app = _make_manual_servo_stub({"frame_id": 10, "slots": []})
+    app.config = AppConfig(
+        robot_transport="ros",
+        vision_continuous_servo_enabled=True,
+        vision_pick_confirm_z_mm=120.0,
+        vision_pick_z_tolerance_mm=4.0,
+        vision_continuous_servo_pick_ready_center_px=2.0,
+        vision_continuous_servo_low_height_discrete_refine_enabled=True,
+        vision_continuous_servo_low_height_refine_max_theta_step_deg=0.25,
+        vision_continuous_servo_low_height_refine_max_radius_step_mm=1.5,
+        vision_continuous_servo_command_timeout_ms=250.0,
+    )
+    app.ros_client = _ContinuousRosClient()
+    app._continuous_vision_servo_controller = None
+    app._continuous_vision_servo_pick = {"slot_id": 1, "stable_frames": 1, "lost_frames": 0, "source": "manual_pick"}
+    app._teleop_cmd_seq = 0
+    app.runtime_info["state_age_ms"] = 0.0
+    app.controller = types.SimpleNamespace(state=None)
+    app._current_robot_cyl_pose = lambda: (7.80, 174.00, 120.0)
+    app._uses_ros_transport = types.MethodType(lambda self: True, app)
+
+    packet = {
+        "frame_id": 10,
+        "queue_age_ms": 10.0,
+        "slots": [
+            {
+                "slot_id": 1,
+                "valid": True,
+                "actionable": False,
+                "invalid_reason": "vision_servo_required",
+                "center_distance_px": 6.0,
+                "servo_command_mode": "cyl",
+                "servo_command_point": [8.20, 176.30],
+            }
+        ],
+    }
+    app._latest_vision_packet = packet
+
+    app._pump_continuous_vision_servo(packet)
+
+    assert app.ros_client.teleop_calls == []
+    assert app.ros_client.stop_calls
+    assert app.sent_commands == ["MOVE_CYL 8.05 175.50 120.00"]
+    assert app._continuous_vision_servo_pick["low_height_refine_attempts"] == 1
+    assert app._continuous_vision_servo_pick["waiting_for_refine_ack"] is True
+    assert app._continuous_vision_servo_pick["min_frame_id"] == 11
+    assert "continuous_low_refine attempt=1" in app.runtime_info["vision_servo_status"]
+
+
+def test_app_continuous_refine_ack_waits_for_fresh_frame_before_next_motion() -> None:
+    app = _make_manual_servo_stub({"frame_id": 10, "slots": []})
+    app.config = AppConfig(
+        robot_transport="ros",
+        vision_continuous_servo_enabled=True,
+        vision_pick_confirm_z_mm=120.0,
+        vision_pick_z_tolerance_mm=4.0,
+        vision_continuous_servo_pick_ready_center_px=2.0,
+        vision_continuous_servo_command_timeout_ms=250.0,
+    )
+    app.ros_client = _ContinuousRosClient()
+    app._continuous_vision_servo_pick = {
+        "slot_id": 1,
+        "stable_frames": 1,
+        "lost_frames": 0,
+        "source": "manual_pick",
+        "low_height_refine_attempts": 1,
+        "waiting_for_refine_ack": True,
+        "min_frame_id": 11,
+    }
+    app._teleop_cmd_seq = 0
+    app.runtime_info["state_age_ms"] = 0.0
+    app.controller = types.SimpleNamespace(state=None)
+    app._current_robot_cyl_pose = lambda: (8.05, 175.50, 120.0)
+    app._uses_ros_transport = types.MethodType(lambda self: True, app)
+    app._latest_vision_packet = {"frame_id": 10, "slots": []}
+
+    app._mark_continuous_refine_move_acknowledged()
+
+    assert app._continuous_vision_servo_pick["waiting_for_refine_ack"] is False
+    assert app._continuous_vision_servo_pick["min_frame_id"] == 11
+
+    stale_packet = {
+        "frame_id": 10,
+        "queue_age_ms": 10.0,
+        "slots": [
+            {
+                "slot_id": 1,
+                "valid": True,
+                "actionable": False,
+                "invalid_reason": "vision_servo_required",
+                "center_distance_px": 6.0,
+                "servo_command_mode": "cyl",
+                "servo_command_point": [8.20, 176.30],
+            }
+        ],
+    }
+    app._latest_vision_packet = stale_packet
+    app._pump_continuous_vision_servo(stale_packet)
+
+    assert app.sent_commands == []
+    assert app.ros_client.teleop_calls == []
+    assert "continuous_wait_fresh_frame" in app.runtime_info["vision_servo_status"]
+
+
+def test_app_continuous_low_height_refine_attempt_limit_stops_without_teleop() -> None:
+    app = _make_manual_servo_stub({"frame_id": 20, "slots": []})
+    app.config = AppConfig(
+        robot_transport="ros",
+        vision_continuous_servo_enabled=True,
+        vision_pick_confirm_z_mm=120.0,
+        vision_pick_z_tolerance_mm=4.0,
+        vision_continuous_servo_pick_ready_center_px=2.0,
+        vision_continuous_servo_low_height_refine_attempts=1,
+        vision_continuous_servo_command_timeout_ms=250.0,
+    )
+    app.ros_client = _ContinuousRosClient()
+    app._continuous_vision_servo_controller = None
+    app._continuous_vision_servo_pick = {
+        "slot_id": 1,
+        "stable_frames": 1,
+        "lost_frames": 0,
+        "source": "manual_pick",
+        "low_height_refine_attempts": 1,
+    }
+    app._teleop_cmd_seq = 0
+    app.runtime_info["state_age_ms"] = 0.0
+    app.controller = types.SimpleNamespace(state=None)
+    app._current_robot_cyl_pose = lambda: (7.80, 174.00, 120.0)
+    app._uses_ros_transport = types.MethodType(lambda self: True, app)
+    packet = {
+        "frame_id": 20,
+        "queue_age_ms": 10.0,
+        "slots": [
+            {
+                "slot_id": 1,
+                "valid": True,
+                "actionable": False,
+                "invalid_reason": "vision_servo_required",
+                "center_distance_px": 6.0,
+                "servo_command_mode": "cyl",
+                "servo_command_point": [8.20, 176.30],
+            }
+        ],
+    }
+    app._latest_vision_packet = packet
+
+    app._pump_continuous_vision_servo(packet)
+
+    assert app.sent_commands == []
+    assert app.ros_client.teleop_calls == []
+    assert app.ros_client.stop_calls
+    assert app._continuous_vision_servo_pick is None
+    assert app.runtime_info["vision_servo_status"] == "continuous_stop reason=low_height_refine_attempt_limit"
+
+
+def test_discrete_low_confirm_large_error_is_blocked_until_local_calibration() -> None:
+    from hybrid_controller.vision.servo_controller import VisionServoController
+
+    controller = VisionServoController(
+        AppConfig(
+            vision_pick_confirm_z_mm=120.0,
+            vision_pick_z_tolerance_mm=4.0,
+            vision_low_confirm_untrusted_error_px=12.0,
+        )
+    )
+
+    decision = controller.decide(
+        slot_id=1,
+        slot_payload={
+            "slot_id": 1,
+            "valid": True,
+            "actionable": False,
+            "invalid_reason": "vision_servo_required",
+            "center_distance_px": 15.8,
+            "servo_command_mode": "cyl",
+            "servo_command_point": [8.54, 174.76],
+        },
+        packet={"frame_id": 10},
+        pending={"slot_id": 1, "state": "LOW_CONFIRM", "attempts": 1},
+        current_cyl_pose=(7.98, 172.90, 120.0),
+        eye_in_hand_enabled=True,
+    )
+
+    assert decision.action == "CANCEL"
+    assert decision.reason == "low_confirm_alignment_untrusted"
+    assert decision.trace["center_distance_px"] == 15.8
+
+
+def test_continuous_servo_clears_pending_after_lost_target_threshold() -> None:
+    app = _make_manual_servo_stub({"frame_id": 1, "slots": []})
+    app.config = AppConfig(
+        robot_transport="ros",
+        vision_continuous_servo_enabled=True,
+        vision_continuous_servo_lost_frames=2,
+        vision_continuous_servo_command_timeout_ms=250.0,
+    )
+    app.ros_client = _ContinuousRosClient()
+    app._continuous_vision_servo_controller = None
+    app._continuous_vision_servo_pick = {"slot_id": 1, "stable_frames": 0, "lost_frames": 1}
+    app._teleop_cmd_seq = 0
+    app.runtime_info["state_age_ms"] = 0.0
+    app.controller = types.SimpleNamespace(state=None)
+    app._current_robot_cyl_pose = lambda: (0.0, 150.0, 190.0)
+    app._uses_ros_transport = types.MethodType(lambda self: True, app)
+
+    app._pump_continuous_vision_servo({"frame_id": 3, "queue_age_ms": 10.0, "slots": []})
+
+    assert app.ros_client.teleop_calls == []
+    assert app.ros_client.stop_calls
+    assert "lost_target" in app.runtime_info["vision_servo_status"]
+    assert app._continuous_vision_servo_pick is None
+
+
+def test_robot_failure_events_clear_continuous_servo_pending() -> None:
+    app = _make_manual_servo_stub({"frame_id": 1, "slots": []})
+    app.config = AppConfig(robot_mode="fake")
+    app._continuous_vision_servo_pick = {"slot_id": 1, "stable_frames": 0, "lost_frames": 0}
+    app._vision_servo_pick = {"slot_id": 1}
+    app._stop_teleop_motion = types.MethodType(lambda self, **_: None, app)
+    app._set_ssvep_stim_enabled = types.MethodType(lambda self, *_args, **_kwargs: False, app)
+    app._log_runtime = types.MethodType(lambda self, *_args, **_kwargs: None, app)
+    app._update_control_scene_from_event = types.MethodType(lambda self, *_args, **_kwargs: None, app)
+    app._update_runtime_health = types.MethodType(lambda self: None, app)
+    app._update_ssvep_mode = types.MethodType(lambda self: None, app)
+    app._refresh_view = types.MethodType(lambda self: None, app)
+    app._resolve_pending_command_from_event = types.MethodType(lambda self, _event: None, app)
+    app._apply_effect = types.MethodType(lambda self, _effect: None, app)
+    app.logger = types.SimpleNamespace(log_event=lambda *_args, **_kwargs: None, log_effect=lambda *_args, **_kwargs: None)
+    app.controller = types.SimpleNamespace(
+        state=TaskState.S2_PICKING,
+        context=types.SimpleNamespace(selected_target_id=1),
+        handle_event=lambda _event: [],
+    )
+
+    from hybrid_controller.controller.events import Event
+
+    HybridControllerApplication.dispatch_event(app, Event(source="robot", type="robot_error", value="unit_error"))
+
+    assert app._continuous_vision_servo_pick is None
+    assert app._vision_servo_pick is None
 
 
 def test_pick_cyl_radius_out_of_limits_is_rejected() -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import socket
+import sys
 import time
 from pathlib import Path
 
@@ -12,6 +13,11 @@ DEFAULT_HOST = "192.168.149.1"
 DEFAULT_USER = "hiwonder"
 DEFAULT_PASSWORD = "hiwonder"
 DEFAULT_REMOTE_ROOT = "/home/hiwonder/brain_code"
+DEPRECATION_MESSAGE = (
+    "jetmax_start_runtime.py is deprecated for this project. Use "
+    "hybrid_controller/robot/tools/jetmax_start_ros_runtime.py for the ROS runtime path. "
+    "Pass --allow-legacy-tcp-start only for an intentional TCP-only fallback."
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -20,11 +26,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--user", default=DEFAULT_USER)
     parser.add_argument("--password", default=DEFAULT_PASSWORD)
     parser.add_argument("--remote-root", default=DEFAULT_REMOTE_ROOT)
+    parser.add_argument(
+        "--allow-legacy-tcp-start",
+        action="store_true",
+        help="Allow the deprecated TCP-only startup path. Prefer jetmax_start_ros_runtime.py.",
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if not bool(args.allow_legacy_tcp_start):
+        print(DEPRECATION_MESSAGE, file=sys.stderr)
+        return 2
     repo_root = Path(__file__).resolve().parents[2]
     local_runtime = repo_root / "robot" / "runtime" / "robot_runtime_py36.py"
     remote_runtime = f"{args.remote_root}/hybrid_controller/robot/runtime/robot_runtime_py36.py"

@@ -41,7 +41,7 @@ def test_switch_latency_uses_penalty_when_switch_not_detected() -> None:
         exit_ratio_th=1.0,
         min_enter_windows=1,
         min_exit_windows=1,
-        model_name="constant",
+        model_name="fbcca",
     )
     segment = np.zeros((40, 1), dtype=np.float64)
     trials = [

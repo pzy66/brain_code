@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Mapping, Optional
 
 import cv2
 import numpy as np
@@ -14,6 +14,59 @@ from hybrid_controller.vision.calibration_profile import VisionCalibrationProfil
 
 def clamp01(value: float) -> float:
     return max(0.0, min(1.0, float(value)))
+
+
+def frame_brightness_quality(
+    frame_bgr: object,
+    *,
+    min_mean: float = 30.0,
+    min_p95: float = 45.0,
+) -> dict[str, Any]:
+    """Return PC-side brightness stats used to block unsafe black-frame motion."""
+    try:
+        arr = np.asarray(frame_bgr)
+    except Exception:
+        return {
+            "valid": False,
+            "too_dark": True,
+            "reason": "frame_unavailable",
+            "min_mean": float(min_mean),
+            "min_p95": float(min_p95),
+        }
+    if arr.size == 0 or arr.ndim < 2:
+        return {
+            "valid": False,
+            "too_dark": True,
+            "reason": "frame_unavailable",
+            "min_mean": float(min_mean),
+            "min_p95": float(min_p95),
+        }
+    if arr.ndim == 2:
+        gray = arr
+    else:
+        channels = arr[:, :, :3]
+        try:
+            gray = cv2.cvtColor(channels, cv2.COLOR_BGR2GRAY)
+        except Exception:
+            gray = np.mean(channels, axis=2)
+    gray_f = gray.astype(np.float32, copy=False)
+    mean_value = float(np.mean(gray_f))
+    p95_value = float(np.percentile(gray_f, 95.0))
+    too_dark = mean_value < float(min_mean) or p95_value < float(min_p95)
+    return {
+        "valid": True,
+        "too_dark": bool(too_dark),
+        "reason": "frame_too_dark" if too_dark else "",
+        "gray_min": float(np.min(gray_f)),
+        "gray_max": float(np.max(gray_f)),
+        "gray_mean": mean_value,
+        "gray_std": float(np.std(gray_f)),
+        "gray_p05": float(np.percentile(gray_f, 5.0)),
+        "gray_p50": float(np.percentile(gray_f, 50.0)),
+        "gray_p95": p95_value,
+        "min_mean": float(min_mean),
+        "min_p95": float(min_p95),
+    }
 
 
 def bbox_iou(
@@ -39,16 +92,43 @@ def bbox_iou(
     return float(inter_area / union) if union > 0 else 0.0
 
 
-def euclidean_distance(point_a: tuple[int, int], point_b: tuple[int, int]) -> float:
+def euclidean_distance(point_a: tuple[float, float], point_b: tuple[float, float]) -> float:
     return math.hypot(float(point_a[0] - point_b[0]), float(point_a[1] - point_b[1]))
 
 
-def median_point(points: list[tuple[int, int]]) -> tuple[int, int] | None:
+def median_point(points: list[tuple[float, float]]) -> tuple[int, int] | None:
+    value = median_point_f(points)
+    if value is None:
+        return None
+    return (int(round(value[0])), int(round(value[1])))
+
+
+def median_point_f(points: list[tuple[float, float]]) -> tuple[float, float] | None:
     if not points:
         return None
     xs = np.array([point[0] for point in points], dtype=np.float64)
     ys = np.array([point[1] for point in points], dtype=np.float64)
-    return (int(round(float(np.median(xs)))), int(round(float(np.median(ys)))))
+    return (float(np.median(xs)), float(np.median(ys)))
+
+
+def rounded_point(point: tuple[float, float]) -> tuple[int, int]:
+    return (int(round(float(point[0]))), int(round(float(point[1]))))
+
+
+def _point_from_polygon_center(points: list[tuple[int, int]]) -> tuple[int, int] | None:
+    if not points:
+        return None
+    xs = [float(point[0]) for point in points]
+    ys = [float(point[1]) for point in points]
+    return (int(round((min(xs) + max(xs)) / 2.0)), int(round((min(ys) + max(ys)) / 2.0)))
+
+
+def _point_from_polygon_center_f(points: list[tuple[int, int]]) -> tuple[float, float] | None:
+    if not points:
+        return None
+    xs = [float(point[0]) for point in points]
+    ys = [float(point[1]) for point in points]
+    return ((min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0)
 
 
 def _angle_distance_deg(angle_a: float, angle_b: float) -> float:
@@ -85,6 +165,8 @@ def normalize_rect_grasp_angle_deg(angle_deg: float, width_px: float, height_px:
 class GeometryResult:
     polygon: list[tuple[int, int]]
     center: tuple[int, int]
+    mask_center: tuple[int, int]
+    geometry_center: tuple[int, int]
     bbox: tuple[int, int, int, int]
     area_px: int
     grasp_pixel: tuple[int, int]
@@ -92,6 +174,10 @@ class GeometryResult:
     oriented_bbox: list[tuple[int, int]]
     grasp_angle_deg: float | None = None
     grasp_angle_quality: float = 0.0
+    center_f: tuple[float, float] | None = None
+    mask_center_f: tuple[float, float] | None = None
+    geometry_center_f: tuple[float, float] | None = None
+    grasp_pixel_f: tuple[float, float] | None = None
 
     def as_legacy_tuple(self) -> tuple[list[tuple[int, int]], tuple[int, int], tuple[int, int, int, int], int]:
         return self.polygon, self.center, self.bbox, int(self.area_px)
@@ -196,8 +282,8 @@ def contour_to_grasp_geometry(
     if moments["m00"] <= 0:
         return None
 
-    center_x = int(round(moments["m10"] / moments["m00"]))
-    center_y = int(round(moments["m01"] / moments["m00"]))
+    center_f = (float(moments["m10"] / moments["m00"]), float(moments["m01"] / moments["m00"]))
+    center_x, center_y = rounded_point(center_f)
     x, y, w, h = cv2.boundingRect(contour)
     epsilon = max(1.0, 0.004 * cv2.arcLength(contour, True))
     simplified = cv2.approxPolyDP(contour, epsilon, True)
@@ -220,9 +306,8 @@ def contour_to_grasp_geometry(
     grasp_quality = clamp01(0.45 * fill_ratio + 0.35 * aspect_score + 0.20 * area_score)
     box_points = cv2.boxPoints(rect)
     oriented_bbox = [(int(round(point[0])), int(round(point[1]))) for point in box_points]
-    grasp_x = int(round(float(rect_center[0])))
-    grasp_y = int(round(float(rect_center[1])))
-    rect_grasp_pixel = (grasp_x, grasp_y)
+    rect_center_f = (float(rect_center[0]), float(rect_center[1]))
+    rect_grasp_pixel = rounded_point(rect_center_f)
     safe_pixel, top_quality = _estimate_top_face_grasp_pixel_and_quality(component, frame_bgr, rect_grasp_pixel)
     max_top_shift_px = max(8.0, min(rect_w, rect_h) * 0.35)
     bbox = (int(x), int(y), int(x + w), int(y + h))
@@ -239,6 +324,8 @@ def contour_to_grasp_geometry(
     return GeometryResult(
         polygon=polygon,
         center=(center_x, center_y),
+        mask_center=(center_x, center_y),
+        geometry_center=rect_grasp_pixel,
         bbox=bbox,
         area_px=int(area_px),
         grasp_pixel=grasp_pixel,
@@ -246,6 +333,10 @@ def contour_to_grasp_geometry(
         oriented_bbox=oriented_bbox,
         grasp_angle_deg=normalize_rect_grasp_angle_deg(rect_angle, rect_w, rect_h),
         grasp_angle_quality=float(angle_quality),
+        center_f=center_f,
+        mask_center_f=center_f,
+        geometry_center_f=rect_center_f,
+        grasp_pixel_f=(float(grasp_pixel[0]), float(grasp_pixel[1])),
     )
 
 
@@ -304,7 +395,8 @@ def bbox_to_grasp_geometry(
     right = max(x1, x2)
     bottom = max(y1, y2)
     polygon = [(left, top), (right, top), (right, bottom), (left, bottom)]
-    center = (int(round((left + right) / 2.0)), int(round((top + bottom) / 2.0)))
+    center_f = ((float(left) + float(right)) / 2.0, (float(top) + float(bottom)) / 2.0)
+    center = rounded_point(center_f)
     bbox = (left, top, right, bottom)
     area_px = max(0, right - left) * max(0, bottom - top)
     fill_score = 1.0 if area_px > 0 else 0.0
@@ -312,6 +404,8 @@ def bbox_to_grasp_geometry(
     return GeometryResult(
         polygon=polygon,
         center=center,
+        mask_center=center,
+        geometry_center=center,
         bbox=bbox,
         area_px=int(area_px),
         grasp_pixel=center,
@@ -319,6 +413,10 @@ def bbox_to_grasp_geometry(
         oriented_bbox=polygon,
         grasp_angle_deg=0.0,
         grasp_angle_quality=0.0,
+        center_f=center_f,
+        mask_center_f=center_f,
+        geometry_center_f=center_f,
+        grasp_pixel_f=center_f,
     )
 
 
@@ -353,6 +451,7 @@ def frame_to_block_candidates(
     roi_radius: int,
     max_det: int,
     min_area_px: int = 700,
+    min_area_ratio: float = 0.010,
 ) -> list[DetectionCandidate]:
     """Color-agnostic fallback for visible painted blocks on a pale workspace.
 
@@ -378,9 +477,10 @@ def frame_to_block_candidates(
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     candidates: list[DetectionCandidate] = []
     frame_area = float(frame_w * frame_h)
+    effective_min_area_px = max(int(min_area_px), int(round(frame_area * max(0.0, float(min_area_ratio)))))
     for contour in contours:
         area_px = int(round(float(cv2.contourArea(contour))))
-        if area_px < int(min_area_px) or float(area_px) > frame_area * 0.45:
+        if area_px < effective_min_area_px or float(area_px) > frame_area * 0.45:
             continue
         if len(contour) < 3:
             continue
@@ -425,6 +525,11 @@ def frame_to_block_candidates(
                 grasp_angle_deg=geometry.grasp_angle_deg,
                 grasp_angle_quality=float(geometry.grasp_angle_quality),
                 distance_to_roi=float(distance_to_roi),
+                geometry_center=geometry.geometry_center,
+                center_f=geometry.center_f,
+                mask_center_f=geometry.mask_center_f,
+                geometry_center_f=geometry.geometry_center_f,
+                grasp_pixel_f=geometry.grasp_pixel_f,
             )
         )
     if candidates:
@@ -456,6 +561,11 @@ class DetectionCandidate:
     distance_to_roi: float
     grasp_angle_deg: float | None = None
     grasp_angle_quality: float = 0.0
+    geometry_center: tuple[int, int] | None = None
+    center_f: tuple[float, float] | None = None
+    mask_center_f: tuple[float, float] | None = None
+    geometry_center_f: tuple[float, float] | None = None
+    grasp_pixel_f: tuple[float, float] | None = None
 
 
 @dataclass
@@ -465,9 +575,16 @@ class SlotState:
     valid: bool = False
     observed: bool = False
     pixel_center: tuple[int, int] | None = None
-    center_history: list[tuple[int, int]] = field(default_factory=list)
+    pixel_center_f: tuple[float, float] | None = None
+    mask_center: tuple[int, int] | None = None
+    mask_center_f: tuple[float, float] | None = None
+    geometry_center: tuple[int, int] | None = None
+    geometry_center_f: tuple[float, float] | None = None
+    center_history: list[tuple[float, float]] = field(default_factory=list)
+    geometry_history: list[tuple[float, float]] = field(default_factory=list)
     grasp_pixel: tuple[int, int] | None = None
-    grasp_history: list[tuple[int, int]] = field(default_factory=list)
+    grasp_pixel_f: tuple[float, float] | None = None
+    grasp_history: list[tuple[float, float]] = field(default_factory=list)
     grasp_angle_history: list[float] = field(default_factory=list)
     area_history: list[int] = field(default_factory=list)
     bbox: tuple[int, int, int, int] | None = None
@@ -491,12 +608,15 @@ class SlotState:
     camera_to_world_raw: tuple[float, float, float] | None = None
     undistorted_pixel: tuple[float, float] | None = None
     alignment_target_pixel: tuple[float, float] | None = None
+    measurement_point: str = ""
     center_distance_px: float | None = None
     center_tolerance_px: float | None = None
     action_tolerance_px: float | None = None
     estimated_xy_error_mm: float | None = None
     center_stable_frames: int = 0
     center_stability_px: float | None = None
+    geometry_stable_frames: int = 0
+    geometry_stability_px: float | None = None
     grasp_stable_frames: int = 0
     grasp_stability_px: float | None = None
     area_stability_ratio: float | None = None
@@ -521,13 +641,23 @@ class SlotState:
         self.valid = True
         self.observed = True
         self.pixel_center = candidate.center
+        self.pixel_center_f = candidate.center_f or (float(candidate.center[0]), float(candidate.center[1]))
+        self.mask_center = candidate.center
+        self.mask_center_f = candidate.mask_center_f or self.pixel_center_f
+        self.geometry_center = candidate.geometry_center or _point_from_polygon_center(candidate.oriented_bbox) or candidate.center
+        self.geometry_center_f = (
+            candidate.geometry_center_f
+            or _point_from_polygon_center_f(candidate.oriented_bbox)
+            or (None if self.geometry_center is None else (float(self.geometry_center[0]), float(self.geometry_center[1])))
+            or self.pixel_center_f
+        )
         history_len = max(1, int(grasp_history_len))
-        self.center_history.append(candidate.center)
+        self.center_history.append(self.pixel_center_f)
         if len(self.center_history) > history_len:
             del self.center_history[:-history_len]
         if self.center_history:
-            center_median = median_point(self.center_history) or candidate.center
-            self.center_stability_px = max(euclidean_distance(point, center_median) for point in self.center_history)
+            center_median_f = median_point_f(self.center_history) or self.pixel_center_f
+            self.center_stability_px = max(euclidean_distance(point, center_median_f) for point in self.center_history)
             self.center_stable_frames = (
                 len(self.center_history)
                 if float(self.center_stability_px) <= float(center_stability_tolerance_px)
@@ -536,20 +666,38 @@ class SlotState:
         else:
             self.center_stability_px = None
             self.center_stable_frames = 0
+        self.geometry_history.append(self.geometry_center_f)
+        if len(self.geometry_history) > history_len:
+            del self.geometry_history[:-history_len]
+        if self.geometry_history:
+            geometry_median_f = median_point_f(self.geometry_history) or self.geometry_center_f
+            self.geometry_stability_px = max(
+                euclidean_distance(point, geometry_median_f) for point in self.geometry_history
+            )
+            self.geometry_stable_frames = (
+                len(self.geometry_history)
+                if float(self.geometry_stability_px) <= float(center_stability_tolerance_px)
+                else 1
+            )
+        else:
+            self.geometry_stability_px = None
+            self.geometry_stable_frames = 0
         previous_median = median_point(self.grasp_history)
-        if previous_median is not None and euclidean_distance(candidate.grasp_pixel, previous_median) > float(
+        candidate_grasp_f = candidate.grasp_pixel_f or (float(candidate.grasp_pixel[0]), float(candidate.grasp_pixel[1]))
+        if previous_median is not None and euclidean_distance(candidate_grasp_f, previous_median) > float(
             grasp_history_reset_px
         ):
             self.grasp_history = []
             self.grasp_angle_history = []
             self.area_history = []
-        self.grasp_history.append(candidate.grasp_pixel)
+        self.grasp_history.append(candidate_grasp_f)
         if len(self.grasp_history) > history_len:
             del self.grasp_history[:-history_len]
-        median = median_point(self.grasp_history) or candidate.grasp_pixel
-        self.grasp_pixel = median
+        median_f = median_point_f(self.grasp_history) or candidate_grasp_f
+        self.grasp_pixel_f = median_f
+        self.grasp_pixel = rounded_point(median_f)
         if self.grasp_history:
-            self.grasp_stability_px = max(euclidean_distance(point, median) for point in self.grasp_history)
+            self.grasp_stability_px = max(euclidean_distance(point, median_f) for point in self.grasp_history)
             self.grasp_stable_frames = (
                 len(self.grasp_history)
                 if float(self.grasp_stability_px) <= float(grasp_stability_tolerance_px)
@@ -610,8 +758,15 @@ class SlotState:
         self.valid = False
         self.observed = False
         self.pixel_center = None
+        self.pixel_center_f = None
+        self.mask_center = None
+        self.mask_center_f = None
+        self.geometry_center = None
+        self.geometry_center_f = None
+        self.geometry_history = []
         self.center_history = []
         self.grasp_pixel = None
+        self.grasp_pixel_f = None
         self.grasp_history = []
         self.grasp_angle_history = []
         self.area_history = []
@@ -635,12 +790,15 @@ class SlotState:
         self.camera_to_world_raw = None
         self.undistorted_pixel = None
         self.alignment_target_pixel = None
+        self.measurement_point = ""
         self.center_distance_px = None
         self.center_tolerance_px = None
         self.action_tolerance_px = None
         self.estimated_xy_error_mm = None
         self.center_stable_frames = 0
         self.center_stability_px = None
+        self.geometry_stable_frames = 0
+        self.geometry_stability_px = None
         self.grasp_stable_frames = 0
         self.grasp_stability_px = None
         self.area_stability_ratio = None
@@ -659,7 +817,25 @@ class SlotState:
             "valid": bool(self.valid),
             "observed": bool(self.observed),
             "pixel_center": None if self.pixel_center is None else [int(self.pixel_center[0]), int(self.pixel_center[1])],
+            "pixel_center_f": (
+                None if self.pixel_center_f is None else [float(self.pixel_center_f[0]), float(self.pixel_center_f[1])]
+            ),
+            "mask_center": None if self.mask_center is None else [int(self.mask_center[0]), int(self.mask_center[1])],
+            "mask_center_f": (
+                None if self.mask_center_f is None else [float(self.mask_center_f[0]), float(self.mask_center_f[1])]
+            ),
+            "geometry_center": (
+                None if self.geometry_center is None else [int(self.geometry_center[0]), int(self.geometry_center[1])]
+            ),
+            "geometry_center_f": (
+                None
+                if self.geometry_center_f is None
+                else [float(self.geometry_center_f[0]), float(self.geometry_center_f[1])]
+            ),
             "grasp_pixel": None if self.grasp_pixel is None else [int(self.grasp_pixel[0]), int(self.grasp_pixel[1])],
+            "grasp_pixel_f": (
+                None if self.grasp_pixel_f is None else [float(self.grasp_pixel_f[0]), float(self.grasp_pixel_f[1])]
+            ),
             "bbox": None if self.bbox is None else [int(v) for v in self.bbox],
             "area_px": int(self.area_px),
             "area_stability_ratio": None if self.area_stability_ratio is None else float(self.area_stability_ratio),
@@ -690,6 +866,7 @@ class SlotState:
             "alignment_target_pixel": (
                 None if self.alignment_target_pixel is None else [float(v) for v in self.alignment_target_pixel]
             ),
+            "measurement_point": str(self.measurement_point),
             "center_distance_px": None if self.center_distance_px is None else float(self.center_distance_px),
             "center_tolerance_px": None if self.center_tolerance_px is None else float(self.center_tolerance_px),
             "action_tolerance_px": None if self.action_tolerance_px is None else float(self.action_tolerance_px),
@@ -698,6 +875,10 @@ class SlotState:
             ),
             "center_stable_frames": int(self.center_stable_frames),
             "center_stability_px": None if self.center_stability_px is None else float(self.center_stability_px),
+            "geometry_stable_frames": int(self.geometry_stable_frames),
+            "geometry_stability_px": (
+                None if self.geometry_stability_px is None else float(self.geometry_stability_px)
+            ),
             "grasp_stable_frames": int(self.grasp_stable_frames),
             "grasp_stability_px": None if self.grasp_stability_px is None else float(self.grasp_stability_px),
             "servo_required": bool(self.servo_required),
@@ -796,6 +977,8 @@ def extract_candidates(
     confidence_threshold: float,
     frame_bgr: np.ndarray | None = None,
     fallback_to_frame: bool = False,
+    prefer_frame_fallback: bool = False,
+    fallback_min_area_ratio: float = 1.20,
 ) -> tuple[list[DetectionCandidate], int]:
     boxes = getattr(result, "boxes", None)
     if boxes is None or getattr(boxes, "conf", None) is None:
@@ -843,6 +1026,11 @@ def extract_candidates(
                 grasp_angle_deg=geometry.grasp_angle_deg,
                 grasp_angle_quality=float(geometry.grasp_angle_quality),
                 distance_to_roi=float(distance_to_roi),
+                geometry_center=geometry.geometry_center,
+                center_f=geometry.center_f,
+                mask_center_f=geometry.mask_center_f,
+                geometry_center_f=geometry.geometry_center_f,
+                grasp_pixel_f=geometry.grasp_pixel_f,
             )
         )
     if candidates:
@@ -861,14 +1049,21 @@ def extract_candidates(
                 -item.confidence,
             )
         )
-    if not candidates and bool(fallback_to_frame) and frame_bgr is not None:
-        candidates = frame_to_block_candidates(
+    if bool(fallback_to_frame) and frame_bgr is not None:
+        frame_candidates = frame_to_block_candidates(
             frame_bgr,
             roi_center=roi_center,
             roi_radius=roi_radius,
             max_det=max_det,
         )
-        return candidates, len(candidates)
+        if not candidates:
+            return frame_candidates, len(frame_candidates)
+        if bool(prefer_frame_fallback) and frame_candidates:
+            best_frame = frame_candidates[0]
+            best_model = candidates[0]
+            min_ratio = max(1.0, float(fallback_min_area_ratio))
+            if float(best_frame.area_px) >= float(best_model.area_px) * min_ratio:
+                return frame_candidates, len(candidates)
     return candidates[: int(max_det)], len(candidates)
 
 
@@ -894,6 +1089,12 @@ def update_slots(
         for candidate_index, candidate in enumerate(candidates):
             distance = euclidean_distance(slot.pixel_center, candidate.center)
             overlap = bbox_iou(slot.bbox, candidate.bbox)
+            if slot.area_history:
+                area_values = np.array(slot.area_history, dtype=np.float64)
+                median_area = max(1.0, float(np.median(area_values)))
+                area_ratio = float(candidate.area_px) / median_area
+                if median_area >= 2000.0 and area_ratio < 0.35 and overlap < 0.20:
+                    continue
             if distance > float(match_distance) and overlap <= 0.05:
                 continue
             score = (distance / float(match_distance)) + (1.0 - overlap) * 0.35
@@ -957,6 +1158,7 @@ def annotate_slots_with_cylindrical(
     grasp_quality_threshold: float = 0.25,
     required_stable_frames: int = 3,
     grasp_angle_stability_tolerance_deg: float = 15.0,
+    servo_measurement_point: str = "center",
 ) -> None:
     scale_xy = float(world_scale_xy)
     offset_x = float(world_offset_xy_mm[0])
@@ -964,6 +1166,9 @@ def annotate_slots_with_cylindrical(
     mapping_mode_text = str(mapping_mode or "absolute_base").strip().lower()
     if mapping_mode_text not in {"absolute_base", "delta_servo"}:
         mapping_mode_text = "delta_servo"
+    measurement_point = str(servo_measurement_point or "center").strip().lower()
+    if measurement_point not in {"center", "geometry", "grasp", "center_subpixel", "geometry_subpixel", "grasp_subpixel"}:
+        measurement_point = "geometry_subpixel"
     for slot in slots:
         slot.command_mode = "world"
         slot.command_point = None
@@ -975,6 +1180,7 @@ def annotate_slots_with_cylindrical(
         slot.camera_to_world_raw = None
         slot.undistorted_pixel = None
         slot.alignment_target_pixel = None
+        slot.measurement_point = measurement_point
         slot.center_distance_px = None
         slot.center_tolerance_px = None
         slot.action_tolerance_px = None
@@ -1017,7 +1223,18 @@ def annotate_slots_with_cylindrical(
                 slot.invalid_reason = "calibration_unavailable"
             continue
 
-        point_for_mapping = slot.pixel_center
+        if measurement_point in {"grasp", "grasp_subpixel"} and slot.grasp_pixel is not None:
+            point_for_mapping = slot.grasp_pixel_f if measurement_point == "grasp_subpixel" and slot.grasp_pixel_f is not None else slot.grasp_pixel
+        elif measurement_point in {"geometry", "geometry_subpixel"} and slot.geometry_center is not None:
+            point_for_mapping = (
+                slot.geometry_center_f
+                if measurement_point == "geometry_subpixel" and slot.geometry_center_f is not None
+                else slot.geometry_center
+            )
+        elif measurement_point == "center_subpixel" and slot.pixel_center_f is not None:
+            point_for_mapping = slot.pixel_center_f
+        else:
+            point_for_mapping = slot.pixel_center
         effective_alignment_target = alignment_target_pixel
         if effective_alignment_target is None and active_profile is not None:
             effective_alignment_target = active_profile.target_pixel
@@ -1083,11 +1300,14 @@ def annotate_slots_with_cylindrical(
                 if active_profile is not None
                 else configured_tolerance
             )
-            action_tolerance = max(float(profile_tolerance), float(action_center_tolerance_px))
+            is_low_confirm_stage = str(calibration_stage or "").strip().lower() in {"confirm", "pick"}
+            if mapping_mode_text == "delta_servo" and is_low_confirm_stage:
+                action_tolerance = min(float(profile_tolerance), float(action_center_tolerance_px))
+            else:
+                action_tolerance = max(float(profile_tolerance), float(action_center_tolerance_px))
             slot.center_distance_px = float(distance_to_center)
             slot.center_tolerance_px = float(profile_tolerance)
             slot.action_tolerance_px = float(action_tolerance)
-            is_low_confirm_stage = str(calibration_stage or "").strip().lower() in {"confirm", "pick"}
             center_aligned = distance_to_center <= action_tolerance
             low_confirm_area_unstable = (
                 is_low_confirm_stage
@@ -1107,14 +1327,6 @@ def annotate_slots_with_cylindrical(
                 )
             )
             if mapping_mode_text == "delta_servo" and low_confirm_area_unstable:
-                slot.invalid_reason = "grasp_unstable"
-                continue
-            if (
-                mapping_mode_text == "delta_servo"
-                and distance_to_center > action_tolerance
-                and is_low_confirm_stage
-                and unstable_for_low_servo
-            ):
                 slot.invalid_reason = "grasp_unstable"
                 continue
             if mapping_mode_text == "delta_servo" and distance_to_center > action_tolerance:
@@ -1170,7 +1382,7 @@ def packet_to_targets(packet: dict[str, Any]) -> list[VisionTarget]:
         if not slot.get("valid"):
             continue
         bbox = tuple(float(v) for v in slot.get("bbox") or (0.0, 0.0, 0.0, 0.0))
-        pixel_center = tuple(float(v) for v in slot.get("pixel_center") or (0.0, 0.0))
+        pixel_center = tuple(float(v) for v in slot.get("pixel_center_f") or slot.get("pixel_center") or (0.0, 0.0))
         command_point_raw = slot.get("command_point")
         command_point = None if command_point_raw is None else tuple(float(v) for v in command_point_raw)
         cylindrical_center_raw = slot.get("cylindrical_center")
@@ -1181,7 +1393,7 @@ def packet_to_targets(packet: dict[str, Any]) -> list[VisionTarget]:
         )
         world_xyz_raw = slot.get("world_xyz")
         world_xyz = None if world_xyz_raw is None else tuple(float(v) for v in world_xyz_raw)
-        grasp_pixel_raw = slot.get("grasp_pixel")
+        grasp_pixel_raw = slot.get("grasp_pixel_f") or slot.get("grasp_pixel")
         grasp_pixel = None if grasp_pixel_raw is None else tuple(float(v) for v in grasp_pixel_raw)
         undistorted_raw = slot.get("undistorted_pixel")
         undistorted_pixel = None if undistorted_raw is None else tuple(float(v) for v in undistorted_raw)
@@ -1247,7 +1459,10 @@ def build_vision_packet(
     alignment_target_pixel: tuple[float, float] | None = None,
     calibration_stage: str | None = None,
     calibration_z_mm: float | None = None,
+    frame_quality: Mapping[str, object] | None = None,
 ) -> dict[str, Any]:
+    quality = dict(frame_quality) if isinstance(frame_quality, Mapping) else {}
+    frame_block_reason = str(quality.get("reason") or "").strip() if bool(quality.get("too_dark", False)) else ""
     return {
         "frame_id": int(frame_id),
         "frame_size": [int(frame_size[0]), int(frame_size[1])],
@@ -1264,6 +1479,8 @@ def build_vision_packet(
         "infer_ms": float(infer_ms),
         "queue_age_ms": float(queue_age_ms),
         "stream_age_ms": None if stream_age_ms is None else float(stream_age_ms),
+        "frame_quality": quality,
+        "frame_block_reason": frame_block_reason,
         "detected_count": int(detected_count),
         "selected_slot": None,
         "slots": [slot.to_packet() for slot in slots],

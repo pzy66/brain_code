@@ -75,6 +75,7 @@ runtime/**
 01_MI/mi_classifier_latest/runtime/
 hybrid_controller/models/
 hybrid_controller/dataset/
+hybrid_controller/robot/backups/
 
 logs/*.out
 logs/*.err
@@ -89,3 +90,6 @@ report_contact_sheet.jpg
 02_SSVEP/2026-03_realtime_ui_and_online_decoder/
 
 hybrid_controller/tmp_test_dir/
+
+# Soft-copyright screenshots are generated evidence attachments, not source-deposit files.
+08_SoftCopyright_UI/artifacts/**

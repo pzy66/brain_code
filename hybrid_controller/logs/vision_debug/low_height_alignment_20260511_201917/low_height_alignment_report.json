@@ -1,0 +1,118 @@
+{
+  "created_at": "2026-05-11T20:19:18",
+  "camera_contract": "PC reads the single official JetMax MJPEG URL only; this tool does not start, restart, scan, repair, or mutate usb_cam.service/web_video_server/uvcvideo/devices.",
+  "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+  "slot_id": 1,
+  "z_mm": 120.0,
+  "theta_offsets_deg": [
+    -0.45,
+    0.0,
+    0.45
+  ],
+  "radius_offsets_mm": [
+    -1.5,
+    0.0,
+    1.5
+  ],
+  "dry_run": true,
+  "write_profile": false,
+  "samples": [
+    {
+      "slot_id": 1,
+      "frame_id": 3,
+      "pose_cyl": [
+        8.0,
+        173.85000610351562,
+        123.41999816894531
+      ],
+      "pose_xy": [
+        -24.195244451352572,
+        -172.15810979483865
+      ],
+      "pixel": [
+        301.0,
+        236.0
+      ],
+      "pixel_center": [
+        302,
+        237
+      ],
+      "geometry_center": [
+        301,
+        236
+      ],
+      "grasp_pixel": [
+        290,
+        236
+      ],
+      "center_distance_px": 19.4164878389476,
+      "confidence": 0.55,
+      "area_px": 32864,
+      "bbox": [
+        194,
+        117,
+        411,
+        358
+      ],
+      "snapshot": {
+        "state": "IDLE",
+        "state_seq": 3619,
+        "robot_ts": 1745847347.2857895,
+        "_local_receive_ts": 356230.9090971,
+        "busy": false,
+        "busy_action": "",
+        "carrying": false,
+        "robot_xy": [
+          -24.19499969482422,
+          -172.1580047607422
+        ],
+        "robot_z": 123.41999816894531,
+        "robot_cyl": {
+          "theta_deg": 8.0,
+          "radius_mm": 173.85000610351562,
+          "z_mm": 123.41999816894531
+        },
+        "limits_cyl": {
+          "theta_deg": [
+            -120.0,
+            120.0
+          ],
+          "radius_mm": [
+            50.0,
+            280.0
+          ]
+        },
+        "limits_cyl_auto": {
+          "radius_mm": [
+            80.0,
+            260.0
+          ]
+        },
+        "calibration_ready": true,
+        "last_ack": "SUCKER_FREEZE_ON",
+        "last_error_code": "",
+        "last_error": "",
+        "release_mode_effective": "sucker_frozen",
+        "sucker_frozen": true,
+        "pick_tuning": {
+          "pick_approach_z_mm": 130.0,
+          "pick_descend_z_mm": 85.0,
+          "pick_pre_suction_sec": 0.25,
+          "pick_bottom_hold_sec": 0.15000000596046448,
+          "pick_lift_sec": 0.800000011920929,
+          "z_carry_floor_mm": 160.0
+        },
+        "sucker_rotation_supported": true
+      },
+      "packet_frame_id": 3,
+      "raw_image": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\low_height_alignment_20260511_201917\\sample_01\\raw.jpg",
+      "packet": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\low_height_alignment_20260511_201917\\sample_01\\packet.json"
+    }
+  ],
+  "start_pose_cyl": [
+    8.0,
+    173.85000610351562,
+    123.41999816894531
+  ],
+  "fit_skipped": "not_enough_samples"
+}

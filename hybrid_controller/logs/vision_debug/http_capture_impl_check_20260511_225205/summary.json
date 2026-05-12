@@ -1,0 +1,93 @@
+{
+  "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+  "frames": [
+    {
+      "index": 1,
+      "ok": true,
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "torn": false,
+      "path": "hybrid_controller\\logs\\vision_debug\\http_capture_impl_check_20260511_225205\\frame_01.jpg"
+    },
+    {
+      "index": 2,
+      "ok": true,
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "torn": false,
+      "path": "hybrid_controller\\logs\\vision_debug\\http_capture_impl_check_20260511_225205\\frame_02.jpg"
+    },
+    {
+      "index": 3,
+      "ok": true,
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "torn": false,
+      "path": "hybrid_controller\\logs\\vision_debug\\http_capture_impl_check_20260511_225205\\frame_03.jpg"
+    },
+    {
+      "index": 4,
+      "ok": true,
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "torn": false,
+      "path": "hybrid_controller\\logs\\vision_debug\\http_capture_impl_check_20260511_225205\\frame_04.jpg"
+    },
+    {
+      "index": 5,
+      "ok": true,
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "torn": false,
+      "path": "hybrid_controller\\logs\\vision_debug\\http_capture_impl_check_20260511_225205\\frame_05.jpg"
+    },
+    {
+      "index": 6,
+      "ok": true,
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "torn": false,
+      "path": "hybrid_controller\\logs\\vision_debug\\http_capture_impl_check_20260511_225205\\frame_06.jpg"
+    },
+    {
+      "index": 7,
+      "ok": true,
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "torn": false,
+      "path": "hybrid_controller\\logs\\vision_debug\\http_capture_impl_check_20260511_225205\\frame_07.jpg"
+    },
+    {
+      "index": 8,
+      "ok": true,
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "torn": false,
+      "path": "hybrid_controller\\logs\\vision_debug\\http_capture_impl_check_20260511_225205\\frame_08.jpg"
+    }
+  ]
+}

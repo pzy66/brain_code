@@ -1,8 +1,45 @@
 import math
 import time
-from typing import Callable, Dict, Optional, Tuple
+from typing import Callable, Dict, Iterable, Optional, Tuple
 
-from hybrid_controller.cylindrical import CylindricalPose, interpolate_auto_z
+try:
+    from hybrid_controller.cylindrical import CylindricalPose, interpolate_auto_z
+except ImportError:  # pragma: no cover - exercised on JetMax robot-only deploys
+    class CylindricalPose:
+        __slots__ = ("theta_deg", "radius_mm", "z_mm")
+
+        def __init__(self, theta_deg, radius_mm, z_mm):
+            self.theta_deg = float(theta_deg)
+            self.radius_mm = float(radius_mm)
+            self.z_mm = float(z_mm)
+
+        def normalized(self):
+            theta = float(self.theta_deg)
+            while theta <= -180.0:
+                theta += 360.0
+            while theta > 180.0:
+                theta -= 360.0
+            return CylindricalPose(theta_deg=theta, radius_mm=self.radius_mm, z_mm=self.z_mm)
+
+    def interpolate_auto_z(profile_points: Iterable[Tuple[float, float]], radius_mm: float) -> float:
+        points = sorted((float(radius), float(z_mm)) for radius, z_mm in profile_points)
+        if not points:
+            raise ValueError("auto-z profile is empty")
+        radius = float(radius_mm)
+        if radius <= points[0][0]:
+            return points[0][1]
+        if radius >= points[-1][0]:
+            return points[-1][1]
+        for index in range(1, len(points)):
+            left_r, left_z = points[index - 1]
+            right_r, right_z = points[index]
+            if radius > right_r:
+                continue
+            if abs(right_r - left_r) <= 1e-6:
+                return right_z
+            ratio = (radius - left_r) / (right_r - left_r)
+            return left_z + (right_z - left_z) * ratio
+        return points[-1][1]
 
 
 class CylindricalTeleopCommand:

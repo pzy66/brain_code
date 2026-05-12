@@ -50,6 +50,22 @@ from ssvep_core.compute_kernels import (
     fbcca_scores_batch,
     preprocess_windows_batch,
 )
+from ssvep_core.score_classifier_runtime import (
+    CLASSIFIER_CONFIDENCE_GATE_POLICY,
+    CLASSIFIER_GATE_VARIANT_BASELINE_LRTMW,
+    CLASSIFIER_LRT_MULTIWINDOW_REJECT_GATE_POLICY,
+    DEFAULT_LRT_MULTIWINDOW_DECAY,
+    classifier_feature_names,
+    command_confidence_from_probs,
+    freq_label,
+    lrt_window_evidence_from_state,
+    normalize_ridge5_state,
+    parse_classifier_gate_variant,
+    parse_score_bank_mode,
+    ridge5_predict_windows_from_state,
+    score_matrices_to_features,
+    smooth_classifier_probabilities,
+)
 
 try:
     from brainflow.board_shim import BoardIds, BoardShim, BrainFlowInputParams
@@ -93,7 +109,13 @@ DEFAULT_SPEED_MIN_EXIT_CANDIDATES = (1, 2, 3)
 DEFAULT_MODEL_NAME = "fbcca"
 DEFAULT_SERIAL_PORT = "auto"
 DEFAULT_GATE_POLICY = "balanced"
-DEFAULT_GATE_POLICIES = ("conservative", "balanced", "speed")
+DEFAULT_GATE_POLICIES = (
+    "conservative",
+    "balanced",
+    "speed",
+    CLASSIFIER_CONFIDENCE_GATE_POLICY,
+    CLASSIFIER_LRT_MULTIWINDOW_REJECT_GATE_POLICY,
+)
 DEFAULT_CHANNEL_WEIGHT_MODE = "fbcca_diag"
 DEFAULT_CHANNEL_WEIGHT_RANGE = (0.5, 1.8)
 DEFAULT_SUBBAND_WEIGHT_MODE = "chen_fixed"
@@ -195,6 +217,7 @@ MODEL_IMPLEMENTATION_LEVELS = {
     "fbcca": "paper-faithful",
     "legacy_fbcca_202603": "paper-faithful",
     "fbcca_fixed_all8": "paper-faithful",
+    "fbcca_score_ridge_5class": "engineering-approx",
     "fbcca_cw_all8": "engineering-approx",
     "fbcca_sw_all8": "engineering-approx",
     "fbcca_cw_sw_all8": "engineering-approx",
@@ -218,6 +241,9 @@ MODEL_METHOD_NOTES = {
         "(fixed FBCCA score path without channel/spatial weighting frontend)."
     ),
     "fbcca_fixed_all8": "Pure FBCCA on all EEG channels with fixed Chen-style subband weights.",
+    "fbcca_score_ridge_5class": (
+        "FBCCA score frontend plus a calibrated 5-class ridge classifier and optional LRT no-control gate."
+    ),
     "fbcca_cw_all8": "Pure FBCCA on all EEG channels with learned diagonal channel weights and fixed subband weights.",
     "fbcca_sw_all8": (
         "Pure FBCCA on all EEG channels with learned subject-specific global subband fusion weights "
@@ -2008,6 +2034,235 @@ class FBCCADecoder(BaseSSVEPDecoder):
         self._sync_subband_model_params()
 
 
+class FBCCAScoreRidge5ClassifierDecoder(BaseSSVEPDecoder):
+    def __init__(
+        self,
+        *,
+        sampling_rate: int,
+        freqs: Sequence[float],
+        win_sec: float,
+        step_sec: float,
+        model_params: Optional[dict[str, Any]] = None,
+    ) -> None:
+        params = dict(model_params or {})
+        raw_state = params.get("state")
+        if not isinstance(raw_state, Mapping):
+            raise ValueError("fbcca_score_ridge_5class requires model_params.state")
+        super().__init__(
+            model_name="fbcca_score_ridge_5class",
+            sampling_rate=sampling_rate,
+            freqs=freqs,
+            win_sec=win_sec,
+            step_sec=step_sec,
+            model_params=params,
+        )
+        self._state = normalize_ridge5_state(raw_state)
+        state_freqs = tuple(float(freq) for freq in self._state.get("freqs", ()) or ())
+        if state_freqs and len(state_freqs) == len(self.freqs):
+            for expected, actual in zip(self.freqs, state_freqs):
+                if abs(float(expected) - float(actual)) > 1e-8:
+                    raise ValueError(
+                        "fbcca_score_ridge_5class state freqs mismatch: "
+                        f"profile={self.freqs} state={state_freqs}"
+                    )
+        self.classifier_labels = tuple(str(label) for label in self._state["labels"])
+        command_labels = tuple(freq_label(freq) for freq in self.freqs)
+        if self.classifier_labels[0] != "idle" or tuple(self.classifier_labels[1:]) != command_labels:
+            raise ValueError(
+                "fbcca_score_ridge_5class labels must be idle plus profile freqs: "
+                f"labels={self.classifier_labels} freqs={command_labels}"
+            )
+        self.score_source_name = str(params.get("score_source_name", "fbcca")).strip().lower() or "fbcca"
+        self.score_bank_mode = parse_score_bank_mode(str(params.get("score_bank_mode", "command_only")))
+        all_freqs_raw = params.get("full_reference_bank_freqs", params.get("all_freqs", ()))
+        self.full_reference_bank_freqs = tuple(float(freq) for freq in all_freqs_raw or ())
+        if self.score_bank_mode == "full_reference_bank" and not self.full_reference_bank_freqs:
+            self.full_reference_bank_freqs = self.freqs
+        decoder_params = dict(params.get("decoder_model_params") or {})
+        if not decoder_params:
+            decoder_params = {"Nh": 5, "subband_weight_mode": "chen_fixed"}
+        decoder_name = str(params.get("decoder_name", "fbcca_fixed_all8")).strip() or "fbcca_fixed_all8"
+        self._command_decoder = create_decoder(
+            decoder_name,
+            sampling_rate=sampling_rate,
+            freqs=self.freqs,
+            win_sec=win_sec,
+            step_sec=step_sec,
+            model_params=decoder_params,
+            decoder_compute_backend=self.compute_backend_requested,
+            gpu_device=self.gpu_device,
+            gpu_precision=self.gpu_precision,
+            gpu_warmup=self.gpu_warmup,
+            gpu_cache_policy=self.gpu_cache_policy,
+        )
+        self._full_bank_decoder: Optional[BaseSSVEPDecoder] = None
+        if self.score_bank_mode == "full_reference_bank":
+            self._full_bank_decoder = create_decoder(
+                decoder_name,
+                sampling_rate=sampling_rate,
+                freqs=self.full_reference_bank_freqs,
+                win_sec=win_sec,
+                step_sec=step_sec,
+                model_params=dict(decoder_params),
+                decoder_compute_backend=self.compute_backend_requested,
+                gpu_device=self.gpu_device,
+                gpu_precision=self.gpu_precision,
+                gpu_warmup=self.gpu_warmup,
+                gpu_cache_policy=self.gpu_cache_policy,
+            )
+        self.compute_backend_used = str(self._command_decoder.compute_backend_used)
+        self._last_window_evidence: Optional[float] = None
+        self._last_probability_vector: Optional[np.ndarray] = None
+
+    def configure_runtime(self, sampling_rate: int) -> None:
+        super().configure_runtime(sampling_rate)
+        self._command_decoder.configure_runtime(int(sampling_rate))
+        if self._full_bank_decoder is not None:
+            self._full_bank_decoder.configure_runtime(int(sampling_rate))
+        self.compute_backend_used = str(self._command_decoder.compute_backend_used)
+
+    def _score_window_batch(self, decoder: BaseSSVEPDecoder, windows: np.ndarray) -> np.ndarray:
+        if hasattr(decoder, "score_windows_batch"):
+            return np.asarray(decoder.score_windows_batch(windows), dtype=np.float64)
+        if hasattr(decoder, "analyze_windows_batch"):
+            payloads = decoder.analyze_windows_batch(windows)
+            return np.vstack(
+                [np.asarray(dict(item)["scores"], dtype=np.float64).reshape(1, -1) for item in payloads]
+            )
+        rows: list[np.ndarray] = []
+        for window in np.asarray(windows, dtype=np.float64):
+            if hasattr(decoder, "score_window"):
+                row = np.asarray(decoder.score_window(window), dtype=np.float64)
+            else:
+                row = np.asarray(dict(decoder.analyze_window(window))["scores"], dtype=np.float64)
+            rows.append(row.reshape(1, -1))
+        return np.vstack(rows)
+
+    def _feature_matrix_for_windows(self, windows: np.ndarray) -> tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
+        command_scores = self._score_window_batch(self._command_decoder, windows)
+        all_scores: Optional[np.ndarray] = None
+        if self.score_bank_mode == "full_reference_bank":
+            if self._full_bank_decoder is None:
+                raise RuntimeError("full_reference_bank mode requires full-bank decoder")
+            all_scores = self._score_window_batch(self._full_bank_decoder, windows)
+        features = score_matrices_to_features(
+            command_score_matrix=command_scores,
+            command_freqs=self.freqs,
+            score_bank_mode=self.score_bank_mode,
+            all_score_matrix=all_scores,
+            all_freqs=self.full_reference_bank_freqs,
+        )
+        expected_feature_names = list(
+            self.model_params.get("feature_names")
+            or classifier_feature_names(
+                self.freqs,
+                score_source_name=self.score_source_name,
+                score_bank_mode=self.score_bank_mode,
+            )
+        )
+        expected_count = int(self._state["feature_mean"].shape[0])
+        if features.shape[1] != expected_count:
+            raise ValueError(
+                "fbcca_score_ridge_5class feature count mismatch: "
+                f"features={features.shape[1]} expected={expected_count} names={expected_feature_names}"
+            )
+        return features, command_scores, all_scores
+
+    def _predict_window_batch(self, windows: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, Optional[np.ndarray], np.ndarray]:
+        features, command_scores, all_scores = self._feature_matrix_for_windows(windows)
+        probs, labels = ridge5_predict_windows_from_state(self._state, features)
+        probs = smooth_classifier_probabilities(probs, smoothing_windows=int(self._state.get("smoothing_windows", 1)))
+        return probs, labels, command_scores, all_scores, features
+
+    def score_window(self, X_window: np.ndarray) -> np.ndarray:
+        analysis = self.analyze_window(X_window)
+        return np.asarray(analysis["scores"], dtype=np.float64)
+
+    def analyze_window(self, X_window: np.ndarray) -> dict[str, Any]:
+        matrix = np.ascontiguousarray(np.asarray(X_window, dtype=np.float64))
+        probs, labels, command_scores, all_scores, features = self._predict_window_batch(matrix[None, :, :])
+        row = probs[-1]
+        label_index = int(np.argmax(row))
+        pred_label = str(labels[label_index])
+        command_indices = [int(index) for index, label in enumerate(labels) if str(label) != "idle"]
+        command_probs = row[np.asarray(command_indices, dtype=int)]
+        command_local_index = int(np.argmax(command_probs))
+        command_label_index = command_indices[command_local_index]
+        command_label = str(labels[command_label_index])
+        command_scores_row = np.asarray(command_scores[-1], dtype=np.float64)
+        result = scores_to_feature_dict(command_scores_row, self.freqs)
+        result["classifier_probs"] = np.asarray(row, dtype=np.float64)
+        result["classifier_labels"] = [str(label) for label in labels]
+        result["classifier_pred_label"] = pred_label
+        result["classifier_pred_freq"] = None if pred_label == "idle" else float(pred_label)
+        result["classifier_command_confidence"] = float(command_confidence_from_probs(probs[-1:, :], labels)[0])
+        result["classifier_top_command_label"] = command_label
+        result["classifier_top_command_freq"] = float(command_label)
+        result["classifier_top_command_probability"] = float(row[command_label_index])
+        result["pred_freq"] = float(command_label)
+        result["control_log_lr"] = None
+        result["lrt_window_evidence"] = None
+        result["all_bank_scores"] = None if all_scores is None else np.asarray(all_scores[-1], dtype=np.float64)
+        result["classifier_feature_vector"] = np.asarray(features[-1], dtype=np.float64)
+        if str(self._state.get("gate_policy", "")) == CLASSIFIER_LRT_MULTIWINDOW_REJECT_GATE_POLICY:
+            evidence = lrt_window_evidence_from_state(self._state, features)
+            result["control_log_lr"] = float(evidence[-1])
+            result["lrt_window_evidence"] = float(evidence[-1])
+            self._last_window_evidence = float(evidence[-1])
+        self._last_probability_vector = np.asarray(row, dtype=np.float64)
+        if hasattr(self._command_decoder, "_runtime_timing_breakdown"):
+            self._runtime_timing_breakdown = dict(self._command_decoder._runtime_timing_breakdown)
+        return result
+
+    def analyze_windows_batch(self, windows: np.ndarray) -> list[dict[str, Any]]:
+        values = np.ascontiguousarray(np.asarray(windows, dtype=np.float64))
+        probs, labels, command_scores, all_scores, features = self._predict_window_batch(values)
+        evidence: Optional[np.ndarray] = None
+        if str(self._state.get("gate_policy", "")) == CLASSIFIER_LRT_MULTIWINDOW_REJECT_GATE_POLICY:
+            evidence = lrt_window_evidence_from_state(self._state, features)
+        outputs: list[dict[str, Any]] = []
+        for index, score_row in enumerate(command_scores):
+            row = probs[index]
+            label_index = int(np.argmax(row))
+            pred_label = str(labels[label_index])
+            command_indices = [int(item) for item, label in enumerate(labels) if str(label) != "idle"]
+            command_probs = row[np.asarray(command_indices, dtype=int)]
+            command_label_index = command_indices[int(np.argmax(command_probs))]
+            command_label = str(labels[command_label_index])
+            result = scores_to_feature_dict(np.asarray(score_row, dtype=np.float64), self.freqs)
+            result["classifier_probs"] = np.asarray(row, dtype=np.float64)
+            result["classifier_labels"] = [str(label) for label in labels]
+            result["classifier_pred_label"] = pred_label
+            result["classifier_pred_freq"] = None if pred_label == "idle" else float(pred_label)
+            result["classifier_command_confidence"] = float(command_confidence_from_probs(row[None, :], labels)[0])
+            result["classifier_top_command_label"] = command_label
+            result["classifier_top_command_freq"] = float(command_label)
+            result["classifier_top_command_probability"] = float(row[command_label_index])
+            result["pred_freq"] = float(command_label)
+            result["control_log_lr"] = None if evidence is None else float(evidence[index])
+            result["lrt_window_evidence"] = None if evidence is None else float(evidence[index])
+            result["all_bank_scores"] = None if all_scores is None else np.asarray(all_scores[index], dtype=np.float64)
+            result["classifier_feature_vector"] = np.asarray(features[index], dtype=np.float64)
+            outputs.append(result)
+        if outputs:
+            last = outputs[-1]
+            self._last_window_evidence = (
+                None if last.get("lrt_window_evidence") is None else float(last["lrt_window_evidence"])
+            )
+            self._last_probability_vector = np.asarray(last["classifier_probs"], dtype=np.float64)
+        return outputs
+
+    def get_state(self) -> dict[str, Any]:
+        payload = dict(self.model_params.get("state") or {})
+        return json_safe(payload)
+
+    def set_state(self, state: Optional[dict[str, Any]]) -> None:
+        if state is None:
+            raise ValueError("fbcca_score_ridge_5class requires non-empty state")
+        self.model_params["state"] = dict(state)
+        self._state = normalize_ridge5_state(state)
+
+
 class LegacyFBCCA202603Decoder(BaseSSVEPDecoder):
     def __init__(
         self,
@@ -3163,6 +3418,10 @@ MODEL_ALIASES = {
     "fbcca_plain_all8": "fbcca_fixed_all8",
     "fbcca-plain-all8": "fbcca_fixed_all8",
     "fbcca_fixed_all8": "fbcca_fixed_all8",
+    "fbcca_score_ridge_5class": "fbcca_score_ridge_5class",
+    "fbcca-score-ridge-5class": "fbcca_score_ridge_5class",
+    "fbcca_ridge5": "fbcca_score_ridge_5class",
+    "fbcca-ridge5": "fbcca_score_ridge_5class",
     "fbcca_cw_all8": "fbcca_cw_all8",
     "fbcca_sw_all8": "fbcca_sw_all8",
     "fbcca_cw_sw_all8": "fbcca_cw_sw_all8",
@@ -3201,7 +3460,7 @@ MODEL_ALIASES = {
 # Current CUDA-stable set in this codebase. Keep this list conservative, but
 # allow the mainline server-side comparison models to use the validated CUDA
 # path so focused/final benchmarks do not fall back to CPU by policy alone.
-CUDA_STABLE_MODELS = {"cca", "fbcca", "legacy_fbcca_202603", "tdca", "trca_r"}
+CUDA_STABLE_MODELS = {"cca", "fbcca", "fbcca_score_ridge_5class", "legacy_fbcca_202603", "tdca", "trca_r"}
 
 
 def resolve_model_compute_backend(model_name: str, requested_backend: str) -> str:
@@ -3585,6 +3844,14 @@ def create_decoder(
             step_sec=step_sec,
             model_params=params,
         )
+    if name == "fbcca_score_ridge_5class":
+        return FBCCAScoreRidge5ClassifierDecoder(
+            sampling_rate=sampling_rate,
+            freqs=freqs,
+            win_sec=win_sec,
+            step_sec=step_sec,
+            model_params=params,
+        )
     if name == "legacy_fbcca_202603":
         return LegacyFBCCA202603Decoder(
             sampling_rate=sampling_rate,
@@ -3802,6 +4069,22 @@ class AsyncDecisionGate:
         self.exit_acc_th = None if exit_acc_th is None else float(exit_acc_th)
         self.control_state_mode = parse_control_state_mode(control_state_mode)
         self.frequency_specific_thresholds = normalize_frequency_specific_thresholds(frequency_specific_thresholds)
+        self.lrt_window_th = 0.0
+        self.lrt_enter_th = 0.0
+        self.lrt_decay = DEFAULT_LRT_MULTIWINDOW_DECAY
+        self.classifier_gate_variant = CLASSIFIER_GATE_VARIANT_BASELINE_LRTMW
+        self.score_shape_margin_index: Optional[int] = None
+        self.score_shape_ratio_index: Optional[int] = None
+        self.score_shape_entropy_index: Optional[int] = None
+        self.score_shape_margin_th: Optional[float] = None
+        self.score_shape_ratio_th: Optional[float] = None
+        self.score_shape_entropy_th: Optional[float] = None
+        self.lrt_window_floor_th: Optional[float] = None
+        self.weak_subject_guard_active = False
+        self.weak_subject_guard_reasons: list[str] = []
+        self.command_confidence_th = 0.0
+        self.classifier_max_gap_windows = 0
+        self.classifier_gate_enabled = False
         self._control_means_vec = (
             np.array([float(control_feature_means[name]) for name in MODEL_FEATURE_NAMES], dtype=float)
             if control_feature_means is not None
@@ -3827,7 +4110,7 @@ class AsyncDecisionGate:
     @classmethod
     def from_profile(cls, profile: ThresholdProfile) -> "AsyncDecisionGate":
         dynamic_payload = dict(profile.dynamic_stop or {})
-        return cls(
+        gate = cls(
             enter_score_th=profile.enter_score_th,
             enter_ratio_th=profile.enter_ratio_th,
             enter_margin_th=profile.enter_margin_th,
@@ -3853,6 +4136,49 @@ class AsyncDecisionGate:
             control_state_mode=profile.control_state_mode,
             frequency_specific_thresholds=profile.frequency_specific_thresholds,
         )
+        model_params = dict(profile.model_params or {})
+        state = model_params.get("state") if isinstance(model_params.get("state"), dict) else {}
+        gate.command_confidence_th = float(state.get("command_confidence_th", 0.0))
+        gate.classifier_gate_variant = parse_classifier_gate_variant(state.get("gate_variant"))
+        gate.lrt_window_th = float(state.get("lrt_window_th", 0.0))
+        gate.lrt_enter_th = float(state.get("lrt_enter_th", 0.0))
+        gate.lrt_decay = min(max(float(state.get("lrt_decay", DEFAULT_LRT_MULTIWINDOW_DECAY)), 0.0), 0.99)
+        gate.score_shape_margin_index = (
+            None if state.get("score_shape_margin_index") is None else int(state.get("score_shape_margin_index"))
+        )
+        gate.score_shape_ratio_index = (
+            None if state.get("score_shape_ratio_index") is None else int(state.get("score_shape_ratio_index"))
+        )
+        gate.score_shape_entropy_index = (
+            None if state.get("score_shape_entropy_index") is None else int(state.get("score_shape_entropy_index"))
+        )
+        gate.score_shape_margin_th = (
+            None if state.get("score_shape_margin_th") is None else float(state.get("score_shape_margin_th"))
+        )
+        gate.score_shape_ratio_th = (
+            None if state.get("score_shape_ratio_th") is None else float(state.get("score_shape_ratio_th"))
+        )
+        gate.score_shape_entropy_th = (
+            None if state.get("score_shape_entropy_th") is None else float(state.get("score_shape_entropy_th"))
+        )
+        gate.lrt_window_floor_th = (
+            None if state.get("lrt_window_floor_th") is None else float(state.get("lrt_window_floor_th"))
+        )
+        gate.weak_subject_guard_active = bool(state.get("weak_subject_guard_active", False))
+        gate.weak_subject_guard_reasons = [str(item) for item in (state.get("weak_subject_guard_reasons", []) or [])]
+        fit_summary = dict(state.get("fit_summary", {}) or {})
+        gate.classifier_max_gap_windows = max(
+            0,
+            int(
+                model_params.get(
+                    "max_gap_windows",
+                    state.get("max_gap_windows", fit_summary.get("max_gap_windows", 0)),
+                )
+                or 0
+            ),
+        )
+        gate.classifier_gate_enabled = normalize_model_name(profile.model_name) == "fbcca_score_ridge_5class"
+        return gate
 
     def reset(self) -> None:
         self.state = "idle"
@@ -3864,6 +4190,157 @@ class AsyncDecisionGate:
         self._support_windows = 0
         self._exit_windows = 0
         self._acc_log_lr = 0.0
+        self._classifier_evidence_by_label: dict[str, float] = {}
+        self._classifier_streak_label = ""
+        self._classifier_streak_count = 0
+        self._classifier_gap_count = 0
+
+    def _classifier_labels_from_features(self, features: Mapping[str, Any]) -> tuple[str, ...]:
+        labels = features.get("classifier_labels")
+        if isinstance(labels, (list, tuple)):
+            return tuple(str(label) for label in labels)
+        probs = features.get("classifier_probs")
+        if probs is not None:
+            values = np.asarray(probs, dtype=float).reshape(-1)
+            if values.size == 5:
+                return ("idle", "target_1", "target_2", "target_3", "target_4")
+        return ("idle",)
+
+    def _classifier_pred_freq(self, features: Mapping[str, Any]) -> Optional[float]:
+        value = features.get("classifier_pred_freq")
+        if value is None:
+            if "classifier_pred_label" in features:
+                label = str(features.get("classifier_pred_label", ""))
+                if not label or label == "idle":
+                    return None
+            else:
+                label = str(features.get("classifier_top_command_label", ""))
+            try:
+                return None if not label or label == "idle" else float(label)
+            except Exception:
+                return None
+        try:
+            return float(value)
+        except Exception:
+            return None
+
+    def _classifier_control_confidence(self, features: Mapping[str, Any]) -> float:
+        value = features.get("classifier_command_confidence")
+        if value is not None:
+            return float(value)
+        probs = features.get("classifier_probs")
+        labels = self._classifier_labels_from_features(features)
+        if probs is None or "idle" not in labels:
+            return 0.0
+        return float(command_confidence_from_probs(np.asarray(probs, dtype=float).reshape(1, -1), np.asarray(labels, dtype=object))[0])
+
+    def _classifier_score_shape_pass(self, features: Mapping[str, Any]) -> bool:
+        vector = features.get("classifier_feature_vector")
+        if vector is None:
+            return True
+        values = np.asarray(vector, dtype=float).reshape(-1)
+        if self.score_shape_margin_index is not None and self.score_shape_margin_th is not None:
+            if values[int(self.score_shape_margin_index)] + 1e-12 < float(self.score_shape_margin_th):
+                return False
+        if self.score_shape_ratio_index is not None and self.score_shape_ratio_th is not None:
+            if values[int(self.score_shape_ratio_index)] + 1e-12 < float(self.score_shape_ratio_th):
+                return False
+        if self.score_shape_entropy_index is not None and self.score_shape_entropy_th is not None:
+            if values[int(self.score_shape_entropy_index)] > float(self.score_shape_entropy_th) + 1e-12:
+                return False
+        return True
+
+    def _classifier_current_window_pass(
+        self,
+        features: Mapping[str, Any],
+        *,
+        selected_freq: Optional[float] = None,
+    ) -> bool:
+        pred_freq = self._classifier_pred_freq(features)
+        if pred_freq is None:
+            return False
+        if selected_freq is not None and abs(float(pred_freq) - float(selected_freq)) > 1e-8:
+            return False
+        command_confidence = self._classifier_control_confidence(features)
+        if command_confidence + 1e-12 < float(self.command_confidence_th):
+            return False
+        if self.gate_policy == CLASSIFIER_LRT_MULTIWINDOW_REJECT_GATE_POLICY:
+            evidence_value = features.get("lrt_window_evidence", features.get("control_log_lr"))
+            threshold = max(
+                float(self.lrt_window_th),
+                float(self.lrt_window_floor_th) if self.lrt_window_floor_th is not None else float(self.lrt_window_th),
+            )
+            return (
+                evidence_value is not None
+                and float(evidence_value) + 1e-12 >= threshold
+                and self._classifier_score_shape_pass(features)
+            )
+        return True
+
+    def _classifier_gate_update(self, features: dict[str, Any]) -> tuple[bool, Optional[float]]:
+        pred_freq = self._classifier_pred_freq(features)
+        if pred_freq is None:
+            self._classifier_streak_label = ""
+            self._classifier_streak_count = 0
+            self._classifier_gap_count = 0
+            return False, None
+        pred_label = freq_label(pred_freq)
+        command_confidence = self._classifier_control_confidence(features)
+        if command_confidence + 1e-12 < float(self.command_confidence_th):
+            passes_command = False
+        else:
+            passes_command = True
+        if self.gate_policy == CLASSIFIER_LRT_MULTIWINDOW_REJECT_GATE_POLICY:
+            evidence_value = features.get("lrt_window_evidence", features.get("control_log_lr"))
+            if evidence_value is None:
+                evidence_value = 0.0
+            evidence = float(evidence_value)
+            window_th = max(
+                float(self.lrt_window_th),
+                float(self.lrt_window_floor_th) if self.lrt_window_floor_th is not None else float(self.lrt_window_th),
+            )
+            passes_gate = evidence + 1e-12 >= window_th and self._classifier_score_shape_pass(features)
+            score_value = evidence
+        else:
+            passes_gate = True
+            score_value = command_confidence
+        labels = self._classifier_labels_from_features(features)
+        for label in labels:
+            if label != "idle":
+                self._classifier_evidence_by_label.setdefault(str(label), 0.0)
+        if passes_command and passes_gate:
+            for label in list(self._classifier_evidence_by_label):
+                if label != pred_label:
+                    self._classifier_evidence_by_label[label] *= float(self.lrt_decay)
+            increment = max(0.0, float(score_value) - float(self.lrt_window_th))
+            if self.gate_policy == CLASSIFIER_LRT_MULTIWINDOW_REJECT_GATE_POLICY and self.lrt_enter_th <= 1e-12:
+                increment = max(increment, float(score_value))
+            if self.gate_policy != CLASSIFIER_LRT_MULTIWINDOW_REJECT_GATE_POLICY:
+                increment = max(increment, float(score_value))
+            self._classifier_evidence_by_label[pred_label] = float(
+                self._classifier_evidence_by_label.get(pred_label, 0.0) + increment
+            )
+            if pred_label == self._classifier_streak_label:
+                self._classifier_streak_count += 1
+            else:
+                self._classifier_streak_label = pred_label
+                self._classifier_streak_count = 1
+            self._classifier_gap_count = 0
+            needed = max(1, int(self.min_enter_windows))
+            enter_th = float(self.lrt_enter_th if self.gate_policy == CLASSIFIER_LRT_MULTIWINDOW_REJECT_GATE_POLICY else 0.0)
+            selected = self._classifier_streak_count >= needed and (
+                enter_th <= 1e-12 or self._classifier_evidence_by_label.get(pred_label, 0.0) + 1e-12 >= enter_th
+            )
+            return bool(selected), float(pred_freq)
+        if self._classifier_streak_label and self._classifier_gap_count < int(self.classifier_max_gap_windows):
+            self._classifier_gap_count += 1
+        else:
+            for label in list(self._classifier_evidence_by_label):
+                self._classifier_evidence_by_label[label] *= float(self.lrt_decay)
+            self._classifier_streak_label = ""
+            self._classifier_streak_count = 0
+            self._classifier_gap_count = 0
+        return False, pred_freq
 
     def _threshold_payload_for_features(
         self,
@@ -3932,6 +4409,8 @@ class AsyncDecisionGate:
     def _exit_fail(self, features: dict[str, Any]) -> bool:
         if self._selected_freq is None:
             return True
+        if self.classifier_gate_enabled:
+            return not self._classifier_current_window_pass(features, selected_freq=self._selected_freq)
         payload = self._threshold_payload_for_features(features, selected_fallback=True)
         exit_score_th = float(payload.get("exit_score_th", self.exit_score_th))
         exit_ratio_th = float(payload.get("exit_ratio_th", self.exit_ratio_th))
@@ -3992,6 +4471,15 @@ class AsyncDecisionGate:
         pred_freq = features.get("pred_freq")
         enter_pass = pred_freq is not None and self._enter_pass(features)
         switch_pass = pred_freq is not None and self._switch_pass(features)
+        if self.classifier_gate_enabled:
+            classifier_selected, classifier_freq = self._classifier_gate_update(features)
+            if classifier_freq is not None:
+                features["pred_freq"] = float(classifier_freq)
+                pred_freq = float(classifier_freq)
+            enter_pass = bool(classifier_selected)
+            switch_pass = False
+            if not enter_pass:
+                pred_freq = None
 
         if self.state == "idle":
             if enter_pass:
@@ -3999,7 +4487,7 @@ class AsyncDecisionGate:
                 self._candidate_freq = float(pred_freq)
                 self._candidate_windows = 1
                 self._support_windows = 1
-                if self.min_enter_windows <= 1:
+                if self.classifier_gate_enabled or self.min_enter_windows <= 1:
                     self.state = "selected"
                     self._selected_freq = float(pred_freq)
                     self._exit_windows = 0
@@ -4013,7 +4501,7 @@ class AsyncDecisionGate:
             if enter_pass and abs(float(pred_freq) - float(self._candidate_freq)) < 1e-8:
                 self._candidate_windows += 1
                 self._support_windows = self._candidate_windows
-                if self._candidate_windows >= self.min_enter_windows:
+                if self.classifier_gate_enabled or self._candidate_windows >= self.min_enter_windows:
                     self.state = "selected"
                     self._selected_freq = float(pred_freq)
                     self._exit_windows = 0

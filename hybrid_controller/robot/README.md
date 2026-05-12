@@ -40,7 +40,7 @@ http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&widt
 - `run_hybrid_controller_ros_runtime.sh`
   - 机械臂端主启动脚本（推荐）
 - `run_jetmax_robot_runtime.sh`
-  - 仅 TCP 兼容入口（legacy）
+  - 仅 TCP 兼容入口（legacy，非主线）
 - `runtime/`
   - 机械臂执行核心（状态机、安全逻辑、TCP 兼容）
 - `ros_pkg/hybrid_controller_ros/`
@@ -117,7 +117,28 @@ bash run_hybrid_controller_ros_runtime.sh
 ## legacy（保留但非主线）
 
 - `run_jetmax_robot_runtime.sh`
-- `tools/jetmax_start_runtime.py`
+- `tools/jetmax_start_runtime.py`（默认拒绝执行；必须显式加 `--allow-legacy-tcp-start`）
 - `tools/deploy_jetmax_runtime.py`
 
-这些用于老的 TCP-only 路径。主流程调试不要优先使用它们。
+这些用于老的 TCP-only 路径。主流程调试不要优先使用它们；GUI 和连续视觉伺服主链以 ROS runtime / rosbridge 为准。
+
+## 上位机备份与回档
+
+每次修改机械臂端代码前，先在上位机保存快照到：
+
+```text
+hybrid_controller/robot/backups/
+```
+
+备份目录应至少包含：
+
+1. `ros_pkg/hybrid_controller_ros/scripts/hybrid_controller_runtime_node.py`
+2. `runtime/teleop_kernel.py`
+3. `runtime/robot_runtime_py36.py`
+4. `runtime/runtime_core.py`
+5. `runtime/sucker_rotation.py`
+6. `tools/jetmax_start_ros_runtime.py`
+7. `tools/deploy_jetmax_runtime.py`
+8. 本说明文档和 `tools/README.md`
+
+每个备份目录必须带 `MANIFEST.json`，记录相对路径和 SHA256。回档时先校验 manifest，再把对应文件复制回仓库；回档本身不要自动部署到机械臂，部署必须单独确认。

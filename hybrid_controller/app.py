@@ -417,14 +417,17 @@ class HybridControllerApplication:
             if ack == "PICK_DONE":
                 self._finish_pick_trace(response=f"ACK {ack}")
                 self._vision_servo_pick = None
+                self._continuous_vision_servo_pick = None
                 self._rt_set("vision_servo_status", "idle")
                 if self._set_ssvep_stim_enabled(False, refresh=False):
                     self._log_runtime("ssvep", "Stimulus auto-disabled after PICK_DONE.")
             if ack == "MOVE":
                 self._mark_vision_servo_move_acknowledged()
+                self._mark_continuous_refine_move_acknowledged()
             if ack == "ABORT":
                 self._stop_teleop_motion(send_command=False, reason="robot_abort_ack")
                 self._vision_servo_pick = None
+                self._continuous_vision_servo_pick = None
                 self._rt_set("vision_servo_status", "idle")
                 controller_event = None
                 effects = self._force_controller_error("Abort requested by operator.")
@@ -442,11 +445,13 @@ class HybridControllerApplication:
             if ack == "RESET":
                 self._stop_teleop_motion(send_command=False, reason="robot_reset_ack")
                 self._vision_servo_pick = None
+                self._continuous_vision_servo_pick = None
                 self._rt_set("vision_servo_status", "idle")
                 controller_event = Event(source="system", type="reset_task", timestamp=event.timestamp)
         if event.source == "robot" and event.type == "robot_error":
             self._stop_teleop_motion(send_command=False, reason="robot_error")
             self._vision_servo_pick = None
+            self._continuous_vision_servo_pick = None
             self._rt_set("vision_servo_status", "idle")
             self._rt_set("last_robot_error", str(event.value))
             self._finish_pick_trace(response=f"ERR {event.value}")
@@ -464,6 +469,7 @@ class HybridControllerApplication:
             )
             controller_event = None
         if event.source == "robot" and event.type == "robot_busy":
+            self._continuous_vision_servo_pick = None
             self._finish_pick_trace(response="BUSY")
         effects = [] if controller_event is None else self.controller.handle_event(controller_event)
         self._update_control_scene_from_event(event, selected_before=selected_before)
@@ -618,7 +624,9 @@ class HybridControllerApplication:
             return
         reason = str(getattr(self, "_vision_auto_start_deferred_reason", "") or "")
         health = str(self._rt_get("vision_health", ""))
-        if not reason and not health.startswith("waiting_for_robot_runtime"):
+        if not reason and not (
+            health.startswith("waiting_control:") or health.startswith("waiting_for_robot_runtime")
+        ):
             return
         ready, ready_reason = self._vision_stream_start_allowed()
         if not ready:
@@ -1479,6 +1487,8 @@ class HybridControllerApplication:
 
     def _send_robot_command(self, effect: Effect) -> None:
         command = str(effect.payload["command"])
+        if self._maybe_start_continuous_servo_from_task_pick(command):
+            return
         self._send_robot_text_command(command)
 
     def _send_robot_text_command(self, command: str, *, apply_pick_command_bias: bool = True) -> None:
@@ -1517,6 +1527,21 @@ class HybridControllerApplication:
             self.dispatch_event(Event(source="robot", type="robot_error", value=f"Robot send failed: {error}"))
             if opcode in {"PICK", "PICK_WORLD", "PICK_CYL"}:
                 self._finish_pick_trace(response=f"ERR Robot send failed: {error}")
+
+    def _maybe_start_continuous_servo_from_task_pick(self, command: str) -> bool:
+        if not bool(getattr(self.config, "vision_continuous_servo_enabled", False)):
+            return False
+        if not self._vision_eye_in_hand_pick_flow_enabled():
+            return False
+        opcode = self._extract_command_opcode(command)
+        if opcode not in {"PICK_WORLD", "PICK_CYL"}:
+            return False
+        slot_id = self.controller.context.selected_target_id
+        if slot_id is None:
+            self._block_continuous_servo_start("selected_slot_unavailable")
+            return True
+        self._start_continuous_vision_servo_pick(int(slot_id), source="task_confirm")
+        return True
 
     @staticmethod
     def _extract_command_opcode(command: str) -> str:
@@ -2443,21 +2468,15 @@ class HybridControllerApplication:
         if (
             bool(getattr(self.config, "vision_continuous_servo_enabled", False))
             and self._vision_eye_in_hand_pick_flow_enabled()
-            and slot_payload is not None
         ):
-            self._vision_servo_pick = None
-            self._continuous_vision_servo_pick = {"slot_id": int(slot_id), "stable_frames": 0, "lost_frames": 0}
-            packet = self._latest_vision_packet if isinstance(self._latest_vision_packet, dict) else {}
-            decision = self._continuous_vision_servo_controller_instance().decide(
-                slot_id=int(slot_id),
-                slot_payload=slot_payload,
-                packet=packet,
-                pending=self._continuous_vision_servo_pick,
-                current_cyl_pose=self._current_robot_cyl_pose(),
-                frame_pose_age_ms=self._packet_frame_pose_age_ms(packet),
-            )
-            if self._apply_continuous_vision_servo_decision(decision):
+            if slot_payload is None:
+                packet = self._latest_vision_packet if isinstance(self._latest_vision_packet, dict) else {}
+                frame_block_reason = str(packet.get("frame_block_reason") or "").strip()
+                reason = frame_block_reason or f"slot_unavailable:{int(slot_id)}"
+                self._block_continuous_servo_start(reason, dispatch_error=False)
                 return
+            self._start_continuous_vision_servo_pick(int(slot_id), source="manual_pick")
+            return
         command = self._build_manual_pick_command(int(slot_id))
         if command is None:
             if slot_payload is not None and self._send_vision_servo_pick_move(int(slot_id), slot_payload):
@@ -2481,6 +2500,67 @@ class HybridControllerApplication:
         self._vision_servo_pick = None
         self._rt_set("vision_servo_status", "idle")
         self._send_robot_text_command(command)
+
+    def _continuous_pick_pending(self, slot_id: int, *, source: str) -> dict[str, object]:
+        return {
+            "slot_id": int(slot_id),
+            "stable_frames": 0,
+            "pick_ready_frames": 0,
+            "lost_frames": 0,
+            "source": str(source),
+            "low_height_refine_attempts": 0,
+            "waiting_for_refine_ack": False,
+            "min_frame_id": 0,
+        }
+
+    def _start_continuous_vision_servo_pick(self, slot_id: int, *, source: str) -> bool:
+        if not bool(getattr(self.config, "vision_continuous_servo_enabled", False)):
+            return False
+        if not self._vision_eye_in_hand_pick_flow_enabled():
+            return False
+        if self._uses_ros_transport():
+            state_age_ms = self._current_state_age_ms()
+            stale_threshold_ms = float(getattr(self.config, "robot_state_stale_threshold_ms", 700.0))
+            dispatch_error = str(source) != "manual_pick"
+            if self.ros_client is None or not self.ros_client.is_connected():
+                self._block_continuous_servo_start("control_unavailable", dispatch_error=dispatch_error)
+                return True
+            if not math.isfinite(state_age_ms) or state_age_ms > stale_threshold_ms:
+                self._block_continuous_servo_start("robot_state_not_fresh", dispatch_error=dispatch_error)
+                return True
+        slot_payload = self._vision_slot_payload(int(slot_id))
+        if slot_payload is None:
+            packet = self._latest_vision_packet if isinstance(self._latest_vision_packet, dict) else {}
+            frame_block_reason = str(packet.get("frame_block_reason") or "").strip()
+            reason = frame_block_reason or f"slot_unavailable:{int(slot_id)}"
+            self._block_continuous_servo_start(reason, dispatch_error=str(source) != "manual_pick")
+            return True
+        self._vision_servo_pick = None
+        self._continuous_vision_servo_pick = self._continuous_pick_pending(int(slot_id), source=source)
+        self._rt_set("vision_servo_status", f"continuous_pending slot={int(slot_id)} source={source}")
+        packet = self._latest_vision_packet if isinstance(self._latest_vision_packet, dict) else {}
+        decision = self._continuous_vision_servo_controller_instance().decide(
+            slot_id=int(slot_id),
+            slot_payload=slot_payload,
+            packet=packet,
+            pending=self._continuous_vision_servo_pick,
+            current_cyl_pose=self._current_robot_cyl_pose(),
+            frame_pose_age_ms=self._packet_frame_pose_age_ms(packet),
+        )
+        if self._apply_continuous_vision_servo_decision(decision):
+            return True
+        if self._continuous_vision_servo_pick is not None:
+            return True
+        self._block_continuous_servo_start("decision_rejected")
+        return True
+
+    def _block_continuous_servo_start(self, reason: str, *, dispatch_error: bool = True) -> None:
+        message = f"continuous_start_blocked:{str(reason)}"
+        self._continuous_vision_servo_pick = None
+        self._rt_set("vision_servo_status", message)
+        self._handle_runtime_status("vision", message)
+        if dispatch_error:
+            self.dispatch_event(Event(source="robot", type="robot_error", value=message))
 
     def _vision_slot_payload(self, slot_id: int, packet: dict[str, object] | None = None) -> dict[str, object] | None:
         source_packet = packet if isinstance(packet, dict) else self._latest_vision_packet
@@ -2559,36 +2639,13 @@ class HybridControllerApplication:
 
     def _select_continuous_vision_servo_slot(self, packet: dict[str, object]) -> dict[str, object] | None:
         pending = getattr(self, "_continuous_vision_servo_pick", None)
-        locked_slot_id = None
-        if isinstance(pending, dict):
-            try:
-                locked_slot_id = int(pending.get("slot_id"))
-            except (TypeError, ValueError):
-                locked_slot_id = None
-        if locked_slot_id is not None:
-            return self._vision_slot_payload(locked_slot_id, packet=packet)
-        slots = packet.get("slots")
-        if not isinstance(slots, list):
+        if not isinstance(pending, dict):
             return None
-
-        def key(slot: dict[str, object]) -> tuple[int, float, float]:
-            reason = str(slot.get("invalid_reason") or "")
-            priority = 0 if bool(slot.get("actionable", False)) else 1 if reason == "vision_servo_required" else 9
-            try:
-                distance = float(slot.get("center_distance_px"))
-            except (TypeError, ValueError):
-                distance = float("inf")
-            try:
-                confidence = float(slot.get("confidence", 0.0))
-            except (TypeError, ValueError):
-                confidence = 0.0
-            return (priority, distance, -confidence)
-
-        candidates = [dict(slot) for slot in slots if isinstance(slot, dict) and bool(slot.get("valid", False))]
-        candidates.sort(key=key)
-        if not candidates or key(candidates[0])[0] >= 9:
+        try:
+            locked_slot_id = int(pending.get("slot_id"))
+        except (TypeError, ValueError):
             return None
-        return candidates[0]
+        return self._vision_slot_payload(locked_slot_id, packet=packet)
 
     def _is_at_vision_pick_confirm_z(self) -> bool:
         pose = self._current_robot_cyl_pose()
@@ -2597,6 +2654,122 @@ class HybridControllerApplication:
         confirm_z = float(getattr(self.config, "vision_pick_confirm_z_mm", self.config.robot_approach_z))
         tolerance = max(0.5, float(getattr(self.config, "vision_pick_z_tolerance_mm", 4.0)))
         return abs(float(pose[2]) - confirm_z) <= tolerance
+
+    @staticmethod
+    def _slot_servo_command_point(slot: dict[str, object] | None) -> tuple[float, float] | None:
+        if not isinstance(slot, dict):
+            return None
+        point = slot.get("servo_command_point")
+        if not isinstance(point, (tuple, list)) or len(point) < 2:
+            return None
+        try:
+            theta = float(point[0])
+            radius = float(point[1])
+        except (TypeError, ValueError):
+            return None
+        if not (math.isfinite(theta) and math.isfinite(radius)):
+            return None
+        return (theta, radius)
+
+    def _clamp_low_height_refine_target(
+        self,
+        *,
+        current_pose: tuple[float, float, float],
+        target_theta: float,
+        target_radius: float,
+    ) -> tuple[float, float, float]:
+        theta_limit = abs(float(getattr(self.config, "vision_continuous_servo_low_height_refine_max_theta_step_deg", 0.25)))
+        radius_limit = abs(float(getattr(self.config, "vision_continuous_servo_low_height_refine_max_radius_step_mm", 1.5)))
+        theta_delta = max(-theta_limit, min(theta_limit, float(target_theta) - float(current_pose[0])))
+        radius_delta = max(-radius_limit, min(radius_limit, float(target_radius) - float(current_pose[1])))
+        return (
+            float(current_pose[0]) + float(theta_delta),
+            float(current_pose[1]) + float(radius_delta),
+            float(current_pose[2]),
+        )
+
+    def _maybe_send_low_height_discrete_refine(
+        self,
+        *,
+        decision,
+        pending_dict: dict[str, object] | None,
+    ) -> bool:
+        if not bool(getattr(self.config, "vision_continuous_servo_low_height_discrete_refine_enabled", True)):
+            return False
+        if pending_dict is None:
+            return False
+        trace = getattr(decision, "trace", {})
+        if not isinstance(trace, dict):
+            return False
+        try:
+            current_z = float(trace.get("current_z_mm"))
+            confirm_z = float(trace.get("confirm_z_mm"))
+            center_distance_px = float(trace.get("center_distance_px"))
+        except (TypeError, ValueError):
+            return False
+        z_tol = max(0.5, float(getattr(self.config, "vision_pick_z_tolerance_mm", 4.0)))
+        pick_ready_px = max(0.1, float(getattr(self.config, "vision_continuous_servo_pick_ready_center_px", 2.0)))
+        low_height_margin_mm = min(1.0, z_tol)
+        if (
+            abs(current_z - confirm_z) > z_tol
+            or current_z > confirm_z + low_height_margin_mm
+            or center_distance_px <= pick_ready_px
+        ):
+            return False
+        if not self._uses_ros_transport() or self.ros_client is None or not self.ros_client.is_connected():
+            return False
+        attempts = 0
+        try:
+            attempts = int(pending_dict.get("low_height_refine_attempts", 0) or 0)
+        except (TypeError, ValueError):
+            attempts = 0
+        max_attempts = max(1, int(getattr(self.config, "vision_continuous_servo_low_height_refine_attempts", 4)))
+        if attempts >= max_attempts:
+            if self.ros_client is not None:
+                try:
+                    self._teleop_cmd_seq = next_teleop_cmd_seq(self._teleop_cmd_seq)
+                    self.ros_client.stop_teleop(use_auto_z=False, cmd_seq=int(self._teleop_cmd_seq))
+                except Exception:
+                    pass
+            self._continuous_vision_servo_pick = None
+            self._rt_set("vision_servo_status", "continuous_stop reason=low_height_refine_attempt_limit")
+            return True
+        pending_slot_id = int(pending_dict.get("slot_id", 0) or 0)
+        slot = self._vision_slot_payload(pending_slot_id)
+        refine_point = self._slot_servo_command_point(slot)
+        current_pose = self._current_robot_cyl_pose()
+        if refine_point is None or current_pose is None:
+            if self.ros_client is not None:
+                try:
+                    self._teleop_cmd_seq = next_teleop_cmd_seq(self._teleop_cmd_seq)
+                    self.ros_client.stop_teleop(use_auto_z=False, cmd_seq=int(self._teleop_cmd_seq))
+                except Exception:
+                    pass
+            self._continuous_vision_servo_pick = None
+            self._rt_set("vision_servo_status", "continuous_stop reason=low_height_refine_unavailable")
+            return True
+        target = self._clamp_low_height_refine_target(
+            current_pose=current_pose,
+            target_theta=float(refine_point[0]),
+            target_radius=float(refine_point[1]),
+        )
+        pending_next = dict(pending_dict)
+        pending_next["low_height_refine_attempts"] = attempts + 1
+        pending_next["waiting_for_refine_ack"] = True
+        pending_next["min_frame_id"] = int(self._latest_vision_packet.get("frame_id", 0) if isinstance(self._latest_vision_packet, dict) else 0) + 1
+        self._continuous_vision_servo_pick = pending_next
+        if self.ros_client is not None:
+            try:
+                self._teleop_cmd_seq = next_teleop_cmd_seq(self._teleop_cmd_seq)
+                self.ros_client.stop_teleop(use_auto_z=False, cmd_seq=int(self._teleop_cmd_seq))
+            except Exception:
+                pass
+        self._send_robot_text_command(f"MOVE_CYL {target[0]:.2f} {target[1]:.2f} {target[2]:.2f}")
+        self._rt_set(
+            "vision_servo_status",
+            f"continuous_low_refine attempt={attempts + 1} center={center_distance_px:.1f}px",
+        )
+        return True
 
     def _send_vision_low_confirm_move(self, slot_id: int, *, attempts: int = 0) -> bool:
         slot_payload = self._vision_slot_payload(int(slot_id))
@@ -2697,6 +2870,44 @@ class HybridControllerApplication:
         self._vision_servo_pick = acknowledged
         self._rt_set("vision_servo_status", f"waiting_fresh_frame slot={pending.get('slot_id')}")
 
+    def _mark_continuous_refine_move_acknowledged(self) -> None:
+        pending = getattr(self, "_continuous_vision_servo_pick", None)
+        if not isinstance(pending, dict):
+            return
+        if not bool(pending.get("waiting_for_refine_ack", False)):
+            return
+        pending = dict(pending)
+        pending["waiting_for_refine_ack"] = False
+        packet = self._latest_vision_packet if isinstance(self._latest_vision_packet, dict) else {}
+        try:
+            pending["min_frame_id"] = int(packet.get("frame_id", 0) or 0) + 1
+        except (TypeError, ValueError):
+            pending["min_frame_id"] = 1
+        self._continuous_vision_servo_pick = pending
+        self._rt_set("vision_servo_status", f"continuous_wait_fresh_frame slot={pending.get('slot_id')}")
+
+    def _merge_continuous_pick_pending(self, pending_dict: dict[str, object] | None) -> dict[str, object] | None:
+        if not isinstance(pending_dict, dict):
+            return pending_dict
+        merged = dict(pending_dict)
+        current = getattr(self, "_continuous_vision_servo_pick", None)
+        if not isinstance(current, dict):
+            return merged
+        try:
+            current_slot_id = int(current.get("slot_id"))
+            next_slot_id = int(merged.get("slot_id"))
+        except (TypeError, ValueError):
+            return merged
+        if current_slot_id != next_slot_id:
+            return merged
+        for key, default in (
+            ("low_height_refine_attempts", 0),
+            ("waiting_for_refine_ack", False),
+            ("min_frame_id", 0),
+        ):
+            merged[key] = current.get(key, default)
+        return merged
+
     def _pump_pending_vision_servo_pick(self, packet: dict[str, object]) -> None:
         pending = self._vision_servo_pick
         if not isinstance(pending, dict) or bool(pending.get("waiting_for_ack", False)):
@@ -2723,10 +2934,16 @@ class HybridControllerApplication:
 
     def _apply_continuous_vision_servo_decision(self, decision) -> bool:
         action = str(getattr(decision, "action", "")).upper()
-        pending_dict = getattr(decision, "pending_dict", None)
+        raw_pending_dict = getattr(decision, "pending_dict", None)
+        pending_dict = self._merge_continuous_pick_pending(raw_pending_dict)
         if action == "SERVO":
             if pending_dict is not None:
                 self._continuous_vision_servo_pick = pending_dict
+            if isinstance(pending_dict, dict) and self._maybe_send_low_height_discrete_refine(
+                decision=decision,
+                pending_dict=pending_dict,
+            ):
+                return True
             if self.ros_client is None or not self.ros_client.is_connected():
                 self._rt_set("vision_servo_status", "continuous_stop reason=ros_unavailable")
                 return False
@@ -2741,6 +2958,10 @@ class HybridControllerApplication:
                     cmd_seq=int(self._teleop_cmd_seq),
                     client_ts=float(time.time()),
                 )
+                trace = getattr(decision, "trace", {})
+                if isinstance(trace, dict) and bool(trace.get("fine_pulse", False)):
+                    self._teleop_cmd_seq = next_teleop_cmd_seq(self._teleop_cmd_seq)
+                    self.ros_client.stop_teleop(use_auto_z=False, cmd_seq=int(self._teleop_cmd_seq))
             except Exception as error:
                 self._rt_set("vision_servo_status", f"continuous_stop reason=publish_failed:{error}")
                 return False
@@ -2761,8 +2982,16 @@ class HybridControllerApplication:
             self._send_robot_text_command(command, apply_pick_command_bias=False)
             return True
         if action == "STOP":
-            if pending_dict is not None:
+            stop_reason = str(getattr(decision, "reason", "") or "")
+            if pending_dict is not None and stop_reason in {"hold", "lost_target_wait", "settle_near_center"}:
                 self._continuous_vision_servo_pick = pending_dict
+                if stop_reason in {"hold", "settle_near_center"} and self._maybe_send_low_height_discrete_refine(
+                    decision=decision,
+                    pending_dict=pending_dict,
+                ):
+                    return True
+            else:
+                self._continuous_vision_servo_pick = None
             if self.ros_client is not None:
                 try:
                     self._teleop_cmd_seq = next_teleop_cmd_seq(self._teleop_cmd_seq)
@@ -2777,6 +3006,22 @@ class HybridControllerApplication:
         if not bool(getattr(self.config, "vision_continuous_servo_enabled", False)):
             return
         if not self._vision_eye_in_hand_pick_flow_enabled():
+            return
+        pending = getattr(self, "_continuous_vision_servo_pick", None)
+        if not isinstance(pending, dict):
+            self._rt_set("vision_servo_status", "continuous_idle awaiting_pick")
+            return
+        if bool(pending.get("waiting_for_refine_ack", False)):
+            self._rt_set("vision_servo_status", f"continuous_wait_refine_ack slot={pending.get('slot_id')}")
+            return
+        try:
+            min_frame_id = int(pending.get("min_frame_id", 0) or 0)
+            frame_id = int(packet.get("frame_id", 0) or 0)
+        except (TypeError, ValueError):
+            min_frame_id = 0
+            frame_id = 0
+        if min_frame_id > 0 and frame_id < min_frame_id:
+            self._rt_set("vision_servo_status", f"continuous_wait_fresh_frame slot={pending.get('slot_id')}")
             return
         if not self._uses_ros_transport():
             self._rt_set("vision_servo_status", "continuous_stop reason=ros_transport_required")
@@ -2797,7 +3042,7 @@ class HybridControllerApplication:
                     pass
             self._rt_set("vision_servo_status", "continuous_stop reason=control_unavailable")
             return
-        if self.controller.state in {TaskState.S2_PICKING, TaskState.S3_PLACING, TaskState.ERROR}:
+        if self.controller.state in {TaskState.S3_PLACING, TaskState.ERROR}:
             return
         selected_slot = self._select_continuous_vision_servo_slot(packet)
         slot_id = None
@@ -2806,7 +3051,6 @@ class HybridControllerApplication:
                 slot_id = int(selected_slot.get("slot_id", selected_slot.get("slot", 0)))
             except (TypeError, ValueError):
                 slot_id = None
-        pending = getattr(self, "_continuous_vision_servo_pick", None)
         if slot_id is None and isinstance(pending, dict):
             try:
                 slot_id = int(pending.get("slot_id"))
@@ -3666,27 +3910,51 @@ class HybridControllerApplication:
         queue_age_ms = float(resolved_packet.get("queue_age_ms", 0.0))
         infer_interval_ms = float(resolved_packet.get("infer_interval_ms", self.config.vision_infer_interval_ms))
         frame_drop_ratio = float(resolved_packet.get("frame_drop_ratio", 0.0))
+        frame_quality = resolved_packet.get("frame_quality", {})
+        frame_block_reason = str(resolved_packet.get("frame_block_reason") or "").strip()
+        if isinstance(frame_quality, dict):
+            brightness_mean = frame_quality.get("gray_mean")
+            brightness_p95 = frame_quality.get("gray_p95")
+        else:
+            brightness_mean = None
+            brightness_p95 = None
         self._rt_update(
             {
                 "queue_age_ms": queue_age_ms,
                 "infer_interval_ms": infer_interval_ms,
                 "frame_drop_ratio": frame_drop_ratio,
+                "vision_frame_block_reason": frame_block_reason or "--",
+                "vision_frame_brightness_mean": brightness_mean,
+                "vision_frame_brightness_p95": brightness_p95,
             }
         )
         remote_age_ms = float(self._rt_get("remote_snapshot_age_ms", 0.0))
         ui_refresh_ms = float(self._rt_get("ui_refresh_ms_ema", 0.0))
         mapping_mode = str(resolved_packet.get("mapping_mode", self.config.vision_mapping_mode))
         invalid_reason = str(self._rt_get("vision_invalid_reason", "--"))
+        if frame_block_reason and invalid_reason == "--":
+            invalid_reason = frame_block_reason
         resolved_base_xy = self._rt_get("vision_last_resolved_base_xy")
         resolved_cyl = self._rt_get("vision_last_resolved_cyl")
         profile_id = str(resolved_packet.get("calibration_profile_id", "") or "--")
         self._rt_set("vision_calibration_profile_id", profile_id)
+        brightness_text = ""
+        try:
+            if brightness_mean is not None:
+                brightness_text += f"brightness_mean={float(brightness_mean):.1f} "
+            if brightness_p95 is not None:
+                brightness_text += f"brightness_p95={float(brightness_p95):.1f} "
+        except (TypeError, ValueError):
+            brightness_text = ""
+        frame_block_text = f"frame_block={frame_block_reason} " if frame_block_reason else ""
         vision_health = (
             f"camera_fps={float(packet.get('capture_fps', 0.0)):.1f} "
             f"infer_ms={float(packet.get('infer_ms', 0.0)):.1f} "
             f"queue_age_ms={queue_age_ms:.1f} "
             f"infer_interval_ms={infer_interval_ms:.0f} "
             f"drop_ratio={frame_drop_ratio:.2f} "
+            f"{brightness_text}"
+            f"{frame_block_text}"
             f"ui_refresh_ms={ui_refresh_ms:.1f} "
             f"snapshot_age_ms={remote_age_ms:.1f} "
             f"slots={valid_slots} actionable={actionable_slots} "
@@ -4383,6 +4651,12 @@ def build_config_from_args(args: argparse.Namespace) -> AppConfig:
         vision_frame_fallback_enabled=bool(
             getattr(args, "vision_frame_fallback_enabled", AppConfig.vision_frame_fallback_enabled)
         ),
+        vision_frame_min_brightness_mean=float(
+            getattr(args, "vision_frame_min_brightness_mean", AppConfig.vision_frame_min_brightness_mean)
+        ),
+        vision_frame_min_brightness_p95=float(
+            getattr(args, "vision_frame_min_brightness_p95", AppConfig.vision_frame_min_brightness_p95)
+        ),
         vision_servo_center_tolerance_px=float(
             getattr(args, "vision_servo_center_tolerance_px", AppConfig.vision_servo_center_tolerance_px)
         ),
@@ -4718,6 +4992,16 @@ def main(argv: list[str] | None = None) -> int:
         "--no-vision-frame-fallback",
         action="store_false",
         dest="vision_frame_fallback_enabled",
+    )
+    parser.add_argument(
+        "--vision-frame-min-brightness-mean",
+        type=float,
+        default=AppConfig.vision_frame_min_brightness_mean,
+    )
+    parser.add_argument(
+        "--vision-frame-min-brightness-p95",
+        type=float,
+        default=AppConfig.vision_frame_min_brightness_p95,
     )
     parser.add_argument(
         "--vision-servo-center-tolerance-px",

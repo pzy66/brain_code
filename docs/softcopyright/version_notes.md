@@ -12,11 +12,20 @@
 - 视觉机械臂复用：只读取 `hybrid_controller` 当前配置、模型和 profile 状态，真实动作保留在原安全门控内。
 - 材料工作流：说明书、用户手册、测试报告、源码交存清单、版本说明和引用资料目录。
 
+## Freeze-preview 候选状态
+
+当前版本处于 `freeze-preview` 候选冻结阶段，不是最终申报冻结阶段。本阶段用于收敛软著 UI、材料、SSVEP classifier candidate、机械臂低高度视觉对齐和连续视觉伺服证据。
+
+当前 MI 状态为 `legacy_detected / pending_profile`：旧入口和轻量测试存在，但 `datasets/profiles/MI/current_mi_profile.json` 与 `datasets/profiles/MI/mi_status.json` 尚未发布。因此本候选版本不宣称 MI 分类器已完整发布。
+
+正式 `softcopyright-v1.0` tag 应在新 MI 分类器并入、MI profile/status 发布、最终测试报告更新后创建。
+
 ## 暂不纳入 V1.0 的内容
 
 - 直接在软著 UI 内启动真实抓取、写入 profile 或绕过 `hybrid_controller` 安全门控。
 - 将真实 EEG 数据、外部数据集原始文件、论文 PDF、训练输出和临时缓存纳入源码交存。
 - 在 MI 分类器正式入库前，承诺具体模型权重或最终离线精度。
+- 将 `source_manifest.freeze-preview.json` 视为最终源码交存清单。
 
 ## 下一版本候选
 

@@ -40,9 +40,11 @@ bash run_hybrid_controller_ros_runtime.sh
 - `8080`：web_video_server（视觉识别阶段使用，启动 runtime 时不拉流）
 - `8888`：TCP 兼容/诊断（可选）
 
-`run_real.py` 默认用于“机械臂重启后，电脑连接 JetMax Wi-Fi，然后启动主程序”的流程：GUI 启动后会自动连接 `rosbridge`，但不会在 `9091` 不稳定时自动 SSH 启动 JetMax ROS runtime。后台 bootstrap 轮询仍默认关闭，避免反复探测或反复 SSH；需要启动 runtime 时使用显式按钮或显式命令。
+`run_real.py` 默认用于“机械臂重启后，电脑连接 JetMax Wi-Fi，然后启动主程序”的流程：GUI 启动后会自动连接 `rosbridge`；如果首连失败，允许通过 SSH 自动启动一次 JetMax 控制 runtime。自动启动只恢复控制链路，固定传入 `--skip-camera-check --skip-tcp-check`，不会检查 `8080`，不会拉取视频，不会启动、重启或修复 `usb_cam.service` / `web_video_server`。一次自动启动失败后只进入温和重连，不反复 SSH。
 
-自动 bringup 不会启动、重启、检查或拉取 `8080` 视频流，不会订阅 `/usb_cam/image_rect_color`，不会改官方摄像头发送链路。点击“连接机器人”或启动自动连接时默认也不做额外 `9091` TCP 预探测，而是直接建立 rosbridge WebSocket。只有显式加 `--ros-probe-before-connect` 时才恢复预探测。
+视觉自动启动是电脑端读取行为，不是相机发送端管理行为。GUI 只有在 `rosbridge` 已连接、runtime 不在启动中、机器人状态新鲜后，才创建 `VisionRuntime` 并读取唯一官方 URL：`http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80`。等待控制稳定时显示 `waiting_control:*`，开始读官方流时显示 `starting_8080:*`，运行后显示 `camera_fps=...`。
+
+点击“连接机器人”或启动自动连接时默认也不做额外 `9091` TCP 预探测，而是直接建立 rosbridge WebSocket。只有显式加 `--ros-probe-before-connect` 时才恢复预探测。
 
 如果要关闭启动即连接，可以显式加：
 
@@ -93,8 +95,13 @@ usb_cam.service -> usb_cam_node -> /usb_cam/image_rect_color -> web_video_server
 
 ## 抓取命令约定（当前实现）
 
-- 在 `vision_mode=robot_camera_detection` 下，视觉槽位默认输出 `command_mode=world`，抓取主路径是 `PICK_WORLD x y`。
-- `PICK_CYL` 保留给手动调试和特定圆柱入口，不是视觉主路径默认值。
+- 在 `vision_mode=robot_camera_detection` 下，默认启用连续视觉伺服，但自动视觉只识别和显示目标，不会自行启动运动或抓取。
+- 只有手动 `Pick 1-4` 或 SSVEP/任务状态机确认目标后，才创建 continuous pending；没有 pending 时显示 `continuous_idle awaiting_pick`。
+- 后续视觉包只续跑已锁定 slot，并通过 `/hybrid_controller/teleop_cyl_cmd` 连续发布 `theta_rate_deg_s / radius_rate_mm_s / z_rate_mm_s`，且 `use_auto_z=false`。
+- 到确认高度并稳定对中后发最终 `PICK_CYL`，当前 profile 固化为 `vision_pick_confirm_z_mm=130.0`、`vision_eye_in_hand_pick_radius_bias_mm=40.0`。
+- 离散 `MOVE_CYL -> wait -> re-detect` 保留为 fallback，可用 `--no-vision-continuous-servo` 关闭连续模式。
+- 发真实 `PICK_CYL` 前仍检查 profile ready、ROS 状态新鲜、机器人不 busy、slot 可执行、目标未过期、中心稳定和最终半径不越界。
+- 如果机器人端处于 `sucker_frozen`，最终 PICK 按 dry-run 语义执行，GUI/日志会显示 `release_mode_effective=sucker_frozen`。
 
 ## 当前控制主语义
 

@@ -1,0 +1,142 @@
+{
+  "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+  "elapsed_sec": 0.716,
+  "frame_count": 12,
+  "ok_count": 0,
+  "torn_count": 12,
+  "frames": [
+    {
+      "decoded": true,
+      "torn": true,
+      "bytes": 41950,
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "path": "hybrid_controller\\logs\\vision_debug\\raw_mjpeg_read_check_20260511_223954\\frame_01_torn.jpg"
+    },
+    {
+      "decoded": true,
+      "torn": true,
+      "bytes": 43356,
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "path": "hybrid_controller\\logs\\vision_debug\\raw_mjpeg_read_check_20260511_223954\\frame_02_torn.jpg"
+    },
+    {
+      "decoded": true,
+      "torn": true,
+      "bytes": 40284,
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "path": "hybrid_controller\\logs\\vision_debug\\raw_mjpeg_read_check_20260511_223954\\frame_03_torn.jpg"
+    },
+    {
+      "decoded": true,
+      "torn": true,
+      "bytes": 42478,
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "path": "hybrid_controller\\logs\\vision_debug\\raw_mjpeg_read_check_20260511_223954\\frame_04_torn.jpg"
+    },
+    {
+      "decoded": true,
+      "torn": true,
+      "bytes": 42057,
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "path": "hybrid_controller\\logs\\vision_debug\\raw_mjpeg_read_check_20260511_223954\\frame_05_torn.jpg"
+    },
+    {
+      "decoded": true,
+      "torn": true,
+      "bytes": 43332,
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "path": "hybrid_controller\\logs\\vision_debug\\raw_mjpeg_read_check_20260511_223954\\frame_06_torn.jpg"
+    },
+    {
+      "decoded": true,
+      "torn": true,
+      "bytes": 40200,
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "path": "hybrid_controller\\logs\\vision_debug\\raw_mjpeg_read_check_20260511_223954\\frame_07_torn.jpg"
+    },
+    {
+      "decoded": true,
+      "torn": true,
+      "bytes": 42434,
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "path": "hybrid_controller\\logs\\vision_debug\\raw_mjpeg_read_check_20260511_223954\\frame_08_torn.jpg"
+    },
+    {
+      "decoded": true,
+      "torn": true,
+      "bytes": 41946,
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "path": "hybrid_controller\\logs\\vision_debug\\raw_mjpeg_read_check_20260511_223954\\frame_09_torn.jpg"
+    },
+    {
+      "decoded": true,
+      "torn": true,
+      "bytes": 43364,
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "path": "hybrid_controller\\logs\\vision_debug\\raw_mjpeg_read_check_20260511_223954\\frame_10_torn.jpg"
+    },
+    {
+      "decoded": true,
+      "torn": true,
+      "bytes": 40200,
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "path": "hybrid_controller\\logs\\vision_debug\\raw_mjpeg_read_check_20260511_223954\\frame_11_torn.jpg"
+    },
+    {
+      "decoded": true,
+      "torn": true,
+      "bytes": 42492,
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "path": "hybrid_controller\\logs\\vision_debug\\raw_mjpeg_read_check_20260511_223954\\frame_12_torn.jpg"
+    }
+  ],
+  "output_dir": "hybrid_controller\\logs\\vision_debug\\raw_mjpeg_read_check_20260511_223954"
+}

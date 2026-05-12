@@ -57,6 +57,7 @@ def resolve_vision_packet(
     resolved: dict[str, object] = dict(packet)
     mapping_mode = _resolve_mapping_mode(packet.get("mapping_mode"), config.vision_mapping_mode)
     resolved["mapping_mode"] = mapping_mode
+    frame_block_reason = str(packet.get("frame_block_reason") or "").strip()
 
     robot_xy = _resolve_robot_xy(snapshot)
     cyl_limits = snapshot.get("limits_cyl") if isinstance(snapshot, Mapping) else None
@@ -71,7 +72,7 @@ def resolve_vision_packet(
 
     slots_raw = packet.get("slots", [])
     slots_resolved: list[dict[str, object]] = []
-    first_invalid_reason = "--"
+    first_invalid_reason = frame_block_reason or "--"
     first_resolved_base_xy: list[float] | None = None
     first_resolved_cyl: list[float] | None = None
     calibration_ready = bool(packet.get("calibration_ready", False))
@@ -95,6 +96,13 @@ def resolve_vision_packet(
         slot_resolved["resolved_cyl"] = None
         slot_resolved["world_xyz"] = None
         slot_resolved["cylindrical_center"] = None
+
+        if frame_block_reason:
+            slot_resolved["invalid_reason"] = frame_block_reason
+            slots_resolved.append(slot_resolved)
+            if first_invalid_reason == "--":
+                first_invalid_reason = frame_block_reason
+            continue
 
         if not bool(slot.get("valid", False)):
             slots_resolved.append(slot_resolved)

@@ -512,6 +512,46 @@ def test_deferred_vision_starts_after_robot_runtime_start_finishes(monkeypatch) 
     assert app.runtime_info["vision_health"] == "starting_8080_without_calibration"
 
 
+def test_deferred_vision_resumes_from_waiting_control_health(monkeypatch) -> None:
+    started: list[str] = []
+
+    class FakeVisionRuntime:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def start(self) -> None:
+            started.append("start")
+
+    app = _make_app(
+        AppConfig(
+            robot_mode="real",
+            robot_transport="ros",
+            vision_mode="robot_camera_detection",
+            vision_auto_start=True,
+            robot_state_stale_threshold_ms=700.0,
+        )
+    )
+    app.runtime_info["vision_health"] = "waiting_control:robot_state_not_fresh"
+    app._vision_auto_start_deferred_reason = ""
+    snapshot = {"state": "IDLE", "busy": False, "carrying": False}
+    app.ros_client = _ReadyRosClient(snapshot)  # type: ignore[assignment]
+    app._remote_snapshot_cache = dict(snapshot)
+    app._remote_snapshot_envelope = RobotSnapshotEnvelope(
+        payload=dict(snapshot),
+        ts=__import__("time").time(),
+        transport="unit",
+        ok=True,
+        error="",
+    )
+    vision_runtime_module = importlib.import_module("hybrid_controller.vision.runtime")
+    monkeypatch.setattr(vision_runtime_module, "VisionRuntime", FakeVisionRuntime)
+
+    app._maybe_start_deferred_vision(source="unit_waiting_control")
+
+    assert started == ["start"]
+    assert app.runtime_info["vision_health"] == "starting_8080_without_calibration"
+
+
 def test_robot_runtime_health_marks_disconnected_when_rosbridge_connected_but_state_stale() -> None:
     app = _make_app(AppConfig(robot_mode="real", robot_transport="ros", robot_state_stale_threshold_ms=700.0))
     app.ros_client = _ConnectedRosClient()  # type: ignore[assignment]

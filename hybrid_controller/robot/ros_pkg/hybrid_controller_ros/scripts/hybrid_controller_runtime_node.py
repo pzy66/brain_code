@@ -4,7 +4,6 @@ import os
 import sys
 import threading
 import time
-import math
 from collections import deque
 
 import rospy
@@ -21,7 +20,11 @@ RUNTIME_DIR = os.path.join(REPO_ROOT, "hybrid_controller", "robot", "runtime")
 if RUNTIME_DIR not in sys.path:
     sys.path.insert(0, RUNTIME_DIR)
 
-from robot_runtime_py36 import JetMaxExecutor, cylindrical_to_cartesian, interpolate_auto_z
+from robot_runtime_py36 import JetMaxExecutor, cylindrical_to_cartesian
+try:
+    from hybrid_controller.robot.runtime.teleop_kernel import CylindricalPose, CylindricalTeleopKernel
+except ImportError:
+    from teleop_kernel import CylindricalPose, CylindricalTeleopKernel
 from hybrid_controller_ros.msg import CylindricalTeleop, RobotState
 from hybrid_controller_ros.srv import (
     GetPickTuning,
@@ -39,136 +42,6 @@ from hybrid_controller_ros.srv import (
     SetSuckerRotation,
     SetSuckerRotationResponse,
 )
-
-
-class CylindricalPose(object):
-    def __init__(self, theta_deg=0.0, radius_mm=0.0, z_mm=0.0):
-        self.theta_deg = float(theta_deg)
-        self.radius_mm = float(radius_mm)
-        self.z_mm = float(z_mm)
-
-    def normalized(self):
-        return CylindricalPose(self.theta_deg, self.radius_mm, self.z_mm)
-
-
-class _TeleopStep(object):
-    def __init__(self, pose, stale):
-        self.pose = pose
-        self.stale = bool(stale)
-
-
-class _TeleopKernel(object):
-    def __init__(
-        self,
-        theta_limits_deg,
-        radius_limits_mm,
-        z_limits_mm,
-        auto_z_profile,
-        validator,
-        tick_hz=20.0,
-        deadman_timeout_sec=0.2,
-        theta_accel_deg_s2=220.0,
-        radius_accel_mm_s2=220.0,
-        z_accel_mm_s2=120.0,
-    ):
-        self.theta_limits_deg = (float(theta_limits_deg[0]), float(theta_limits_deg[1]))
-        self.radius_limits_mm = (float(radius_limits_mm[0]), float(radius_limits_mm[1]))
-        self.z_limits_mm = (float(z_limits_mm[0]), float(z_limits_mm[1]))
-        self.auto_z_profile = tuple((float(radius), float(z_mm)) for radius, z_mm in auto_z_profile)
-        self.validator = validator
-        self.tick_hz = max(float(tick_hz), 1.0)
-        self.tick_sec = 1.0 / self.tick_hz
-        self.deadman_timeout_sec = max(float(deadman_timeout_sec), self.tick_sec)
-        self.theta_accel_deg_s2 = max(float(theta_accel_deg_s2), 1.0)
-        self.radius_accel_mm_s2 = max(float(radius_accel_mm_s2), 1.0)
-        self.z_accel_mm_s2 = max(float(z_accel_mm_s2), 1.0)
-        self.theta_rate_deg_s = 0.0
-        self.radius_rate_mm_s = 0.0
-        self.z_rate_mm_s = 0.0
-        self.command_theta_rate_deg_s = 0.0
-        self.command_radius_rate_mm_s = 0.0
-        self.command_z_rate_mm_s = 0.0
-        self.command_use_auto_z = True
-        self.command_enabled = False
-        self.command_ts = time.monotonic()
-
-    def update_command(
-        self,
-        theta_rate_deg_s=0.0,
-        radius_rate_mm_s=0.0,
-        z_rate_mm_s=0.0,
-        use_auto_z=True,
-        enabled=False,
-        timestamp=None,
-    ):
-        self.command_theta_rate_deg_s = float(theta_rate_deg_s)
-        self.command_radius_rate_mm_s = float(radius_rate_mm_s)
-        self.command_z_rate_mm_s = float(z_rate_mm_s)
-        self.command_use_auto_z = bool(use_auto_z)
-        self.command_enabled = bool(enabled)
-        self.command_ts = float(time.monotonic() if timestamp is None else timestamp)
-
-    def clear_command(self, timestamp=None):
-        self.update_command(0.0, 0.0, 0.0, self.command_use_auto_z, False, timestamp=timestamp)
-
-    def step(self, current_pose, now=None):
-        current_time = float(time.monotonic() if now is None else now)
-        stale = (current_time - float(self.command_ts)) > self.deadman_timeout_sec
-        target_theta_rate = 0.0 if stale or not self.command_enabled else float(self.command_theta_rate_deg_s)
-        target_radius_rate = 0.0 if stale or not self.command_enabled else float(self.command_radius_rate_mm_s)
-        target_z_rate = 0.0 if stale or not self.command_enabled else float(self.command_z_rate_mm_s)
-        self.theta_rate_deg_s = self._ramp(
-            self.theta_rate_deg_s,
-            target_theta_rate,
-            self.theta_accel_deg_s2 * self.tick_sec,
-        )
-        self.radius_rate_mm_s = self._ramp(
-            self.radius_rate_mm_s,
-            target_radius_rate,
-            self.radius_accel_mm_s2 * self.tick_sec,
-        )
-        self.z_rate_mm_s = self._ramp(
-            self.z_rate_mm_s,
-            target_z_rate,
-            self.z_accel_mm_s2 * self.tick_sec,
-        )
-        if abs(self.theta_rate_deg_s) < 1e-6 and abs(self.radius_rate_mm_s) < 1e-6 and abs(self.z_rate_mm_s) < 1e-6:
-            return None
-
-        next_theta = self._clamp(
-            float(current_pose.theta_deg) + self.theta_rate_deg_s * self.tick_sec,
-            self.theta_limits_deg,
-        )
-        next_radius = self._clamp(
-            float(current_pose.radius_mm) + self.radius_rate_mm_s * self.tick_sec,
-            self.radius_limits_mm,
-        )
-        if bool(self.command_use_auto_z) and abs(self.z_rate_mm_s) < 1e-6:
-            next_z = float(interpolate_auto_z(self.auto_z_profile, next_radius))
-        else:
-            next_z = self._clamp(
-                float(current_pose.z_mm) + self.z_rate_mm_s * self.tick_sec,
-                self.z_limits_mm,
-            )
-        validation = self.validator(next_theta, next_radius, next_z)
-        if not bool(validation.get("ok", False)):
-            self.theta_rate_deg_s = 0.0
-            self.radius_rate_mm_s = 0.0
-            self.z_rate_mm_s = 0.0
-            return None
-        pose = CylindricalPose(next_theta, next_radius, next_z).normalized()
-        return _TeleopStep(pose, stale)
-
-    @staticmethod
-    def _ramp(current, target, max_delta):
-        delta = float(target) - float(current)
-        if abs(delta) <= float(max_delta):
-            return float(target)
-        return float(current) + math.copysign(float(max_delta), delta)
-
-    @staticmethod
-    def _clamp(value, limits):
-        return max(float(limits[0]), min(float(limits[1]), float(value)))
 
 
 class _BufferedSender(object):
@@ -259,7 +132,7 @@ class HybridControllerRuntimeNode(object):
             },
             home_pose=(0.0, -120.0, 160.0),
         )
-        self.teleop_kernel = _TeleopKernel(
+        self.teleop_kernel = CylindricalTeleopKernel(
             theta_limits_deg=self.executor.theta_limits,
             radius_limits_mm=self.executor.auto_radius_limits,
             z_limits_mm=self.executor.z_limits,

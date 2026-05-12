@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 from typing import Mapping
 
 from hybrid_controller.app_robot_commands import build_pick_command_from_slot_payload
@@ -187,6 +188,17 @@ class VisionServoController:
                 state=current.state,
                 status=f"waiting_fresh_frame slot={int(slot_id)}",
                 pending=current,
+            )
+        frame_block_reason = ""
+        if isinstance(packet, Mapping):
+            frame_block_reason = str(packet.get("frame_block_reason") or "").strip()
+        if frame_block_reason:
+            return VisionServoDecision(
+                action="CANCEL",
+                state=SERVO_FAILED,
+                status=f"cancelled slot={int(slot_id)} reason={frame_block_reason}",
+                message=f"Vision servo cancelled slot {int(slot_id)}: {frame_block_reason}.",
+                reason=frame_block_reason,
             )
         if slot_payload is None or not bool(slot_payload.get("valid", False)):
             return VisionServoDecision(
@@ -431,6 +443,28 @@ class VisionServoController:
             current_z = None if current_cyl_pose is None else float(current_cyl_pose[2])
             at_confirm_height = current_z is not None and abs(float(current_z) - confirm_z) <= pick_z_tolerance
             if current.state == SERVO_LOW_CONFIRM or at_confirm_height:
+                center_distance = _safe_float(slot_payload.get("center_distance_px"), float("nan"))
+                untrusted_error_px = max(
+                    0.0,
+                    float(getattr(self.config, "vision_low_confirm_untrusted_error_px", 12.0)),
+                )
+                if math.isfinite(center_distance) and center_distance > untrusted_error_px:
+                    return VisionServoDecision(
+                        action="CANCEL",
+                        state=SERVO_FAILED,
+                        status=f"cancelled slot={int(slot_id)} reason=low_confirm_alignment_untrusted",
+                        message=(
+                            "Low-height visual centering is outside the trusted range; "
+                            "run local low-height calibration or reset the block pose before moving."
+                        ),
+                        reason="low_confirm_alignment_untrusted",
+                        trace={
+                            "center_distance_px": float(center_distance),
+                            "untrusted_error_px": float(untrusted_error_px),
+                            "current_z_mm": None if current_z is None else float(current_z),
+                            "confirm_z_mm": float(confirm_z),
+                        },
+                    )
                 target_z = confirm_z if at_confirm_height or current_z is None else current_z
                 next_state = SERVO_FINE_CENTER
             else:
@@ -473,3 +507,11 @@ class VisionServoController:
             return int(packet.get("frame_id", 0))
         except (TypeError, ValueError):
             return 0
+
+
+def _safe_float(value: object, default: float) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return float(default)
+    return result if math.isfinite(result) else float(default)

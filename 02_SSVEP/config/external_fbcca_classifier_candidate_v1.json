@@ -1,0 +1,98 @@
+{
+  "schema_version": "external_fbcca_classifier_candidate_profile_v1",
+  "candidate_name": "external_fbcca_classifier_candidate_v1",
+  "status": "deployable_candidate_found",
+  "runtime_loadable": false,
+  "runtime_load_note": "Shared recipe manifest only. The fbcca_score_ridge_5class runtime bridge now exists for per-subject candidate artifacts that include model_params.state; convert those artifacts with tools/export_classifier_candidate_profile.py. Do not copy this recipe JSON over datasets/profiles/ssvep/default_profile.json.",
+  "source_run": {
+    "dataset": "ysu_an",
+    "run_id": "ysuan_full24_fbcca_ridge5_lrt_s2_20260511_120724",
+    "summary_json": "/data1/zkx/brain/ssvep/reports/external_short_pretrain/ysuan_full24_fbcca_ridge5_lrt_s2_20260511_120724/reports/summary.json",
+    "expected_subject_count": 24,
+    "coverage_subject_count": 24
+  },
+  "recommended_short_pretrain_recipe": {
+    "method": "fbcca_ridge5",
+    "recipe_id": "win2_me2_sm3_lrtmw",
+    "decoder": "fbcca_fixed_all8",
+    "classifier": "fbcca_score_ridge_5class",
+    "score_bank_mode": "full_reference_bank",
+    "threshold_policy": "lrt_multiwindow_reject_gate",
+    "win_sec": 2.0,
+    "step_sec": 0.25,
+    "min_enter_windows": 2,
+    "max_gap_windows": 0,
+    "smoothing_windows": 3,
+    "idle_multiplier": 3.0,
+    "calibration_block_count": 2,
+    "selected_freqs": [
+      8.0,
+      10.5,
+      12.0,
+      15.0
+    ],
+    "frequency_set_id": "none_8_10p5_12_15",
+    "channel_weight_mode": null,
+    "channel_weights": null
+  },
+  "validation_metrics": {
+    "mean_idle_fp_per_min": 0.8366935483870966,
+    "mean_control_recall": 0.8854166666666666,
+    "mean_control_recall_at_2.5s": 0.7781250000000001,
+    "mean_detection_latency_s": 2.296875,
+    "mean_ns1_fp_per_min": 0.609375,
+    "mean_ns2_fp_per_min": 1.984375,
+    "mean_ns3_fp_per_min": 0.0,
+    "split_count": 48
+  },
+  "deployable_budget": {
+    "max_idle_fp_per_min": 1.0,
+    "min_control_recall": 0.8,
+    "min_control_recall_at_2.5s": 0.75,
+    "max_detection_latency_s": 2.5,
+    "require_full_subject_coverage": true
+  },
+  "budget_pass": true,
+  "channel_contract": {
+    "contract": "strict_required_8_posterior",
+    "project_channel_names": [
+      "Oz",
+      "O1",
+      "O2",
+      "PO3",
+      "POz",
+      "PO7",
+      "PO8",
+      "PO4"
+    ],
+    "ysu_an_selected_channel_names": [
+      "Oz",
+      "O1",
+      "O2",
+      "PO3",
+      "Poz",
+      "PO7",
+      "PO8",
+      "PO4"
+    ],
+    "ysu_an_selected_channel_indices_zero_based": [
+      15,
+      14,
+      16,
+      45,
+      46,
+      44,
+      48,
+      47
+    ],
+    "ysu_an_poz_normalizes_to_poz": true,
+    "all_loaded_subjects_match_project_channel_contract": true,
+    "only_required_channels_used": true
+  },
+  "next_steps": [
+    "Use this recipe as the short-pretrain default grid for live calibration.",
+    "Keep channel weights disabled for the first deployable candidate.",
+    "Tune NS2-specific LRT rejection before changing decoder if no-control FP rises in live data.",
+    "Convert per-subject runtime_loadable candidate artifacts to ThresholdProfile JSON before online loading."
+  ]
+}

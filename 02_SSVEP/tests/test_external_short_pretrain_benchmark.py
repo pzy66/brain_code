@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 import sys
 
@@ -48,6 +49,7 @@ def _aggregate_test_row(
     idle_fp_per_min: float,
     control_recall: float,
     detection_latency_s: float,
+    ns2_fp_per_min: float = 0.0,
 ) -> dict[str, object]:
     return {
         "method": "fbcca_ridge5",
@@ -66,6 +68,7 @@ def _aggregate_test_row(
             "async_acc_5class": async_acc_5class,
             "async_macro_f1_5class": async_macro_f1_5class,
             "idle_fp_per_min": idle_fp_per_min,
+            "mixed_idle_fp_per_min": idle_fp_per_min,
             "idle_selected_windows_per_min": idle_fp_per_min,
             "control_recall": control_recall,
             "control_recall_at_2s": control_recall,
@@ -74,6 +77,10 @@ def _aggregate_test_row(
             "detection_latency_s": detection_latency_s,
             "switch_latency_s": detection_latency_s,
             "release_latency_s": detection_latency_s,
+            "ns1_fp_per_min": 0.0,
+            "ns2_fp_per_min": ns2_fp_per_min,
+            "ns3_fp_per_min": 0.0,
+            "ns_all_fp_per_min": ns2_fp_per_min,
         },
     }
 
@@ -112,6 +119,924 @@ def test_enumerate_external_subjects_orders_and_limits(tmp_path: Path) -> None:
 def test_parse_subject_whitelist_supports_global_and_dataset_scoped_tokens() -> None:
     parsed = bench._parse_subject_whitelist("S1,beta:S16,wang2016:S2,ysu_an:S01")
     assert parsed == (("*", "S1"), ("beta", "S16"), ("wang2016", "S2"), ("ysu_an", "S01"))
+
+
+def test_classifier_gate_variant_parser_and_tokens_keep_baseline_recipe_id() -> None:
+    parsed = bench._csv_gate_variant_tuple("baseline_lrtmw,lrtmw_margin_gate,baseline")
+
+    baseline_recipe = bench._classifier_recipe_id_with_smoothing(
+        win_sec=2.0,
+        min_enter_windows=2,
+        smoothing_windows=3,
+        gate_policy=bench.CLASSIFIER_LRT_MULTIWINDOW_REJECT_GATE_POLICY,
+        gate_variant=bench.CLASSIFIER_GATE_VARIANT_BASELINE_LRTMW,
+    )
+    margin_params = {
+        "gate_variant": bench.CLASSIFIER_GATE_VARIANT_LRTMW_MARGIN,
+        "margin_control_quantile": 0.05,
+        "margin_idle_quantile": 0.95,
+        "ratio_idle_quantile": 0.975,
+    }
+    margin_recipe = bench._classifier_recipe_id_with_smoothing(
+        win_sec=2.0,
+        min_enter_windows=2,
+        smoothing_windows=3,
+        gate_policy=bench.CLASSIFIER_LRT_MULTIWINDOW_REJECT_GATE_POLICY,
+        gate_variant=bench.CLASSIFIER_GATE_VARIANT_LRTMW_MARGIN,
+        variant_token=bench._classifier_gate_variant_token(bench.CLASSIFIER_GATE_VARIANT_LRTMW_MARGIN, margin_params),
+    )
+
+    assert parsed == (bench.CLASSIFIER_GATE_VARIANT_BASELINE_LRTMW, bench.CLASSIFIER_GATE_VARIANT_LRTMW_MARGIN)
+    assert baseline_recipe == "win2_me2_sm3_lrtmw"
+    assert margin_recipe.startswith("win2_me2_sm3_lrtmw_mg0p05_0p95_0p975")
+
+
+def test_frequency_specific_gate_variants_parser_and_grid() -> None:
+    parsed = bench._csv_gate_variant_tuple("freqspec_threshold,frequency-specific-logistic,baseline")
+
+    assert parsed == (
+        bench.CLASSIFIER_GATE_VARIANT_FREQUENCY_SPECIFIC_THRESHOLD,
+        bench.CLASSIFIER_GATE_VARIANT_FREQUENCY_SPECIFIC_LOGISTIC,
+        bench.CLASSIFIER_GATE_VARIANT_BASELINE_LRTMW,
+    )
+    assert len(bench._gate_variant_param_grid(bench.CLASSIFIER_GATE_VARIANT_FREQUENCY_SPECIFIC_THRESHOLD)) == 108
+    assert len(bench._gate_variant_param_grid(bench.CLASSIFIER_GATE_VARIANT_FREQUENCY_SPECIFIC_LOGISTIC)) == 16
+    token = bench._classifier_gate_variant_token(
+        bench.CLASSIFIER_GATE_VARIANT_FREQUENCY_SPECIFIC_THRESHOLD,
+        {
+            "margin_idle_quantile": 0.95,
+            "ratio_idle_quantile": 0.975,
+            "entropy_control_quantile": 0.85,
+            "ns2_safety_factor": 1.2,
+        },
+    )
+    assert token == "fsth0p95_0p975_0p85_1p2"
+
+
+def test_frequency_specific_gate_grid_can_be_limited_for_smoke() -> None:
+    threshold_grid = bench._gate_variant_param_grid(
+        bench.CLASSIFIER_GATE_VARIANT_FREQUENCY_SPECIFIC_THRESHOLD,
+        freqspec_margin_idle_quantiles=(0.90,),
+        freqspec_ratio_idle_quantiles=(0.90, 0.95),
+        freqspec_entropy_control_quantiles=(0.80,),
+        freqspec_ns2_safety_factors=(1.0, 1.2),
+    )
+    logistic_grid = bench._gate_variant_param_grid(
+        bench.CLASSIFIER_GATE_VARIANT_FREQUENCY_SPECIFIC_LOGISTIC,
+        freqspec_logistic_prob_thresholds=(0.6, 0.8),
+        freqspec_logistic_ns2_weights=(1.0,),
+    )
+
+    assert len(threshold_grid) == 4
+    assert {item["ratio_idle_quantile"] for item in threshold_grid} == {0.90, 0.95}
+    assert {item["ns2_safety_factor"] for item in threshold_grid} == {1.0, 1.2}
+    assert len(logistic_grid) == 2
+    assert {item["prob_threshold"] for item in logistic_grid} == {0.6, 0.8}
+
+
+def test_frequency_specific_threshold_priority6_combo_set_is_exact() -> None:
+    grid = bench._gate_variant_param_grid(
+        bench.CLASSIFIER_GATE_VARIANT_FREQUENCY_SPECIFIC_THRESHOLD,
+        freqspec_threshold_combo_set=bench.FREQSPEC_THRESHOLD_COMBO_SET_PRIORITY6,
+        freqspec_margin_idle_quantiles=(0.975,),
+        freqspec_ratio_idle_quantiles=(0.975,),
+        freqspec_entropy_control_quantiles=(0.80,),
+        freqspec_ns2_safety_factors=(1.3,),
+    )
+
+    assert len(grid) == 6
+    assert [item["combo_name"] for item in grid] == [
+        "mild",
+        "balanced",
+        "ns2_strict",
+        "recall_safe",
+        "margin_only-ish",
+        "ratio_ns2",
+    ]
+    assert grid[0] == {
+        "gate_variant": bench.CLASSIFIER_GATE_VARIANT_FREQUENCY_SPECIFIC_THRESHOLD,
+        "combo_name": "mild",
+        "margin_idle_quantile": 0.90,
+        "ratio_idle_quantile": 0.90,
+        "entropy_control_quantile": 0.90,
+        "ns2_safety_factor": 1.0,
+    }
+    assert grid[2]["ns2_safety_factor"] == 1.2
+
+
+def test_ns2_and_subject_floor_gate_grids_can_be_limited_for_round2() -> None:
+    ns2_grid = bench._gate_variant_param_grid(
+        bench.CLASSIFIER_GATE_VARIANT_NS2_AWARE,
+        ns2_safety_factors=(1.0, 1.2),
+    )
+    floor_grid = bench._gate_variant_param_grid(
+        bench.CLASSIFIER_GATE_VARIANT_SUBJECT_THRESHOLD_FLOOR,
+        subject_floor_global_quantiles=(0.90, 0.95),
+        subject_floor_idle_quantiles=(0.95,),
+    )
+    combo_grid = bench._gate_variant_param_grid(
+        bench.CLASSIFIER_GATE_VARIANT_SUBJECT_FLOOR_NS2_AWARE,
+        subject_floor_global_quantiles=(0.90,),
+        subject_floor_idle_quantiles=(0.95, 0.975),
+        ns2_safety_factors=(1.0, 1.2),
+    )
+    combo_token = bench._classifier_gate_variant_token(
+        bench.CLASSIFIER_GATE_VARIANT_SUBJECT_FLOOR_NS2_AWARE,
+        combo_grid[-1],
+    )
+
+    assert ns2_grid == [
+        {"gate_variant": bench.CLASSIFIER_GATE_VARIANT_NS2_AWARE, "ns2_safety_factor": 1.0},
+        {"gate_variant": bench.CLASSIFIER_GATE_VARIANT_NS2_AWARE, "ns2_safety_factor": 1.2},
+    ]
+    assert len(floor_grid) == 2
+    assert {item["subject_idle_quantile"] for item in floor_grid} == {0.95}
+    assert len(combo_grid) == 4
+    assert combo_token == "floorns20p9_0p975_1p2"
+
+
+def test_parser_exposes_ns2_and_subject_floor_round2_options() -> None:
+    parser = bench.build_parser()
+    args = parser.parse_args(
+        [
+            "--run-id",
+            "round2",
+            "--output-root",
+            "out",
+            "--dataset-root",
+            "data",
+            "--wang-raw-dir",
+            "wang",
+            "--wang-channels-loc",
+            "loc",
+            "--beta-raw-dir",
+            "beta",
+            "--classifier-gate-variants",
+            "ns2_aware_gate,subject_floor_ns2_aware_gate",
+            "--ns2-safety-factors",
+            "1.0,1.2",
+            "--subject-floor-global-quantiles",
+            "0.90,0.95",
+            "--subject-floor-idle-quantiles",
+            "0.95,0.975",
+        ]
+    )
+
+    assert bench._csv_gate_variant_tuple(args.classifier_gate_variants) == (
+        bench.CLASSIFIER_GATE_VARIANT_NS2_AWARE,
+        bench.CLASSIFIER_GATE_VARIANT_SUBJECT_FLOOR_NS2_AWARE,
+    )
+    assert bench._csv_float_tuple(args.ns2_safety_factors, default=()) == (1.0, 1.2)
+    assert bench._csv_float_tuple(args.subject_floor_global_quantiles, default=()) == (0.90, 0.95)
+    assert bench._csv_float_tuple(args.subject_floor_idle_quantiles, default=()) == (0.95, 0.975)
+
+
+def test_lrt_shape_gate_rejects_low_margin_windows() -> None:
+    freqs = (8.0, 10.5, 12.0, 15.0)
+    labels = ("idle", "8", "10.5", "12", "15")
+    feature_count = len(bench._classifier_feature_names(freqs))
+    model = bench.FBCCARidge5Model(
+        freqs=freqs,
+        labels=labels,
+        feature_mean=np.zeros(feature_count, dtype=np.float64),
+        feature_std=np.ones(feature_count, dtype=np.float64),
+        weights=np.zeros((feature_count + 1, len(labels)), dtype=np.float64),
+        l2=0.1,
+        command_confidence_th=0.1,
+        gate_policy=bench.CLASSIFIER_LRT_MULTIWINDOW_REJECT_GATE_POLICY,
+        lrt_window_th=0.2,
+        lrt_enter_th=0.0,
+        score_shape_margin_index=bench._feature_index(bench._classifier_feature_names(freqs), "margin"),
+        score_shape_margin_th=1.0,
+        fit_summary={},
+    )
+    probs = np.asarray([[0.1, 0.8, 0.05, 0.03, 0.02]], dtype=np.float64)
+    evidence = np.asarray([2.0], dtype=np.float64)
+    features = np.zeros((1, feature_count), dtype=np.float64)
+    features[0, int(model.score_shape_margin_index)] = 0.2
+
+    pred_label, _confidence, _first_index = bench._predict_lrt_multiwindow_reject_trial_from_probs(
+        model,
+        probs,
+        np.asarray(labels, dtype=object),
+        evidence,
+        min_enter_windows=1,
+        feature_matrix=features,
+    )
+
+    assert pred_label == "idle"
+
+
+def test_frequency_specific_gate_mask_rejects_selected_freq_when_threshold_not_met() -> None:
+    freqs = (8.0, 10.5, 12.0, 15.0)
+    labels = ("idle", "8", "10.5", "12", "15")
+    feature_names = bench._classifier_feature_names(freqs)
+    feature_count = len(feature_names)
+    margin_index = bench._feature_index(feature_names, "margin")
+    ratio_index = bench._feature_index(feature_names, "ratio")
+    entropy_index = bench._feature_index(feature_names, "score_entropy")
+    top1_index = bench._feature_index(feature_names, "top1_score")
+    top2_index = bench._feature_index(feature_names, "top2_score")
+    normalized_top1_index = bench._feature_index(feature_names, "normalized_top1")
+    model = bench.FBCCARidge5Model(
+        freqs=freqs,
+        labels=labels,
+        feature_mean=np.zeros(feature_count, dtype=np.float64),
+        feature_std=np.ones(feature_count, dtype=np.float64),
+        weights=np.zeros((feature_count + 1, len(labels)), dtype=np.float64),
+        l2=0.1,
+        command_confidence_th=0.1,
+        gate_policy=bench.CLASSIFIER_LRT_MULTIWINDOW_REJECT_GATE_POLICY,
+        lrt_window_th=0.1,
+        lrt_enter_th=0.0,
+        smoothing_windows=1,
+        gate_variant=bench.CLASSIFIER_GATE_VARIANT_FREQUENCY_SPECIFIC_THRESHOLD,
+        frequency_specific_control_state_gates={
+            "8": {
+                "type": "threshold",
+                "theta_lrt_f": 0.2,
+                "theta_score_f": 0.5,
+                "theta_margin_f": 1.0,
+                "theta_ratio_f": 1.1,
+                "theta_entropy_f": 0.9,
+                "theta_multiwindow_same_freq_count": 1.0,
+            }
+        },
+        fit_summary={"score_bank_mode": "command_only"},
+    )
+    probs = np.asarray([[0.05, 0.90, 0.03, 0.01, 0.01]], dtype=np.float64)
+    features = np.zeros((1, feature_count), dtype=np.float64)
+    features[0, 0] = 0.9
+    features[0, top1_index] = 0.9
+    features[0, top2_index] = 0.1
+    features[0, margin_index] = 0.2
+    features[0, ratio_index] = 9.0
+    features[0, normalized_top1_index] = 0.75
+    features[0, entropy_index] = 0.2
+
+    pred_label, _confidence, _first_index = bench._predict_lrt_multiwindow_reject_trial_from_probs(
+        model,
+        probs,
+        np.asarray(labels, dtype=object),
+        np.asarray([2.0], dtype=np.float64),
+        min_enter_windows=1,
+        feature_matrix=features,
+    )
+
+    assert pred_label == "idle"
+
+
+def test_frequency_specific_logistic_trace_exports_score_space_fields() -> None:
+    freqs = (8.0, 10.5, 12.0, 15.0)
+    labels = ("idle", "8", "10.5", "12", "15")
+    feature_names = bench._classifier_feature_names(freqs)
+    feature_count = len(feature_names)
+    margin_index = bench._feature_index(feature_names, "margin")
+    top1_index = bench._feature_index(feature_names, "top1_score")
+    top2_index = bench._feature_index(feature_names, "top2_score")
+    ratio_index = bench._feature_index(feature_names, "ratio")
+    normalized_top1_index = bench._feature_index(feature_names, "normalized_top1")
+    entropy_index = bench._feature_index(feature_names, "score_entropy")
+    weights = np.zeros((feature_count + 1, len(labels)), dtype=np.float64)
+    weights[0, 1] = 5.0
+    base_model = bench.FBCCARidge5Model(
+        freqs=freqs,
+        labels=labels,
+        feature_mean=np.zeros(feature_count, dtype=np.float64),
+        feature_std=np.ones(feature_count, dtype=np.float64),
+        weights=weights,
+        l2=0.1,
+        command_confidence_th=0.0,
+        gate_policy=bench.CLASSIFIER_LRT_MULTIWINDOW_REJECT_GATE_POLICY,
+        lrt_feature_indices=(margin_index,),
+        lrt_feature_mean_control=np.asarray([3.0], dtype=np.float64),
+        lrt_feature_std_control=np.ones(1, dtype=np.float64),
+        lrt_feature_mean_idle=np.asarray([0.0], dtype=np.float64),
+        lrt_feature_std_idle=np.ones(1, dtype=np.float64),
+        lrt_window_th=0.1,
+        lrt_enter_th=0.0,
+        smoothing_windows=1,
+        fit_summary={"score_bank_mode": "command_only"},
+    )
+    candidate_model = replace(
+        base_model,
+        gate_variant=bench.CLASSIFIER_GATE_VARIANT_FREQUENCY_SPECIFIC_LOGISTIC,
+        frequency_specific_control_state_gates={
+            "8": {
+                "type": "logistic",
+                "weights": [3.0] + [0.0] * len(bench.FREQUENCY_SPECIFIC_GATE_FEATURE_NAMES),
+                "feature_mean": [0.0] * len(bench.FREQUENCY_SPECIFIC_GATE_FEATURE_NAMES),
+                "feature_std": [1.0] * len(bench.FREQUENCY_SPECIFIC_GATE_FEATURE_NAMES),
+                "prob_threshold": 0.5,
+            }
+        },
+    )
+    features = np.zeros((2, feature_count), dtype=np.float64)
+    features[:, 0] = 0.9
+    features[:, top1_index] = 0.9
+    features[:, top2_index] = 0.1
+    features[:, margin_index] = 3.0
+    features[:, ratio_index] = 9.0
+    features[:, normalized_top1_index] = 0.75
+    features[:, entropy_index] = 0.2
+    scored = [
+        bench.ScoredTrial(
+            trial=TrialSpec(label="8Hz", expected_freq=8.0, trial_id=7, block_index=2),
+            score_matrix=np.asarray([[0.9, 0.1, 0.05, 0.02], [0.92, 0.11, 0.05, 0.02]], dtype=np.float64),
+            feature_matrix=features,
+            duration_sec=2.5,
+        )
+    ]
+
+    trace = bench._trace_rows_for_frequency_specific_logistic_case(
+        baseline_model=base_model,
+        candidate_model=candidate_model,
+        scored_trials=scored,
+        dataset="ysu_an",
+        subject="S11",
+        split_index=0,
+        recipe_id="trace_recipe",
+        frequency_profile="8_10p5_12_15",
+        frequency_set_id="none_8_10p5_12_15",
+        win_sec=2.0,
+        step_sec=0.25,
+        min_enter_windows=2,
+    )
+
+    assert trace["logistic_trace_windows"]
+    first = trace["logistic_trace_windows"][0]
+    for key in (
+        "selected_freq_score",
+        "top1_score",
+        "top2_score",
+        "top3_score",
+        "margin",
+        "ratio",
+        "normalized_top1",
+        "score_entropy",
+        "lrt_evidence",
+        "multiwindow_same_freq_count",
+        "multiwindow_margin_mean",
+        "multiwindow_entropy_mean",
+        "cs_probability",
+        "gate_pass",
+        "transition_type",
+    ):
+        assert key in first
+    assert first["subject"] == "S11"
+    assert first["selected_freq"] == "8"
+    assert first["cs_probability"] > 0.5
+    assert trace["logistic_trace_trial_summary"][0]["transition_type"] == "baseline_TP_candidate_TP"
+
+
+def test_subject_floor_ns2_aware_gate_uses_calibration_only_thresholds() -> None:
+    freqs = (8.0, 10.5, 12.0, 15.0)
+    labels = ("idle", "8", "10.5", "12", "15")
+    feature_names = bench._classifier_feature_names(freqs)
+    feature_count = len(feature_names)
+    margin_index = bench._feature_index(feature_names, "margin")
+    model = bench.FBCCARidge5Model(
+        freqs=freqs,
+        labels=labels,
+        feature_mean=np.zeros(feature_count, dtype=np.float64),
+        feature_std=np.ones(feature_count, dtype=np.float64),
+        weights=np.zeros((feature_count + 1, len(labels)), dtype=np.float64),
+        l2=0.1,
+        command_confidence_th=0.0,
+        gate_policy=bench.CLASSIFIER_LRT_MULTIWINDOW_REJECT_GATE_POLICY,
+        lrt_feature_indices=(margin_index,),
+        lrt_feature_mean_control=np.asarray([3.0], dtype=np.float64),
+        lrt_feature_std_control=np.ones(1, dtype=np.float64),
+        lrt_feature_mean_idle=np.asarray([0.0], dtype=np.float64),
+        lrt_feature_std_idle=np.asarray([3.0], dtype=np.float64),
+        lrt_window_th=0.2,
+        lrt_enter_th=0.0,
+        fit_summary={},
+    )
+
+    def row(margin: float) -> np.ndarray:
+        values = np.zeros(feature_count, dtype=np.float64)
+        values[margin_index] = float(margin)
+        return values
+
+    updated = bench._apply_gate_variant_to_model(
+        model,
+        feature_names=feature_names,
+        grouped_features={
+            "control": np.vstack([row(3.0), row(3.2)]),
+            "idle": np.vstack([row(0.0), row(0.2), row(0.4)]),
+            "ns2": np.vstack([row(2.5), row(2.8), row(3.0)]),
+        },
+        params={
+            "gate_variant": bench.CLASSIFIER_GATE_VARIANT_SUBJECT_FLOOR_NS2_AWARE,
+            "global_floor_quantile": 0.90,
+            "subject_idle_quantile": 0.95,
+            "ns2_safety_factor": 1.2,
+        },
+    )
+    fit = dict(updated.fit_summary)
+
+    assert updated.gate_variant == bench.CLASSIFIER_GATE_VARIANT_SUBJECT_FLOOR_NS2_AWARE
+    assert updated.lrt_window_floor_th is not None
+    assert fit["threshold_fit_split"] == "calibration_blocks"
+    assert fit["test_split"] == "holdout_blocks"
+    assert fit["ns2_threshold_source"] == "calibration_ns2"
+    assert fit["lrt_window_floor_th"] == pytest.approx(
+        max(
+            model.lrt_window_th,
+            fit["subject_floor_global_lrt_th"],
+            fit["subject_floor_idle_lrt_th"],
+            fit["ns2_lrt_window_floor_th"],
+        )
+    )
+    assert fit["lrt_window_floor_th"] >= fit["ns2_lrt_window_floor_th"]
+    assert fit["gate_variant_params"]["ns2_safety_factor"] == 1.2
+
+
+def test_frequency_specific_threshold_fit_uses_selected_freq_rows_and_ns2_hard_negative() -> None:
+    freqs = (8.0, 10.5, 12.0, 15.0)
+    labels = ("idle", "8", "10.5", "12", "15")
+    feature_names = bench._classifier_feature_names(freqs)
+    feature_count = len(feature_names)
+    score8 = bench._feature_index(feature_names, "fbcca_score_8")
+    score10 = bench._feature_index(feature_names, "fbcca_score_10.5")
+    top1 = bench._feature_index(feature_names, "top1_score")
+    top2 = bench._feature_index(feature_names, "top2_score")
+    margin = bench._feature_index(feature_names, "margin")
+    ratio = bench._feature_index(feature_names, "ratio")
+    normalized = bench._feature_index(feature_names, "normalized_top1")
+    entropy = bench._feature_index(feature_names, "score_entropy")
+
+    def feature_row(selected: str, *, margin_value: float, ratio_value: float = 4.0, entropy_value: float = 0.2) -> np.ndarray:
+        row = np.zeros(feature_count, dtype=np.float64)
+        if selected == "8":
+            row[score8] = 10.0
+            row[score10] = 1.0
+        else:
+            row[score8] = 1.0
+            row[score10] = 10.0
+        row[top1] = 10.0
+        row[top2] = 1.0
+        row[margin] = margin_value
+        row[ratio] = ratio_value
+        row[normalized] = 0.8
+        row[entropy] = entropy_value
+        return row
+
+    scored = [
+        bench.ScoredTrial(
+            trial=TrialSpec(label="8Hz", expected_freq=8.0, trial_id=1, block_index=0),
+            score_matrix=np.zeros((1, 4), dtype=np.float64),
+            feature_matrix=np.vstack([feature_row("8", margin_value=4.0)]),
+            duration_sec=2.0,
+        ),
+        bench.ScoredTrial(
+            trial=TrialSpec(label="ns2_idle", expected_freq=None, trial_id=2, block_index=0),
+            score_matrix=np.zeros((1, 4), dtype=np.float64),
+            feature_matrix=np.vstack([feature_row("10.5", margin_value=99.0)]),
+            duration_sec=2.0,
+        ),
+        bench.ScoredTrial(
+            trial=TrialSpec(label="ns2_idle", expected_freq=None, trial_id=3, block_index=0),
+            score_matrix=np.zeros((1, 4), dtype=np.float64),
+            feature_matrix=np.vstack([feature_row("8", margin_value=4.0)]),
+            duration_sec=2.0,
+        ),
+    ]
+    model = bench.FBCCARidge5Model(
+        freqs=freqs,
+        labels=labels,
+        feature_mean=np.zeros(feature_count, dtype=np.float64),
+        feature_std=np.ones(feature_count, dtype=np.float64),
+        weights=np.zeros((feature_count + 1, len(labels)), dtype=np.float64),
+        l2=0.1,
+        command_confidence_th=0.0,
+        gate_policy=bench.CLASSIFIER_LRT_MULTIWINDOW_REJECT_GATE_POLICY,
+        lrt_feature_indices=(margin,),
+        lrt_feature_mean_control=np.asarray([4.0], dtype=np.float64),
+        lrt_feature_std_control=np.ones(1, dtype=np.float64),
+        lrt_feature_mean_idle=np.zeros(1, dtype=np.float64),
+        lrt_feature_std_idle=np.ones(1, dtype=np.float64),
+        lrt_window_th=0.0,
+        lrt_enter_th=0.0,
+        smoothing_windows=1,
+        fit_summary={"min_enter_windows": 1, "score_bank_mode": "command_only"},
+    )
+    model.weights[1 + score8, 1] = 1.0
+    model.weights[1 + score10, 2] = 1.0
+
+    payload = bench._fit_frequency_specific_threshold_gate_payload(
+        model,
+        feature_names=feature_names,
+        scored_trials=scored,
+        params={
+            "margin_idle_quantile": 0.90,
+            "ratio_idle_quantile": 0.90,
+            "entropy_control_quantile": 0.85,
+            "ns2_safety_factor": 1.2,
+        },
+        smoothing_windows=1,
+    )
+
+    assert sorted(payload) == ["10.5", "12", "15", "8"]
+    assert payload["8"]["negative_windows"] == 1
+    assert payload["8"]["hard_negative_windows"] == 1
+    assert payload["8"]["theta_lrt_f"] >= payload["8"]["theta_ns2_f"] * 1.2 - 1e-9
+    assert payload["8"]["theta_margin_f"] < 20.0
+    assert payload["8"]["gate_fit_validation"]["policy"] == "calibration_trial_holdout_alternating"
+    assert payload["8"]["gate_fit_validation"]["validation_trial_ids"] == [2]
+
+
+def test_frequency_specific_gate_model_records_calibration_validation_metrics() -> None:
+    freqs = (8.0, 10.5, 12.0, 15.0)
+    labels = ("idle", "8", "10.5", "12", "15")
+    feature_names = bench._classifier_feature_names(freqs)
+    feature_count = len(feature_names)
+    score8 = bench._feature_index(feature_names, "fbcca_score_8")
+    top1 = bench._feature_index(feature_names, "top1_score")
+    top2 = bench._feature_index(feature_names, "top2_score")
+    margin = bench._feature_index(feature_names, "margin")
+    ratio = bench._feature_index(feature_names, "ratio")
+    normalized = bench._feature_index(feature_names, "normalized_top1")
+    entropy = bench._feature_index(feature_names, "score_entropy")
+
+    def row(score: float, margin_value: float) -> np.ndarray:
+        values = np.zeros(feature_count, dtype=np.float64)
+        values[score8] = score
+        values[top1] = score
+        values[top2] = 0.1
+        values[margin] = margin_value
+        values[ratio] = score / 0.1
+        values[normalized] = 0.9
+        values[entropy] = 0.1
+        return values
+
+    scored = [
+        bench.ScoredTrial(
+            trial=TrialSpec(label="8Hz", expected_freq=8.0, trial_id=1, block_index=0),
+            score_matrix=np.zeros((1, 4), dtype=np.float64),
+            feature_matrix=np.vstack([row(5.0, 4.0)]),
+            duration_sec=2.0,
+        ),
+        bench.ScoredTrial(
+            trial=TrialSpec(label="ns2_idle", expected_freq=None, trial_id=2, block_index=0),
+            score_matrix=np.zeros((1, 4), dtype=np.float64),
+            feature_matrix=np.vstack([row(5.0, 4.0)]),
+            duration_sec=2.0,
+        ),
+        bench.ScoredTrial(
+            trial=TrialSpec(label="8Hz", expected_freq=8.0, trial_id=3, block_index=1),
+            score_matrix=np.zeros((1, 4), dtype=np.float64),
+            feature_matrix=np.vstack([row(5.0, 4.0)]),
+            duration_sec=2.0,
+        ),
+    ]
+    model = bench.FBCCARidge5Model(
+        freqs=freqs,
+        labels=labels,
+        feature_mean=np.zeros(feature_count, dtype=np.float64),
+        feature_std=np.ones(feature_count, dtype=np.float64),
+        weights=np.zeros((feature_count + 1, len(labels)), dtype=np.float64),
+        l2=0.1,
+        command_confidence_th=0.0,
+        gate_policy=bench.CLASSIFIER_LRT_MULTIWINDOW_REJECT_GATE_POLICY,
+        lrt_feature_indices=(margin,),
+        lrt_feature_mean_control=np.asarray([4.0], dtype=np.float64),
+        lrt_feature_std_control=np.ones(1, dtype=np.float64),
+        lrt_feature_mean_idle=np.zeros(1, dtype=np.float64),
+        lrt_feature_std_idle=np.ones(1, dtype=np.float64),
+        lrt_window_th=0.0,
+        lrt_enter_th=0.0,
+        smoothing_windows=1,
+        fit_summary={"min_enter_windows": 1, "score_bank_mode": "command_only"},
+    )
+    model.weights[1 + score8, 1] = 1.0
+
+    updated = bench._apply_gate_variant_to_model(
+        model,
+        feature_names=feature_names,
+        grouped_features={"control": np.vstack([row(5.0, 4.0)]), "idle": np.vstack([row(5.0, 4.0)])},
+        scored_trials=scored,
+        params={
+            "gate_variant": bench.CLASSIFIER_GATE_VARIANT_FREQUENCY_SPECIFIC_THRESHOLD,
+            "margin_idle_quantile": 0.90,
+            "ratio_idle_quantile": 0.90,
+            "entropy_control_quantile": 0.85,
+            "ns2_safety_factor": 1.0,
+        },
+        win_sec=2.0,
+        step_sec=0.25,
+        min_enter_windows=1,
+    )
+
+    validation = updated.fit_summary["gate_validation_metrics"]
+    assert updated.fit_summary["frequency_specific_grid_selection_policy"] == "calibration_internal_validation_first"
+    assert validation["supported"] is True
+    assert validation["split"] == "calibration_gate_validation_trials"
+    assert validation["trial_count"] == 1
+    assert "control_recall" in validation["metrics"]
+
+
+def test_frequency_specific_summary_rank_uses_gate_validation_before_holdout() -> None:
+    baseline = {
+        "gate_variant": bench.CLASSIFIER_GATE_VARIANT_BASELINE_LRTMW,
+        "mean_mixed_idle_fp_per_min": 0.8,
+        "mean_control_recall": 0.88,
+        "mean_control_recall_at_2.5s": 0.78,
+        "mean_async_macro_f1_5class": 0.8,
+        "mean_detection_latency_s": 2.3,
+    }
+    validation_good = {
+        **baseline,
+        "gate_variant": bench.CLASSIFIER_GATE_VARIANT_FREQUENCY_SPECIFIC_THRESHOLD,
+        "mean_mixed_idle_fp_per_min": 0.95,
+        "gate_validation_summary": {
+            "supported": True,
+            "mean_idle_fp_per_min": 0.2,
+            "mean_control_recall": 0.9,
+            "mean_control_recall_at_2.5s": 0.8,
+            "mean_async_macro_f1_5class": 0.82,
+            "mean_detection_latency_s": 2.2,
+        },
+    }
+    validation_bad = {
+        **baseline,
+        "gate_variant": bench.CLASSIFIER_GATE_VARIANT_FREQUENCY_SPECIFIC_THRESHOLD,
+        "mean_mixed_idle_fp_per_min": 0.1,
+        "gate_validation_summary": {
+            "supported": True,
+            "mean_idle_fp_per_min": 2.0,
+            "mean_control_recall": 0.5,
+            "mean_control_recall_at_2.5s": 0.4,
+            "mean_async_macro_f1_5class": 0.4,
+            "mean_detection_latency_s": 3.0,
+        },
+    }
+
+    assert bench._summary_rank_key(validation_good) < bench._summary_rank_key(validation_bad)
+
+
+def test_decision_table_marks_ns2_reduced_tradeoff_and_5state_alias() -> None:
+    baseline = {
+        "method": "fbcca_ridge5",
+        "recipe_id": "win2_me2_sm3_lrtmw",
+        "gate_variant": bench.CLASSIFIER_GATE_VARIANT_BASELINE_LRTMW,
+        "expected_subject_count": 24,
+        "coverage_subject_count": 24,
+        "split_count": 48,
+        "mean_mixed_idle_fp_per_min": 0.84,
+        "mean_ns2_fp_per_min": 1.98,
+        "mean_control_recall": 0.885,
+        "mean_control_recall_at_2.5s": 0.778,
+        "mean_detection_latency_s": 2.29,
+        "mean_async_macro_f1_5class": 0.8,
+        "deployable_budget_pass": True,
+        "subjects": [],
+    }
+    candidate = {
+        **baseline,
+        "recipe_id": "win2_me2_sm3_lrtmw_ns2sf1p2",
+        "gate_variant": bench.CLASSIFIER_GATE_VARIANT_NS2_AWARE,
+        "mean_ns2_fp_per_min": 1.2,
+        "mean_control_recall_at_2.5s": 0.752,
+    }
+
+    metrics = bench._summary_metric_payload(candidate)
+    rows = bench._decision_table_rows([baseline, candidate])
+
+    assert metrics["async_macro_f1_5state"] == metrics["async_macro_f1_5class"]
+    assert rows[1]["ns2_status"] == "ns2_reduced_tradeoff"
+    assert rows[1]["deployable"] is True
+    assert rows[1]["delta_ns2_fp_per_min"] < 0.0
+
+
+def test_subgroup_comparison_marks_ns2_improved_and_candidate_eligible() -> None:
+    baseline_rows = [
+        _aggregate_test_row(
+            subject=subject,
+            recipe_id="win2_me2_sm3_lrtmw",
+            async_macro_f1_5class=0.8,
+            async_acc_5class=0.8,
+            idle_fp_per_min=1.2,
+            ns2_fp_per_min=2.0 if subject in bench.HIGH_FP_SUBGROUP_SUBJECTS else 0.2,
+            control_recall=0.78 if subject in bench.LOW_RECALL_SUBGROUP_SUBJECTS else 0.88,
+            detection_latency_s=2.3,
+        )
+        for subject in bench.HIGH_RISK_VALIDATION_SUBJECTS
+    ]
+    candidate_rows = [
+        _aggregate_test_row(
+            subject=subject,
+            recipe_id="win2_me2_sm3_lrtmw_fsth0p95_0p90_0p90_1p1",
+            async_macro_f1_5class=0.82,
+            async_acc_5class=0.82,
+            idle_fp_per_min=0.9,
+            ns2_fp_per_min=1.1 if subject in bench.HIGH_FP_SUBGROUP_SUBJECTS else 0.2,
+            control_recall=0.76 if subject in bench.LOW_RECALL_SUBGROUP_SUBJECTS else 0.86,
+            detection_latency_s=2.35,
+        )
+        for subject in bench.HIGH_RISK_VALIDATION_SUBJECTS
+    ]
+    for row in candidate_rows:
+        row["gate_variant"] = bench.CLASSIFIER_GATE_VARIANT_FREQUENCY_SPECIFIC_THRESHOLD
+        row["gate_variant_params"] = {
+            "gate_variant": bench.CLASSIFIER_GATE_VARIANT_FREQUENCY_SPECIFIC_THRESHOLD,
+            "combo_name": "balanced",
+            "margin_idle_quantile": 0.95,
+            "ratio_idle_quantile": 0.90,
+            "entropy_control_quantile": 0.90,
+            "ns2_safety_factor": 1.1,
+        }
+        row["calibration_profile"] = {
+            "fit_summary": {
+                "gate_variant_params": dict(row["gate_variant_params"]),
+                "frequency_specific_grid_selection_policy": bench.FREQSPEC_GRID_SELECTION_POLICY,
+                "gate_validation_metrics": {
+                    "supported": True,
+                    "metrics": {
+                        "mixed_idle_fp_per_min": 0.8,
+                        "ns2_fp_per_min": 1.0,
+                        "control_recall": 0.86,
+                        "control_recall_at_2.5s": 0.76,
+                        "async_macro_f1_5class": 0.8,
+                        "detection_latency_s": 2.3,
+                    },
+                },
+            }
+        }
+
+    summaries = bench.aggregate_recipe_rows(baseline_rows + candidate_rows, expected_subject_count=9)
+    rows = bench._decision_table_rows(summaries)
+    candidate = next(row for row in rows if row["gate_variant"] == bench.CLASSIFIER_GATE_VARIANT_FREQUENCY_SPECIFIC_THRESHOLD)
+
+    assert candidate["combo_name"] == "balanced"
+    assert candidate["high_risk_ns2_fp_per_min"] == pytest.approx(1.1)
+    assert candidate["high_risk_delta_ns2_fp_per_min"] == pytest.approx(-0.9)
+    assert candidate["high_risk_ns2_reduction_ratio"] == pytest.approx(0.45)
+    assert candidate["low_recall_recall_at_2.5s"] == pytest.approx(0.76)
+    assert candidate["low_recall_delta_recall_at_2.5s"] == pytest.approx(-0.02)
+    assert candidate["ns2_improved"] is True
+    assert candidate["recall_degraded"] is False
+    assert candidate["full24_candidate_eligible"] is True
+    assert candidate["recommended_profile_export"] is True
+    assert candidate["frequency_specific_grid_selection_policy"] == bench.FREQSPEC_GRID_SELECTION_POLICY
+    assert candidate["gate_validation_ns2_fp_per_min"] == pytest.approx(1.0)
+    assert "freq_10p5_command_recall" in candidate
+    assert "freq_8_recall_at_2.5s" in candidate
+
+
+def test_subgroup_comparison_marks_recall_degraded_with_relaxed_large_ns2_gain() -> None:
+    baseline = {
+        "mean_control_recall": 0.88,
+        "subjects": [
+            {"subject": subject, "mean_ns2_fp_per_min": 2.0, "mean_control_recall_at_2.5s": 0.78}
+            for subject in bench.HIGH_FP_SUBGROUP_SUBJECTS
+        ]
+        + [
+            {"subject": subject, "mean_ns2_fp_per_min": 0.2, "mean_control_recall_at_2.5s": 0.78}
+            for subject in bench.LOW_RECALL_SUBGROUP_SUBJECTS
+        ],
+    }
+    candidate = {
+        "mean_control_recall": 0.86,
+        "failed_case_count": 0,
+        "hard_failed_case_count": 0,
+        "subjects": [
+            {"subject": subject, "mean_ns2_fp_per_min": 1.0, "mean_control_recall_at_2.5s": 0.78}
+            for subject in bench.HIGH_FP_SUBGROUP_SUBJECTS
+        ]
+        + [
+            {"subject": subject, "mean_ns2_fp_per_min": 0.2, "mean_control_recall_at_2.5s": 0.725}
+            for subject in bench.LOW_RECALL_SUBGROUP_SUBJECTS
+        ],
+    }
+
+    payload = bench._candidate_subgroup_comparison_payload(candidate, baseline)
+
+    assert payload["high_risk_ns2_reduction_ratio"] == pytest.approx(0.5)
+    assert payload["allowed_low_recall_drop"] == pytest.approx(0.05)
+    assert payload["recall_degraded"] is True
+    assert payload["full24_candidate_eligible"] is False
+
+
+def test_candidate_artifact_paths_for_recipe_reads_matching_rows() -> None:
+    rows = [
+        _aggregate_test_row(
+            subject="S01",
+            recipe_id="win2_me2_sm3_lrtmw",
+            async_macro_f1_5class=0.9,
+            async_acc_5class=0.9,
+            idle_fp_per_min=0.5,
+            control_recall=0.9,
+            detection_latency_s=2.2,
+        ),
+        _aggregate_test_row(
+            subject="S02",
+            recipe_id="win2_me2_sm3_lrtmw",
+            async_macro_f1_5class=0.9,
+            async_acc_5class=0.9,
+            idle_fp_per_min=0.5,
+            control_recall=0.9,
+            detection_latency_s=2.2,
+        ),
+        _aggregate_test_row(
+            subject="S03",
+            recipe_id="win2p5_me2_sm3_lrtmw",
+            async_macro_f1_5class=0.9,
+            async_acc_5class=0.9,
+            idle_fp_per_min=0.5,
+            control_recall=0.9,
+            detection_latency_s=2.2,
+        ),
+    ]
+    rows[0]["calibration_profile"] = {"candidate_artifact_path": "/remote/S01.json"}
+    rows[1]["calibration_profile"] = {"candidate_artifact_path": "/remote/S02.json"}
+    rows[2]["calibration_profile"] = {"candidate_artifact_path": "/remote/S03.json"}
+    recipe = {
+        "method": "fbcca_ridge5",
+        "recipe_id": "win2_me2_sm3_lrtmw",
+        "frequency_set_id": "",
+        "idle_multiplier": 2.0,
+        "calibration_block_count": 2,
+    }
+
+    paths = bench._candidate_artifact_paths_for_recipe(rows, recipe)
+
+    assert paths == ["/remote/S01.json", "/remote/S02.json"]
+
+
+def test_channel_compatibility_payload_marks_ysuan_strict8_match() -> None:
+    payload = bench._channel_compatibility_payload(
+        "ysu_an",
+        {
+            "all_channel_count": 63,
+            "selected_channel_names": ["Oz", "O1", "O2", "PO3", "Poz", "PO7", "PO8", "PO4"],
+            "selected_channel_indices_zero_based": [15, 14, 16, 45, 46, 44, 48, 47],
+        },
+    )
+
+    assert payload["channel_contract"] == "strict_required_8_posterior"
+    assert payload["matches_project_channel_contract"] is True
+    assert payload["dataset_matches_required_order"] is True
+    assert payload["only_required_channels_used"] is True
+    assert payload["source_channel_count"] == 63
+    assert payload["selected_channel_indices_one_based"] == [16, 15, 17, 46, 47, 45, 49, 48]
+
+
+def test_channel_compatibility_summary_reports_mismatch() -> None:
+    summary = bench._channel_compatibility_summary(
+        [
+            {
+                "dataset": "ysu_an",
+                "subject": "S01",
+                "channel_compatibility": {
+                    "matches_project_channel_contract": False,
+                    "dataset_selected_channel_names": ["O1", "Oz"],
+                    "dataset_required_channel_names": list(bench.YSUAN_REQUIRED_CHANNELS),
+                },
+            }
+        ]
+    )
+
+    assert summary["all_loaded_subjects_match_project_channel_contract"] is False
+    assert summary["mismatched_subjects"][0]["subject"] == "S01"
+
+
+def test_evaluation_payload_preserves_ysuan_no_control_subtype_metrics() -> None:
+    payload = bench._evaluation_payload(
+        {
+            "fixed_window_metrics_5class": {"acc": 1.0},
+            "async_lens_metrics_5class": {"macro_f1": 0.8},
+            "no_control_subtype_metrics": {
+                "ns1": {"idle_fp_per_min": 0.1},
+                "ns2": {"idle_fp_per_min": 0.2},
+                "ns3": {"idle_fp_per_min": 0.3},
+                "ns_all_fp_per_min": 0.25,
+            },
+        }
+    )
+
+    metrics = bench._extract_row_metrics(payload)
+
+    assert abs(float(metrics["ns1_fp_per_min"]) - 0.1) < 1e-9
+    assert abs(float(metrics["ns2_fp_per_min"]) - 0.2) < 1e-9
+    assert abs(float(metrics["ns3_fp_per_min"]) - 0.3) < 1e-9
+    assert abs(float(metrics["ns_all_fp_per_min"]) - 0.25) < 1e-9
+    assert abs(float(metrics["real_idle_fp_per_min"]) - 0.25) < 1e-9
+    assert abs(float(metrics["mixed_idle_fp_per_min"]) - 0.25) < 1e-9
+
+
+def test_extract_row_metrics_distinguishes_real_approx_and_mixed_idle() -> None:
+    payload = {
+        "async_metrics": {"idle_fp_per_min": 1.25},
+        "clean_idle_proxy_metrics": {"supported": True, "idle_fp_per_min": 0.4},
+    }
+
+    metrics = bench._extract_row_metrics(payload)
+
+    assert abs(float(metrics["approx_idle_fp_per_min"]) - 1.25) < 1e-9
+    assert abs(float(metrics["real_idle_fp_per_min"]) - 0.4) < 1e-9
+    assert abs(float(metrics["mixed_idle_fp_per_min"]) - 0.4) < 1e-9
 
 
 def test_build_ysuan_all_target_segments_keeps_explicit_ns_idle(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -169,6 +1094,23 @@ def test_ysuan_holdout_no_control_scored_uses_only_explicit_ns_trials() -> None:
     assert support["supported"] is True
     assert support["segment_count"] == 1
     assert "holdout NS1/NS2/NS3" in str(support["note"])
+
+
+def test_ysuan_no_control_payload_is_not_gated_by_idle_eval_mode() -> None:
+    scored = [
+        bench.ScoredTrial(
+            trial=TrialSpec(label="ysu_an_ns2_trial01", expected_freq=None, trial_id=1, block_index=0),
+            score_matrix=np.zeros((1, 4), dtype=np.float64),
+            feature_matrix=np.zeros((1, 4), dtype=np.float64),
+            duration_sec=4.0,
+        )
+    ]
+
+    ns_scored, support = bench._ysuan_holdout_no_control_scored(scored, win_sec=1.5)
+
+    assert len(ns_scored) == 1
+    assert support["supported"] is True
+    assert support["note"] == "YSU-an no-control metrics use holdout NS1/NS2/NS3 trials only."
 
 
 def test_method_parser_supports_short_pretrain_candidates() -> None:
@@ -1703,6 +2645,11 @@ def test_fbcca_lda5_method_uses_precomputed_scored_trials(monkeypatch, tmp_path:
     assert artifact["runtime_loadable"] is False
     assert artifact["training_provenance"]["required_channel_names"] == list(bench.WANG2016_REQUIRED_CHANNELS)
     assert artifact["training_provenance"]["only_required_channels_used"] is True
+    assert artifact["training_provenance"]["source_subjects"] == ["S1"]
+    assert artifact["training_provenance"]["target_subject"] == "S1"
+    assert artifact["training_provenance"]["calibration_blocks"] == [0]
+    assert artifact["training_provenance"]["excluded_test_blocks"] == [1]
+    assert "test blocks are excluded" in artifact["training_provenance"]["data_leakage_guard"]
     assert artifact["feature_contract"]["feature_names"] == bench._classifier_feature_names(freqs)
     assert len(artifact["state"]["feature_mean"]) == feature_count
 
@@ -1777,8 +2724,10 @@ def test_fbcca_ridge5_method_uses_precomputed_scored_trials(monkeypatch, tmp_pat
     artifact_path = Path(str(row["calibration_profile"]["candidate_artifact_path"]))
     artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
     assert artifact["model_name"] == "fbcca_score_ridge_5class"
+    assert artifact["runtime_loadable"] is False
     assert artifact["state"]["l2"] == 0.3
     assert len(artifact["state"]["weights"]) == feature_count + 1
+    assert artifact["runtime_profile_model_params"]["state"]["l2"] == 0.3
 
 
 def test_score_based_method_artifact_propagates_decoder_metadata(monkeypatch, tmp_path: Path) -> None:
@@ -1959,6 +2908,99 @@ def test_score_segment_subset_cached_reuses_overlap_and_preserves_order(monkeypa
     assert len(decoder_cache) == 1
 
 
+def test_score_split_once_for_method_reuses_shared_cache(monkeypatch) -> None:
+    freqs = (9.8, 12.0, 14.8, 15.8)
+    feature_count = len(bench._classifier_feature_names(freqs))
+    calibration_segments = [
+        (
+            TrialSpec(label="idle", expected_freq=None, trial_id=100, block_index=0),
+            np.zeros((500, 8), dtype=np.float64),
+        ),
+        *[
+            (
+                TrialSpec(label=f"{float(freq):g}Hz", expected_freq=float(freq), trial_id=index, block_index=0),
+                np.zeros((500, 8), dtype=np.float64),
+            )
+            for index, freq in enumerate(freqs)
+        ],
+    ]
+    holdout_segments = [
+        (
+            TrialSpec(label="idle", expected_freq=None, trial_id=200, block_index=1),
+            np.zeros((500, 8), dtype=np.float64),
+        ),
+        *[
+            (
+                TrialSpec(label=f"{float(freq):g}Hz", expected_freq=float(freq), trial_id=10 + index, block_index=1),
+                np.zeros((500, 8), dtype=np.float64),
+            )
+            for index, freq in enumerate(freqs)
+        ],
+    ]
+    score_call_sizes: list[int] = []
+
+    class FakeDecoder:
+        win_samples = 1
+        step_samples = 1
+        fs = 250
+
+    monkeypatch.setattr(bench, "_build_fbcca_decoder_for_scoring", lambda **_kwargs: FakeDecoder())
+
+    def fake_score_trials(*, trial_segments, decoder, **_kwargs):
+        assert isinstance(decoder, FakeDecoder)
+        score_call_sizes.append(len(trial_segments))
+        return [
+            bench.ScoredTrial(
+                trial=trial,
+                score_matrix=np.zeros((1, len(freqs)), dtype=np.float64),
+                feature_matrix=np.zeros((1, feature_count), dtype=np.float64),
+                duration_sec=2.0,
+            )
+            for trial, _segment in trial_segments
+        ]
+
+    monkeypatch.setattr(bench, "_score_trials_for_classifier", fake_score_trials)
+    decoder_cache: dict[tuple[object, ...], object] = {}
+    scored_cache: dict[tuple[object, ...], dict[tuple[object, ...], bench.ScoredTrial]] = {}
+
+    first = bench._score_split_once_for_method(
+        method_name="fbcca_ridge5",
+        freqs=freqs,
+        sampling_rate=250,
+        step_sec=0.25,
+        compute_backend="cpu",
+        gpu_device=0,
+        gpu_precision="float32",
+        calibration_segments=calibration_segments,
+        holdout_segments=holdout_segments,
+        win_sec=1.5,
+        context="first split",
+        decoder_cache=decoder_cache,
+        scored_cache=scored_cache,
+    )
+    second = bench._score_split_once_for_method(
+        method_name="fbcca_ridge5",
+        freqs=freqs,
+        sampling_rate=250,
+        step_sec=0.25,
+        compute_backend="cpu",
+        gpu_device=0,
+        gpu_precision="float32",
+        calibration_segments=list(reversed(calibration_segments)),
+        holdout_segments=list(reversed(holdout_segments)),
+        win_sec=1.5,
+        context="second split",
+        decoder_cache=decoder_cache,
+        scored_cache=scored_cache,
+    )
+
+    assert score_call_sizes == [5, 5]
+    assert [item.trial.trial_id for item in first[0]] == [100, 0, 1, 2, 3]
+    assert [item.trial.trial_id for item in second[0]] == [3, 2, 1, 0, 100]
+    assert [item.trial.trial_id for item in second[1]] == [13, 12, 11, 10, 200]
+    assert len(decoder_cache) == 1
+
+
 def test_aggregate_recipe_rows_uses_subject_level_means() -> None:
     rows = [
         {
@@ -2134,6 +3176,335 @@ def test_aggregate_recipe_rows_tracks_shared_coverage() -> None:
     assert [summary["recipe_id"] for summary in shared_summaries] == ["win2_me1"]
 
 
+def test_aggregate_recipe_rows_marks_deployable_shared_recipe() -> None:
+    rows = [
+        _aggregate_test_row(
+            subject="S01",
+            recipe_id="win2_me2_lrtmw",
+            async_macro_f1_5class=0.88,
+            async_acc_5class=0.94,
+            idle_fp_per_min=0.7,
+            control_recall=0.85,
+            detection_latency_s=2.2,
+        ),
+        _aggregate_test_row(
+            subject="S02",
+            recipe_id="win2_me2_lrtmw",
+            async_macro_f1_5class=0.90,
+            async_acc_5class=0.95,
+            idle_fp_per_min=0.9,
+            control_recall=0.82,
+            detection_latency_s=2.4,
+        ),
+        _aggregate_test_row(
+            subject="S01",
+            recipe_id="win1p5_me1_fast",
+            async_macro_f1_5class=0.92,
+            async_acc_5class=0.97,
+            idle_fp_per_min=0.2,
+            control_recall=0.90,
+            detection_latency_s=1.6,
+        ),
+    ]
+
+    summaries = bench.aggregate_recipe_rows(rows, expected_subject_count=2)
+    shared = bench._shared_recipe_summaries(summaries)
+    deployable = bench._deployable_recipe_summaries(shared)
+
+    assert [summary["recipe_id"] for summary in shared] == ["win2_me2_lrtmw"]
+    assert [summary["recipe_id"] for summary in deployable] == ["win2_me2_lrtmw"]
+    assert deployable[0]["deployable_budget_pass"] is True
+    assert deployable[0]["deployable_budget_failed_reasons"] == []
+
+
+def test_deployable_budget_payload_reports_failed_reasons() -> None:
+    payload = bench._deployable_budget_payload(
+        {
+            "expected_subject_count": 24,
+            "coverage_subject_count": 4,
+            "mean_idle_fp_per_min": 1.5,
+            "mean_control_recall": 0.7,
+            "mean_control_recall_at_2.5s": 0.6,
+            "mean_detection_latency_s": 3.0,
+        }
+    )
+
+    assert payload["deployable_budget_pass"] is False
+    assert payload["deployable_budget_failed_reasons"] == [
+        "full_subject_coverage",
+        "idle_fp_budget",
+        "control_recall_budget",
+        "control_recall_at_2.5s_budget",
+        "detection_latency_budget",
+    ]
+
+
+def test_deployable_candidate_profile_payload_records_lrt_recipe_without_runtime_claim() -> None:
+    recipe = {
+        "method": "fbcca_ridge5",
+        "recipe_id": "win2_me2_sm3_lrtmw",
+        "frequency_set_id": "none_8_10p5_12_15",
+        "idle_multiplier": 3.0,
+        "calibration_block_count": 2,
+        "selected_freqs": [8.0, 10.5, 12.0, 15.0],
+        "expected_subject_count": 24,
+        "coverage_subject_count": 24,
+        "split_count": 48,
+        "mean_idle_fp_per_min": 0.8367,
+        "mean_control_recall": 0.8854,
+        "mean_control_recall_at_2.5s": 0.7781,
+        "mean_detection_latency_s": 2.2969,
+        "mean_ns1_fp_per_min": 0.6094,
+        "mean_ns2_fp_per_min": 1.9844,
+        "mean_ns3_fp_per_min": 0.0,
+        "deployable_budget_pass": True,
+        "deployable_budget_checks": {"idle_fp_budget": True},
+        "deployable_budget": {"max_idle_fp_per_min": 1.0},
+    }
+    rows = [
+        {
+            "method": "fbcca_ridge5",
+            "recipe_id": "win2_me2_sm3_lrtmw",
+            "frequency_set_id": "none_8_10p5_12_15",
+            "calibration_blocks": [0, 2],
+            "split_summary": {"idle_multiplier": 3.0},
+            "calibration_profile": {"candidate_artifact_path": "/remote/S01/win2_me2_sm3_lrtmw_candidate.json"},
+        },
+        {
+            "method": "fbcca_ridge5",
+            "recipe_id": "win2_me2_sm3_lrtmw",
+            "frequency_set_id": "none_8_10p5_12_15",
+            "calibration_blocks": [6, 8],
+            "split_summary": {"idle_multiplier": 3.0},
+            "calibration_profile": {"candidate_artifact_path": "/remote/S02/win2_me2_sm3_lrtmw_candidate.json"},
+        },
+        {
+            "method": "fbcca_ridge5",
+            "recipe_id": "win2_me3_sm3_lrtmw",
+            "frequency_set_id": "none_8_10p5_12_15",
+            "calibration_blocks": [0, 2],
+            "split_summary": {"idle_multiplier": 3.0},
+            "calibration_profile": {"candidate_artifact_path": "/remote/other.json"},
+        },
+    ]
+
+    payload = bench._deployable_candidate_profile_payload(
+        run_id="ysuan_full24",
+        best_deployable_shared_recipe=recipe,
+        rows=rows,
+        channel_compatibility={"all_loaded_subjects_match_project_channel_contract": True},
+        artifact_paths={"summary_json": "/remote/summary.json"},
+    )
+
+    recommended = payload["recommended_short_pretrain_recipe"]
+    assert payload["schema_version"] == bench.DEPLOYABLE_CANDIDATE_PROFILE_SCHEMA_VERSION
+    assert payload["runtime_loadable"] is False
+    assert "do not copy this JSON" in payload["runtime_load_note"]
+    assert recommended["threshold_policy"] == "lrt_multiwindow_reject_gate"
+    assert recommended["win_sec"] == 2.0
+    assert recommended["min_enter_windows"] == 2
+    assert recommended["smoothing_windows"] == 3
+    assert recommended["idle_multiplier"] == 3.0
+    assert recommended["score_bank_mode"] == "full_reference_bank"
+    assert recommended["channel_weight_mode"] is None
+    assert payload["validation_metrics"]["coverage_subject_count"] == 24
+    assert payload["validation_metrics"]["mean_ns2_fp_per_min"] == 1.9844
+    assert payload["channel_contract"]["all_loaded_subjects_match_project_channel_contract"] is True
+    assert payload["candidate_artifacts"]["candidate_artifact_count"] == 2
+
+
+def test_artifact_manifest_includes_frequency_specific_reports(tmp_path: Path) -> None:
+    paths = bench._artifact_manifest_paths(
+        report_root=tmp_path / "reports",
+        run_id="freqspec_smoke",
+        log_path=tmp_path / "reports" / "benchmark.log",
+        failed_cases_path=tmp_path / "reports" / "failed_cases.json",
+        coverage_report_path=tmp_path / "reports" / "coverage_report.json",
+    )
+
+    assert paths["ns2_by_selected_freq_csv"].endswith("ns2_by_selected_freq.csv")
+    assert paths["ns2_by_subject_freq_csv"].endswith("ns2_by_subject_freq.csv")
+    assert paths["selected_freq_confusion_csv"].endswith("selected_freq_confusion.csv")
+    assert paths["per_frequency_metrics_csv"].endswith("per_frequency_metrics.csv")
+    assert paths["gate_params_by_frequency_json"].endswith("gate_params_by_frequency.json")
+
+
+def test_gate_params_by_frequency_payload_extracts_four_frequency_gates() -> None:
+    summary = {
+        "method": "fbcca_ridge5",
+        "recipe_id": "win2_me2_sm3_lrtmw_fsth0p95_0p95_0p85_1p2",
+        "gate_variant": bench.CLASSIFIER_GATE_VARIANT_FREQUENCY_SPECIFIC_THRESHOLD,
+        "gate_params": [
+            {
+                "subject": "ysu_an:S01",
+                "split_index": 0,
+                "frequency_specific_control_state_gates": {
+                    "8": {"theta_lrt_f": 1.0},
+                    "10.5": {"theta_lrt_f": 1.1},
+                    "12": {"theta_lrt_f": 1.2},
+                    "15": {"theta_lrt_f": 1.3},
+                },
+            }
+        ],
+    }
+
+    payload = bench._gate_params_by_frequency_payload([summary])
+    gates = payload["recipes"][0]["frequency_specific_control_state_gates"]
+
+    assert sorted(gates) == ["10.5", "12", "15", "8"]
+    assert gates["8"][0]["theta_lrt_f"] == 1.0
+    assert gates["15"][0]["subject"] == "ysu_an:S01"
+
+
+def test_tracked_external_fbcca_candidate_manifest_matches_ysuan_lrt_contract() -> None:
+    manifest_path = PROJECT_DIR / "config" / "external_fbcca_classifier_candidate_v1.json"
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    recipe = dict(payload["recommended_short_pretrain_recipe"])
+
+    assert payload["schema_version"] == "external_fbcca_classifier_candidate_profile_v1"
+    assert payload["runtime_loadable"] is False
+    assert payload["budget_pass"] is True
+    assert payload["source_run"]["expected_subject_count"] == 24
+    assert payload["source_run"]["coverage_subject_count"] == 24
+    assert recipe["method"] == "fbcca_ridge5"
+    assert recipe["recipe_id"] == "win2_me2_sm3_lrtmw"
+    assert recipe["score_bank_mode"] == "full_reference_bank"
+    assert recipe["threshold_policy"] == "lrt_multiwindow_reject_gate"
+    assert recipe["win_sec"] == 2.0
+    assert recipe["min_enter_windows"] == 2
+    assert recipe["smoothing_windows"] == 3
+    assert recipe["channel_weight_mode"] is None
+    assert recipe["channel_weights"] is None
+    assert payload["channel_contract"]["project_channel_names"] == list(bench.PROJECT_POSTERIOR_8_CHANNELS)
+    assert payload["channel_contract"]["only_required_channels_used"] is True
+
+
+def test_case_tracker_records_failure_safe_coverage_and_failures() -> None:
+    ctx = bench.CaseContext(
+        dataset="beta",
+        subject="S11",
+        frequency_profile="deploy_current_profile",
+        frequency_set_id="freqs_8_10_12_15",
+        selected_freqs=(8.0, 10.0, 12.0, 15.0),
+        method="tdca5",
+        calibration_blocks=(0,),
+        holdout_blocks=(1, 2),
+        split_index=0,
+        window_length_s=1.0,
+        min_enter_windows=2,
+        reject_gate="lrt_multiwindow_reject_gate:full_reference_bank",
+        implementation_level="engineering-approx",
+    )
+    tracker = bench.CaseTracker(expected_subject_count=2)
+
+    tracker.planned(ctx)
+    tracker.skipped(ctx, reason="insufficient_training_trials", detail="one calibration block")
+    tracker.planned(ctx)
+    tracker.completed(ctx, row={"recipe_id": "win1_me2", "calibration_profile": {"candidate_artifact_path": "candidate.json"}})
+    report = tracker.report()
+
+    failed = tracker.failed_cases[0]
+    assert failed["skip_or_fail"] == "skip"
+    assert failed["skip_reason"] == "insufficient_training_trials"
+    assert failed["excluded_test_blocks"] == [1, 2]
+    leaf = report["by_dataset_frequency_profile_method_subject"]["beta"]["deploy_current_profile"]["tdca5"]["S11"]["0"]["split00"]
+    assert leaf["planned"] == 2
+    assert leaf["skipped"] == 1
+    assert leaf["completed"] == 1
+    flat = report["by_dataset_frequency_profile_method"][0]
+    assert flat["shared_eligible"] is False
+    assert flat["subjects_completed"] == 1
+    assert report["event_count"] == 4
+    assert report["case_count"] == 2
+    assert report["planned_case_count"] == 2
+    assert report["completed_case_count"] == 1
+    assert report["skipped_case_count"] == 1
+    assert report["hard_failed_case_count"] == 0
+
+
+def test_score_bank_compatibility_skips_template_spatial_full_bank() -> None:
+    assert bench._method_score_bank_skip_reason("trca5", "full_reference_bank") == "unsupported_score_bank_mode"
+    assert bench._method_score_bank_skip_reason("tdca5", "full_reference_bank") == "unsupported_score_bank_mode"
+    assert bench._method_score_bank_skip_reason("fbcca_ridge5", "full_reference_bank") == ""
+    assert bench._method_score_bank_skip_reason("trca5", "command_only") == ""
+
+
+def test_enrich_result_row_writes_contract_fields_and_levels() -> None:
+    row = _aggregate_test_row(
+        subject="S11",
+        recipe_id="win1_me2",
+        async_macro_f1_5class=0.5,
+        async_acc_5class=0.6,
+        idle_fp_per_min=1.2,
+        control_recall=0.7,
+        detection_latency_s=2.1,
+    )
+    row["method"] = "trca5"
+    row["calibration_blocks"] = [0]
+    frequency_case = bench.FrequencyEvalCase(
+        mode="none",
+        frequency_set_id="freqs_8_10_12_15",
+        freqs=(8.0, 10.0, 12.0, 15.0),
+    )
+
+    enriched = bench._enrich_result_row(
+        row,
+        frequency_profile="deploy_current_profile",
+        frequency_case=frequency_case,
+        step_sec=0.25,
+        decision_start_sec=0.5,
+        decision_deadline_sec=2.5,
+        min_release_windows=3,
+        threshold_policy=bench.CLASSIFIER_LRT_MULTIWINDOW_REJECT_GATE_POLICY,
+        score_bank_mode="full_reference_bank",
+    )
+
+    assert enriched["frequency_profile"] == "deploy_current_profile"
+    assert enriched["step_size_s"] == 0.25
+    assert enriched["decision_start_s"] == 0.5
+    assert enriched["decision_deadline_s"] == 2.5
+    assert enriched["min_release_windows"] == 3
+    assert enriched["implementation_level"] == "engineering-approx"
+    assert enriched["engineering_approx"] is True
+    assert enriched["paper_faithful"] is False
+    assert enriched["reject_gate"] == "lrt_multiwindow_reject_gate:full_reference_bank"
+    assert "mixed_idle_fp_per_min" in enriched["summary_metrics"]
+
+
+def test_aggregate_recipe_rows_keeps_missing_real_idle_as_null() -> None:
+    base_row = _aggregate_test_row(
+        subject="S1",
+        recipe_id="win1_me1",
+        async_macro_f1_5class=0.5,
+        async_acc_5class=0.6,
+        idle_fp_per_min=1.2,
+        control_recall=0.7,
+        detection_latency_s=2.1,
+    )
+    base_metrics = dict(base_row["summary_metrics"])
+    base_metrics.update(
+        {
+            "real_idle_fp_per_min": None,
+            "approx_idle_fp_per_min": 1.2,
+            "mixed_idle_fp_per_min": 1.2,
+        }
+    )
+    rows = [
+        {
+            **base_row,
+            "dataset": "beta",
+            "summary_metrics": base_metrics,
+        }
+    ]
+
+    summary = bench.aggregate_recipe_rows(rows, expected_subject_count=1)[0]
+
+    assert summary["mean_real_idle_fp_per_min"] != summary["mean_real_idle_fp_per_min"]
+    assert bench.json_safe(summary)["mean_real_idle_fp_per_min"] is None
+    assert abs(float(summary["mean_approx_idle_fp_per_min"]) - 1.2) < 1e-9
+    assert abs(float(summary["mean_mixed_idle_fp_per_min"]) - 1.2) < 1e-9
+
+
 def test_aggregate_recipe_rows_keeps_frequency_sets_separate() -> None:
     rows = [
         {
@@ -2272,8 +3643,112 @@ def test_render_markdown_summary_lists_shared_recipes_with_coverage() -> None:
     )
 
     assert markdown.index("## Top Shared Recipes") < markdown.index("## Top Recipes")
-    assert "| Rank | Method | Recipe | Freqs | Coverage |" in markdown
-    assert "| 1 | fbcca_ridge5 | `win2_me1` | `` | 2/2 |" in markdown
+    assert "| Rank | Deployable | Profile | Method | Recipe | Freqs | Coverage |" in markdown
+    assert "| 1 | yes |" in markdown
+    assert "| fbcca_ridge5 | `win2_me1` | `` | 2/2 |" in markdown
+    assert "detection_latency_s is stimulus onset to first correct control output" in markdown
+
+
+def test_run_metadata_and_evaluation_contract_schema_paths(tmp_path: Path) -> None:
+    artifact_paths = bench._artifact_manifest_paths(
+        report_root=tmp_path / "reports",
+        run_id="external_short_pretrain_beta_profile_smoke_deploy_20260511_120000",
+        log_path=tmp_path / "reports" / "benchmark.log",
+        failed_cases_path=tmp_path / "reports" / "failed_cases.json",
+        coverage_report_path=tmp_path / "reports" / "coverage_report.json",
+    )
+    metadata = bench._run_metadata_payload(
+        run_id="external_short_pretrain_beta_profile_smoke_deploy_20260511_120000",
+        datasets=("beta",),
+        freqs=(8.0, 10.0, 12.0, 15.0),
+        methods=("fbcca_ridge5",),
+        subjects_expected=8,
+        calibration_blocks=(1, 2),
+        window_lengths=(1.0, 1.25, 1.5),
+        score_bank_mode="full_reference_bank",
+        idle_eval_mode="both",
+        timeout_sec=3600.0,
+        artifact_paths=artifact_paths,
+    )
+    contract = bench._evaluation_contract_payload(
+        datasets=("beta",),
+        freqs=(8.0, 10.0, 12.0, 15.0),
+        methods=("fbcca_ridge5",),
+        subjects_expected=8,
+        subjects_completed=8,
+        calibration_blocks=(1, 2),
+        window_lengths=(1.0, 1.25, 1.5),
+        step_sec=0.25,
+        decision_start_sec=0.5,
+        decision_deadline_sec=2.5,
+        min_release_windows=2,
+        reject_gate="lrt_multiwindow_reject_gate:full_reference_bank",
+        artifact_paths=artifact_paths,
+        implementation_level="paper-faithful",
+    )
+
+    assert metadata["frequency_profile"] == "deploy_current_profile"
+    assert metadata["server_writable_root"] == "/data1/zkx/brain/ssvep"
+    assert metadata["server_log_contract"].endswith("/logs/external_short_pretrain_beta_profile_smoke_deploy_20260511_120000.log")
+    assert metadata["candidate_artifacts_only"] is True
+    assert contract["subjects_expected"] == 8
+    assert contract["subjects_completed"] == 8
+    assert contract["step_size_s"] == 0.25
+    assert contract["decision_start_s"] == 0.5
+    assert contract["decision_deadline_s"] == 2.5
+    assert contract["reject_gate"] == "lrt_multiwindow_reject_gate:full_reference_bank"
+    assert "no-control is produced only by the reject gate" in contract["no_control_policy"]
+    assert set(artifact_paths) >= {
+        "summary_json",
+        "summary_md",
+        "partial_summary_json",
+        "failed_cases_json",
+        "coverage_report_json",
+        "logistic_trace_windows_csv",
+        "logistic_trace_trial_summary_csv",
+        "logistic_transition_counts_by_subject_csv",
+        "logistic_transition_counts_by_frequency_csv",
+        "logistic_feature_summary_tp_fp_csv",
+        "local_log",
+        "server_log_contract",
+    }
+
+
+def test_parser_exposes_pseudo_online_timing_and_timeout_options() -> None:
+    parser = bench.build_parser()
+    args = parser.parse_args(
+        [
+            "--run-id",
+            "explicit_run",
+            "--output-root",
+            "out",
+            "--dataset-root",
+            "data",
+            "--wang-raw-dir",
+            "wang",
+            "--wang-channels-loc",
+            "loc",
+            "--beta-raw-dir",
+            "beta",
+            "--decision-start-sec",
+            "0.5",
+            "--decision-deadline-sec",
+            "2.5",
+            "--min-release-windows",
+            "4",
+            "--timeout-sec",
+            "60",
+            "--case-limit",
+            "4",
+        ]
+    )
+
+    assert args.run_id == "explicit_run"
+    assert float(args.decision_start_sec) == 0.5
+    assert float(args.decision_deadline_sec) == 2.5
+    assert int(args.min_release_windows) == 4
+    assert float(args.timeout_sec) == 60.0
+    assert int(args.case_limit) == 4
 
 
 def test_aggregate_recipe_rows_uses_aggregate_recipe_id_when_present() -> None:

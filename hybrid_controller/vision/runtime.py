@@ -19,6 +19,7 @@ from hybrid_controller.vision.processing import (
     annotate_slots_with_cylindrical,
     build_vision_packet,
     extract_candidates,
+    frame_brightness_quality,
     packet_to_targets,
     update_slots,
 )
@@ -41,6 +42,135 @@ def _normalize_web_video_url(source: str) -> str:
     return urlunparse(parsed._replace(query=normalized_query))
 
 
+def _frame_has_horizontal_tearing(frame: object) -> bool:
+    """Detect obvious cross-frame horizontal slice artifacts in MJPEG images."""
+    if frame is None:
+        return False
+    try:
+        arr = np.asarray(frame)
+    except Exception:
+        return False
+    if arr.ndim < 2:
+        return False
+    height, width = arr.shape[:2]
+    if height < 40 or width < 40:
+        return False
+    if arr.ndim == 2:
+        sample = arr[:, :, None]
+    else:
+        sample = arr[:, :, : min(3, arr.shape[2])]
+    diffs = np.mean(np.abs(np.diff(sample.astype(np.int16), axis=0)), axis=(1, 2))
+    if diffs.size < 20:
+        return False
+    row_edge_fraction = np.mean(np.mean(np.abs(np.diff(sample.astype(np.int16), axis=0)), axis=2) > 18.0, axis=1)
+    edge_rows = np.flatnonzero(row_edge_fraction > 0.20)
+    if edge_rows.size >= 6 and float(np.percentile(row_edge_fraction, 95)) >= 0.18:
+        clusters_for_edges: list[list[int]] = [[int(edge_rows[0])]]
+        for row_index in edge_rows[1:]:
+            row_index = int(row_index)
+            if row_index - clusters_for_edges[-1][-1] <= 4:
+                clusters_for_edges[-1].append(row_index)
+            else:
+                clusters_for_edges.append([row_index])
+        strong_edge_clusters = [
+            cluster
+            for cluster in clusters_for_edges
+            if len(cluster) >= 2 and max(float(row_edge_fraction[int(row)]) for row in cluster) >= 0.24
+        ]
+        central_top = int(height * 0.25)
+        central_bottom = int(height * 0.75)
+        central_clusters = [
+            cluster
+            for cluster in strong_edge_clusters
+            if central_top <= (cluster[0] + cluster[-1]) // 2 <= central_bottom
+        ]
+        if len(strong_edge_clusters) >= 4 and len(central_clusters) >= 3:
+            return True
+    median = float(np.median(diffs))
+    mad = float(np.median(np.abs(diffs - median))) + 1e-6
+    p95 = float(np.percentile(diffs, 95))
+    threshold = max(12.0, median + 20.0 * mad, p95 * 4.0)
+    strong_rows = np.flatnonzero(diffs > threshold)
+    if strong_rows.size < 2:
+        return False
+    clusters: list[list[int]] = [[int(strong_rows[0])]]
+    for row_index in strong_rows[1:]:
+        row_index = int(row_index)
+        if row_index - clusters[-1][-1] <= 4:
+            clusters[-1].append(row_index)
+        else:
+            clusters.append([row_index])
+    if len(clusters) < 2:
+        return False
+    row_diffs = np.abs(np.diff(sample.astype(np.int16), axis=0))
+    strong_clusters = 0
+    for cluster in clusters:
+        cluster_rows = [int(row) for row in cluster]
+        cluster_score = 0.0
+        for row_index in cluster_rows:
+            per_column = np.mean(row_diffs[int(row_index)], axis=1)
+            cluster_score = max(cluster_score, float(np.mean(per_column > 25.0)))
+        if cluster_score >= 0.18:
+            strong_clusters += 1
+    if strong_clusters >= 2:
+        return True
+    return False
+
+
+def _frame_is_temporal_splice(previous_frame: object, frame: object) -> bool:
+    """Reject MJPEG frames whose regions are visibly assembled from different moments.
+
+    The official JetMax stream sometimes delivers a frame that decodes as a valid
+    JPEG but contains a large partial-frame jump during motion.  A single-frame
+    check misses those cases because the JPEG itself is syntactically valid, so
+    this compares coarse image structure against the last accepted frame.
+    """
+    if previous_frame is None or frame is None:
+        return False
+    try:
+        previous = np.asarray(previous_frame)
+        current = np.asarray(frame)
+    except Exception:
+        return False
+    if previous.shape != current.shape or current.ndim < 2:
+        return False
+    height, width = current.shape[:2]
+    if height < 80 or width < 80:
+        return False
+    previous_small = previous[::8, ::8, :3] if previous.ndim >= 3 else previous[::8, ::8]
+    current_small = current[::8, ::8, :3] if current.ndim >= 3 else current[::8, ::8]
+    diff = np.mean(np.abs(current_small.astype(np.int16) - previous_small.astype(np.int16)), axis=-1)
+    changed = diff > 28.0
+    changed_ratio = float(np.mean(changed))
+    if changed_ratio < 0.18:
+        return False
+    row_ratio = np.mean(changed, axis=1)
+    col_ratio = np.mean(changed, axis=0)
+    active_rows = np.flatnonzero(row_ratio > 0.22)
+    active_cols = np.flatnonzero(col_ratio > 0.22)
+    row_span = 0.0 if active_rows.size == 0 else float(active_rows[-1] - active_rows[0] + 1) / float(changed.shape[0])
+    col_span = 0.0 if active_cols.size == 0 else float(active_cols[-1] - active_cols[0] + 1) / float(changed.shape[1])
+    # Normal robot motion changes the scene broadly and smoothly.  Spliced MJPEG
+    # frames tend to replace a large slice while leaving another large slice from
+    # the previous moment, which yields a broad but non-global change mask.
+    return 0.18 <= changed_ratio <= 0.58 and (row_span >= 0.35 or col_span >= 0.35)
+
+
+def _multipart_content_length(header_block: bytes) -> int | None:
+    for raw_line in header_block.splitlines():
+        if b":" not in raw_line:
+            continue
+        key, raw_value = raw_line.split(b":", 1)
+        if key.strip().lower() != b"content-length":
+            continue
+        try:
+            value = int(raw_value.strip())
+        except ValueError:
+            return None
+        return value if 0 < value <= 4_000_000 else None
+    return None
+
+
 class _HttpMjpegCapture:
     """Small MJPEG reader for the locked JetMax web_video_server URL.
 
@@ -55,36 +185,128 @@ class _HttpMjpegCapture:
         self._timeout_sec = max(0.2, float(timeout_sec))
         self._response = None
         self._buffer = bytearray()
+        self._last_frame = None
+        self._consecutive_rejected_frames = 0
+        self._stats: dict[str, object] = {
+            "open_count": 0,
+            "bytes_read": 0,
+            "content_length_payloads": 0,
+            "jpeg_marker_payloads": 0,
+            "frames_accepted": 0,
+            "frames_rejected": 0,
+            "buffer_resets": 0,
+            "reopen_count": 0,
+            "last_reject_reason": "",
+        }
         self._open()
 
     def _open(self) -> None:
         request = Request(self._url, headers={"User-Agent": "hybrid-controller/vision"})
         self._response = urlopen(request, timeout=self._timeout_sec)
+        self._stats["open_count"] = int(self._stats.get("open_count", 0)) + 1
 
     def isOpened(self) -> bool:
         return self._response is not None
+
+    def stats(self) -> dict[str, object]:
+        """Return transport counters for debug reports without touching the sender."""
+        result = dict(self._stats)
+        result["buffer_bytes"] = int(len(self._buffer))
+        result["consecutive_rejected_frames"] = int(self._consecutive_rejected_frames)
+        result["url"] = self._url
+        result["reader"] = "http_multipart_mjpeg"
+        result["content_length_preferred"] = True
+        return result
 
     def read(self):
         if self._response is None:
             return False, None
         deadline = time.perf_counter() + self._timeout_sec
         while time.perf_counter() < deadline:
-            start = self._buffer.find(b"\xff\xd8")
-            end = self._buffer.find(b"\xff\xd9", start + 2 if start >= 0 else 0)
-            if start >= 0 and end >= 0:
-                jpg = bytes(self._buffer[start : end + 2])
-                del self._buffer[: end + 2]
-                frame = self._cv2.imdecode(np.frombuffer(jpg, dtype=np.uint8), self._cv2.IMREAD_COLOR)
-                if frame is not None:
+            while True:
+                read_status, frame = self._read_buffered_frame()
+                if read_status == "ready" and frame is not None:
                     return True, frame
-                continue
+                if read_status == "need_data":
+                    break
             chunk = self._response.read(4096)
             if not chunk:
                 return False, None
+            self._stats["bytes_read"] = int(self._stats.get("bytes_read", 0)) + len(chunk)
             self._buffer.extend(chunk)
             if len(self._buffer) > 4_000_000:
                 del self._buffer[:-1_000_000]
         return False, None
+
+    def _read_buffered_frame(self):
+        header_end = self._buffer.find(b"\r\n\r\n")
+        if header_end >= 0:
+            header = bytes(self._buffer[:header_end])
+            content_length = _multipart_content_length(header)
+            if content_length is not None:
+                payload_start = header_end + 4
+                payload_end = payload_start + content_length
+                if len(self._buffer) < payload_end:
+                    return "need_data", None
+                jpg = bytes(self._buffer[payload_start:payload_end])
+                del self._buffer[:payload_end]
+                self._stats["content_length_payloads"] = int(self._stats.get("content_length_payloads", 0)) + 1
+                frame = self._decode_frame(jpg, source="content_length")
+                return ("ready", frame) if frame is not None else ("skipped", None)
+            if len(self._buffer) > 8192:
+                del self._buffer[: header_end + 4]
+
+        start = self._buffer.find(b"\xff\xd8")
+        end = self._buffer.find(b"\xff\xd9", start + 2 if start >= 0 else 0)
+        if start < 0 or end < 0:
+            return "need_data", None
+        jpg = bytes(self._buffer[start : end + 2])
+        del self._buffer[: end + 2]
+        self._stats["jpeg_marker_payloads"] = int(self._stats.get("jpeg_marker_payloads", 0)) + 1
+        frame = self._decode_frame(jpg, source="jpeg_marker_scan")
+        return ("ready", frame) if frame is not None else ("skipped", None)
+
+    def _decode_frame(self, jpg: bytes, *, source: str):
+        if not jpg.startswith(b"\xff\xd8") or not jpg.endswith(b"\xff\xd9"):
+            self._note_rejected_frame(f"invalid_jpeg:{source}")
+            return None
+        frame = self._cv2.imdecode(np.frombuffer(jpg, dtype=np.uint8), self._cv2.IMREAD_COLOR)
+        if frame is not None and not _frame_has_horizontal_tearing(frame):
+            if _frame_is_temporal_splice(self._last_frame, frame):
+                self._note_rejected_frame(f"temporal_splice:{source}")
+                return None
+            self._last_frame = frame
+            self._consecutive_rejected_frames = 0
+            self._stats["frames_accepted"] = int(self._stats.get("frames_accepted", 0)) + 1
+            return frame
+        if frame is not None:
+            self._note_rejected_frame(f"horizontal_tearing:{source}")
+        else:
+            self._note_rejected_frame(f"decode_failed:{source}")
+        return None
+
+    def _note_rejected_frame(self, reason: str) -> None:
+        self._stats["frames_rejected"] = int(self._stats.get("frames_rejected", 0)) + 1
+        self._stats["last_reject_reason"] = str(reason)
+        self._consecutive_rejected_frames += 1
+        if self._consecutive_rejected_frames < 3:
+            return
+        self._buffer.clear()
+        self._last_frame = None
+        self._consecutive_rejected_frames = 0
+        self._stats["buffer_resets"] = int(self._stats.get("buffer_resets", 0)) + 1
+        response = self._response
+        self._response = None
+        if response is not None:
+            try:
+                response.close()
+            except Exception:
+                pass
+        try:
+            self._stats["reopen_count"] = int(self._stats.get("reopen_count", 0)) + 1
+            self._open()
+        except Exception:
+            self._response = None
 
     def release(self) -> None:
         response = self._response
@@ -442,6 +664,8 @@ class _VisionWorker(QObject):
                 with self._frame_lock:
                     self._capture_lost = True
                 return
+            if _frame_has_horizontal_tearing(frame):
+                continue
 
             now = time.perf_counter()
             self._capture_counter += 1
@@ -570,6 +794,11 @@ class _VisionWorker(QObject):
 
             self._frame_id += 1
             frame_h, frame_w = frame.shape[:2]
+            frame_quality = frame_brightness_quality(
+                frame,
+                min_mean=float(getattr(self.config, "vision_frame_min_brightness_mean", 30.0)),
+                min_p95=float(getattr(self.config, "vision_frame_min_brightness_p95", 45.0)),
+            )
             self._reload_calibration_profile_if_needed()
             roi_center = self._resolve_roi_center(frame_w, frame_h)
             roi_radius = self._resolve_roi_radius(frame_w, frame_h)
@@ -588,10 +817,13 @@ class _VisionWorker(QObject):
                     float(getattr(self.config, "vision_servo_search_action_tolerance_px", action_center_tolerance_px)),
                 )
             elif str(calibration_stage or "").strip().lower() in {"confirm", "pick"}:
-                action_center_tolerance_px = max(
-                    action_center_tolerance_px,
-                    float(getattr(self.config, "vision_servo_low_action_tolerance_px", action_center_tolerance_px)),
+                action_center_tolerance_px = float(
+                    getattr(self.config, "vision_servo_low_action_tolerance_px", action_center_tolerance_px)
                 )
+            low_height_shape_fallback = (
+                bool(getattr(self.config, "vision_low_height_shape_fallback_enabled", True))
+                and str(calibration_stage or "").strip().lower() in {"confirm", "pick"}
+            )
 
             infer_start = time.perf_counter()
             try:
@@ -613,6 +845,10 @@ class _VisionWorker(QObject):
                 confidence_threshold=self.config.vision_confidence_threshold,
                 frame_bgr=frame,
                 fallback_to_frame=bool(self.config.vision_frame_fallback_enabled),
+                prefer_frame_fallback=low_height_shape_fallback,
+                fallback_min_area_ratio=float(
+                    getattr(self.config, "vision_low_height_shape_fallback_min_area_ratio", 1.20)
+                ),
             )
             update_slots(
                 self._slots,
@@ -652,6 +888,7 @@ class _VisionWorker(QObject):
                 grasp_angle_stability_tolerance_deg=float(
                     self.config.vision_grasp_angle_stability_tolerance_deg
                 ),
+                servo_measurement_point=str(getattr(self.config, "vision_servo_measurement_point", "center")),
             )
             calibration_ready = self._calibration is not None or (
                 self._calibration_profile is not None
@@ -679,6 +916,7 @@ class _VisionWorker(QObject):
                 alignment_target_pixel=alignment_target_pixel,
                 calibration_stage=calibration_stage,
                 calibration_z_mm=calibration_z_mm,
+                frame_quality=frame_quality,
             )
             packet["infer_interval_ms"] = float(self._infer_interval_dynamic_ms)
             total_infer_frames = max(1, int(self._infer_total_frames))

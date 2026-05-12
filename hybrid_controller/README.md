@@ -208,9 +208,15 @@ decision_source = sim 或 ssvep
 
 ### 3.2 机械臂端 runtime 启动
 
-`run_real.py` 默认适配“机械臂重启后，电脑先连 JetMax Wi-Fi，再启动主程序”的流程：GUI 启动时会自动连接 `rosbridge`，但不会在 `9091` 不稳定时自动 SSH 启动 JetMax runtime。这样可以避免控制链路恢复过程干扰官方摄像头 ROS graph。需要启动 runtime 时，使用显式按钮或显式命令；默认启动不会启动、重启、检查或拉取 `8080` 视频流，也不会改官方摄像头发送链路。
+`run_real.py` 默认适配“机械臂重启后，电脑先连 JetMax Wi-Fi，再启动主程序”的流程：GUI 启动时会自动连接 `rosbridge`；如果首连失败，允许通过 SSH 自动启动一次 JetMax 控制 runtime。这个自动启动固定使用相机安全参数，只恢复 `9091` 控制链路，不检查 `8080`，不拉取视频，不启动、重启或修复 `usb_cam.service` / `web_video_server`，也不会改官方摄像头发送链路。一次自动启动失败后只进入温和重连，不反复 SSH。
 
 GUI 默认直接建立 rosbridge WebSocket，不再先额外打开一次 `9091` TCP 预探测连接。这样调试时对 JetMax Wi-Fi 的连接动作最少。只有需要对比端口状态时才显式加 `--ros-probe-before-connect`。后台 bootstrap 轮询仍默认关闭，避免机械臂 Wi-Fi 弱时反复探测或反复 SSH。
+
+`run_real.py` 会打开视觉自动启动，但只在控制链路稳定后启动：`rosbridge` 已连接、runtime 不在启动中、机器人状态是新鲜状态。视觉启动只创建电脑端 `VisionRuntime`，并且只读取 `AppConfig.resolve_vision_stream_url()` 返回的单一官方 URL。GUI 状态会显示 `waiting_control:*`、`starting_8080:*`、`starting_8080_without_calibration`、`camera_fps=...` 或 `Vision stream unavailable...`，用于区分“控制还没稳”和“8080 读取失败”。裸 `AppConfig()` 仍保持 `vision_auto_start=False`。
+
+主程序视觉抓取默认启用连续视觉伺服，但自动视觉不等于自动抓取：视觉包只负责识别和刷新画面，不会自行选择目标或启动运动。只有手动 `Pick 1-4` 或 SSVEP/任务状态机确认目标后，才创建 continuous pending；后续视觉包只续跑这个已锁定 slot，并通过 `/hybrid_controller/teleop_cyl_cmd` 发布 `theta_rate_deg_s / radius_rate_mm_s / z_rate_mm_s`，且 `use_auto_z=false`。没有 pending 时状态显示 `continuous_idle awaiting_pick`。到 `vision_pick_confirm_z_mm=130.0` 并稳定对中后，当前 `command_bias` 模式下最终 `PICK_CYL` 半径使用确认半径 `+ vision_eye_in_hand_pick_radius_bias_mm=40.0`，并绕过旧的 app 层 `pick_cyl_radius_bias_mm` 二次改写。离散 `MOVE_CYL -> 等待完成 -> 重识别` 只作为 fallback，可用 `--no-vision-continuous-servo` 关闭连续模式。
+
+当前正式抓取 profile 默认 `real_pick_enabled=true`，但发 `PICK` / `PICK_WORLD` / `PICK_CYL` 前仍强制检查 profile ready、ROS 状态新鲜、机器人不 busy，以及 `PICK_CYL` 半径不越界；slot 可执行、画面新鲜、中心稳定和目标未丢失由视觉伺服决策层在生成最终 PICK 前检查。如果机器人端处于 `sucker_frozen`，runtime 会按 dry-run 语义执行，GUI/日志里的 `release_mode_effective=sucker_frozen` 用来明确区分冻结吸盘和真实吸取。
 
 如果 Wi-Fi 连接后自己断开，先运行只读本机诊断，不要先 ping、SSH、扫端口或拉视频流：
 
@@ -261,8 +267,8 @@ bash run_hybrid_controller_ros_runtime.sh
 ```text
 1. 拷贝/编译 ROS package 到 ~/catkin_ws
 2. 启动 rosbridge websocket，默认 9091
-3. 复用官方 usb_cam.service 的 web_video_server，默认 8080
-4. 启动 hybrid_controller_runtime_node.py
+3. 启动 hybrid_controller_runtime_node.py
+4. 保持官方 usb_cam.service / web_video_server 原样运行；runtime 启动脚本默认不检查、不拉取、不修复 8080
 ```
 
 ---
@@ -453,23 +459,30 @@ TCP runtime 保留在 `robot/runtime` 内，主要用于旧流程或诊断。当
 
 ## 8. 视觉检测和抓取坐标流程
 
-当前默认模式：
+当前真机主线模式：
 
 ```text
 vision_mode = robot_camera_detection
 vision_mapping_mode = delta_servo
-pick_tool_offset_source = target_pixel
-```
-
-当前真机主线已经切到低处相机中心对正方案：
-
-```text
 pick_tool_offset_source = command_bias
 vision_eye_in_hand_pick_radius_bias_mm = 40.0
 pick_cyl_radius_bias_mm = 0.0
 ```
 
-含义是：高处只利用大视野发现和选择目标；下降后把目标闭环移动到相机中心 `(320,240)`；最终抓取命令按当前圆柱坐标只前伸一次 40 mm。不要再给 `stage_models.confirm.servo.target_pixel` 写低高度偏移，也不要把 `pick_cyl_radius_bias_mm` 改成非零，否则会和 40 mm 前伸重复。
+含义是：高处只利用大视野发现和选择目标；下降后把目标闭环移动到当前帧 ROI 中心。官方 640x480 流中，如果配置的 `roi_center=(640,360)` 超出画面，运行时会回退到帧中心 `(320,240)`。最终抓取命令按当前圆柱坐标只前伸一次 40 mm。不要再给 `stage_models.confirm.servo.target_pixel` 写低高度偏移，也不要把 `pick_cyl_radius_bias_mm` 改成非零，否则会和 40 mm 前伸重复。
+
+低位中心对正要求更严格：`command_bias` 主线的目标仍然是相机中心，不是吸盘投影像素。低处如果出现“看起来没对准中心”或 2 px 阈值下反复来回，不要扩大阈值，也不要修改机械臂相机发送端；先运行低位响应标定工具，用小范围安全位移测出 `z≈120` 附近的局部图像 Jacobian，并把结果写成 `stage_models.confirm.pixel_to_delta`。这个 stage model 只校正“像素误差 -> 机械臂小步移动”的方向/比例，不改变最终 `+40 mm` 前伸策略。
+
+```powershell
+$env:BRAIN_PYTHON_EXE .\hybrid_controller\tools\calibrate_low_height_alignment.py `
+  --slot-id 1 `
+  --z-mm 120 `
+  --theta-offsets-deg "-0.45,0,0.45" `
+  --radius-offsets-mm "-1.5,0,1.5" `
+  --write-profile
+```
+
+该工具默认冻结吸盘，只读取官方 8080 MJPEG URL，只调用 ROS 的 `move_cyl`/状态/`sucker_freeze` 服务；它不会启动、重启、修复或扫描 `usb_cam.service`、`web_video_server`、`uvcvideo` 或 `/dev/video*`。如果只是检查当前画面和采样逻辑，先加 `--dry-run`。
 
 ### 8.1 从摄像头到候选目标
 
@@ -527,34 +540,25 @@ grasp_angle_deg 使用最近 3 到 5 帧角度中位数
 如果角度跳变太大，角度质量降低或等待稳定
 ```
 
-### 8.3 摄像头中心不等于吸盘中心
+### 8.3 吸盘偏置只补偿一次
 
 这是本项目最关键的点。
 
-摄像头随臂移动，吸盘在摄像头后方。程序不应该简单把木块移动到图像中心，而应该移动到“吸盘投影像素”：
+摄像头随臂移动，吸盘在摄像头后方，所以视觉对中和最终抓取半径不能同时补偿同一个物理偏移。当前真机主线使用 `command_bias`：
 
 ```text
-servo.target_pixel
+pick_tool_offset_source = command_bias
+vision_pick_target_pixel = None
+vision_eye_in_hand_pick_radius_bias_mm = 40.0
+pick_cyl_radius_bias_mm = 0.0
 ```
 
-这个值保存在视觉标定 profile 中，表示：
+也就是说，低处闭环对中目标使用当前帧 ROI 中心；到确认高度并稳定后，最终 `PICK_CYL` 在当前圆柱半径上只加一次 `vision_eye_in_hand_pick_radius_bias_mm`。旧的 app 层 `pick_cyl_radius_bias_mm` 必须保持 `0.0`，否则会造成二次前伸。
 
-```text
-当吸盘正对木块时，木块在摄像头画面中应该出现的位置。
-```
-
-默认：
-
-```text
-pick_tool_offset_source = target_pixel
-```
-
-也就是说，程序默认使用 `servo.target_pixel` 做吸盘偏置补偿，最终抓取命令不再叠加 `pick_cyl_radius_bias_mm` 或 `vision_eye_in_hand_pick_radius_bias_mm`。这条规则很重要：如果目标已经被闭环移动到 `servo.target_pixel`，再在 `PICK_CYL` 上加半径偏置会造成重复补偿，抓取点会偏离木块。
-
-旧的 `r_bias` 调试方式仍保留，但必须显式切换：
+`target_pixel` 是保留的旧/备用策略。切回它时才使用视觉 profile 里的 `servo.target_pixel`，并且所有半径偏置都必须清零：
 
 ```powershell
---pick-tool-offset-source command_bias
+--pick-tool-offset-source target_pixel --vision-eye-in-hand-pick-radius-bias-mm 0 --pick-cyl-radius-bias-mm 0
 ```
 
 ---
@@ -704,7 +708,7 @@ grasp_quality 达标
 profile 可用
 frame_size 匹配
 estimated_xy_error_mm <= 阈值
-grasp_pixel 已经靠近 servo.target_pixel
+grasp_pixel 已经靠近当前 alignment_target_pixel
 grasp_pixel 多帧稳定
 目标在机械臂工作区内
 机器人状态允许抓取
@@ -854,7 +858,7 @@ current_profile_heatmap.png
 1. 只测试机械臂移动：MOVE_CYL / MOVE_CYL_AUTO。
 2. 测试吸盘开关和 PLACE 顺序。
 3. 关闭吸盘，测试 SET_SUCKER_ROTATION -30/0/30。
-4. 标定 servo.target_pixel。
+4. 当前 `command_bias` 主线先确认低处 alignment_target_pixel 是 ROI 中心；只有切回 `target_pixel` 策略时才标定 `servo.target_pixel`。
 5. 用左/中/右三个位置测试视觉对中，不立刻抓。
 6. 确认对中稳定后，再启用抓取。
 7. 最后做 5x5 工作区验收。
@@ -953,7 +957,7 @@ calibration_profile_unavailable
   profile 缺失或加载失败。
 
 alignment_target_unavailable
-  当前默认 target_pixel 模式，但 profile 没有 servo.target_pixel。
+  只会在 `target_pixel` 模式下出现，表示 profile 没有可用的 `servo.target_pixel`。
 
 vision_mapping_error_high
   profile 估计误差超过 vision_action_max_error_mm。
@@ -974,8 +978,8 @@ vision_servo_required
 
 ```text
 1. 不要继续手调 r_bias。
-2. 确认 pick_tool_offset_source 是 target_pixel。
-3. 标定 servo.target_pixel。
+2. 确认当前策略：主线用 command_bias；切回 target_pixel 时才依赖 servo.target_pixel。
+3. 如果使用 target_pixel，标定 servo.target_pixel；如果使用 command_bias，确认低处 alignment_target_pixel 是 ROI 中心并保持 pick_cyl_radius_bias_mm=0。
 4. 采集 7x7 或更多工作区样本。
 5. 生成带 K/D 和 residual_grid 的 profile。
 6. 看 heatmap，把高误差区域排除或重新采样。
@@ -1038,7 +1042,7 @@ pick_cyl_radius_bias_mm = 0.0
 说明：
 
 ```text
-当前 command_bias 模式下，低处对中目标固定为相机中心。
+当前 command_bias 模式下，低处对中目标是运行时解析出的 ROI/帧中心。
 vision_eye_in_hand_pick_radius_bias_mm 是最终前伸偏置，默认只加一次 40mm。
 pick_cyl_radius_bias_mm 默认必须为 0，避免发 PICK 前二次重写半径。
 target_pixel 模式只作为备用旧策略；切回时才使用 servo.target_pixel，并且所有半径偏置必须清零。
@@ -1096,7 +1100,7 @@ git diff --check
 ```text
 1. 首次改参数后，先 MOVE-only，不直接抓。
 2. 调整视觉标定时，先关闭吸盘。
-3. 每次只改一个核心变量，例如 target_pixel、profile 或高度。
+3. 每次只改一个核心变量，例如 command_bias 半径、target_pixel、profile 或高度。
 4. 未标定、残差高、目标不稳定时，程序应拒绝抓取。
 5. 任何异常先 ABORT，再 RESET。
 6. 不要在机器人 busy 时连续下发 PICK/PLACE。
@@ -1113,7 +1117,7 @@ git diff --check
 4. MOVE_CYL_AUTO 测试左/中/右移动方向。
 5. SUCKER_OFF，确认吸盘关闭。
 6. SET_SUCKER_ROTATION -30/0/30 确认方向。
-7. 确认低处 alignment_target_pixel 是相机中心 `(320,240)`。
+7. 确认低处 alignment_target_pixel 是当前帧 ROI/帧中心；官方 640x480 流通常显示为 `(320,240)`。
 8. 确认 dry-run 最终 `PICK_CYL` 的 radius 只比当前 radius 大 40mm。
 9. 采集工作区样本并生成 current_profile.json。
 10. 左/中/右三个位置各做 3 次视觉对中。

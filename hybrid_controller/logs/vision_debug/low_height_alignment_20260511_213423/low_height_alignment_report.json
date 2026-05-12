@@ -1,0 +1,501 @@
+{
+  "created_at": "2026-05-11T21:34:24",
+  "camera_contract": "PC reads the single official JetMax MJPEG URL only; this tool does not start, restart, scan, repair, or mutate usb_cam.service/web_video_server/uvcvideo/devices.",
+  "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+  "slot_id": 1,
+  "z_mm": 120.0,
+  "theta_offsets_deg": [
+    -1.2,
+    0.0,
+    1.2
+  ],
+  "radius_offsets_mm": [
+    -4.0,
+    0.0,
+    4.0
+  ],
+  "dry_run": false,
+  "write_profile": false,
+  "samples": [
+    {
+      "slot_id": 1,
+      "frame_id": 3,
+      "pose_cyl": [
+        7.590000152587891,
+        173.97000122070312,
+        120.0
+      ],
+      "pose_xy": [
+        -22.978547717113308,
+        -172.4457818258939
+      ],
+      "pixel": [
+        315.1575927734375,
+        234.75341796875
+      ],
+      "pixel_center": [
+        316,
+        235
+      ],
+      "pixel_center_f": [
+        316.141402778559,
+        235.2628100568086
+      ],
+      "geometry_center": [
+        315,
+        235
+      ],
+      "geometry_center_f": [
+        315.1575927734375,
+        234.75341796875
+      ],
+      "grasp_pixel": [
+        302,
+        235
+      ],
+      "grasp_pixel_f": [
+        302.0,
+        235.0
+      ],
+      "center_distance_px": 7.13971503342396,
+      "confidence": 0.55,
+      "area_px": 35212,
+      "bbox": [
+        206,
+        112,
+        429,
+        360
+      ],
+      "snapshot": {
+        "state": "IDLE",
+        "state_seq": 3762,
+        "robot_ts": 1745851854.1528509,
+        "_local_receive_ts": 360737.8095418,
+        "busy": false,
+        "busy_action": "",
+        "carrying": false,
+        "robot_xy": [
+          -22.979000091552734,
+          -172.4459991455078
+        ],
+        "robot_z": 120.0,
+        "robot_cyl": {
+          "theta_deg": 7.590000152587891,
+          "radius_mm": 173.97000122070312,
+          "z_mm": 120.0
+        },
+        "limits_cyl": {
+          "theta_deg": [
+            -120.0,
+            120.0
+          ],
+          "radius_mm": [
+            50.0,
+            280.0
+          ]
+        },
+        "limits_cyl_auto": {
+          "radius_mm": [
+            80.0,
+            260.0
+          ]
+        },
+        "calibration_ready": true,
+        "last_ack": "MOVE",
+        "last_error_code": "",
+        "last_error": "",
+        "release_mode_effective": "sucker_frozen",
+        "sucker_frozen": true,
+        "pick_tuning": {
+          "pick_approach_z_mm": 130.0,
+          "pick_descend_z_mm": 85.0,
+          "pick_pre_suction_sec": 0.25,
+          "pick_bottom_hold_sec": 0.15000000596046448,
+          "pick_lift_sec": 0.800000011920929,
+          "z_carry_floor_mm": 160.0
+        },
+        "sucker_rotation_supported": true
+      },
+      "packet_frame_id": 3,
+      "raw_image": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\low_height_alignment_20260511_213423\\sample_01\\raw.jpg",
+      "packet": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\low_height_alignment_20260511_213423\\sample_01\\packet.json"
+    },
+    {
+      "slot_id": 1,
+      "frame_id": 6,
+      "pose_cyl": [
+        6.389999866485596,
+        169.97000122070312,
+        120.0
+      ],
+      "pose_xy": [
+        -18.916893376566723,
+        -168.91403867040012
+      ],
+      "pixel": [
+        316.2489013671875,
+        234.19683837890625
+      ],
+      "pixel_center": [
+        317,
+        235
+      ],
+      "pixel_center_f": [
+        316.9808390309783,
+        234.77932528628907
+      ],
+      "geometry_center": [
+        316,
+        234
+      ],
+      "geometry_center_f": [
+        316.2489013671875,
+        234.19683837890625
+      ],
+      "grasp_pixel": [
+        302,
+        235
+      ],
+      "grasp_pixel_f": [
+        302.0,
+        235.0
+      ],
+      "center_distance_px": 6.909951212101519,
+      "confidence": 0.55,
+      "area_px": 35197,
+      "bbox": [
+        207,
+        111,
+        429,
+        359
+      ],
+      "snapshot": {
+        "state": "IDLE",
+        "state_seq": 3764,
+        "robot_ts": 1745851855.8184447,
+        "_local_receive_ts": 360739.4721378,
+        "busy": false,
+        "busy_action": "",
+        "carrying": false,
+        "robot_xy": [
+          -18.91699981689453,
+          -168.91400146484375
+        ],
+        "robot_z": 120.0,
+        "robot_cyl": {
+          "theta_deg": 6.389999866485596,
+          "radius_mm": 169.97000122070312,
+          "z_mm": 120.0
+        },
+        "limits_cyl": {
+          "theta_deg": [
+            -120.0,
+            120.0
+          ],
+          "radius_mm": [
+            50.0,
+            280.0
+          ]
+        },
+        "limits_cyl_auto": {
+          "radius_mm": [
+            80.0,
+            260.0
+          ]
+        },
+        "calibration_ready": true,
+        "last_ack": "MOVE",
+        "last_error_code": "",
+        "last_error": "",
+        "release_mode_effective": "sucker_frozen",
+        "sucker_frozen": true,
+        "pick_tuning": {
+          "pick_approach_z_mm": 130.0,
+          "pick_descend_z_mm": 85.0,
+          "pick_pre_suction_sec": 0.25,
+          "pick_bottom_hold_sec": 0.15000000596046448,
+          "pick_lift_sec": 0.800000011920929,
+          "z_carry_floor_mm": 160.0
+        },
+        "sucker_rotation_supported": true
+      },
+      "packet_frame_id": 6,
+      "raw_image": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\low_height_alignment_20260511_213423\\sample_02\\raw.jpg",
+      "packet": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\low_height_alignment_20260511_213423\\sample_02\\packet.json"
+    },
+    {
+      "slot_id": 1,
+      "frame_id": 9,
+      "pose_cyl": [
+        6.389999866485596,
+        173.97000122070312,
+        120.0
+      ],
+      "pose_xy": [
+        -19.36207530845371,
+        -172.8891881075309
+      ],
+      "pixel": [
+        318.3440246582031,
+        232.56842041015625
+      ],
+      "pixel_center": [
+        319,
+        233
+      ],
+      "pixel_center_f": [
+        319.1994865641655,
+        233.0916371348048
+      ],
+      "geometry_center": [
+        318,
+        233
+      ],
+      "geometry_center_f": [
+        318.3440246582031,
+        232.56842041015625
+      ],
+      "grasp_pixel": [
+        305,
+        234
+      ],
+      "grasp_pixel_f": [
+        305.0,
+        234.0
+      ],
+      "center_distance_px": 7.6138445960514245,
+      "confidence": 0.55,
+      "area_px": 35490,
+      "bbox": [
+        208,
+        109,
+        432,
+        359
+      ],
+      "snapshot": {
+        "state": "IDLE",
+        "state_seq": 3766,
+        "robot_ts": 1745851856.618847,
+        "_local_receive_ts": 360740.2725825,
+        "busy": false,
+        "busy_action": "",
+        "carrying": false,
+        "robot_xy": [
+          -19.36199951171875,
+          -172.88900756835938
+        ],
+        "robot_z": 120.0,
+        "robot_cyl": {
+          "theta_deg": 6.389999866485596,
+          "radius_mm": 173.97000122070312,
+          "z_mm": 120.0
+        },
+        "limits_cyl": {
+          "theta_deg": [
+            -120.0,
+            120.0
+          ],
+          "radius_mm": [
+            50.0,
+            280.0
+          ]
+        },
+        "limits_cyl_auto": {
+          "radius_mm": [
+            80.0,
+            260.0
+          ]
+        },
+        "calibration_ready": true,
+        "last_ack": "MOVE",
+        "last_error_code": "",
+        "last_error": "",
+        "release_mode_effective": "sucker_frozen",
+        "sucker_frozen": true,
+        "pick_tuning": {
+          "pick_approach_z_mm": 130.0,
+          "pick_descend_z_mm": 85.0,
+          "pick_pre_suction_sec": 0.25,
+          "pick_bottom_hold_sec": 0.15000000596046448,
+          "pick_lift_sec": 0.800000011920929,
+          "z_carry_floor_mm": 160.0
+        },
+        "sucker_rotation_supported": true
+      },
+      "packet_frame_id": 9,
+      "raw_image": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\low_height_alignment_20260511_213423\\sample_03\\raw.jpg",
+      "packet": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\low_height_alignment_20260511_213423\\sample_03\\packet.json"
+    },
+    {
+      "slot_id": 1,
+      "frame_id": 12,
+      "pose_cyl": [
+        6.389999866485596,
+        177.97000122070312,
+        120.0
+      ],
+      "pose_xy": [
+        -19.807257240340704,
+        -176.86433754466174
+      ],
+      "pixel": [
+        321.1776123046875,
+        232.95608520507812
+      ],
+      "pixel_center": [
+        322,
+        234
+      ],
+      "pixel_center_f": [
+        322.2760225119804,
+        233.54087261785355
+      ],
+      "geometry_center": [
+        321,
+        233
+      ],
+      "geometry_center_f": [
+        321.1776123046875,
+        232.95608520507812
+      ],
+      "grasp_pixel": [
+        308,
+        234
+      ],
+      "grasp_pixel_f": [
+        308.0,
+        234.0
+      ],
+      "center_distance_px": 7.141673919906361,
+      "confidence": 0.55,
+      "area_px": 35545,
+      "bbox": [
+        210,
+        109,
+        436,
+        358
+      ],
+      "snapshot": {
+        "state": "IDLE",
+        "state_seq": 3768,
+        "robot_ts": 1745851857.4190416,
+        "_local_receive_ts": 360741.0726833,
+        "busy": false,
+        "busy_action": "",
+        "carrying": false,
+        "robot_xy": [
+          -19.80699920654297,
+          -176.86399841308594
+        ],
+        "robot_z": 120.0,
+        "robot_cyl": {
+          "theta_deg": 6.389999866485596,
+          "radius_mm": 177.97000122070312,
+          "z_mm": 120.0
+        },
+        "limits_cyl": {
+          "theta_deg": [
+            -120.0,
+            120.0
+          ],
+          "radius_mm": [
+            50.0,
+            280.0
+          ]
+        },
+        "limits_cyl_auto": {
+          "radius_mm": [
+            80.0,
+            260.0
+          ]
+        },
+        "calibration_ready": true,
+        "last_ack": "MOVE",
+        "last_error_code": "",
+        "last_error": "",
+        "release_mode_effective": "sucker_frozen",
+        "sucker_frozen": true,
+        "pick_tuning": {
+          "pick_approach_z_mm": 130.0,
+          "pick_descend_z_mm": 85.0,
+          "pick_pre_suction_sec": 0.25,
+          "pick_bottom_hold_sec": 0.15000000596046448,
+          "pick_lift_sec": 0.800000011920929,
+          "z_carry_floor_mm": 160.0
+        },
+        "sucker_rotation_supported": true
+      },
+      "packet_frame_id": 12,
+      "raw_image": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\low_height_alignment_20260511_213423\\sample_04\\raw.jpg",
+      "packet": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\low_height_alignment_20260511_213423\\sample_04\\packet.json"
+    }
+  ],
+  "start_pose_cyl": [
+    7.590000152587891,
+    173.97000122070312,
+    120.0
+  ],
+  "moves": [
+    {
+      "index": 1,
+      "target_cyl": [
+        7.590000152587891,
+        173.97000122070312,
+        120.0
+      ],
+      "response": {
+        "message": "ACCEPTED move_cyl",
+        "ok": true
+      }
+    },
+    {
+      "index": 2,
+      "target_cyl": [
+        6.3900001525878904,
+        169.97000122070312,
+        120.0
+      ],
+      "response": {
+        "message": "ACCEPTED move_cyl",
+        "ok": true
+      }
+    },
+    {
+      "index": 3,
+      "target_cyl": [
+        6.3900001525878904,
+        173.97000122070312,
+        120.0
+      ],
+      "response": {
+        "message": "ACCEPTED move_cyl",
+        "ok": true
+      }
+    },
+    {
+      "index": 4,
+      "target_cyl": [
+        6.3900001525878904,
+        177.97000122070312,
+        120.0
+      ],
+      "response": {
+        "message": "ACCEPTED move_cyl",
+        "ok": true
+      }
+    },
+    {
+      "index": 5,
+      "target_cyl": [
+        7.590000152587891,
+        169.97000122070312,
+        120.0
+      ],
+      "response": {
+        "message": "ACCEPTED move_cyl",
+        "ok": true
+      }
+    }
+  ],
+  "error": "Timed out waiting for camera frames."
+}

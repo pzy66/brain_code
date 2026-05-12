@@ -1,0 +1,7703 @@
+{
+  "created_at": "2026-05-10T21:54:46",
+  "servo_mode": "continuous",
+  "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+  "weights": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\datasets\\vision\\models\\best.pt",
+  "profile": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\datasets\\vision\\calibration\\current_profile.json",
+  "detector": "auto",
+  "execute": true,
+  "allow_pick": true,
+  "pick_radius_bias_mm": 40.0,
+  "confirm_z_mm": null,
+  "center_tolerance_px": null,
+  "frames_requested": 2,
+  "drain_frames": 1,
+  "process_latest_frames": 1,
+  "capture_backend": "http",
+  "persistent_camera": true,
+  "continuous_teleop_rate_hz": 10.0,
+  "continuous_max_duration_sec": 20.0,
+  "camera_contract": "PC reads the single official Hiwonder MJPEG stream from usb_cam.service -> /usb_cam/image_rect_color -> web_video_server:8080; this tool must not start, restart, scan, or mutate the robot camera sender.",
+  "ros": {
+    "connected": true,
+    "snapshot": {
+      "state": "IDLE",
+      "state_seq": 238,
+      "robot_ts": 1745829153.996372,
+      "_local_receive_ts": 275558.6021527,
+      "busy": false,
+      "busy_action": "",
+      "carrying": false,
+      "robot_xy": [
+        -29.409000396728516,
+        -170.46099853515625
+      ],
+      "robot_z": 179.96400451660156,
+      "robot_cyl": {
+        "theta_deg": 9.788999557495117,
+        "radius_mm": 172.97900390625,
+        "z_mm": 179.96400451660156
+      },
+      "limits_cyl": {
+        "theta_deg": [
+          -120.0,
+          120.0
+        ],
+        "radius_mm": [
+          50.0,
+          280.0
+        ]
+      },
+      "limits_cyl_auto": {
+        "radius_mm": [
+          80.0,
+          260.0
+        ]
+      },
+      "calibration_ready": true,
+      "last_ack": "MOVE",
+      "last_error_code": "",
+      "last_error": "",
+      "release_mode_effective": "sucker_frozen",
+      "sucker_frozen": true,
+      "pick_tuning": {
+        "pick_approach_z_mm": 130.0,
+        "pick_descend_z_mm": 85.0,
+        "pick_pre_suction_sec": 0.25,
+        "pick_bottom_hold_sec": 0.15000000596046448,
+        "pick_lift_sec": 0.800000011920929,
+        "z_carry_floor_mm": 160.0
+      },
+      "sucker_rotation_supported": true
+    }
+  },
+  "steps": [
+    {
+      "step": 1,
+      "elapsed_sec": 0.488201999978628,
+      "camera_frames_captured": 2,
+      "camera_frames_processed": 1,
+      "slots": [
+        {
+          "slot_id": 1,
+          "bbox": [
+            233,
+            168,
+            363,
+            309
+          ],
+          "pixel_center": [
+            296,
+            238
+          ],
+          "grasp_pixel": [
+            290,
+            234
+          ],
+          "confidence": 0.9448005557060242,
+          "grasp_quality": 0.9597043640110006,
+          "center_stable_frames": 1,
+          "center_stability_px": 0.0,
+          "grasp_stable_frames": 1,
+          "grasp_stability_px": 0.0,
+          "center_distance_px": 24.08318915758459,
+          "center_tolerance_px": 8.0,
+          "action_tolerance_px": 20.0,
+          "estimated_xy_error_mm": 2.364577548787454,
+          "servo_required": false,
+          "actionable": false,
+          "invalid_reason": "grasp_unstable",
+          "camera_to_world_raw": [
+            7.854103343465027,
+            -0.44984802431612536,
+            0.0
+          ],
+          "servo_command_point": null,
+          "command_point": null,
+          "resolved_cyl": null
+        }
+      ],
+      "selected_slot_id": 1,
+      "selected_slot": {
+        "slot_id": 1,
+        "slot": 1,
+        "freq_hz": 8.0,
+        "valid": true,
+        "observed": true,
+        "pixel_center": [
+          296,
+          238
+        ],
+        "grasp_pixel": [
+          290,
+          234
+        ],
+        "bbox": [
+          233,
+          168,
+          363,
+          309
+        ],
+        "area_px": 10675,
+        "area_stability_ratio": 0.0,
+        "confidence": 0.9448005557060242,
+        "polygon": [
+          [
+            322,
+            168
+          ],
+          [
+            314,
+            168
+          ],
+          [
+            305,
+            177
+          ],
+          [
+            233,
+            208
+          ],
+          [
+            233,
+            221
+          ],
+          [
+            239,
+            224
+          ],
+          [
+            265,
+            297
+          ],
+          [
+            273,
+            308
+          ],
+          [
+            362,
+            267
+          ],
+          [
+            362,
+            263
+          ],
+          [
+            353,
+            254
+          ]
+        ],
+        "oriented_bbox": [
+          [
+            270,
+            309
+          ],
+          [
+            226,
+            205
+          ],
+          [
+            322,
+            165
+          ],
+          [
+            366,
+            269
+          ]
+        ],
+        "grasp_quality": 0.9597043640110006,
+        "grasp_angle_deg": -22.833654403686523,
+        "grasp_angle_quality": 0.052452368786239906,
+        "grasp_angle_stability_deg": 0.0,
+        "age": 1,
+        "lost_frames": 0,
+        "command_mode": "world",
+        "command_point": null,
+        "servo_command_mode": "cyl",
+        "servo_command_point": null,
+        "cylindrical_center": null,
+        "world_xyz": null,
+        "mapping_mode": "delta_servo",
+        "camera_to_world_raw": [
+          7.854103343465027,
+          -0.44984802431612536,
+          0.0
+        ],
+        "undistorted_pixel": [
+          296.0,
+          238.0
+        ],
+        "alignment_target_pixel": [
+          320.0,
+          240.0
+        ],
+        "center_distance_px": 24.08318915758459,
+        "center_tolerance_px": 8.0,
+        "action_tolerance_px": 20.0,
+        "estimated_xy_error_mm": 2.364577548787454,
+        "center_stable_frames": 1,
+        "center_stability_px": 0.0,
+        "grasp_stable_frames": 1,
+        "grasp_stability_px": 0.0,
+        "servo_required": false,
+        "calibration_profile_id": "eye-in-hand-live-20260503",
+        "actionable": false,
+        "invalid_reason": "grasp_unstable",
+        "resolved_base_xy": null,
+        "resolved_cyl": null
+      },
+      "decision": {
+        "action": "STOP",
+        "state": "STOP",
+        "status": "holding unstable grasp slot=1",
+        "reason": "hold",
+        "command": null,
+        "raw_command": null,
+        "pending": {
+          "slot_id": 1,
+          "stable_frames": 0,
+          "lost_frames": 0
+        },
+        "theta_rate_deg_s": 0.0,
+        "radius_rate_mm_s": 0.0,
+        "z_rate_mm_s": 0.0,
+        "trace": {
+          "center_distance_px": 24.08318915758459,
+          "center_allow_descent_px": 24.0,
+          "center_stop_descent_px": 36.0,
+          "stable_frames": 0,
+          "current_z_mm": 179.96400451660156,
+          "confirm_z_mm": 175.0,
+          "invalid_reason": "grasp_unstable"
+        }
+      },
+      "snapshot": {
+        "state": "IDLE",
+        "state_seq": 238,
+        "robot_ts": 1745829153.996372,
+        "_local_receive_ts": 275558.6021527,
+        "busy": false,
+        "busy_action": "",
+        "carrying": false,
+        "robot_xy": [
+          -29.409000396728516,
+          -170.46099853515625
+        ],
+        "robot_z": 179.96400451660156,
+        "robot_cyl": {
+          "theta_deg": 9.788999557495117,
+          "radius_mm": 172.97900390625,
+          "z_mm": 179.96400451660156
+        },
+        "limits_cyl": {
+          "theta_deg": [
+            -120.0,
+            120.0
+          ],
+          "radius_mm": [
+            50.0,
+            280.0
+          ]
+        },
+        "limits_cyl_auto": {
+          "radius_mm": [
+            80.0,
+            260.0
+          ]
+        },
+        "calibration_ready": true,
+        "last_ack": "MOVE",
+        "last_error_code": "",
+        "last_error": "",
+        "release_mode_effective": "sucker_frozen",
+        "sucker_frozen": true,
+        "pick_tuning": {
+          "pick_approach_z_mm": 130.0,
+          "pick_descend_z_mm": 85.0,
+          "pick_pre_suction_sec": 0.25,
+          "pick_bottom_hold_sec": 0.15000000596046448,
+          "pick_lift_sec": 0.800000011920929,
+          "z_carry_floor_mm": 160.0
+        },
+        "sucker_rotation_supported": true
+      },
+      "raw_image": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\output\\jetmax_no_suction_test_20260510_04\\continuous_001\\raw.jpg",
+      "overlay_image": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\output\\jetmax_no_suction_test_20260510_04\\continuous_001\\overlay.jpg",
+      "packet": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\output\\jetmax_no_suction_test_20260510_04\\continuous_001\\packet.json"
+    },
+    {
+      "step": 2,
+      "elapsed_sec": 0.5689223000081256,
+      "camera_frames_captured": 2,
+      "camera_frames_processed": 1,
+      "slots": [
+        {
+          "slot_id": 1,
+          "bbox": [
+            233,
+            168,
+            363,
+            309
+          ],
+          "pixel_center": [
+            296,
+            238
+          ],
+          "grasp_pixel": [
+            290,
+            234
+          ],
+          "confidence": 0.9459390044212341,
+          "grasp_quality": 0.9594357054116491,
+          "center_stable_frames": 2,
+          "center_stability_px": 0.0,
+          "grasp_stable_frames": 2,
+          "grasp_stability_px": 1.0,
+          "center_distance_px": 24.08318915758459,
+          "center_tolerance_px": 8.0,
+          "action_tolerance_px": 20.0,
+          "estimated_xy_error_mm": 2.364577548787454,
+          "servo_required": false,
+          "actionable": false,
+          "invalid_reason": "grasp_unstable",
+          "camera_to_world_raw": [
+            7.854103343465027,
+            -0.44984802431612536,
+            0.0
+          ],
+          "servo_command_point": null,
+          "command_point": null,
+          "resolved_cyl": null
+        }
+      ],
+      "selected_slot_id": 1,
+      "selected_slot": {
+        "slot_id": 1,
+        "slot": 1,
+        "freq_hz": 8.0,
+        "valid": true,
+        "observed": true,
+        "pixel_center": [
+          296,
+          238
+        ],
+        "grasp_pixel": [
+          290,
+          234
+        ],
+        "bbox": [
+          233,
+          168,
+          363,
+          309
+        ],
+        "area_px": 10668,
+        "area_stability_ratio": 0.00032797638570022957,
+        "confidence": 0.9459390044212341,
+        "polygon": [
+          [
+            322,
+            168
+          ],
+          [
+            314,
+            168
+          ],
+          [
+            311,
+            173
+          ],
+          [
+            233,
+            208
+          ],
+          [
+            233,
+            221
+          ],
+          [
+            239,
+            224
+          ],
+          [
+            265,
+            297
+          ],
+          [
+            272,
+            308
+          ],
+          [
+            362,
+            267
+          ],
+          [
+            353,
+            254
+          ]
+        ],
+        "oriented_bbox": [
+          [
+            270,
+            309
+          ],
+          [
+            226,
+            205
+          ],
+          [
+            322,
+            165
+          ],
+          [
+            366,
+            269
+          ]
+        ],
+        "grasp_quality": 0.9594357054116491,
+        "grasp_angle_deg": -22.833654403686523,
+        "grasp_angle_quality": 0.052417973790314494,
+        "grasp_angle_stability_deg": 0.0,
+        "age": 2,
+        "lost_frames": 0,
+        "command_mode": "world",
+        "command_point": null,
+        "servo_command_mode": "cyl",
+        "servo_command_point": null,
+        "cylindrical_center": null,
+        "world_xyz": null,
+        "mapping_mode": "delta_servo",
+        "camera_to_world_raw": [
+          7.854103343465027,
+          -0.44984802431612536,
+          0.0
+        ],
+        "undistorted_pixel": [
+          296.0,
+          238.0
+        ],
+        "alignment_target_pixel": [
+          320.0,
+          240.0
+        ],
+        "center_distance_px": 24.08318915758459,
+        "center_tolerance_px": 8.0,
+        "action_tolerance_px": 20.0,
+        "estimated_xy_error_mm": 2.364577548787454,
+        "center_stable_frames": 2,
+        "center_stability_px": 0.0,
+        "grasp_stable_frames": 2,
+        "grasp_stability_px": 1.0,
+        "servo_required": false,
+        "calibration_profile_id": "eye-in-hand-live-20260503",
+        "actionable": false,
+        "invalid_reason": "grasp_unstable",
+        "resolved_base_xy": null,
+        "resolved_cyl": null
+      },
+      "decision": {
+        "action": "STOP",
+        "state": "STOP",
+        "status": "holding unstable grasp slot=1",
+        "reason": "hold",
+        "command": null,
+        "raw_command": null,
+        "pending": {
+          "slot_id": 1,
+          "stable_frames": 0,
+          "lost_frames": 0
+        },
+        "theta_rate_deg_s": 0.0,
+        "radius_rate_mm_s": 0.0,
+        "z_rate_mm_s": 0.0,
+        "trace": {
+          "center_distance_px": 24.08318915758459,
+          "center_allow_descent_px": 24.0,
+          "center_stop_descent_px": 36.0,
+          "stable_frames": 0,
+          "current_z_mm": 179.96400451660156,
+          "confirm_z_mm": 175.0,
+          "invalid_reason": "grasp_unstable"
+        }
+      },
+      "snapshot": {
+        "state": "IDLE",
+        "state_seq": 238,
+        "robot_ts": 1745829154.4626527,
+        "_local_receive_ts": 275559.0567913,
+        "busy": false,
+        "busy_action": "",
+        "carrying": false,
+        "robot_xy": [
+          -29.409000396728516,
+          -170.46099853515625
+        ],
+        "robot_z": 179.96400451660156,
+        "robot_cyl": {
+          "theta_deg": 9.788999557495117,
+          "radius_mm": 172.97900390625,
+          "z_mm": 179.96400451660156
+        },
+        "limits_cyl": {
+          "theta_deg": [
+            -120.0,
+            120.0
+          ],
+          "radius_mm": [
+            50.0,
+            280.0
+          ]
+        },
+        "limits_cyl_auto": {
+          "radius_mm": [
+            80.0,
+            260.0
+          ]
+        },
+        "calibration_ready": true,
+        "last_ack": "MOVE",
+        "last_error_code": "",
+        "last_error": "",
+        "release_mode_effective": "sucker_frozen",
+        "sucker_frozen": true,
+        "pick_tuning": {
+          "pick_approach_z_mm": 130.0,
+          "pick_descend_z_mm": 85.0,
+          "pick_pre_suction_sec": 0.25,
+          "pick_bottom_hold_sec": 0.15000000596046448,
+          "pick_lift_sec": 0.800000011920929,
+          "z_carry_floor_mm": 160.0
+        },
+        "sucker_rotation_supported": true
+      },
+      "raw_image": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\output\\jetmax_no_suction_test_20260510_04\\continuous_002\\raw.jpg",
+      "overlay_image": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\output\\jetmax_no_suction_test_20260510_04\\continuous_002\\overlay.jpg",
+      "packet": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\output\\jetmax_no_suction_test_20260510_04\\continuous_002\\packet.json"
+    },
+    {
+      "step": 3,
+      "elapsed_sec": 0.6750526999821886,
+      "camera_frames_captured": 2,
+      "camera_frames_processed": 1,
+      "slots": [
+        {
+          "slot_id": 1,
+          "bbox": [
+            233,
+            168,
+            363,
+            309
+          ],
+          "pixel_center": [
+            296,
+            238
+          ],
+          "grasp_pixel": [
+            291,
+            234
+          ],
+          "confidence": 0.9303821921348572,
+          "grasp_quality": 0.9580540326149845,
+          "center_stable_frames": 3,
+          "center_stability_px": 0.0,
+          "grasp_stable_frames": 3,
+          "grasp_stability_px": 1.0,
+          "center_distance_px": 24.08318915758459,
+          "center_tolerance_px": 8.0,
+          "action_tolerance_px": 20.0,
+          "estimated_xy_error_mm": 2.364577548787454,
+          "servo_required": true,
+          "actionable": false,
+          "invalid_reason": "vision_servo_required",
+          "camera_to_world_raw": [
+            7.854103343465027,
+            -0.44984802431612536,
+            0.0
+          ],
+          "servo_command_point": [
+            9.270351681689666,
+            172.80797720032587
+          ],
+          "command_point": null,
+          "resolved_cyl": [
+            7.188066599795525,
+            172.2647121689532,
+            85.0
+          ]
+        }
+      ],
+      "selected_slot_id": 1,
+      "selected_slot": {
+        "slot_id": 1,
+        "slot": 1,
+        "freq_hz": 8.0,
+        "valid": true,
+        "observed": true,
+        "pixel_center": [
+          296,
+          238
+        ],
+        "grasp_pixel": [
+          291,
+          234
+        ],
+        "bbox": [
+          233,
+          168,
+          363,
+          309
+        ],
+        "area_px": 10632,
+        "area_stability_ratio": 0.003374578177727784,
+        "confidence": 0.9303821921348572,
+        "polygon": [
+          [
+            322,
+            168
+          ],
+          [
+            314,
+            168
+          ],
+          [
+            311,
+            173
+          ],
+          [
+            233,
+            209
+          ],
+          [
+            233,
+            221
+          ],
+          [
+            239,
+            224
+          ],
+          [
+            265,
+            297
+          ],
+          [
+            272,
+            308
+          ],
+          [
+            362,
+            267
+          ],
+          [
+            362,
+            264
+          ],
+          [
+            358,
+            263
+          ],
+          [
+            354,
+            257
+          ]
+        ],
+        "oriented_bbox": [
+          [
+            270,
+            309
+          ],
+          [
+            226,
+            205
+          ],
+          [
+            322,
+            165
+          ],
+          [
+            366,
+            269
+          ]
+        ],
+        "grasp_quality": 0.9580540326149845,
+        "grasp_angle_deg": -22.833654403686523,
+        "grasp_angle_quality": 0.052241085239841,
+        "grasp_angle_stability_deg": 0.0,
+        "age": 3,
+        "lost_frames": 0,
+        "command_mode": "world",
+        "command_point": null,
+        "servo_command_mode": "cyl",
+        "servo_command_point": [
+          9.270351681689666,
+          172.80797720032587
+        ],
+        "cylindrical_center": [
+          7.188066599795525,
+          172.2647121689532,
+          85.0
+        ],
+        "world_xyz": [
+          -21.55489705326349,
+          -170.91084655947236,
+          0.0
+        ],
+        "mapping_mode": "delta_servo",
+        "camera_to_world_raw": [
+          7.854103343465027,
+          -0.44984802431612536,
+          0.0
+        ],
+        "undistorted_pixel": [
+          296.0,
+          238.0
+        ],
+        "alignment_target_pixel": [
+          320.0,
+          240.0
+        ],
+        "center_distance_px": 24.08318915758459,
+        "center_tolerance_px": 8.0,
+        "action_tolerance_px": 20.0,
+        "estimated_xy_error_mm": 2.364577548787454,
+        "center_stable_frames": 3,
+        "center_stability_px": 0.0,
+        "grasp_stable_frames": 3,
+        "grasp_stability_px": 1.0,
+        "servo_required": true,
+        "calibration_profile_id": "eye-in-hand-live-20260503",
+        "actionable": false,
+        "invalid_reason": "vision_servo_required",
+        "resolved_base_xy": [
+          -21.55489705326349,
+          -170.91084655947236
+        ],
+        "resolved_cyl": [
+          7.188066599795525,
+          172.2647121689532,
+          85.0
+        ]
+      },
+      "decision": {
+        "action": "SERVO",
+        "state": "SERVO",
+        "status": "servo slot=1",
+        "reason": "continuous_servo",
+        "command": null,
+        "raw_command": null,
+        "pending": {
+          "slot_id": 1,
+          "stable_frames": 0,
+          "lost_frames": 0
+        },
+        "theta_rate_deg_s": -1.0372957516109018,
+        "radius_rate_mm_s": -0.2052320471089615,
+        "z_rate_mm_s": 0.0,
+        "trace": {
+          "center_distance_px": 24.08318915758459,
+          "center_allow_descent_px": 24.0,
+          "center_stop_descent_px": 36.0,
+          "stable_frames": 0,
+          "current_z_mm": 179.96400451660156,
+          "confirm_z_mm": 175.0
+        }
+      },
+      "snapshot": {
+        "state": "IDLE",
+        "state_seq": 238,
+        "robot_ts": 1745829154.596599,
+        "_local_receive_ts": 275559.1914424,
+        "busy": false,
+        "busy_action": "",
+        "carrying": false,
+        "robot_xy": [
+          -29.409000396728516,
+          -170.46099853515625
+        ],
+        "robot_z": 179.96400451660156,
+        "robot_cyl": {
+          "theta_deg": 9.788999557495117,
+          "radius_mm": 172.97900390625,
+          "z_mm": 179.96400451660156
+        },
+        "limits_cyl": {
+          "theta_deg": [
+            -120.0,
+            120.0
+          ],
+          "radius_mm": [
+            50.0,
+            280.0
+          ]
+        },
+        "limits_cyl_auto": {
+          "radius_mm": [
+            80.0,
+            260.0
+          ]
+        },
+        "calibration_ready": true,
+        "last_ack": "MOVE",
+        "last_error_code": "",
+        "last_error": "",
+        "release_mode_effective": "sucker_frozen",
+        "sucker_frozen": true,
+        "pick_tuning": {
+          "pick_approach_z_mm": 130.0,
+          "pick_descend_z_mm": 85.0,
+          "pick_pre_suction_sec": 0.25,
+          "pick_bottom_hold_sec": 0.15000000596046448,
+          "pick_lift_sec": 0.800000011920929,
+          "z_carry_floor_mm": 160.0
+        },
+        "sucker_rotation_supported": true
+      }
+    },
+    {
+      "step": 4,
+      "elapsed_sec": 0.7809974999981932,
+      "camera_frames_captured": 2,
+      "camera_frames_processed": 1,
+      "slots": [
+        {
+          "slot_id": 1,
+          "bbox": [
+            233,
+            168,
+            363,
+            310
+          ],
+          "pixel_center": [
+            296,
+            238
+          ],
+          "grasp_pixel": [
+            291,
+            234
+          ],
+          "confidence": 0.9422072768211365,
+          "grasp_quality": 0.9582124281268831,
+          "center_stable_frames": 4,
+          "center_stability_px": 0.0,
+          "grasp_stable_frames": 4,
+          "grasp_stability_px": 1.0,
+          "center_distance_px": 24.08318915758459,
+          "center_tolerance_px": 8.0,
+          "action_tolerance_px": 20.0,
+          "estimated_xy_error_mm": 2.364577548787454,
+          "servo_required": true,
+          "actionable": false,
+          "invalid_reason": "vision_servo_required",
+          "camera_to_world_raw": [
+            7.854103343465027,
+            -0.44984802431612536,
+            0.0
+          ],
+          "servo_command_point": [
+            9.270351681689666,
+            172.80797720032587
+          ],
+          "command_point": null,
+          "resolved_cyl": [
+            7.188066599795525,
+            172.2647121689532,
+            85.0
+          ]
+        }
+      ],
+      "selected_slot_id": 1,
+      "selected_slot": {
+        "slot_id": 1,
+        "slot": 1,
+        "freq_hz": 8.0,
+        "valid": true,
+        "observed": true,
+        "pixel_center": [
+          296,
+          238
+        ],
+        "grasp_pixel": [
+          291,
+          234
+        ],
+        "bbox": [
+          233,
+          168,
+          363,
+          310
+        ],
+        "area_px": 10675,
+        "area_stability_ratio": 0.0037014477814740197,
+        "confidence": 0.9422072768211365,
+        "polygon": [
+          [
+            322,
+            168
+          ],
+          [
+            314,
+            168
+          ],
+          [
+            311,
+            173
+          ],
+          [
+            233,
+            208
+          ],
+          [
+            233,
+            220
+          ],
+          [
+            239,
+            224
+          ],
+          [
+            265,
+            297
+          ],
+          [
+            272,
+            309
+          ],
+          [
+            362,
+            267
+          ],
+          [
+            354,
+            256
+          ]
+        ],
+        "oriented_bbox": [
+          [
+            270,
+            310
+          ],
+          [
+            227,
+            204
+          ],
+          [
+            322,
+            165
+          ],
+          [
+            366,
+            270
+          ]
+        ],
+        "grasp_quality": 0.9582124281268831,
+        "grasp_angle_deg": -22.833654403686523,
+        "grasp_angle_quality": 0.06777436005987494,
+        "grasp_angle_stability_deg": 0.2666454315185547,
+        "age": 4,
+        "lost_frames": 0,
+        "command_mode": "world",
+        "command_point": null,
+        "servo_command_mode": "cyl",
+        "servo_command_point": [
+          9.270351681689666,
+          172.80797720032587
+        ],
+        "cylindrical_center": [
+          7.188066599795525,
+          172.2647121689532,
+          85.0
+        ],
+        "world_xyz": [
+          -21.55489705326349,
+          -170.91084655947236,
+          0.0
+        ],
+        "mapping_mode": "delta_servo",
+        "camera_to_world_raw": [
+          7.854103343465027,
+          -0.44984802431612536,
+          0.0
+        ],
+        "undistorted_pixel": [
+          296.0,
+          238.0
+        ],
+        "alignment_target_pixel": [
+          320.0,
+          240.0
+        ],
+        "center_distance_px": 24.08318915758459,
+        "center_tolerance_px": 8.0,
+        "action_tolerance_px": 20.0,
+        "estimated_xy_error_mm": 2.364577548787454,
+        "center_stable_frames": 4,
+        "center_stability_px": 0.0,
+        "grasp_stable_frames": 4,
+        "grasp_stability_px": 1.0,
+        "servo_required": true,
+        "calibration_profile_id": "eye-in-hand-live-20260503",
+        "actionable": false,
+        "invalid_reason": "vision_servo_required",
+        "resolved_base_xy": [
+          -21.55489705326349,
+          -170.91084655947236
+        ],
+        "resolved_cyl": [
+          7.188066599795525,
+          172.2647121689532,
+          85.0
+        ]
+      },
+      "decision": {
+        "action": "SERVO",
+        "state": "SERVO",
+        "status": "servo slot=1",
+        "reason": "continuous_servo",
+        "command": null,
+        "raw_command": null,
+        "pending": {
+          "slot_id": 1,
+          "stable_frames": 0,
+          "lost_frames": 0
+        },
+        "theta_rate_deg_s": -1.0372957516109018,
+        "radius_rate_mm_s": -0.2052320471089615,
+        "z_rate_mm_s": 0.0,
+        "trace": {
+          "center_distance_px": 24.08318915758459,
+          "center_allow_descent_px": 24.0,
+          "center_stop_descent_px": 36.0,
+          "stable_frames": 0,
+          "current_z_mm": 179.96400451660156,
+          "confirm_z_mm": 175.0
+        }
+      },
+      "snapshot": {
+        "state": "IDLE",
+        "state_seq": 238,
+        "robot_ts": 1745829154.6625185,
+        "_local_receive_ts": 275559.2569194,
+        "busy": false,
+        "busy_action": "",
+        "carrying": false,
+        "robot_xy": [
+          -29.409000396728516,
+          -170.46099853515625
+        ],
+        "robot_z": 179.96400451660156,
+        "robot_cyl": {
+          "theta_deg": 9.788999557495117,
+          "radius_mm": 172.97900390625,
+          "z_mm": 179.96400451660156
+        },
+        "limits_cyl": {
+          "theta_deg": [
+            -120.0,
+            120.0
+          ],
+          "radius_mm": [
+            50.0,
+            280.0
+          ]
+        },
+        "limits_cyl_auto": {
+          "radius_mm": [
+            80.0,
+            260.0
+          ]
+        },
+        "calibration_ready": true,
+        "last_ack": "MOVE",
+        "last_error_code": "",
+        "last_error": "",
+        "release_mode_effective": "sucker_frozen",
+        "sucker_frozen": true,
+        "pick_tuning": {
+          "pick_approach_z_mm": 130.0,
+          "pick_descend_z_mm": 85.0,
+          "pick_pre_suction_sec": 0.25,
+          "pick_bottom_hold_sec": 0.15000000596046448,
+          "pick_lift_sec": 0.800000011920929,
+          "z_carry_floor_mm": 160.0
+        },
+        "sucker_rotation_supported": true
+      }
+    },
+    {
+      "step": 5,
+      "elapsed_sec": 0.883023599977605,
+      "camera_frames_captured": 2,
+      "camera_frames_processed": 1,
+      "slots": [
+        {
+          "slot_id": 1,
+          "bbox": [
+            233,
+            168,
+            363,
+            310
+          ],
+          "pixel_center": [
+            296,
+            238
+          ],
+          "grasp_pixel": [
+            291,
+            234
+          ],
+          "confidence": 0.9390998482704163,
+          "grasp_quality": 0.9559320084495946,
+          "center_stable_frames": 5,
+          "center_stability_px": 0.0,
+          "grasp_stable_frames": 5,
+          "grasp_stability_px": 1.0,
+          "center_distance_px": 24.08318915758459,
+          "center_tolerance_px": 8.0,
+          "action_tolerance_px": 20.0,
+          "estimated_xy_error_mm": 2.364577548787454,
+          "servo_required": true,
+          "actionable": false,
+          "invalid_reason": "vision_servo_required",
+          "camera_to_world_raw": [
+            7.854103343465027,
+            -0.44984802431612536,
+            0.0
+          ],
+          "servo_command_point": [
+            9.166536582384007,
+            172.78957949911222
+          ],
+          "command_point": null,
+          "resolved_cyl": [
+            7.0837739421763875,
+            172.25770421218908,
+            85.0
+          ]
+        }
+      ],
+      "selected_slot_id": 1,
+      "selected_slot": {
+        "slot_id": 1,
+        "slot": 1,
+        "freq_hz": 8.0,
+        "valid": true,
+        "observed": true,
+        "pixel_center": [
+          296,
+          238
+        ],
+        "grasp_pixel": [
+          291,
+          234
+        ],
+        "bbox": [
+          233,
+          168,
+          363,
+          310
+        ],
+        "area_px": 10690,
+        "area_stability_ratio": 0.004028103044496487,
+        "confidence": 0.9390998482704163,
+        "polygon": [
+          [
+            322,
+            168
+          ],
+          [
+            313,
+            168
+          ],
+          [
+            302,
+            178
+          ],
+          [
+            233,
+            208
+          ],
+          [
+            233,
+            221
+          ],
+          [
+            239,
+            224
+          ],
+          [
+            265,
+            297
+          ],
+          [
+            273,
+            309
+          ],
+          [
+            362,
+            267
+          ],
+          [
+            353,
+            254
+          ]
+        ],
+        "oriented_bbox": [
+          [
+            270,
+            310
+          ],
+          [
+            226,
+            205
+          ],
+          [
+            322,
+            164
+          ],
+          [
+            366,
+            270
+          ]
+        ],
+        "grasp_quality": 0.9559320084495946,
+        "grasp_angle_deg": -22.833654403686523,
+        "grasp_angle_quality": 0.06605334698009911,
+        "grasp_angle_stability_deg": 0.2666454315185547,
+        "age": 5,
+        "lost_frames": 0,
+        "command_mode": "world",
+        "command_point": null,
+        "servo_command_mode": "cyl",
+        "servo_command_point": [
+          9.166536582384007,
+          172.78957949911222
+        ],
+        "cylindrical_center": [
+          7.0837739421763875,
+          172.25770421218908,
+          85.0
+        ],
+        "world_xyz": [
+          -21.242896778605285,
+          -170.94284424013642,
+          0.0
+        ],
+        "mapping_mode": "delta_servo",
+        "camera_to_world_raw": [
+          7.854103343465027,
+          -0.44984802431612536,
+          0.0
+        ],
+        "undistorted_pixel": [
+          296.0,
+          238.0
+        ],
+        "alignment_target_pixel": [
+          320.0,
+          240.0
+        ],
+        "center_distance_px": 24.08318915758459,
+        "center_tolerance_px": 8.0,
+        "action_tolerance_px": 20.0,
+        "estimated_xy_error_mm": 2.364577548787454,
+        "center_stable_frames": 5,
+        "center_stability_px": 0.0,
+        "grasp_stable_frames": 5,
+        "grasp_stability_px": 1.0,
+        "servo_required": true,
+        "calibration_profile_id": "eye-in-hand-live-20260503",
+        "actionable": false,
+        "invalid_reason": "vision_servo_required",
+        "resolved_base_xy": [
+          -21.242896778605285,
+          -170.94284424013642
+        ],
+        "resolved_cyl": [
+          7.0837739421763875,
+          172.25770421218908,
+          85.0
+        ]
+      },
+      "decision": {
+        "action": "SERVO",
+        "state": "SERVO",
+        "status": "servo slot=1",
+        "reason": "continuous_servo",
+        "command": null,
+        "raw_command": null,
+        "pending": {
+          "slot_id": 1,
+          "stable_frames": 0,
+          "lost_frames": 0
+        },
+        "theta_rate_deg_s": -1.0369276744653853,
+        "radius_rate_mm_s": -0.2020956655184591,
+        "z_rate_mm_s": 0.0,
+        "trace": {
+          "center_distance_px": 24.08318915758459,
+          "center_allow_descent_px": 24.0,
+          "center_stop_descent_px": 36.0,
+          "stable_frames": 0,
+          "current_z_mm": 179.96400451660156,
+          "confirm_z_mm": 175.0
+        }
+      },
+      "snapshot": {
+        "state": "MOVING_XY",
+        "state_seq": 240,
+        "robot_ts": 1745829154.796189,
+        "_local_receive_ts": 275559.3911908,
+        "busy": false,
+        "busy_action": "teleop",
+        "carrying": false,
+        "robot_xy": [
+          -29.097000122070312,
+          -170.4929962158203
+        ],
+        "robot_z": 179.96400451660156,
+        "robot_cyl": {
+          "theta_deg": 9.6850004196167,
+          "radius_mm": 172.95799255371094,
+          "z_mm": 179.96400451660156
+        },
+        "limits_cyl": {
+          "theta_deg": [
+            -120.0,
+            120.0
+          ],
+          "radius_mm": [
+            50.0,
+            280.0
+          ]
+        },
+        "limits_cyl_auto": {
+          "radius_mm": [
+            80.0,
+            260.0
+          ]
+        },
+        "calibration_ready": true,
+        "last_ack": "MOVE",
+        "last_error_code": "",
+        "last_error": "",
+        "release_mode_effective": "sucker_frozen",
+        "sucker_frozen": true,
+        "pick_tuning": {
+          "pick_approach_z_mm": 130.0,
+          "pick_descend_z_mm": 85.0,
+          "pick_pre_suction_sec": 0.25,
+          "pick_bottom_hold_sec": 0.15000000596046448,
+          "pick_lift_sec": 0.800000011920929,
+          "z_carry_floor_mm": 160.0
+        },
+        "sucker_rotation_supported": true
+      },
+      "raw_image": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\output\\jetmax_no_suction_test_20260510_04\\continuous_005\\raw.jpg",
+      "overlay_image": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\output\\jetmax_no_suction_test_20260510_04\\continuous_005\\overlay.jpg",
+      "packet": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\output\\jetmax_no_suction_test_20260510_04\\continuous_005\\packet.json"
+    },
+    {
+      "step": 6,
+      "elapsed_sec": 0.9797217999584973,
+      "camera_frames_captured": 2,
+      "camera_frames_processed": 1,
+      "slots": [
+        {
+          "slot_id": 1,
+          "bbox": [
+            233,
+            168,
+            363,
+            309
+          ],
+          "pixel_center": [
+            296,
+            238
+          ],
+          "grasp_pixel": [
+            291,
+            234
+          ],
+          "confidence": 0.9199278950691223,
+          "grasp_quality": 0.9584960887139673,
+          "center_stable_frames": 5,
+          "center_stability_px": 0.0,
+          "grasp_stable_frames": 5,
+          "grasp_stability_px": 2.0,
+          "center_distance_px": 24.08318915758459,
+          "center_tolerance_px": 8.0,
+          "action_tolerance_px": 20.0,
+          "estimated_xy_error_mm": 2.364577548787454,
+          "servo_required": true,
+          "actionable": false,
+          "invalid_reason": "vision_servo_required",
+          "camera_to_world_raw": [
+            7.854103343465027,
+            -0.44984802431612536,
+            0.0
+          ],
+          "servo_command_point": [
+            9.114620426493707,
+            172.78060094332565
+          ],
+          "command_point": null,
+          "resolved_cyl": [
+            7.031624206838523,
+            172.2544218474437,
+            85.0
+          ]
+        }
+      ],
+      "selected_slot_id": 1,
+      "selected_slot": {
+        "slot_id": 1,
+        "slot": 1,
+        "freq_hz": 8.0,
+        "valid": true,
+        "observed": true,
+        "pixel_center": [
+          296,
+          238
+        ],
+        "grasp_pixel": [
+          291,
+          234
+        ],
+        "bbox": [
+          233,
+          168,
+          363,
+          309
+        ],
+        "area_px": 10680,
+        "area_stability_ratio": 0.004028103044496487,
+        "confidence": 0.9199278950691223,
+        "polygon": [
+          [
+            322,
+            168
+          ],
+          [
+            313,
+            168
+          ],
+          [
+            302,
+            178
+          ],
+          [
+            233,
+            208
+          ],
+          [
+            233,
+            221
+          ],
+          [
+            239,
+            224
+          ],
+          [
+            265,
+            297
+          ],
+          [
+            272,
+            308
+          ],
+          [
+            362,
+            267
+          ],
+          [
+            353,
+            254
+          ],
+          [
+            351,
+            243
+          ],
+          [
+            343,
+            228
+          ]
+        ],
+        "oriented_bbox": [
+          [
+            270,
+            309
+          ],
+          [
+            226,
+            205
+          ],
+          [
+            322,
+            164
+          ],
+          [
+            366,
+            269
+          ]
+        ],
+        "grasp_quality": 0.9584960887139673,
+        "grasp_angle_deg": -22.833654403686523,
+        "grasp_angle_quality": 0.05683303445202361,
+        "grasp_angle_stability_deg": 0.2666454315185547,
+        "age": 6,
+        "lost_frames": 0,
+        "command_mode": "world",
+        "command_point": null,
+        "servo_command_mode": "cyl",
+        "servo_command_point": [
+          9.114620426493707,
+          172.78060094332565
+        ],
+        "cylindrical_center": [
+          7.031624206838523,
+          172.2544218474437,
+          85.0
+        ],
+        "world_xyz": [
+          -21.086896641276184,
+          -170.958850709863,
+          0.0
+        ],
+        "mapping_mode": "delta_servo",
+        "camera_to_world_raw": [
+          7.854103343465027,
+          -0.44984802431612536,
+          0.0
+        ],
+        "undistorted_pixel": [
+          296.0,
+          238.0
+        ],
+        "alignment_target_pixel": [
+          320.0,
+          240.0
+        ],
+        "center_distance_px": 24.08318915758459,
+        "center_tolerance_px": 8.0,
+        "action_tolerance_px": 20.0,
+        "estimated_xy_error_mm": 2.364577548787454,
+        "center_stable_frames": 5,
+        "center_stability_px": 0.0,
+        "grasp_stable_frames": 5,
+        "grasp_stability_px": 2.0,
+        "servo_required": true,
+        "calibration_profile_id": "eye-in-hand-live-20260503",
+        "actionable": false,
+        "invalid_reason": "vision_servo_required",
+        "resolved_base_xy": [
+          -21.086896641276184,
+          -170.958850709863
+        ],
+        "resolved_cyl": [
+          7.031624206838523,
+          172.2544218474437,
+          85.0
+        ]
+      },
+      "decision": {
+        "action": "SERVO",
+        "state": "SERVO",
+        "status": "servo slot=1",
+        "reason": "continuous_servo",
+        "command": null,
+        "raw_command": null,
+        "pending": {
+          "slot_id": 1,
+          "stable_frames": 0,
+          "lost_frames": 0
+        },
+        "theta_rate_deg_s": -1.036759894693251,
+        "radius_rate_mm_s": -0.2008765242592176,
+        "z_rate_mm_s": 0.0,
+        "trace": {
+          "center_distance_px": 24.08318915758459,
+          "center_allow_descent_px": 24.0,
+          "center_stop_descent_px": 36.0,
+          "stable_frames": 0,
+          "current_z_mm": 179.96400451660156,
+          "confirm_z_mm": 175.0
+        }
+      },
+      "snapshot": {
+        "state": "MOVING_XY",
+        "state_seq": 241,
+        "robot_ts": 1745829154.8627467,
+        "_local_receive_ts": 275559.4566875,
+        "busy": false,
+        "busy_action": "teleop",
+        "carrying": false,
+        "robot_xy": [
+          -28.94099998474121,
+          -170.50900268554688
+        ],
+        "robot_z": 179.96400451660156,
+        "robot_cyl": {
+          "theta_deg": 9.633000373840332,
+          "radius_mm": 172.947998046875,
+          "z_mm": 179.96400451660156
+        },
+        "limits_cyl": {
+          "theta_deg": [
+            -120.0,
+            120.0
+          ],
+          "radius_mm": [
+            50.0,
+            280.0
+          ]
+        },
+        "limits_cyl_auto": {
+          "radius_mm": [
+            80.0,
+            260.0
+          ]
+        },
+        "calibration_ready": true,
+        "last_ack": "MOVE",
+        "last_error_code": "",
+        "last_error": "",
+        "release_mode_effective": "sucker_frozen",
+        "sucker_frozen": true,
+        "pick_tuning": {
+          "pick_approach_z_mm": 130.0,
+          "pick_descend_z_mm": 85.0,
+          "pick_pre_suction_sec": 0.25,
+          "pick_bottom_hold_sec": 0.15000000596046448,
+          "pick_lift_sec": 0.800000011920929,
+          "z_carry_floor_mm": 160.0
+        },
+        "sucker_rotation_supported": true
+      }
+    },
+    {
+      "step": 7,
+      "elapsed_sec": 1.0794225999852642,
+      "camera_frames_captured": 2,
+      "camera_frames_processed": 1,
+      "slots": [
+        {
+          "slot_id": 1,
+          "bbox": [
+            233,
+            168,
+            363,
+            310
+          ],
+          "pixel_center": [
+            296,
+            238
+          ],
+          "grasp_pixel": [
+            291,
+            234
+          ],
+          "confidence": 0.9392156004905701,
+          "grasp_quality": 0.9573895374896999,
+          "center_stable_frames": 5,
+          "center_stability_px": 0.0,
+          "grasp_stable_frames": 5,
+          "grasp_stability_px": 2.0,
+          "center_distance_px": 24.08318915758459,
+          "center_tolerance_px": 8.0,
+          "action_tolerance_px": 20.0,
+          "estimated_xy_error_mm": 2.364577548787454,
+          "servo_required": true,
+          "actionable": false,
+          "invalid_reason": "vision_servo_required",
+          "camera_to_world_raw": [
+            7.854103343465027,
+            -0.44984802431612536,
+            0.0
+          ],
+          "servo_command_point": [
+            8.95884096500486,
+            172.75450152795815
+          ],
+          "command_point": null,
+          "resolved_cyl": [
+            6.875164287926163,
+            172.24541587778185,
+            85.0
+          ]
+        }
+      ],
+      "selected_slot_id": 1,
+      "selected_slot": {
+        "slot_id": 1,
+        "slot": 1,
+        "freq_hz": 8.0,
+        "valid": true,
+        "observed": true,
+        "pixel_center": [
+          296,
+          238
+        ],
+        "grasp_pixel": [
+          291,
+          234
+        ],
+        "bbox": [
+          233,
+          168,
+          363,
+          310
+        ],
+        "area_px": 10692,
+        "area_stability_ratio": 0.0044943820224719105,
+        "confidence": 0.9392156004905701,
+        "polygon": [
+          [
+            322,
+            168
+          ],
+          [
+            313,
+            168
+          ],
+          [
+            302,
+            178
+          ],
+          [
+            233,
+            208
+          ],
+          [
+            233,
+            221
+          ],
+          [
+            239,
+            224
+          ],
+          [
+            265,
+            297
+          ],
+          [
+            272,
+            309
+          ],
+          [
+            362,
+            267
+          ],
+          [
+            362,
+            263
+          ],
+          [
+            353,
+            254
+          ]
+        ],
+        "oriented_bbox": [
+          [
+            270,
+            310
+          ],
+          [
+            226,
+            205
+          ],
+          [
+            322,
+            164
+          ],
+          [
+            366,
+            270
+          ]
+        ],
+        "grasp_quality": 0.9573895374896999,
+        "grasp_angle_deg": -22.83365249633789,
+        "grasp_angle_quality": 0.06176744697422099,
+        "grasp_angle_stability_deg": 0.2666435241699219,
+        "age": 7,
+        "lost_frames": 0,
+        "command_mode": "world",
+        "command_point": null,
+        "servo_command_mode": "cyl",
+        "servo_command_point": [
+          8.95884096500486,
+          172.75450152795815
+        ],
+        "cylindrical_center": [
+          6.875164287926163,
+          172.24541587778185,
+          85.0
+        ],
+        "world_xyz": [
+          -20.61889622928888,
+          -171.0068548602536,
+          0.0
+        ],
+        "mapping_mode": "delta_servo",
+        "camera_to_world_raw": [
+          7.854103343465027,
+          -0.44984802431612536,
+          0.0
+        ],
+        "undistorted_pixel": [
+          296.0,
+          238.0
+        ],
+        "alignment_target_pixel": [
+          320.0,
+          240.0
+        ],
+        "center_distance_px": 24.08318915758459,
+        "center_tolerance_px": 8.0,
+        "action_tolerance_px": 20.0,
+        "estimated_xy_error_mm": 2.364577548787454,
+        "center_stable_frames": 5,
+        "center_stability_px": 0.0,
+        "grasp_stable_frames": 5,
+        "grasp_stability_px": 2.0,
+        "servo_required": true,
+        "calibration_profile_id": "eye-in-hand-live-20260503",
+        "actionable": false,
+        "invalid_reason": "vision_servo_required",
+        "resolved_base_xy": [
+          -20.61889622928888,
+          -171.0068548602536
+        ],
+        "resolved_cyl": [
+          6.875164287926163,
+          172.24541587778185,
+          85.0
+        ]
+      },
+      "decision": {
+        "action": "SERVO",
+        "state": "SERVO",
+        "status": "servo slot=1",
+        "reason": "continuous_servo",
+        "command": null,
+        "raw_command": null,
+        "pending": {
+          "slot_id": 1,
+          "stable_frames": 0,
+          "lost_frames": 0
+        },
+        "theta_rate_deg_s": -1.0383174443799277,
+        "radius_rate_mm_s": -0.19619728754396418,
+        "z_rate_mm_s": 0.0,
+        "trace": {
+          "center_distance_px": 24.08318915758459,
+          "center_allow_descent_px": 24.0,
+          "center_stop_descent_px": 36.0,
+          "stable_frames": 0,
+          "current_z_mm": 179.96400451660156,
+          "confirm_z_mm": 175.0
+        }
+      },
+      "snapshot": {
+        "state": "MOVING_XY",
+        "state_seq": 243,
+        "robot_ts": 1745829154.9961784,
+        "_local_receive_ts": 275559.5926996,
+        "busy": false,
+        "busy_action": "teleop",
+        "carrying": false,
+        "robot_xy": [
+          -28.472999572753906,
+          -170.5570068359375
+        ],
+        "robot_z": 179.96400451660156,
+        "robot_cyl": {
+          "theta_deg": 9.477999687194824,
+          "radius_mm": 172.91799926757812,
+          "z_mm": 179.96400451660156
+        },
+        "limits_cyl": {
+          "theta_deg": [
+            -120.0,
+            120.0
+          ],
+          "radius_mm": [
+            50.0,
+            280.0
+          ]
+        },
+        "limits_cyl_auto": {
+          "radius_mm": [
+            80.0,
+            260.0
+          ]
+        },
+        "calibration_ready": true,
+        "last_ack": "MOVE",
+        "last_error_code": "",
+        "last_error": "",
+        "release_mode_effective": "sucker_frozen",
+        "sucker_frozen": true,
+        "pick_tuning": {
+          "pick_approach_z_mm": 130.0,
+          "pick_descend_z_mm": 85.0,
+          "pick_pre_suction_sec": 0.25,
+          "pick_bottom_hold_sec": 0.15000000596046448,
+          "pick_lift_sec": 0.800000011920929,
+          "z_carry_floor_mm": 160.0
+        },
+        "sucker_rotation_supported": true
+      }
+    },
+    {
+      "step": 8,
+      "elapsed_sec": 1.17983069998445,
+      "camera_frames_captured": 2,
+      "camera_frames_processed": 1,
+      "slots": [
+        {
+          "slot_id": 1,
+          "bbox": [
+            233,
+            168,
+            363,
+            308
+          ],
+          "pixel_center": [
+            296,
+            238
+          ],
+          "grasp_pixel": [
+            291,
+            234
+          ],
+          "confidence": 0.9342787861824036,
+          "grasp_quality": 0.9451012618281405,
+          "center_stable_frames": 5,
+          "center_stability_px": 0.0,
+          "grasp_stable_frames": 5,
+          "grasp_stability_px": 2.0,
+          "center_distance_px": 24.08318915758459,
+          "center_tolerance_px": 8.0,
+          "action_tolerance_px": 20.0,
+          "estimated_xy_error_mm": 2.364577548787454,
+          "servo_required": true,
+          "actionable": false,
+          "invalid_reason": "vision_servo_required",
+          "camera_to_world_raw": [
+            7.854103343465027,
+            -0.44984802431612536,
+            0.0
+          ],
+          "servo_command_point": [
+            8.906904681984443,
+            172.7460755164071
+          ],
+          "command_point": null,
+          "resolved_cyl": [
+            6.823007891795103,
+            172.24268923458166,
+            85.0
+          ]
+        }
+      ],
+      "selected_slot_id": 1,
+      "selected_slot": {
+        "slot_id": 1,
+        "slot": 1,
+        "freq_hz": 8.0,
+        "valid": true,
+        "observed": true,
+        "pixel_center": [
+          296,
+          238
+        ],
+        "grasp_pixel": [
+          291,
+          234
+        ],
+        "bbox": [
+          233,
+          168,
+          363,
+          308
+        ],
+        "area_px": 10705,
+        "area_stability_ratio": 0.001403180542563143,
+        "confidence": 0.9342787861824036,
+        "polygon": [
+          [
+            322,
+            168
+          ],
+          [
+            313,
+            168
+          ],
+          [
+            302,
+            178
+          ],
+          [
+            233,
+            208
+          ],
+          [
+            233,
+            220
+          ],
+          [
+            239,
+            224
+          ],
+          [
+            269,
+            307
+          ],
+          [
+            285,
+            307
+          ],
+          [
+            291,
+            299
+          ],
+          [
+            362,
+            267
+          ],
+          [
+            362,
+            263
+          ],
+          [
+            353,
+            254
+          ]
+        ],
+        "oriented_bbox": [
+          [
+            271,
+            313
+          ],
+          [
+            226,
+            204
+          ],
+          [
+            322,
+            164
+          ],
+          [
+            366,
+            274
+          ]
+        ],
+        "grasp_quality": 0.9451012618281405,
+        "grasp_angle_deg": -22.83365249633789,
+        "grasp_angle_quality": 0.10884139582411308,
+        "grasp_angle_stability_deg": 0.5846290588378906,
+        "age": 8,
+        "lost_frames": 0,
+        "command_mode": "world",
+        "command_point": null,
+        "servo_command_mode": "cyl",
+        "servo_command_point": [
+          8.906904681984443,
+          172.7460755164071
+        ],
+        "cylindrical_center": [
+          6.823007891795103,
+          172.24268923458166,
+          85.0
+        ],
+        "world_xyz": [
+          -20.462896091959777,
+          -171.0228460711911,
+          0.0
+        ],
+        "mapping_mode": "delta_servo",
+        "camera_to_world_raw": [
+          7.854103343465027,
+          -0.44984802431612536,
+          0.0
+        ],
+        "undistorted_pixel": [
+          296.0,
+          238.0
+        ],
+        "alignment_target_pixel": [
+          320.0,
+          240.0
+        ],
+        "center_distance_px": 24.08318915758459,
+        "center_tolerance_px": 8.0,
+        "action_tolerance_px": 20.0,
+        "estimated_xy_error_mm": 2.364577548787454,
+        "center_stable_frames": 5,
+        "center_stability_px": 0.0,
+        "grasp_stable_frames": 5,
+        "grasp_stability_px": 2.0,
+        "servo_required": true,
+        "calibration_profile_id": "eye-in-hand-live-20260503",
+        "actionable": false,
+        "invalid_reason": "vision_servo_required",
+        "resolved_base_xy": [
+          -20.462896091959777,
+          -171.0228460711911
+        ],
+        "resolved_cyl": [
+          6.823007891795103,
+          172.24268923458166,
+          85.0
+        ]
+      },
+      "decision": {
+        "action": "SERVO",
+        "state": "SERVO",
+        "status": "servo slot=1",
+        "reason": "continuous_servo",
+        "command": null,
+        "raw_command": null,
+        "pending": {
+          "slot_id": 1,
+          "stable_frames": 0,
+          "lost_frames": 0
+        },
+        "theta_rate_deg_s": -1.038189918868028,
+        "radius_rate_mm_s": -0.19431509320210125,
+        "z_rate_mm_s": 0.0,
+        "trace": {
+          "center_distance_px": 24.08318915758459,
+          "center_allow_descent_px": 24.0,
+          "center_stop_descent_px": 36.0,
+          "stable_frames": 0,
+          "current_z_mm": 179.96400451660156,
+          "confirm_z_mm": 175.0
+        }
+      },
+      "snapshot": {
+        "state": "MOVING_XY",
+        "state_seq": 244,
+        "robot_ts": 1745829155.0627968,
+        "_local_receive_ts": 275559.6574307,
+        "busy": false,
+        "busy_action": "teleop",
+        "carrying": false,
+        "robot_xy": [
+          -28.316999435424805,
+          -170.572998046875
+        ],
+        "robot_z": 179.96400451660156,
+        "robot_cyl": {
+          "theta_deg": 9.425999641418457,
+          "radius_mm": 172.9080047607422,
+          "z_mm": 179.96400451660156
+        },
+        "limits_cyl": {
+          "theta_deg": [
+            -120.0,
+            120.0
+          ],
+          "radius_mm": [
+            50.0,
+            280.0
+          ]
+        },
+        "limits_cyl_auto": {
+          "radius_mm": [
+            80.0,
+            260.0
+          ]
+        },
+        "calibration_ready": true,
+        "last_ack": "MOVE",
+        "last_error_code": "",
+        "last_error": "",
+        "release_mode_effective": "sucker_frozen",
+        "sucker_frozen": true,
+        "pick_tuning": {
+          "pick_approach_z_mm": 130.0,
+          "pick_descend_z_mm": 85.0,
+          "pick_pre_suction_sec": 0.25,
+          "pick_bottom_hold_sec": 0.15000000596046448,
+          "pick_lift_sec": 0.800000011920929,
+          "z_carry_floor_mm": 160.0
+        },
+        "sucker_rotation_supported": true
+      }
+    },
+    {
+      "step": 9,
+      "elapsed_sec": 1.2861602999619208,
+      "camera_frames_captured": 2,
+      "camera_frames_processed": 1,
+      "slots": [
+        {
+          "slot_id": 1,
+          "bbox": [
+            233,
+            168,
+            363,
+            309
+          ],
+          "pixel_center": [
+            296,
+            238
+          ],
+          "grasp_pixel": [
+            291,
+            235
+          ],
+          "confidence": 0.9370100498199463,
+          "grasp_quality": 0.9582283478318514,
+          "center_stable_frames": 5,
+          "center_stability_px": 0.0,
+          "grasp_stable_frames": 5,
+          "grasp_stability_px": 1.4142135623730951,
+          "center_distance_px": 24.08318915758459,
+          "center_tolerance_px": 8.0,
+          "action_tolerance_px": 20.0,
+          "estimated_xy_error_mm": 2.364577548787454,
+          "servo_required": true,
+          "actionable": false,
+          "invalid_reason": "vision_servo_required",
+          "camera_to_world_raw": [
+            7.854103343465027,
+            -0.44984802431612536,
+            0.0
+          ],
+          "servo_command_point": [
+            8.751115938465464,
+            172.72068438172326
+          ],
+          "command_point": null,
+          "resolved_cyl": [
+            6.666567744269377,
+            172.2343959898432,
+            85.0
+          ]
+        }
+      ],
+      "selected_slot_id": 1,
+      "selected_slot": {
+        "slot_id": 1,
+        "slot": 1,
+        "freq_hz": 8.0,
+        "valid": true,
+        "observed": true,
+        "pixel_center": [
+          296,
+          238
+        ],
+        "grasp_pixel": [
+          291,
+          235
+        ],
+        "bbox": [
+          233,
+          168,
+          363,
+          309
+        ],
+        "area_px": 10673,
+        "area_stability_ratio": 0.0015902712815715622,
+        "confidence": 0.9370100498199463,
+        "polygon": [
+          [
+            322,
+            168
+          ],
+          [
+            313,
+            168
+          ],
+          [
+            302,
+            178
+          ],
+          [
+            233,
+            208
+          ],
+          [
+            233,
+            221
+          ],
+          [
+            237,
+            222
+          ],
+          [
+            242,
+            230
+          ],
+          [
+            265,
+            297
+          ],
+          [
+            272,
+            308
+          ],
+          [
+            362,
+            267
+          ],
+          [
+            362,
+            263
+          ],
+          [
+            353,
+            254
+          ]
+        ],
+        "oriented_bbox": [
+          [
+            270,
+            309
+          ],
+          [
+            226,
+            205
+          ],
+          [
+            322,
+            164
+          ],
+          [
+            366,
+            269
+          ]
+        ],
+        "grasp_quality": 0.9582283478318514,
+        "grasp_angle_deg": -22.83365249633789,
+        "grasp_angle_quality": 0.056795784335809736,
+        "grasp_angle_stability_deg": 0.5846290588378906,
+        "age": 9,
+        "lost_frames": 0,
+        "command_mode": "world",
+        "command_point": null,
+        "servo_command_mode": "cyl",
+        "servo_command_point": [
+          8.751115938465464,
+          172.72068438172326
+        ],
+        "cylindrical_center": [
+          6.666567744269377,
+          172.2343959898432,
+          85.0
+        ],
+        "world_xyz": [
+          -19.994897587321105,
+          -171.0698431415036,
+          0.0
+        ],
+        "mapping_mode": "delta_servo",
+        "camera_to_world_raw": [
+          7.854103343465027,
+          -0.44984802431612536,
+          0.0
+        ],
+        "undistorted_pixel": [
+          296.0,
+          238.0
+        ],
+        "alignment_target_pixel": [
+          320.0,
+          240.0
+        ],
+        "center_distance_px": 24.08318915758459,
+        "center_tolerance_px": 8.0,
+        "action_tolerance_px": 20.0,
+        "estimated_xy_error_mm": 2.364577548787454,
+        "center_stable_frames": 5,
+        "center_stability_px": 0.0,
+        "grasp_stable_frames": 5,
+        "grasp_stability_px": 1.4142135623730951,
+        "servo_required": true,
+        "calibration_profile_id": "eye-in-hand-live-20260503",
+        "actionable": false,
+        "invalid_reason": "vision_servo_required",
+        "resolved_base_xy": [
+          -19.994897587321105,
+          -171.0698431415036
+        ],
+        "resolved_cyl": [
+          6.666567744269377,
+          172.2343959898432,
+          85.0
+        ]
+      },
+      "decision": {
+        "action": "SERVO",
+        "state": "SERVO",
+        "status": "servo slot=1",
+        "reason": "continuous_servo",
+        "command": null,
+        "raw_command": null,
+        "pending": {
+          "slot_id": 1,
+          "stable_frames": 0,
+          "lost_frames": 0
+        },
+        "theta_rate_deg_s": -1.0377690385964158,
+        "radius_rate_mm_s": -0.18878591966646355,
+        "z_rate_mm_s": 0.0,
+        "trace": {
+          "center_distance_px": 24.08318915758459,
+          "center_allow_descent_px": 24.0,
+          "center_stop_descent_px": 36.0,
+          "stable_frames": 0,
+          "current_z_mm": 179.96400451660156,
+          "confirm_z_mm": 175.0
+        }
+      },
+      "snapshot": {
+        "state": "MOVING_XY",
+        "state_seq": 246,
+        "robot_ts": 1745829155.1965995,
+        "_local_receive_ts": 275559.7936692,
+        "busy": false,
+        "busy_action": "teleop",
+        "carrying": false,
+        "robot_xy": [
+          -27.849000930786133,
+          -170.6199951171875
+        ],
+        "robot_z": 179.96400451660156,
+        "robot_cyl": {
+          "theta_deg": 9.270000457763672,
+          "radius_mm": 172.8780059814453,
+          "z_mm": 179.96400451660156
+        },
+        "limits_cyl": {
+          "theta_deg": [
+            -120.0,
+            120.0
+          ],
+          "radius_mm": [
+            50.0,
+            280.0
+          ]
+        },
+        "limits_cyl_auto": {
+          "radius_mm": [
+            80.0,
+            260.0
+          ]
+        },
+        "calibration_ready": true,
+        "last_ack": "MOVE",
+        "last_error_code": "",
+        "last_error": "",
+        "release_mode_effective": "sucker_frozen",
+        "sucker_frozen": true,
+        "pick_tuning": {
+          "pick_approach_z_mm": 130.0,
+          "pick_descend_z_mm": 85.0,
+          "pick_pre_suction_sec": 0.25,
+          "pick_bottom_hold_sec": 0.15000000596046448,
+          "pick_lift_sec": 0.800000011920929,
+          "z_carry_floor_mm": 160.0
+        },
+        "sucker_rotation_supported": true
+      }
+    },
+    {
+      "step": 10,
+      "elapsed_sec": 1.3812337999697775,
+      "camera_frames_captured": 2,
+      "camera_frames_processed": 1,
+      "slots": [
+        {
+          "slot_id": 1,
+          "bbox": [
+            233,
+            168,
+            363,
+            309
+          ],
+          "pixel_center": [
+            296,
+            238
+          ],
+          "grasp_pixel": [
+            291,
+            235
+          ],
+          "confidence": 0.9430751204490662,
+          "grasp_quality": 0.9582068460504973,
+          "center_stable_frames": 5,
+          "center_stability_px": 0.0,
+          "grasp_stable_frames": 5,
+          "grasp_stability_px": 1.4142135623730951,
+          "center_distance_px": 24.08318915758459,
+          "center_tolerance_px": 8.0,
+          "action_tolerance_px": 20.0,
+          "estimated_xy_error_mm": 2.364577548787454,
+          "servo_required": true,
+          "actionable": false,
+          "invalid_reason": "vision_servo_required",
+          "camera_to_world_raw": [
+            7.854103343465027,
+            -0.44984802431612536,
+            0.0
+          ],
+          "servo_command_point": [
+            8.69915901339657,
+            172.71284125346958
+          ],
+          "command_point": null,
+          "resolved_cyl": [
+            6.614404556123264,
+            172.23225536823168,
+            85.0
+          ]
+        }
+      ],
+      "selected_slot_id": 1,
+      "selected_slot": {
+        "slot_id": 1,
+        "slot": 1,
+        "freq_hz": 8.0,
+        "valid": true,
+        "observed": true,
+        "pixel_center": [
+          296,
+          238
+        ],
+        "grasp_pixel": [
+          291,
+          235
+        ],
+        "bbox": [
+          233,
+          168,
+          363,
+          309
+        ],
+        "area_px": 10667,
+        "area_stability_ratio": 0.0023408239700374533,
+        "confidence": 0.9430751204490662,
+        "polygon": [
+          [
+            322,
+            168
+          ],
+          [
+            313,
+            168
+          ],
+          [
+            302,
+            178
+          ],
+          [
+            233,
+            208
+          ],
+          [
+            233,
+            220
+          ],
+          [
+            239,
+            223
+          ],
+          [
+            265,
+            297
+          ],
+          [
+            273,
+            308
+          ],
+          [
+            362,
+            267
+          ],
+          [
+            362,
+            263
+          ],
+          [
+            353,
+            254
+          ],
+          [
+            351,
+            243
+          ],
+          [
+            343,
+            228
+          ]
+        ],
+        "oriented_bbox": [
+          [
+            270,
+            309
+          ],
+          [
+            226,
+            204
+          ],
+          [
+            322,
+            164
+          ],
+          [
+            365,
+            270
+          ]
+        ],
+        "grasp_quality": 0.9582068460504973,
+        "grasp_angle_deg": -22.83365249633789,
+        "grasp_angle_quality": 0.06678918332094183,
+        "grasp_angle_stability_deg": 0.5846290588378906,
+        "age": 10,
+        "lost_frames": 0,
+        "command_mode": "world",
+        "command_point": null,
+        "servo_command_mode": "cyl",
+        "servo_command_point": [
+          8.69915901339657,
+          172.71284125346958
+        ],
+        "cylindrical_center": [
+          6.614404556123264,
+          172.23225536823168,
+          85.0
+        ],
+        "world_xyz": [
+          -19.838897449992004,
+          -171.08584961123017,
+          0.0
+        ],
+        "mapping_mode": "delta_servo",
+        "camera_to_world_raw": [
+          7.854103343465027,
+          -0.44984802431612536,
+          0.0
+        ],
+        "undistorted_pixel": [
+          296.0,
+          238.0
+        ],
+        "alignment_target_pixel": [
+          320.0,
+          240.0
+        ],
+        "center_distance_px": 24.08318915758459,
+        "center_tolerance_px": 8.0,
+        "action_tolerance_px": 20.0,
+        "estimated_xy_error_mm": 2.364577548787454,
+        "center_stable_frames": 5,
+        "center_stability_px": 0.0,
+        "grasp_stable_frames": 5,
+        "grasp_stability_px": 1.4142135623730951,
+        "servo_required": true,
+        "calibration_profile_id": "eye-in-hand-live-20260503",
+        "actionable": false,
+        "invalid_reason": "vision_servo_required",
+        "resolved_base_xy": [
+          -19.838897449992004,
+          -171.08584961123017
+        ],
+        "resolved_cyl": [
+          6.614404556123264,
+          172.23225536823168,
+          85.0
+        ]
+      },
+      "decision": {
+        "action": "SERVO",
+        "state": "SERVO",
+        "status": "servo slot=1",
+        "reason": "continuous_servo",
+        "command": null,
+        "raw_command": null,
+        "pending": {
+          "slot_id": 1,
+          "stable_frames": 0,
+          "lost_frames": 0
+        },
+        "theta_rate_deg_s": -1.0376827971814677,
+        "radius_rate_mm_s": -0.18618595482088265,
+        "z_rate_mm_s": 0.0,
+        "trace": {
+          "center_distance_px": 24.08318915758459,
+          "center_allow_descent_px": 24.0,
+          "center_stop_descent_px": 36.0,
+          "stable_frames": 0,
+          "current_z_mm": 179.96400451660156,
+          "confirm_z_mm": 175.0
+        }
+      },
+      "snapshot": {
+        "state": "MOVING_XY",
+        "state_seq": 247,
+        "robot_ts": 1745829155.262782,
+        "_local_receive_ts": 275559.8572381,
+        "busy": false,
+        "busy_action": "teleop",
+        "carrying": false,
+        "robot_xy": [
+          -27.69300079345703,
+          -170.63600158691406
+        ],
+        "robot_z": 179.96400451660156,
+        "robot_cyl": {
+          "theta_deg": 9.218000411987305,
+          "radius_mm": 172.8679962158203,
+          "z_mm": 179.96400451660156
+        },
+        "limits_cyl": {
+          "theta_deg": [
+            -120.0,
+            120.0
+          ],
+          "radius_mm": [
+            50.0,
+            280.0
+          ]
+        },
+        "limits_cyl_auto": {
+          "radius_mm": [
+            80.0,
+            260.0
+          ]
+        },
+        "calibration_ready": true,
+        "last_ack": "MOVE",
+        "last_error_code": "",
+        "last_error": "",
+        "release_mode_effective": "sucker_frozen",
+        "sucker_frozen": true,
+        "pick_tuning": {
+          "pick_approach_z_mm": 130.0,
+          "pick_descend_z_mm": 85.0,
+          "pick_pre_suction_sec": 0.25,
+          "pick_bottom_hold_sec": 0.15000000596046448,
+          "pick_lift_sec": 0.800000011920929,
+          "z_carry_floor_mm": 160.0
+        },
+        "sucker_rotation_supported": true
+      },
+      "raw_image": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\output\\jetmax_no_suction_test_20260510_04\\continuous_010\\raw.jpg",
+      "overlay_image": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\output\\jetmax_no_suction_test_20260510_04\\continuous_010\\overlay.jpg",
+      "packet": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\output\\jetmax_no_suction_test_20260510_04\\continuous_010\\packet.json"
+    },
+    {
+      "step": 11,
+      "elapsed_sec": 1.4822169999824837,
+      "camera_frames_captured": 2,
+      "camera_frames_processed": 1,
+      "slots": [
+        {
+          "slot_id": 1,
+          "bbox": [
+            233,
+            168,
+            363,
+            308
+          ],
+          "pixel_center": [
+            296,
+            238
+          ],
+          "grasp_pixel": [
+            291,
+            234
+          ],
+          "confidence": 0.944961667060852,
+          "grasp_quality": 0.9473178045807216,
+          "center_stable_frames": 5,
+          "center_stability_px": 0.0,
+          "grasp_stable_frames": 5,
+          "grasp_stability_px": 1.0,
+          "center_distance_px": 24.08318915758459,
+          "center_tolerance_px": 8.0,
+          "action_tolerance_px": 20.0,
+          "estimated_xy_error_mm": 2.364577548787454,
+          "servo_required": true,
+          "actionable": false,
+          "invalid_reason": "vision_servo_required",
+          "camera_to_world_raw": [
+            7.854103343465027,
+            -0.44984802431612536,
+            0.0
+          ],
+          "servo_command_point": [
+            8.543031869651106,
+            172.68802389006842
+          ],
+          "command_point": null,
+          "resolved_cyl": [
+            6.45765279402584,
+            172.2245762963411,
+            85.0
+          ]
+        }
+      ],
+      "selected_slot_id": 1,
+      "selected_slot": {
+        "slot_id": 1,
+        "slot": 1,
+        "freq_hz": 8.0,
+        "valid": true,
+        "observed": true,
+        "pixel_center": [
+          296,
+          238
+        ],
+        "grasp_pixel": [
+          291,
+          234
+        ],
+        "bbox": [
+          233,
+          168,
+          363,
+          308
+        ],
+        "area_px": 10696,
+        "area_stability_ratio": 0.0023381967826412273,
+        "confidence": 0.944961667060852,
+        "polygon": [
+          [
+            322,
+            168
+          ],
+          [
+            313,
+            168
+          ],
+          [
+            305,
+            177
+          ],
+          [
+            233,
+            208
+          ],
+          [
+            233,
+            220
+          ],
+          [
+            239,
+            224
+          ],
+          [
+            269,
+            307
+          ],
+          [
+            283,
+            307
+          ],
+          [
+            291,
+            299
+          ],
+          [
+            362,
+            267
+          ],
+          [
+            362,
+            263
+          ],
+          [
+            353,
+            254
+          ]
+        ],
+        "oriented_bbox": [
+          [
+            271,
+            312
+          ],
+          [
+            226,
+            204
+          ],
+          [
+            322,
+            164
+          ],
+          [
+            366,
+            273
+          ]
+        ],
+        "grasp_quality": 0.9473178045807216,
+        "grasp_angle_deg": -22.56700897216797,
+        "grasp_angle_quality": 0.10082055202629225,
+        "grasp_angle_stability_deg": 0.31798553466796875,
+        "age": 11,
+        "lost_frames": 0,
+        "command_mode": "world",
+        "command_point": null,
+        "servo_command_mode": "cyl",
+        "servo_command_point": [
+          8.543031869651106,
+          172.68802389006842
+        ],
+        "cylindrical_center": [
+          6.45765279402584,
+          172.2245762963411,
+          85.0
+        ],
+        "world_xyz": [
+          -19.369897587321105,
+          -171.1318548602536,
+          0.0
+        ],
+        "mapping_mode": "delta_servo",
+        "camera_to_world_raw": [
+          7.854103343465027,
+          -0.44984802431612536,
+          0.0
+        ],
+        "undistorted_pixel": [
+          296.0,
+          238.0
+        ],
+        "alignment_target_pixel": [
+          320.0,
+          240.0
+        ],
+        "center_distance_px": 24.08318915758459,
+        "center_tolerance_px": 8.0,
+        "action_tolerance_px": 20.0,
+        "estimated_xy_error_mm": 2.364577548787454,
+        "center_stable_frames": 5,
+        "center_stability_px": 0.0,
+        "grasp_stable_frames": 5,
+        "grasp_stability_px": 1.0,
+        "servo_required": true,
+        "calibration_profile_id": "eye-in-hand-live-20260503",
+        "actionable": false,
+        "invalid_reason": "vision_servo_required",
+        "resolved_base_xy": [
+          -19.369897587321105,
+          -171.1318548602536
+        ],
+        "resolved_cyl": [
+          6.45765279402584,
+          172.2245762963411,
+          85.0
+        ]
+      },
+      "decision": {
+        "action": "SERVO",
+        "state": "SERVO",
+        "status": "servo slot=1",
+        "reason": "continuous_servo",
+        "command": null,
+        "raw_command": null,
+        "pending": {
+          "slot_id": 1,
+          "stable_frames": 0,
+          "lost_frames": 0
+        },
+        "theta_rate_deg_s": -1.039935711381382,
+        "radius_rate_mm_s": -0.1823669373866437,
+        "z_rate_mm_s": 0.0,
+        "trace": {
+          "center_distance_px": 24.08318915758459,
+          "center_allow_descent_px": 24.0,
+          "center_stop_descent_px": 36.0,
+          "stable_frames": 0,
+          "current_z_mm": 179.96400451660156,
+          "confirm_z_mm": 175.0
+        }
+      },
+      "snapshot": {
+        "state": "MOVING_XY",
+        "state_seq": 249,
+        "robot_ts": 1745829155.3964717,
+        "_local_receive_ts": 275559.9926669,
+        "busy": false,
+        "busy_action": "teleop",
+        "carrying": false,
+        "robot_xy": [
+          -27.224000930786133,
+          -170.6820068359375
+        ],
+        "robot_z": 179.96400451660156,
+        "robot_cyl": {
+          "theta_deg": 9.062999725341797,
+          "radius_mm": 172.83999633789062,
+          "z_mm": 179.96400451660156
+        },
+        "limits_cyl": {
+          "theta_deg": [
+            -120.0,
+            120.0
+          ],
+          "radius_mm": [
+            50.0,
+            280.0
+          ]
+        },
+        "limits_cyl_auto": {
+          "radius_mm": [
+            80.0,
+            260.0
+          ]
+        },
+        "calibration_ready": true,
+        "last_ack": "MOVE",
+        "last_error_code": "",
+        "last_error": "",
+        "release_mode_effective": "sucker_frozen",
+        "sucker_frozen": true,
+        "pick_tuning": {
+          "pick_approach_z_mm": 130.0,
+          "pick_descend_z_mm": 85.0,
+          "pick_pre_suction_sec": 0.25,
+          "pick_bottom_hold_sec": 0.15000000596046448,
+          "pick_lift_sec": 0.800000011920929,
+          "z_carry_floor_mm": 160.0
+        },
+        "sucker_rotation_supported": true
+      }
+    },
+    {
+      "step": 12,
+      "elapsed_sec": 1.5758639000123367,
+      "camera_frames_captured": 2,
+      "camera_frames_processed": 1,
+      "slots": [
+        {
+          "slot_id": 1,
+          "bbox": [
+            233,
+            168,
+            363,
+            308
+          ],
+          "pixel_center": [
+            296,
+            238
+          ],
+          "grasp_pixel": [
+            291,
+            234
+          ],
+          "confidence": 0.9433838725090027,
+          "grasp_quality": 0.9479864396295672,
+          "center_stable_frames": 5,
+          "center_stability_px": 0.0,
+          "grasp_stable_frames": 5,
+          "grasp_stability_px": 1.0,
+          "center_distance_px": 24.08318915758459,
+          "center_tolerance_px": 8.0,
+          "action_tolerance_px": 20.0,
+          "estimated_xy_error_mm": 2.364577548787454,
+          "servo_required": true,
+          "actionable": false,
+          "invalid_reason": "vision_servo_required",
+          "camera_to_world_raw": [
+            7.854103343465027,
+            -0.44984802431612536,
+            0.0
+          ],
+          "servo_command_point": [
+            8.491105434087668,
+            172.67975361235924
+          ],
+          "command_point": null,
+          "resolved_cyl": [
+            6.405521846906521,
+            172.2220066508808,
+            85.0
+          ]
+        }
+      ],
+      "selected_slot_id": 1,
+      "selected_slot": {
+        "slot_id": 1,
+        "slot": 1,
+        "freq_hz": 8.0,
+        "valid": true,
+        "observed": true,
+        "pixel_center": [
+          296,
+          238
+        ],
+        "grasp_pixel": [
+          291,
+          234
+        ],
+        "bbox": [
+          233,
+          168,
+          363,
+          308
+        ],
+        "area_px": 10714,
+        "area_stability_ratio": 0.0027112939416604337,
+        "confidence": 0.9433838725090027,
+        "polygon": [
+          [
+            322,
+            168
+          ],
+          [
+            313,
+            168
+          ],
+          [
+            302,
+            178
+          ],
+          [
+            233,
+            208
+          ],
+          [
+            233,
+            220
+          ],
+          [
+            239,
+            223
+          ],
+          [
+            247,
+            241
+          ],
+          [
+            269,
+            307
+          ],
+          [
+            283,
+            307
+          ],
+          [
+            293,
+            298
+          ],
+          [
+            362,
+            268
+          ],
+          [
+            362,
+            263
+          ],
+          [
+            354,
+            256
+          ],
+          [
+            352,
+            245
+          ],
+          [
+            344,
+            230
+          ]
+        ],
+        "oriented_bbox": [
+          [
+            271,
+            312
+          ],
+          [
+            226,
+            204
+          ],
+          [
+            322,
+            164
+          ],
+          [
+            366,
+            273
+          ]
+        ],
+        "grasp_quality": 0.9479864396295672,
+        "grasp_angle_deg": -22.2490234375,
+        "grasp_angle_quality": 0.10099022012057733,
+        "grasp_angle_stability_deg": 0.5846290588378906,
+        "age": 12,
+        "lost_frames": 0,
+        "command_mode": "world",
+        "command_point": null,
+        "servo_command_mode": "cyl",
+        "servo_command_point": [
+          8.491105434087668,
+          172.67975361235924
+        ],
+        "cylindrical_center": [
+          6.405521846906521,
+          172.2220066508808,
+          85.0
+        ],
+        "world_xyz": [
+          -19.213897449992004,
+          -171.14685424990205,
+          0.0
+        ],
+        "mapping_mode": "delta_servo",
+        "camera_to_world_raw": [
+          7.854103343465027,
+          -0.44984802431612536,
+          0.0
+        ],
+        "undistorted_pixel": [
+          296.0,
+          238.0
+        ],
+        "alignment_target_pixel": [
+          320.0,
+          240.0
+        ],
+        "center_distance_px": 24.08318915758459,
+        "center_tolerance_px": 8.0,
+        "action_tolerance_px": 20.0,
+        "estimated_xy_error_mm": 2.364577548787454,
+        "center_stable_frames": 5,
+        "center_stability_px": 0.0,
+        "grasp_stable_frames": 5,
+        "grasp_stability_px": 1.0,
+        "servo_required": true,
+        "calibration_profile_id": "eye-in-hand-live-20260503",
+        "actionable": false,
+        "invalid_reason": "vision_servo_required",
+        "resolved_base_xy": [
+          -19.213897449992004,
+          -171.14685424990205
+        ],
+        "resolved_cyl": [
+          6.405521846906521,
+          172.2220066508808,
+          85.0
+        ]
+      },
+      "decision": {
+        "action": "SERVO",
+        "state": "SERVO",
+        "status": "servo slot=1",
+        "reason": "continuous_servo",
+        "command": null,
+        "raw_command": null,
+        "pending": {
+          "slot_id": 1,
+          "stable_frames": 0,
+          "lost_frames": 0
+        },
+        "theta_rate_deg_s": -1.039788490955523,
+        "radius_rate_mm_s": -0.18029786243454282,
+        "z_rate_mm_s": 0.0,
+        "trace": {
+          "center_distance_px": 24.08318915758459,
+          "center_allow_descent_px": 24.0,
+          "center_stop_descent_px": 36.0,
+          "stable_frames": 0,
+          "current_z_mm": 179.96400451660156,
+          "confirm_z_mm": 175.0
+        }
+      },
+      "snapshot": {
+        "state": "MOVING_XY",
+        "state_seq": 250,
+        "robot_ts": 1745829155.462689,
+        "_local_receive_ts": 275560.0571057,
+        "busy": false,
+        "busy_action": "teleop",
+        "carrying": false,
+        "robot_xy": [
+          -27.06800079345703,
+          -170.69700622558594
+        ],
+        "robot_z": 179.96400451660156,
+        "robot_cyl": {
+          "theta_deg": 9.01099967956543,
+          "radius_mm": 172.8300018310547,
+          "z_mm": 179.96400451660156
+        },
+        "limits_cyl": {
+          "theta_deg": [
+            -120.0,
+            120.0
+          ],
+          "radius_mm": [
+            50.0,
+            280.0
+          ]
+        },
+        "limits_cyl_auto": {
+          "radius_mm": [
+            80.0,
+            260.0
+          ]
+        },
+        "calibration_ready": true,
+        "last_ack": "MOVE",
+        "last_error_code": "",
+        "last_error": "",
+        "release_mode_effective": "sucker_frozen",
+        "sucker_frozen": true,
+        "pick_tuning": {
+          "pick_approach_z_mm": 130.0,
+          "pick_descend_z_mm": 85.0,
+          "pick_pre_suction_sec": 0.25,
+          "pick_bottom_hold_sec": 0.15000000596046448,
+          "pick_lift_sec": 0.800000011920929,
+          "z_carry_floor_mm": 160.0
+        },
+        "sucker_rotation_supported": true
+      }
+    },
+    {
+      "step": 13,
+      "elapsed_sec": 1.6840437999926507,
+      "camera_frames_captured": 2,
+      "camera_frames_processed": 1,
+      "slots": [
+        {
+          "slot_id": 1,
+          "bbox": [
+            233,
+            168,
+            363,
+            308
+          ],
+          "pixel_center": [
+            296,
+            238
+          ],
+          "grasp_pixel": [
+            291,
+            234
+          ],
+          "confidence": 0.9462970495223999,
+          "grasp_quality": 0.9466278588028101,
+          "center_stable_frames": 5,
+          "center_stability_px": 0.0,
+          "grasp_stable_frames": 5,
+          "grasp_stability_px": 1.0,
+          "center_distance_px": 24.08318915758459,
+          "center_tolerance_px": 8.0,
+          "action_tolerance_px": 20.0,
+          "estimated_xy_error_mm": 2.364577548787454,
+          "servo_required": true,
+          "actionable": false,
+          "invalid_reason": "vision_servo_required",
+          "camera_to_world_raw": [
+            7.854103343465027,
+            -0.44984802431612536,
+            0.0
+          ],
+          "servo_command_point": [
+            8.335249163967866,
+            172.65677527448872
+          ],
+          "command_point": null,
+          "resolved_cyl": [
+            6.249084357135048,
+            172.2161391240295,
+            85.0
+          ]
+        }
+      ],
+      "selected_slot_id": 1,
+      "selected_slot": {
+        "slot_id": 1,
+        "slot": 1,
+        "freq_hz": 8.0,
+        "valid": true,
+        "observed": true,
+        "pixel_center": [
+          296,
+          238
+        ],
+        "grasp_pixel": [
+          291,
+          234
+        ],
+        "bbox": [
+          233,
+          168,
+          363,
+          308
+        ],
+        "area_px": 10680,
+        "area_stability_ratio": 0.003183520599250936,
+        "confidence": 0.9462970495223999,
+        "polygon": [
+          [
+            323,
+            168
+          ],
+          [
+            314,
+            168
+          ],
+          [
+            311,
+            173
+          ],
+          [
+            292,
+            183
+          ],
+          [
+            233,
+            208
+          ],
+          [
+            233,
+            220
+          ],
+          [
+            239,
+            223
+          ],
+          [
+            247,
+            241
+          ],
+          [
+            269,
+            307
+          ],
+          [
+            283,
+            307
+          ],
+          [
+            293,
+            298
+          ],
+          [
+            362,
+            268
+          ],
+          [
+            362,
+            263
+          ],
+          [
+            354,
+            256
+          ],
+          [
+            351,
+            243
+          ],
+          [
+            343,
+            228
+          ]
+        ],
+        "oriented_bbox": [
+          [
+            270,
+            312
+          ],
+          [
+            226,
+            204
+          ],
+          [
+            322,
+            165
+          ],
+          [
+            366,
+            273
+          ]
+        ],
+        "grasp_quality": 0.9466278588028101,
+        "grasp_angle_deg": -22.2490234375,
+        "grasp_angle_quality": 0.09506335926700962,
+        "grasp_angle_stability_deg": 0.5846290588378906,
+        "age": 13,
+        "lost_frames": 0,
+        "command_mode": "world",
+        "command_point": null,
+        "servo_command_mode": "cyl",
+        "servo_command_point": [
+          8.335249163967866,
+          172.65677527448872
+        ],
+        "cylindrical_center": [
+          6.249084357135048,
+          172.2161391240295,
+          85.0
+        ],
+        "world_xyz": [
+          -18.7458970380047,
+          -171.19284424013642,
+          0.0
+        ],
+        "mapping_mode": "delta_servo",
+        "camera_to_world_raw": [
+          7.854103343465027,
+          -0.44984802431612536,
+          0.0
+        ],
+        "undistorted_pixel": [
+          296.0,
+          238.0
+        ],
+        "alignment_target_pixel": [
+          320.0,
+          240.0
+        ],
+        "center_distance_px": 24.08318915758459,
+        "center_tolerance_px": 8.0,
+        "action_tolerance_px": 20.0,
+        "estimated_xy_error_mm": 2.364577548787454,
+        "center_stable_frames": 5,
+        "center_stability_px": 0.0,
+        "grasp_stable_frames": 5,
+        "grasp_stability_px": 1.0,
+        "servo_required": true,
+        "calibration_profile_id": "eye-in-hand-live-20260503",
+        "actionable": false,
+        "invalid_reason": "vision_servo_required",
+        "resolved_base_xy": [
+          -18.7458970380047,
+          -171.19284424013642
+        ],
+        "resolved_cyl": [
+          6.249084357135048,
+          172.2161391240295,
+          85.0
+        ]
+      },
+      "decision": {
+        "action": "SERVO",
+        "state": "SERVO",
+        "status": "servo slot=1",
+        "reason": "continuous_servo",
+        "command": null,
+        "raw_command": null,
+        "pending": {
+          "slot_id": 1,
+          "stable_frames": 0,
+          "lost_frames": 0
+        },
+        "theta_rate_deg_s": -1.039500756536924,
+        "radius_rate_mm_s": -0.17546219991040743,
+        "z_rate_mm_s": 0.0,
+        "trace": {
+          "center_distance_px": 24.08318915758459,
+          "center_allow_descent_px": 24.0,
+          "center_stop_descent_px": 36.0,
+          "stable_frames": 0,
+          "current_z_mm": 179.96400451660156,
+          "confirm_z_mm": 175.0
+        }
+      },
+      "snapshot": {
+        "state": "MOVING_XY",
+        "state_seq": 252,
+        "robot_ts": 1745829155.5966053,
+        "_local_receive_ts": 275560.1906863,
+        "busy": false,
+        "busy_action": "teleop",
+        "carrying": false,
+        "robot_xy": [
+          -26.600000381469727,
+          -170.7429962158203
+        ],
+        "robot_z": 179.96400451660156,
+        "robot_cyl": {
+          "theta_deg": 8.854999542236328,
+          "radius_mm": 172.80299377441406,
+          "z_mm": 179.96400451660156
+        },
+        "limits_cyl": {
+          "theta_deg": [
+            -120.0,
+            120.0
+          ],
+          "radius_mm": [
+            50.0,
+            280.0
+          ]
+        },
+        "limits_cyl_auto": {
+          "radius_mm": [
+            80.0,
+            260.0
+          ]
+        },
+        "calibration_ready": true,
+        "last_ack": "MOVE",
+        "last_error_code": "",
+        "last_error": "",
+        "release_mode_effective": "sucker_frozen",
+        "sucker_frozen": true,
+        "pick_tuning": {
+          "pick_approach_z_mm": 130.0,
+          "pick_descend_z_mm": 85.0,
+          "pick_pre_suction_sec": 0.25,
+          "pick_bottom_hold_sec": 0.15000000596046448,
+          "pick_lift_sec": 0.800000011920929,
+          "z_carry_floor_mm": 160.0
+        },
+        "sucker_rotation_supported": true
+      }
+    },
+    {
+      "step": 14,
+      "elapsed_sec": 1.781965099973604,
+      "camera_frames_captured": 2,
+      "camera_frames_processed": 1,
+      "slots": [
+        {
+          "slot_id": 1,
+          "bbox": [
+            233,
+            168,
+            363,
+            308
+          ],
+          "pixel_center": [
+            296,
+            238
+          ],
+          "grasp_pixel": [
+            291,
+            234
+          ],
+          "confidence": 0.9444577693939209,
+          "grasp_quality": 0.9465907213628473,
+          "center_stable_frames": 5,
+          "center_stability_px": 0.0,
+          "grasp_stable_frames": 5,
+          "grasp_stability_px": 1.0,
+          "center_distance_px": 24.08318915758459,
+          "center_tolerance_px": 8.0,
+          "action_tolerance_px": 20.0,
+          "estimated_xy_error_mm": 2.364577548787454,
+          "servo_required": true,
+          "actionable": false,
+          "invalid_reason": "vision_servo_required",
+          "camera_to_world_raw": [
+            7.854103343465027,
+            -0.44984802431612536,
+            0.0
+          ],
+          "servo_command_point": [
+            8.282975583148241,
+            172.64892864037563
+          ],
+          "command_point": null,
+          "resolved_cyl": [
+            6.196617600426182,
+            172.2140320321407,
+            85.0
+          ]
+        }
+      ],
+      "selected_slot_id": 1,
+      "selected_slot": {
+        "slot_id": 1,
+        "slot": 1,
+        "freq_hz": 8.0,
+        "valid": true,
+        "observed": true,
+        "pixel_center": [
+          296,
+          238
+        ],
+        "grasp_pixel": [
+          291,
+          234
+        ],
+        "bbox": [
+          233,
+          168,
+          363,
+          308
+        ],
+        "area_px": 10679,
+        "area_stability_ratio": 0.003183520599250936,
+        "confidence": 0.9444577693939209,
+        "polygon": [
+          [
+            323,
+            168
+          ],
+          [
+            314,
+            168
+          ],
+          [
+            313,
+            172
+          ],
+          [
+            233,
+            208
+          ],
+          [
+            233,
+            220
+          ],
+          [
+            239,
+            223
+          ],
+          [
+            247,
+            241
+          ],
+          [
+            269,
+            307
+          ],
+          [
+            283,
+            307
+          ],
+          [
+            293,
+            298
+          ],
+          [
+            362,
+            268
+          ],
+          [
+            362,
+            263
+          ],
+          [
+            354,
+            256
+          ]
+        ],
+        "oriented_bbox": [
+          [
+            270,
+            312
+          ],
+          [
+            226,
+            204
+          ],
+          [
+            322,
+            165
+          ],
+          [
+            366,
+            273
+          ]
+        ],
+        "grasp_quality": 0.9465907213628473,
+        "grasp_angle_deg": -22.2490234375,
+        "grasp_angle_quality": 0.09505445820340785,
+        "grasp_angle_stability_deg": 0.31798553466796875,
+        "age": 14,
+        "lost_frames": 0,
+        "command_mode": "world",
+        "command_point": null,
+        "servo_command_mode": "cyl",
+        "servo_command_point": [
+          8.282975583148241,
+          172.64892864037563
+        ],
+        "cylindrical_center": [
+          6.196617600426182,
+          172.2140320321407,
+          85.0
+        ],
+        "world_xyz": [
+          -18.588897449992004,
+          -171.20784362978486,
+          0.0
+        ],
+        "mapping_mode": "delta_servo",
+        "camera_to_world_raw": [
+          7.854103343465027,
+          -0.44984802431612536,
+          0.0
+        ],
+        "undistorted_pixel": [
+          296.0,
+          238.0
+        ],
+        "alignment_target_pixel": [
+          320.0,
+          240.0
+        ],
+        "center_distance_px": 24.08318915758459,
+        "center_tolerance_px": 8.0,
+        "action_tolerance_px": 20.0,
+        "estimated_xy_error_mm": 2.364577548787454,
+        "center_stable_frames": 5,
+        "center_stability_px": 0.0,
+        "grasp_stable_frames": 5,
+        "grasp_stability_px": 1.0,
+        "servo_required": true,
+        "calibration_profile_id": "eye-in-hand-live-20260503",
+        "actionable": false,
+        "invalid_reason": "vision_servo_required",
+        "resolved_base_xy": [
+          -18.588897449992004,
+          -171.20784362978486
+        ],
+        "resolved_cyl": [
+          6.196617600426182,
+          172.2140320321407,
+          85.0
+        ]
+      },
+      "decision": {
+        "action": "SERVO",
+        "state": "SERVO",
+        "status": "servo slot=1",
+        "reason": "continuous_servo",
+        "command": null,
+        "raw_command": null,
+        "pending": {
+          "slot_id": 1,
+          "stable_frames": 0,
+          "lost_frames": 0
+        },
+        "theta_rate_deg_s": -1.0400497339720722,
+        "radius_rate_mm_s": -0.1740932487367445,
+        "z_rate_mm_s": 0.0,
+        "trace": {
+          "center_distance_px": 24.08318915758459,
+          "center_allow_descent_px": 24.0,
+          "center_stop_descent_px": 36.0,
+          "stable_frames": 0,
+          "current_z_mm": 179.96400451660156,
+          "confirm_z_mm": 175.0
+        }
+      },
+      "snapshot": {
+        "state": "MOVING_XY",
+        "state_seq": 253,
+        "robot_ts": 1745829155.6630816,
+        "_local_receive_ts": 275560.2583567,
+        "busy": false,
+        "busy_action": "teleop",
+        "carrying": false,
+        "robot_xy": [
+          -26.44300079345703,
+          -170.75799560546875
+        ],
+        "robot_z": 179.96400451660156,
+        "robot_cyl": {
+          "theta_deg": 8.803000450134277,
+          "radius_mm": 172.79400634765625,
+          "z_mm": 179.96400451660156
+        },
+        "limits_cyl": {
+          "theta_deg": [
+            -120.0,
+            120.0
+          ],
+          "radius_mm": [
+            50.0,
+            280.0
+          ]
+        },
+        "limits_cyl_auto": {
+          "radius_mm": [
+            80.0,
+            260.0
+          ]
+        },
+        "calibration_ready": true,
+        "last_ack": "MOVE",
+        "last_error_code": "",
+        "last_error": "",
+        "release_mode_effective": "sucker_frozen",
+        "sucker_frozen": true,
+        "pick_tuning": {
+          "pick_approach_z_mm": 130.0,
+          "pick_descend_z_mm": 85.0,
+          "pick_pre_suction_sec": 0.25,
+          "pick_bottom_hold_sec": 0.15000000596046448,
+          "pick_lift_sec": 0.800000011920929,
+          "z_carry_floor_mm": 160.0
+        },
+        "sucker_rotation_supported": true
+      }
+    },
+    {
+      "step": 15,
+      "elapsed_sec": 1.8839546999661252,
+      "camera_frames_captured": 2,
+      "camera_frames_processed": 1,
+      "slots": [
+        {
+          "slot_id": 1,
+          "bbox": [
+            233,
+            168,
+            363,
+            308
+          ],
+          "pixel_center": [
+            296,
+            238
+          ],
+          "grasp_pixel": [
+            291,
+            234
+          ],
+          "confidence": 0.9454754590988159,
+          "grasp_quality": 0.9462802116955211,
+          "center_stable_frames": 5,
+          "center_stability_px": 0.0,
+          "grasp_stable_frames": 5,
+          "grasp_stability_px": 1.0,
+          "center_distance_px": 24.08318915758459,
+          "center_tolerance_px": 8.0,
+          "action_tolerance_px": 20.0,
+          "estimated_xy_error_mm": 2.364577548787454,
+          "servo_required": true,
+          "actionable": false,
+          "invalid_reason": "vision_servo_required",
+          "camera_to_world_raw": [
+            7.854103343465027,
+            -0.44984802431612536,
+            0.0
+          ],
+          "servo_command_point": [
+            8.126783723028689,
+            172.62653370630838
+          ],
+          "command_point": null,
+          "resolved_cyl": [
+            6.039871608407911,
+            172.20878755950844,
+            85.0
+          ]
+        }
+      ],
+      "selected_slot_id": 1,
+      "selected_slot": {
+        "slot_id": 1,
+        "slot": 1,
+        "freq_hz": 8.0,
+        "valid": true,
+        "observed": true,
+        "pixel_center": [
+          296,
+          238
+        ],
+        "grasp_pixel": [
+          291,
+          234
+        ],
+        "bbox": [
+          233,
+          168,
+          363,
+          308
+        ],
+        "area_px": 10705,
+        "area_stability_ratio": 0.0016828721017202693,
+        "confidence": 0.9454754590988159,
+        "polygon": [
+          [
+            323,
+            168
+          ],
+          [
+            313,
+            168
+          ],
+          [
+            302,
+            178
+          ],
+          [
+            233,
+            208
+          ],
+          [
+            233,
+            220
+          ],
+          [
+            237,
+            221
+          ],
+          [
+            242,
+            229
+          ],
+          [
+            269,
+            307
+          ],
+          [
+            283,
+            307
+          ],
+          [
+            286,
+            302
+          ],
+          [
+            362,
+            268
+          ],
+          [
+            362,
+            263
+          ],
+          [
+            354,
+            256
+          ]
+        ],
+        "oriented_bbox": [
+          [
+            270,
+            312
+          ],
+          [
+            226,
+            203
+          ],
+          [
+            322,
+            164
+          ],
+          [
+            366,
+            273
+          ]
+        ],
+        "grasp_quality": 0.9462802116955211,
+        "grasp_angle_deg": -22.145179748535156,
+        "grasp_angle_quality": 0.09925592218794943,
+        "grasp_angle_stability_deg": 0.10384368896484375,
+        "age": 15,
+        "lost_frames": 0,
+        "command_mode": "world",
+        "command_point": null,
+        "servo_command_mode": "cyl",
+        "servo_command_point": [
+          8.126783723028689,
+          172.62653370630838
+        ],
+        "cylindrical_center": [
+          6.039871608407911,
+          172.20878755950844,
+          85.0
+        ],
+        "world_xyz": [
+          -18.119897587321105,
+          -171.25284179873017,
+          0.0
+        ],
+        "mapping_mode": "delta_servo",
+        "camera_to_world_raw": [
+          7.854103343465027,
+          -0.44984802431612536,
+          0.0
+        ],
+        "undistorted_pixel": [
+          296.0,
+          238.0
+        ],
+        "alignment_target_pixel": [
+          320.0,
+          240.0
+        ],
+        "center_distance_px": 24.08318915758459,
+        "center_tolerance_px": 8.0,
+        "action_tolerance_px": 20.0,
+        "estimated_xy_error_mm": 2.364577548787454,
+        "center_stable_frames": 5,
+        "center_stability_px": 0.0,
+        "grasp_stable_frames": 5,
+        "grasp_stability_px": 1.0,
+        "servo_required": true,
+        "calibration_profile_id": "eye-in-hand-live-20260503",
+        "actionable": false,
+        "invalid_reason": "vision_servo_required",
+        "resolved_base_xy": [
+          -18.119897587321105,
+          -171.25284179873017
+        ],
+        "resolved_cyl": [
+          6.039871608407911,
+          172.20878755950844,
+          85.0
+        ]
+      },
+      "decision": {
+        "action": "SERVO",
+        "state": "SERVO",
+        "status": "servo slot=1",
+        "reason": "continuous_servo",
+        "command": null,
+        "raw_command": null,
+        "pending": {
+          "slot_id": 1,
+          "stable_frames": 0,
+          "lost_frames": 0
+        },
+        "theta_rate_deg_s": -1.0404331795529735,
+        "radius_rate_mm_s": -0.16855750164869504,
+        "z_rate_mm_s": 0.0,
+        "trace": {
+          "center_distance_px": 24.08318915758459,
+          "center_allow_descent_px": 24.0,
+          "center_stop_descent_px": 36.0,
+          "stable_frames": 0,
+          "current_z_mm": 179.96400451660156,
+          "confirm_z_mm": 175.0
+        }
+      },
+      "snapshot": {
+        "state": "MOVING_XY",
+        "state_seq": 255,
+        "robot_ts": 1745829155.796105,
+        "_local_receive_ts": 275560.3925641,
+        "busy": false,
+        "busy_action": "teleop",
+        "carrying": false,
+        "robot_xy": [
+          -25.974000930786133,
+          -170.80299377441406
+        ],
+        "robot_z": 179.96400451660156,
+        "robot_cyl": {
+          "theta_deg": 8.647000312805176,
+          "radius_mm": 172.76699829101562,
+          "z_mm": 179.96400451660156
+        },
+        "limits_cyl": {
+          "theta_deg": [
+            -120.0,
+            120.0
+          ],
+          "radius_mm": [
+            50.0,
+            280.0
+          ]
+        },
+        "limits_cyl_auto": {
+          "radius_mm": [
+            80.0,
+            260.0
+          ]
+        },
+        "calibration_ready": true,
+        "last_ack": "MOVE",
+        "last_error_code": "",
+        "last_error": "",
+        "release_mode_effective": "sucker_frozen",
+        "sucker_frozen": true,
+        "pick_tuning": {
+          "pick_approach_z_mm": 130.0,
+          "pick_descend_z_mm": 85.0,
+          "pick_pre_suction_sec": 0.25,
+          "pick_bottom_hold_sec": 0.15000000596046448,
+          "pick_lift_sec": 0.800000011920929,
+          "z_carry_floor_mm": 160.0
+        },
+        "sucker_rotation_supported": true
+      },
+      "raw_image": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\output\\jetmax_no_suction_test_20260510_04\\continuous_015\\raw.jpg",
+      "overlay_image": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\output\\jetmax_no_suction_test_20260510_04\\continuous_015\\overlay.jpg",
+      "packet": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\output\\jetmax_no_suction_test_20260510_04\\continuous_015\\packet.json"
+    },
+    {
+      "step": 16,
+      "elapsed_sec": 1.9884903999627568,
+      "camera_frames_captured": 2,
+      "camera_frames_processed": 1,
+      "slots": [
+        {
+          "slot_id": 1,
+          "bbox": [
+            233,
+            168,
+            363,
+            310
+          ],
+          "pixel_center": [
+            297,
+            238
+          ],
+          "grasp_pixel": [
+            291,
+            234
+          ],
+          "confidence": 0.9444407820701599,
+          "grasp_quality": 0.9557901289572468,
+          "center_stable_frames": 5,
+          "center_stability_px": 1.0,
+          "grasp_stable_frames": 5,
+          "grasp_stability_px": 1.0,
+          "center_distance_px": 23.08679276123039,
+          "center_tolerance_px": 8.0,
+          "action_tolerance_px": 20.0,
+          "estimated_xy_error_mm": 2.364577548787454,
+          "servo_required": true,
+          "actionable": false,
+          "invalid_reason": "vision_servo_required",
+          "camera_to_world_raw": [
+            7.5258358662613745,
+            -0.46200607902736124,
+            0.0
+          ],
+          "servo_command_point": [
+            8.096281207096784,
+            172.6310423583365
+          ],
+          "command_point": null,
+          "resolved_cyl": [
+            6.095903275459759,
+            172.25400267754765,
+            85.0
+          ]
+        }
+      ],
+      "selected_slot_id": 1,
+      "selected_slot": {
+        "slot_id": 1,
+        "slot": 1,
+        "freq_hz": 8.0,
+        "valid": true,
+        "observed": true,
+        "pixel_center": [
+          297,
+          238
+        ],
+        "grasp_pixel": [
+          291,
+          234
+        ],
+        "bbox": [
+          233,
+          168,
+          363,
+          310
+        ],
+        "area_px": 10660,
+        "area_stability_ratio": 0.003183520599250936,
+        "confidence": 0.9444407820701599,
+        "polygon": [
+          [
+            323,
+            168
+          ],
+          [
+            314,
+            168
+          ],
+          [
+            311,
+            174
+          ],
+          [
+            233,
+            208
+          ],
+          [
+            233,
+            220
+          ],
+          [
+            237,
+            221
+          ],
+          [
+            242,
+            229
+          ],
+          [
+            265,
+            296
+          ],
+          [
+            273,
+            309
+          ],
+          [
+            362,
+            268
+          ],
+          [
+            362,
+            263
+          ],
+          [
+            356,
+            259
+          ],
+          [
+            343,
+            228
+          ]
+        ],
+        "oriented_bbox": [
+          [
+            271,
+            310
+          ],
+          [
+            227,
+            205
+          ],
+          [
+            322,
+            165
+          ],
+          [
+            366,
+            270
+          ]
+        ],
+        "grasp_quality": 0.9557901289572468,
+        "grasp_angle_deg": -22.145179748535156,
+        "grasp_angle_quality": 0.06028582952019742,
+        "grasp_angle_stability_deg": 0.6884727478027344,
+        "age": 16,
+        "lost_frames": 0,
+        "command_mode": "world",
+        "command_point": null,
+        "servo_command_mode": "cyl",
+        "servo_command_point": [
+          8.096281207096784,
+          172.6310423583365
+        ],
+        "cylindrical_center": [
+          6.095903275459759,
+          172.25400267754765,
+          85.0
+        ],
+        "world_xyz": [
+          -18.292164927195657,
+          -171.27999924308986,
+          0.0
+        ],
+        "mapping_mode": "delta_servo",
+        "camera_to_world_raw": [
+          7.5258358662613745,
+          -0.46200607902736124,
+          0.0
+        ],
+        "undistorted_pixel": [
+          297.0,
+          238.0
+        ],
+        "alignment_target_pixel": [
+          320.0,
+          240.0
+        ],
+        "center_distance_px": 23.08679276123039,
+        "center_tolerance_px": 8.0,
+        "action_tolerance_px": 20.0,
+        "estimated_xy_error_mm": 2.364577548787454,
+        "center_stable_frames": 5,
+        "center_stability_px": 1.0,
+        "grasp_stable_frames": 5,
+        "grasp_stability_px": 1.0,
+        "servo_required": true,
+        "calibration_profile_id": "eye-in-hand-live-20260503",
+        "actionable": false,
+        "invalid_reason": "vision_servo_required",
+        "resolved_base_xy": [
+          -18.292164927195657,
+          -171.27999924308986
+        ],
+        "resolved_cyl": [
+          6.095903275459759,
+          172.25400267754765,
+          85.0
+        ]
+      },
+      "decision": {
+        "action": "SERVO",
+        "state": "SERVO",
+        "status": "servo slot=1",
+        "reason": "continuous_servo",
+        "command": null,
+        "raw_command": null,
+        "pending": {
+          "slot_id": 1,
+          "stable_frames": 1,
+          "lost_frames": 0
+        },
+        "theta_rate_deg_s": -0.9974381198640501,
+        "radius_rate_mm_s": -0.15234389655871608,
+        "z_rate_mm_s": 0.0,
+        "trace": {
+          "center_distance_px": 23.08679276123039,
+          "center_allow_descent_px": 24.0,
+          "center_stop_descent_px": 36.0,
+          "stable_frames": 1,
+          "current_z_mm": 179.96400451660156,
+          "confirm_z_mm": 175.0
+        }
+      },
+      "snapshot": {
+        "state": "MOVING_XY",
+        "state_seq": 256,
+        "robot_ts": 1745829155.8629577,
+        "_local_receive_ts": 275560.4574451,
+        "busy": false,
+        "busy_action": "teleop",
+        "carrying": false,
+        "robot_xy": [
+          -25.81800079345703,
+          -170.8179931640625
+        ],
+        "robot_z": 179.96400451660156,
+        "robot_cyl": {
+          "theta_deg": 8.595000267028809,
+          "radius_mm": 172.75799560546875,
+          "z_mm": 179.96400451660156
+        },
+        "limits_cyl": {
+          "theta_deg": [
+            -120.0,
+            120.0
+          ],
+          "radius_mm": [
+            50.0,
+            280.0
+          ]
+        },
+        "limits_cyl_auto": {
+          "radius_mm": [
+            80.0,
+            260.0
+          ]
+        },
+        "calibration_ready": true,
+        "last_ack": "MOVE",
+        "last_error_code": "",
+        "last_error": "",
+        "release_mode_effective": "sucker_frozen",
+        "sucker_frozen": true,
+        "pick_tuning": {
+          "pick_approach_z_mm": 130.0,
+          "pick_descend_z_mm": 85.0,
+          "pick_pre_suction_sec": 0.25,
+          "pick_bottom_hold_sec": 0.15000000596046448,
+          "pick_lift_sec": 0.800000011920929,
+          "z_carry_floor_mm": 160.0
+        },
+        "sucker_rotation_supported": true
+      }
+    },
+    {
+      "step": 17,
+      "elapsed_sec": 2.0861815999960527,
+      "camera_frames_captured": 2,
+      "camera_frames_processed": 1,
+      "slots": [
+        {
+          "slot_id": 1,
+          "bbox": [
+            233,
+            168,
+            363,
+            310
+          ],
+          "pixel_center": [
+            297,
+            238
+          ],
+          "grasp_pixel": [
+            291,
+            234
+          ],
+          "confidence": 0.9446413516998291,
+          "grasp_quality": 0.9562849949681702,
+          "center_stable_frames": 5,
+          "center_stability_px": 1.0,
+          "grasp_stable_frames": 5,
+          "grasp_stability_px": 1.0,
+          "center_distance_px": 23.08679276123039,
+          "center_tolerance_px": 8.0,
+          "action_tolerance_px": 20.0,
+          "estimated_xy_error_mm": 2.364577548787454,
+          "servo_required": true,
+          "actionable": false,
+          "invalid_reason": "vision_servo_required",
+          "camera_to_world_raw": [
+            7.5258358662613745,
+            -0.46200607902736124,
+            0.0
+          ],
+          "servo_command_point": [
+            7.9400497633624045,
+            172.61019630056776
+          ],
+          "command_point": null,
+          "resolved_cyl": [
+            5.939190683713166,
+            172.24960139162988,
+            85.0
+          ]
+        }
+      ],
+      "selected_slot_id": 1,
+      "selected_slot": {
+        "slot_id": 1,
+        "slot": 1,
+        "freq_hz": 8.0,
+        "valid": true,
+        "observed": true,
+        "pixel_center": [
+          297,
+          238
+        ],
+        "grasp_pixel": [
+          291,
+          234
+        ],
+        "bbox": [
+          233,
+          168,
+          363,
+          310
+        ],
+        "area_px": 10673,
+        "area_stability_ratio": 0.002434684895589475,
+        "confidence": 0.9446413516998291,
+        "polygon": [
+          [
+            323,
+            168
+          ],
+          [
+            314,
+            168
+          ],
+          [
+            311,
+            173
+          ],
+          [
+            292,
+            183
+          ],
+          [
+            233,
+            208
+          ],
+          [
+            233,
+            220
+          ],
+          [
+            237,
+            221
+          ],
+          [
+            242,
+            229
+          ],
+          [
+            265,
+            296
+          ],
+          [
+            273,
+            309
+          ],
+          [
+            362,
+            268
+          ],
+          [
+            362,
+            263
+          ],
+          [
+            354,
+            256
+          ]
+        ],
+        "oriented_bbox": [
+          [
+            271,
+            310
+          ],
+          [
+            227,
+            205
+          ],
+          [
+            322,
+            165
+          ],
+          [
+            366,
+            270
+          ]
+        ],
+        "grasp_quality": 0.9562849949681702,
+        "grasp_angle_deg": -22.145179748535156,
+        "grasp_angle_quality": 0.060359348824490344,
+        "grasp_angle_stability_deg": 0.6884727478027344,
+        "age": 17,
+        "lost_frames": 0,
+        "command_mode": "world",
+        "command_point": null,
+        "servo_command_mode": "cyl",
+        "servo_command_point": [
+          7.9400497633624045,
+          172.61019630056776
+        ],
+        "cylindrical_center": [
+          5.939190683713166,
+          172.24960139162988,
+          85.0
+        ],
+        "world_xyz": [
+          -17.82316506452476,
+          -171.32501267082424,
+          0.0
+        ],
+        "mapping_mode": "delta_servo",
+        "camera_to_world_raw": [
+          7.5258358662613745,
+          -0.46200607902736124,
+          0.0
+        ],
+        "undistorted_pixel": [
+          297.0,
+          238.0
+        ],
+        "alignment_target_pixel": [
+          320.0,
+          240.0
+        ],
+        "center_distance_px": 23.08679276123039,
+        "center_tolerance_px": 8.0,
+        "action_tolerance_px": 20.0,
+        "estimated_xy_error_mm": 2.364577548787454,
+        "center_stable_frames": 5,
+        "center_stability_px": 1.0,
+        "grasp_stable_frames": 5,
+        "grasp_stability_px": 1.0,
+        "servo_required": true,
+        "calibration_profile_id": "eye-in-hand-live-20260503",
+        "actionable": false,
+        "invalid_reason": "vision_servo_required",
+        "resolved_base_xy": [
+          -17.82316506452476,
+          -171.32501267082424
+        ],
+        "resolved_cyl": [
+          5.939190683713166,
+          172.24960139162988,
+          85.0
+        ]
+      },
+      "decision": {
+        "action": "SERVO",
+        "state": "SERVO",
+        "status": "servo slot=1",
+        "reason": "continuous_servo",
+        "command": null,
+        "raw_command": null,
+        "pending": {
+          "slot_id": 1,
+          "stable_frames": 2,
+          "lost_frames": 0
+        },
+        "theta_rate_deg_s": -0.997900732674605,
+        "radius_rate_mm_s": -0.14736649009993244,
+        "z_rate_mm_s": -4.467604064941407,
+        "trace": {
+          "center_distance_px": 23.08679276123039,
+          "center_allow_descent_px": 24.0,
+          "center_stop_descent_px": 36.0,
+          "stable_frames": 2,
+          "current_z_mm": 179.96400451660156,
+          "confirm_z_mm": 175.0
+        }
+      },
+      "snapshot": {
+        "state": "MOVING_XY",
+        "state_seq": 258,
+        "robot_ts": 1745829155.9958508,
+        "_local_receive_ts": 275560.5904684,
+        "busy": false,
+        "busy_action": "teleop",
+        "carrying": false,
+        "robot_xy": [
+          -25.349000930786133,
+          -170.86300659179688
+        ],
+        "robot_z": 179.96400451660156,
+        "robot_cyl": {
+          "theta_deg": 8.439000129699707,
+          "radius_mm": 172.73300170898438,
+          "z_mm": 179.96400451660156
+        },
+        "limits_cyl": {
+          "theta_deg": [
+            -120.0,
+            120.0
+          ],
+          "radius_mm": [
+            50.0,
+            280.0
+          ]
+        },
+        "limits_cyl_auto": {
+          "radius_mm": [
+            80.0,
+            260.0
+          ]
+        },
+        "calibration_ready": true,
+        "last_ack": "MOVE",
+        "last_error_code": "",
+        "last_error": "",
+        "release_mode_effective": "sucker_frozen",
+        "sucker_frozen": true,
+        "pick_tuning": {
+          "pick_approach_z_mm": 130.0,
+          "pick_descend_z_mm": 85.0,
+          "pick_pre_suction_sec": 0.25,
+          "pick_bottom_hold_sec": 0.15000000596046448,
+          "pick_lift_sec": 0.800000011920929,
+          "z_carry_floor_mm": 160.0
+        },
+        "sucker_rotation_supported": true
+      }
+    },
+    {
+      "step": 18,
+      "elapsed_sec": 2.1853927999618463,
+      "camera_frames_captured": 2,
+      "camera_frames_processed": 1,
+      "slots": [
+        {
+          "slot_id": 1,
+          "bbox": [
+            233,
+            168,
+            363,
+            310
+          ],
+          "pixel_center": [
+            297,
+            238
+          ],
+          "grasp_pixel": [
+            291,
+            234
+          ],
+          "confidence": 0.9403160214424133,
+          "grasp_quality": 0.9564372614330698,
+          "center_stable_frames": 5,
+          "center_stability_px": 1.0,
+          "grasp_stable_frames": 5,
+          "grasp_stability_px": 0.0,
+          "center_distance_px": 23.08679276123039,
+          "center_tolerance_px": 8.0,
+          "action_tolerance_px": 20.0,
+          "estimated_xy_error_mm": 2.364577548787454,
+          "servo_required": true,
+          "actionable": false,
+          "invalid_reason": "vision_servo_required",
+          "camera_to_world_raw": [
+            7.5258358662613745,
+            -0.46200607902736124,
+            0.0
+          ],
+          "servo_command_point": [
+            7.890092427134872,
+            172.60339933572482
+          ],
+          "command_point": null,
+          "resolved_cyl": [
+            5.889081110023076,
+            172.24806337702432,
+            85.0
+          ]
+        }
+      ],
+      "selected_slot_id": 1,
+      "selected_slot": {
+        "slot_id": 1,
+        "slot": 1,
+        "freq_hz": 8.0,
+        "valid": true,
+        "observed": true,
+        "pixel_center": [
+          297,
+          238
+        ],
+        "grasp_pixel": [
+          291,
+          234
+        ],
+        "bbox": [
+          233,
+          168,
+          363,
+          310
+        ],
+        "area_px": 10677,
+        "area_stability_ratio": 0.0026224594923667695,
+        "confidence": 0.9403160214424133,
+        "polygon": [
+          [
+            323,
+            168
+          ],
+          [
+            314,
+            168
+          ],
+          [
+            303,
+            178
+          ],
+          [
+            233,
+            208
+          ],
+          [
+            233,
+            220
+          ],
+          [
+            237,
+            221
+          ],
+          [
+            243,
+            230
+          ],
+          [
+            265,
+            296
+          ],
+          [
+            273,
+            309
+          ],
+          [
+            362,
+            268
+          ],
+          [
+            362,
+            263
+          ],
+          [
+            354,
+            256
+          ],
+          [
+            351,
+            243
+          ],
+          [
+            343,
+            228
+          ]
+        ],
+        "oriented_bbox": [
+          [
+            271,
+            310
+          ],
+          [
+            227,
+            205
+          ],
+          [
+            322,
+            165
+          ],
+          [
+            366,
+            270
+          ]
+        ],
+        "grasp_quality": 0.9564372614330698,
+        "grasp_angle_deg": -22.83365249633789,
+        "grasp_angle_quality": 0.060381970148888166,
+        "grasp_angle_stability_deg": 0.6884746551513672,
+        "age": 18,
+        "lost_frames": 0,
+        "command_mode": "world",
+        "command_point": null,
+        "servo_command_mode": "cyl",
+        "servo_command_point": [
+          7.890092427134872,
+          172.60339933572482
+        ],
+        "cylindrical_center": [
+          5.889081110023076,
+          172.24806337702432,
+          85.0
+        ],
+        "world_xyz": [
+          -17.673163538645852,
+          -171.33900498039455,
+          0.0
+        ],
+        "mapping_mode": "delta_servo",
+        "camera_to_world_raw": [
+          7.5258358662613745,
+          -0.46200607902736124,
+          0.0
+        ],
+        "undistorted_pixel": [
+          297.0,
+          238.0
+        ],
+        "alignment_target_pixel": [
+          320.0,
+          240.0
+        ],
+        "center_distance_px": 23.08679276123039,
+        "center_tolerance_px": 8.0,
+        "action_tolerance_px": 20.0,
+        "estimated_xy_error_mm": 2.364577548787454,
+        "center_stable_frames": 5,
+        "center_stability_px": 1.0,
+        "grasp_stable_frames": 5,
+        "grasp_stability_px": 0.0,
+        "servo_required": true,
+        "calibration_profile_id": "eye-in-hand-live-20260503",
+        "actionable": false,
+        "invalid_reason": "vision_servo_required",
+        "resolved_base_xy": [
+          -17.673163538645852,
+          -171.33900498039455
+        ],
+        "resolved_cyl": [
+          5.889081110023076,
+          172.24806337702432,
+          85.0
+        ]
+      },
+      "decision": {
+        "action": "SERVO",
+        "state": "SERVO",
+        "status": "servo slot=1",
+        "reason": "continuous_servo",
+        "command": null,
+        "raw_command": null,
+        "pending": {
+          "slot_id": 1,
+          "stable_frames": 3,
+          "lost_frames": 0
+        },
+        "theta_rate_deg_s": -0.9978150236599443,
+        "radius_rate_mm_s": -0.1459281213489703,
+        "z_rate_mm_s": -4.467604064941407,
+        "trace": {
+          "center_distance_px": 23.08679276123039,
+          "center_allow_descent_px": 24.0,
+          "center_stop_descent_px": 36.0,
+          "stable_frames": 3,
+          "current_z_mm": 179.96400451660156,
+          "confirm_z_mm": 175.0
+        }
+      },
+      "snapshot": {
+        "state": "MOVING_XY",
+        "state_seq": 259,
+        "robot_ts": 1745829156.0623317,
+        "_local_receive_ts": 275560.6565342,
+        "busy": false,
+        "busy_action": "teleop",
+        "carrying": false,
+        "robot_xy": [
+          -25.198999404907227,
+          -170.8769989013672
+        ],
+        "robot_z": 179.96400451660156,
+        "robot_cyl": {
+          "theta_deg": 8.388999938964844,
+          "radius_mm": 172.72500610351562,
+          "z_mm": 179.96400451660156
+        },
+        "limits_cyl": {
+          "theta_deg": [
+            -120.0,
+            120.0
+          ],
+          "radius_mm": [
+            50.0,
+            280.0
+          ]
+        },
+        "limits_cyl_auto": {
+          "radius_mm": [
+            80.0,
+            260.0
+          ]
+        },
+        "calibration_ready": true,
+        "last_ack": "MOVE",
+        "last_error_code": "",
+        "last_error": "",
+        "release_mode_effective": "sucker_frozen",
+        "sucker_frozen": true,
+        "pick_tuning": {
+          "pick_approach_z_mm": 130.0,
+          "pick_descend_z_mm": 85.0,
+          "pick_pre_suction_sec": 0.25,
+          "pick_bottom_hold_sec": 0.15000000596046448,
+          "pick_lift_sec": 0.800000011920929,
+          "z_carry_floor_mm": 160.0
+        },
+        "sucker_rotation_supported": true
+      }
+    },
+    {
+      "step": 19,
+      "elapsed_sec": 2.289638299960643,
+      "camera_frames_captured": 2,
+      "camera_frames_processed": 1,
+      "slots": [
+        {
+          "slot_id": 1,
+          "bbox": [
+            233,
+            168,
+            363,
+            310
+          ],
+          "pixel_center": [
+            297,
+            238
+          ],
+          "grasp_pixel": [
+            291,
+            234
+          ],
+          "confidence": 0.9456893801689148,
+          "grasp_quality": 0.9564372614330698,
+          "center_stable_frames": 5,
+          "center_stability_px": 1.0,
+          "grasp_stable_frames": 5,
+          "grasp_stability_px": 1.0,
+          "center_distance_px": 23.08679276123039,
+          "center_tolerance_px": 8.0,
+          "action_tolerance_px": 20.0,
+          "estimated_xy_error_mm": 2.364577548787454,
+          "servo_required": true,
+          "actionable": false,
+          "invalid_reason": "vision_servo_required",
+          "camera_to_world_raw": [
+            7.5258358662613745,
+            -0.46200607902736124,
+            0.0
+          ],
+          "servo_command_point": [
+            7.740482291998235,
+            172.58494429258005
+          ],
+          "command_point": null,
+          "resolved_cyl": [
+            5.739046237021478,
+            172.245357586665,
+            85.0
+          ]
+        }
+      ],
+      "selected_slot_id": 1,
+      "selected_slot": {
+        "slot_id": 1,
+        "slot": 1,
+        "freq_hz": 8.0,
+        "valid": true,
+        "observed": true,
+        "pixel_center": [
+          297,
+          238
+        ],
+        "grasp_pixel": [
+          291,
+          234
+        ],
+        "bbox": [
+          233,
+          168,
+          363,
+          310
+        ],
+        "area_px": 10677,
+        "area_stability_ratio": 0.0026224594923667695,
+        "confidence": 0.9456893801689148,
+        "polygon": [
+          [
+            323,
+            168
+          ],
+          [
+            314,
+            168
+          ],
+          [
+            311,
+            173
+          ],
+          [
+            292,
+            183
+          ],
+          [
+            233,
+            208
+          ],
+          [
+            233,
+            220
+          ],
+          [
+            237,
+            221
+          ],
+          [
+            242,
+            229
+          ],
+          [
+            265,
+            296
+          ],
+          [
+            273,
+            309
+          ],
+          [
+            362,
+            268
+          ],
+          [
+            362,
+            263
+          ],
+          [
+            353,
+            253
+          ]
+        ],
+        "oriented_bbox": [
+          [
+            271,
+            310
+          ],
+          [
+            227,
+            205
+          ],
+          [
+            322,
+            165
+          ],
+          [
+            366,
+            270
+          ]
+        ],
+        "grasp_quality": 0.9564372614330698,
+        "grasp_angle_deg": -22.83365249633789,
+        "grasp_angle_quality": 0.060381970148888166,
+        "grasp_angle_stability_deg": 0.6884727478027344,
+        "age": 19,
+        "lost_frames": 0,
+        "command_mode": "world",
+        "command_point": null,
+        "servo_command_mode": "cyl",
+        "servo_command_point": [
+          7.740482291998235,
+          172.58494429258005
+        ],
+        "cylindrical_center": [
+          5.739046237021478,
+          172.245357586665,
+          85.0
+        ],
+        "world_xyz": [
+          -17.224164133738626,
+          -171.38200424797267,
+          0.0
+        ],
+        "mapping_mode": "delta_servo",
+        "camera_to_world_raw": [
+          7.5258358662613745,
+          -0.46200607902736124,
+          0.0
+        ],
+        "undistorted_pixel": [
+          297.0,
+          238.0
+        ],
+        "alignment_target_pixel": [
+          320.0,
+          240.0
+        ],
+        "center_distance_px": 23.08679276123039,
+        "center_tolerance_px": 8.0,
+        "action_tolerance_px": 20.0,
+        "estimated_xy_error_mm": 2.364577548787454,
+        "center_stable_frames": 5,
+        "center_stability_px": 1.0,
+        "grasp_stable_frames": 5,
+        "grasp_stability_px": 1.0,
+        "servo_required": true,
+        "calibration_profile_id": "eye-in-hand-live-20260503",
+        "actionable": false,
+        "invalid_reason": "vision_servo_required",
+        "resolved_base_xy": [
+          -17.224164133738626,
+          -171.38200424797267
+        ],
+        "resolved_cyl": [
+          5.739046237021478,
+          172.245357586665,
+          85.0
+        ]
+      },
+      "decision": {
+        "action": "SERVO",
+        "state": "SERVO",
+        "status": "servo slot=1",
+        "reason": "continuous_servo",
+        "command": null,
+        "raw_command": null,
+        "pending": {
+          "slot_id": 1,
+          "stable_frames": 4,
+          "lost_frames": 0
+        },
+        "theta_rate_deg_s": -0.9970360568726715,
+        "radius_rate_mm_s": -0.14167036452894308,
+        "z_rate_mm_s": -4.065298461914063,
+        "trace": {
+          "center_distance_px": 23.08679276123039,
+          "center_allow_descent_px": 24.0,
+          "center_stop_descent_px": 36.0,
+          "stable_frames": 4,
+          "current_z_mm": 179.51699829101562,
+          "confirm_z_mm": 175.0
+        }
+      },
+      "snapshot": {
+        "state": "MOVING_XY",
+        "state_seq": 261,
+        "robot_ts": 1745829156.1966517,
+        "_local_receive_ts": 275560.7934887,
+        "busy": false,
+        "busy_action": "teleop",
+        "carrying": false,
+        "robot_xy": [
+          -24.75,
+          -170.9199981689453
+        ],
+        "robot_z": 179.51699829101562,
+        "robot_cyl": {
+          "theta_deg": 8.23900032043457,
+          "radius_mm": 172.7030029296875,
+          "z_mm": 179.51699829101562
+        },
+        "limits_cyl": {
+          "theta_deg": [
+            -120.0,
+            120.0
+          ],
+          "radius_mm": [
+            50.0,
+            280.0
+          ]
+        },
+        "limits_cyl_auto": {
+          "radius_mm": [
+            80.0,
+            260.0
+          ]
+        },
+        "calibration_ready": true,
+        "last_ack": "MOVE",
+        "last_error_code": "",
+        "last_error": "",
+        "release_mode_effective": "sucker_frozen",
+        "sucker_frozen": true,
+        "pick_tuning": {
+          "pick_approach_z_mm": 130.0,
+          "pick_descend_z_mm": 85.0,
+          "pick_pre_suction_sec": 0.25,
+          "pick_bottom_hold_sec": 0.15000000596046448,
+          "pick_lift_sec": 0.800000011920929,
+          "z_carry_floor_mm": 160.0
+        },
+        "sucker_rotation_supported": true
+      }
+    },
+    {
+      "step": 20,
+      "elapsed_sec": 2.3989325999864377,
+      "camera_frames_captured": 2,
+      "camera_frames_processed": 1,
+      "slots": [
+        {
+          "slot_id": 1,
+          "bbox": [
+            233,
+            168,
+            363,
+            298
+          ],
+          "pixel_center": [
+            297,
+            237
+          ],
+          "grasp_pixel": [
+            291,
+            234
+          ],
+          "confidence": 0.9113509058952332,
+          "grasp_quality": 0.9446461137672801,
+          "center_stable_frames": 5,
+          "center_stability_px": 1.0,
+          "grasp_stable_frames": 5,
+          "grasp_stability_px": 1.0,
+          "center_distance_px": 23.194827009486403,
+          "center_tolerance_px": 8.0,
+          "action_tolerance_px": 20.0,
+          "estimated_xy_error_mm": 2.364577548787454,
+          "servo_required": true,
+          "actionable": false,
+          "invalid_reason": "vision_servo_required",
+          "camera_to_world_raw": [
+            7.513677811550139,
+            -0.832826747720361,
+            0.0
+          ],
+          "servo_command_point": [
+            7.687972165608368,
+            172.6534924979331
+          ],
+          "command_point": null,
+          "resolved_cyl": [
+            5.6807160702189625,
+            172.6155493745802,
+            85.0
+          ]
+        },
+        {
+          "slot_id": 2,
+          "bbox": [
+            333,
+            288,
+            368,
+            338
+          ],
+          "pixel_center": [
+            354,
+            308
+          ],
+          "grasp_pixel": [
+            354,
+            308
+          ],
+          "confidence": 0.7787002325057983,
+          "grasp_quality": 0.8491826468674346,
+          "center_stable_frames": 1,
+          "center_stability_px": 0.0,
+          "grasp_stable_frames": 1,
+          "grasp_stability_px": 0.0,
+          "center_distance_px": 76.02631123499285,
+          "center_tolerance_px": 8.0,
+          "action_tolerance_px": 20.0,
+          "estimated_xy_error_mm": 2.364577548787454,
+          "servo_required": false,
+          "actionable": false,
+          "invalid_reason": "grasp_unstable",
+          "camera_to_world_raw": [
+            -10.334346504559221,
+            24.802431610942236,
+            0.0
+          ],
+          "servo_command_point": null,
+          "command_point": null,
+          "resolved_cyl": null
+        }
+      ],
+      "selected_slot_id": 1,
+      "selected_slot": {
+        "slot_id": 1,
+        "slot": 1,
+        "freq_hz": 8.0,
+        "valid": true,
+        "observed": true,
+        "pixel_center": [
+          297,
+          237
+        ],
+        "grasp_pixel": [
+          291,
+          234
+        ],
+        "bbox": [
+          233,
+          168,
+          363,
+          298
+        ],
+        "area_px": 10526,
+        "area_stability_ratio": 0.013773072238358474,
+        "confidence": 0.9113509058952332,
+        "polygon": [
+          [
+            323,
+            168
+          ],
+          [
+            314,
+            168
+          ],
+          [
+            311,
+            173
+          ],
+          [
+            292,
+            183
+          ],
+          [
+            233,
+            208
+          ],
+          [
+            233,
+            220
+          ],
+          [
+            237,
+            221
+          ],
+          [
+            243,
+            230
+          ],
+          [
+            266,
+            297
+          ],
+          [
+            306,
+            297
+          ],
+          [
+            309,
+            291
+          ],
+          [
+            362,
+            268
+          ],
+          [
+            362,
+            263
+          ],
+          [
+            356,
+            259
+          ]
+        ],
+        "oriented_bbox": [
+          [
+            272,
+            312
+          ],
+          [
+            227,
+            205
+          ],
+          [
+            322,
+            165
+          ],
+          [
+            367,
+            271
+          ]
+        ],
+        "grasp_quality": 0.9446461137672801,
+        "grasp_angle_deg": -22.83365249633789,
+        "grasp_angle_quality": 0.07832873529101574,
+        "grasp_angle_stability_deg": 0.0,
+        "age": 20,
+        "lost_frames": 0,
+        "command_mode": "world",
+        "command_point": null,
+        "servo_command_mode": "cyl",
+        "servo_command_point": [
+          7.687972165608368,
+          172.6534924979331
+        ],
+        "cylindrical_center": [
+          5.6807160702189625,
+          172.6155493745802,
+          85.0
+        ],
+        "world_xyz": [
+          -17.086322569919588,
+          -171.7678243063141,
+          0.0
+        ],
+        "mapping_mode": "delta_servo",
+        "camera_to_world_raw": [
+          7.513677811550139,
+          -0.832826747720361,
+          0.0
+        ],
+        "undistorted_pixel": [
+          297.0,
+          237.0
+        ],
+        "alignment_target_pixel": [
+          320.0,
+          240.0
+        ],
+        "center_distance_px": 23.194827009486403,
+        "center_tolerance_px": 8.0,
+        "action_tolerance_px": 20.0,
+        "estimated_xy_error_mm": 2.364577548787454,
+        "center_stable_frames": 5,
+        "center_stability_px": 1.0,
+        "grasp_stable_frames": 5,
+        "grasp_stability_px": 1.0,
+        "servo_required": true,
+        "calibration_profile_id": "eye-in-hand-live-20260503",
+        "actionable": false,
+        "invalid_reason": "vision_servo_required",
+        "resolved_base_xy": [
+          -17.086322569919588,
+          -171.7678243063141
+        ],
+        "resolved_cyl": [
+          5.6807160702189625,
+          172.6155493745802,
+          85.0
+        ]
+      },
+      "decision": {
+        "action": "SERVO",
+        "state": "SERVO",
+        "status": "servo slot=1",
+        "reason": "continuous_servo",
+        "command": null,
+        "raw_command": null,
+        "pending": {
+          "slot_id": 1,
+          "stable_frames": 5,
+          "lost_frames": 0
+        },
+        "theta_rate_deg_s": -1.0020559281826777,
+        "radius_rate_mm_s": -0.051007977089670926,
+        "z_rate_mm_s": -3.864605712890625,
+        "trace": {
+          "center_distance_px": 23.194827009486403,
+          "center_allow_descent_px": 24.0,
+          "center_stop_descent_px": 36.0,
+          "stable_frames": 5,
+          "current_z_mm": 179.29400634765625,
+          "confirm_z_mm": 175.0
+        }
+      },
+      "snapshot": {
+        "state": "MOVING_XY",
+        "state_seq": 262,
+        "robot_ts": 1745829156.2627668,
+        "_local_receive_ts": 275560.8571149,
+        "busy": false,
+        "busy_action": "teleop",
+        "carrying": false,
+        "robot_xy": [
+          -24.600000381469727,
+          -170.93499755859375
+        ],
+        "robot_z": 179.29400634765625,
+        "robot_cyl": {
+          "theta_deg": 8.189000129699707,
+          "radius_mm": 172.6959991455078,
+          "z_mm": 179.29400634765625
+        },
+        "limits_cyl": {
+          "theta_deg": [
+            -120.0,
+            120.0
+          ],
+          "radius_mm": [
+            50.0,
+            280.0
+          ]
+        },
+        "limits_cyl_auto": {
+          "radius_mm": [
+            80.0,
+            260.0
+          ]
+        },
+        "calibration_ready": true,
+        "last_ack": "MOVE",
+        "last_error_code": "",
+        "last_error": "",
+        "release_mode_effective": "sucker_frozen",
+        "sucker_frozen": true,
+        "pick_tuning": {
+          "pick_approach_z_mm": 130.0,
+          "pick_descend_z_mm": 85.0,
+          "pick_pre_suction_sec": 0.25,
+          "pick_bottom_hold_sec": 0.15000000596046448,
+          "pick_lift_sec": 0.800000011920929,
+          "z_carry_floor_mm": 160.0
+        },
+        "sucker_rotation_supported": true
+      },
+      "raw_image": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\output\\jetmax_no_suction_test_20260510_04\\continuous_020\\raw.jpg",
+      "overlay_image": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\output\\jetmax_no_suction_test_20260510_04\\continuous_020\\overlay.jpg",
+      "packet": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\output\\jetmax_no_suction_test_20260510_04\\continuous_020\\packet.json"
+    },
+    {
+      "step": 21,
+      "elapsed_sec": 2.4933891000109725,
+      "camera_frames_captured": 2,
+      "camera_frames_processed": 1,
+      "slots": [
+        {
+          "slot_id": 1,
+          "bbox": [
+            233,
+            168,
+            363,
+            310
+          ],
+          "pixel_center": [
+            297,
+            238
+          ],
+          "grasp_pixel": [
+            291,
+            234
+          ],
+          "confidence": 0.9443666934967041,
+          "grasp_quality": 0.9561707951194955,
+          "center_stable_frames": 5,
+          "center_stability_px": 1.0,
+          "grasp_stable_frames": 5,
+          "grasp_stability_px": 1.0,
+          "center_distance_px": 23.08679276123039,
+          "center_tolerance_px": 8.0,
+          "action_tolerance_px": 20.0,
+          "estimated_xy_error_mm": 2.364577548787454,
+          "servo_required": true,
+          "actionable": false,
+          "invalid_reason": "vision_servo_required",
+          "camera_to_world_raw": [
+            7.5258358662613745,
+            -0.46200607902736124,
+            0.0
+          ],
+          "servo_command_point": [
+            7.540529191512312,
+            172.561670660589
+          ],
+          "command_point": null,
+          "resolved_cyl": [
+            5.538562970485208,
+            172.24313438245173,
+            85.0
+          ]
+        },
+        {
+          "slot_id": 2,
+          "bbox": [
+            333,
+            288,
+            368,
+            338
+          ],
+          "pixel_center": [
+            354,
+            308
+          ],
+          "grasp_pixel": [
+            354,
+            308
+          ],
+          "confidence": 0.7787002325057983,
+          "grasp_quality": 0.8491826468674346,
+          "center_stable_frames": 1,
+          "center_stability_px": 0.0,
+          "grasp_stable_frames": 1,
+          "grasp_stability_px": 0.0,
+          "center_distance_px": 76.02631123499285,
+          "center_tolerance_px": 8.0,
+          "action_tolerance_px": 20.0,
+          "estimated_xy_error_mm": 2.364577548787454,
+          "servo_required": false,
+          "actionable": false,
+          "invalid_reason": "grasp_unstable",
+          "camera_to_world_raw": [
+            -10.334346504559221,
+            24.802431610942236,
+            0.0
+          ],
+          "servo_command_point": null,
+          "command_point": null,
+          "resolved_cyl": null
+        }
+      ],
+      "selected_slot_id": 1,
+      "selected_slot": {
+        "slot_id": 1,
+        "slot": 1,
+        "freq_hz": 8.0,
+        "valid": true,
+        "observed": true,
+        "pixel_center": [
+          297,
+          238
+        ],
+        "grasp_pixel": [
+          291,
+          234
+        ],
+        "bbox": [
+          233,
+          168,
+          363,
+          310
+        ],
+        "area_px": 10670,
+        "area_stability_ratio": 0.013773072238358474,
+        "confidence": 0.9443666934967041,
+        "polygon": [
+          [
+            323,
+            168
+          ],
+          [
+            314,
+            168
+          ],
+          [
+            305,
+            177
+          ],
+          [
+            233,
+            209
+          ],
+          [
+            233,
+            220
+          ],
+          [
+            237,
+            221
+          ],
+          [
+            242,
+            229
+          ],
+          [
+            265,
+            296
+          ],
+          [
+            273,
+            309
+          ],
+          [
+            362,
+            268
+          ],
+          [
+            362,
+            261
+          ],
+          [
+            354,
+            255
+          ]
+        ],
+        "oriented_bbox": [
+          [
+            271,
+            310
+          ],
+          [
+            227,
+            205
+          ],
+          [
+            322,
+            165
+          ],
+          [
+            366,
+            270
+          ]
+        ],
+        "grasp_quality": 0.9561707951194955,
+        "grasp_angle_deg": -22.83365249633789,
+        "grasp_angle_quality": 0.060342382831191976,
+        "grasp_angle_stability_deg": 0.0,
+        "age": 21,
+        "lost_frames": 0,
+        "command_mode": "world",
+        "command_point": null,
+        "servo_command_mode": "cyl",
+        "servo_command_point": [
+          7.540529191512312,
+          172.561670660589
+        ],
+        "cylindrical_center": [
+          5.538562970485208,
+          172.24313438245173,
+          85.0
+        ],
+        "world_xyz": [
+          -16.6241637522689,
+          -171.43901108391017,
+          0.0
+        ],
+        "mapping_mode": "delta_servo",
+        "camera_to_world_raw": [
+          7.5258358662613745,
+          -0.46200607902736124,
+          0.0
+        ],
+        "undistorted_pixel": [
+          297.0,
+          238.0
+        ],
+        "alignment_target_pixel": [
+          320.0,
+          240.0
+        ],
+        "center_distance_px": 23.08679276123039,
+        "center_tolerance_px": 8.0,
+        "action_tolerance_px": 20.0,
+        "estimated_xy_error_mm": 2.364577548787454,
+        "center_stable_frames": 5,
+        "center_stability_px": 1.0,
+        "grasp_stable_frames": 5,
+        "grasp_stability_px": 1.0,
+        "servo_required": true,
+        "calibration_profile_id": "eye-in-hand-live-20260503",
+        "actionable": false,
+        "invalid_reason": "vision_servo_required",
+        "resolved_base_xy": [
+          -16.6241637522689,
+          -171.43901108391017
+        ],
+        "resolved_cyl": [
+          5.538562970485208,
+          172.24313438245173,
+          85.0
+        ]
+      },
+      "decision": {
+        "action": "SERVO",
+        "state": "SERVO",
+        "status": "servo slot=1",
+        "reason": "continuous_servo",
+        "command": null,
+        "raw_command": null,
+        "pending": {
+          "slot_id": 1,
+          "stable_frames": 6,
+          "lost_frames": 0
+        },
+        "theta_rate_deg_s": -0.9989415406814306,
+        "radius_rate_mm_s": -0.1347903733088401,
+        "z_rate_mm_s": 0.0,
+        "trace": {
+          "center_distance_px": 23.08679276123039,
+          "center_allow_descent_px": 24.0,
+          "center_stop_descent_px": 36.0,
+          "stable_frames": 6,
+          "current_z_mm": 178.66400146484375,
+          "confirm_z_mm": 175.0
+        }
+      },
+      "snapshot": {
+        "state": "MOVING_XY",
+        "state_seq": 264,
+        "robot_ts": 1745829156.398141,
+        "_local_receive_ts": 275560.9934007,
+        "busy": false,
+        "busy_action": "teleop",
+        "carrying": false,
+        "robot_xy": [
+          -24.149999618530273,
+          -170.9770050048828
+        ],
+        "robot_z": 178.66400146484375,
+        "robot_cyl": {
+          "theta_deg": 8.039999961853027,
+          "radius_mm": 172.6739959716797,
+          "z_mm": 178.66400146484375
+        },
+        "limits_cyl": {
+          "theta_deg": [
+            -120.0,
+            120.0
+          ],
+          "radius_mm": [
+            50.0,
+            280.0
+          ]
+        },
+        "limits_cyl_auto": {
+          "radius_mm": [
+            80.0,
+            260.0
+          ]
+        },
+        "calibration_ready": true,
+        "last_ack": "MOVE",
+        "last_error_code": "",
+        "last_error": "",
+        "release_mode_effective": "sucker_frozen",
+        "sucker_frozen": true,
+        "pick_tuning": {
+          "pick_approach_z_mm": 130.0,
+          "pick_descend_z_mm": 85.0,
+          "pick_pre_suction_sec": 0.25,
+          "pick_bottom_hold_sec": 0.15000000596046448,
+          "pick_lift_sec": 0.800000011920929,
+          "z_carry_floor_mm": 160.0
+        },
+        "sucker_rotation_supported": true
+      }
+    },
+    {
+      "step": 22,
+      "elapsed_sec": 2.5987815000116825,
+      "camera_frames_captured": 2,
+      "camera_frames_processed": 1,
+      "slots": [
+        {
+          "slot_id": 1,
+          "bbox": [
+            233,
+            168,
+            363,
+            308
+          ],
+          "pixel_center": [
+            297,
+            238
+          ],
+          "grasp_pixel": [
+            291,
+            234
+          ],
+          "confidence": 0.9451704621315002,
+          "grasp_quality": 0.9466278588028101,
+          "center_stable_frames": 5,
+          "center_stability_px": 1.0,
+          "grasp_stable_frames": 5,
+          "grasp_stability_px": 1.0,
+          "center_distance_px": 23.08679276123039,
+          "center_tolerance_px": 8.0,
+          "action_tolerance_px": 20.0,
+          "estimated_xy_error_mm": 2.364577548787454,
+          "servo_required": true,
+          "actionable": false,
+          "invalid_reason": "vision_servo_required",
+          "camera_to_world_raw": [
+            7.5258358662613745,
+            -0.46200607902736124,
+            0.0
+          ],
+          "servo_command_point": [
+            7.490327429969641,
+            172.56088573699742
+          ],
+          "command_point": null,
+          "resolved_cyl": [
+            5.488290717478169,
+            172.2476318733547,
+            85.0
+          ]
+        },
+        {
+          "slot_id": 2,
+          "bbox": [
+            333,
+            288,
+            368,
+            338
+          ],
+          "pixel_center": [
+            354,
+            308
+          ],
+          "grasp_pixel": [
+            354,
+            308
+          ],
+          "confidence": 0.7787002325057983,
+          "grasp_quality": 0.8491826468674346,
+          "center_stable_frames": 1,
+          "center_stability_px": 0.0,
+          "grasp_stable_frames": 1,
+          "grasp_stability_px": 0.0,
+          "center_distance_px": 76.02631123499285,
+          "center_tolerance_px": 8.0,
+          "action_tolerance_px": 20.0,
+          "estimated_xy_error_mm": 2.364577548787454,
+          "servo_required": false,
+          "actionable": false,
+          "invalid_reason": "grasp_unstable",
+          "camera_to_world_raw": [
+            -10.334346504559221,
+            24.802431610942236,
+            0.0
+          ],
+          "servo_command_point": null,
+          "command_point": null,
+          "resolved_cyl": null
+        }
+      ],
+      "selected_slot_id": 1,
+      "selected_slot": {
+        "slot_id": 1,
+        "slot": 1,
+        "freq_hz": 8.0,
+        "valid": true,
+        "observed": true,
+        "pixel_center": [
+          297,
+          238
+        ],
+        "grasp_pixel": [
+          291,
+          234
+        ],
+        "bbox": [
+          233,
+          168,
+          363,
+          308
+        ],
+        "area_px": 10680,
+        "area_stability_ratio": 0.014142549405263652,
+        "confidence": 0.9451704621315002,
+        "polygon": [
+          [
+            323,
+            168
+          ],
+          [
+            314,
+            168
+          ],
+          [
+            311,
+            174
+          ],
+          [
+            233,
+            208
+          ],
+          [
+            233,
+            220
+          ],
+          [
+            237,
+            221
+          ],
+          [
+            242,
+            229
+          ],
+          [
+            269,
+            307
+          ],
+          [
+            283,
+            307
+          ],
+          [
+            286,
+            302
+          ],
+          [
+            362,
+            268
+          ],
+          [
+            362,
+            263
+          ],
+          [
+            354,
+            255
+          ]
+        ],
+        "oriented_bbox": [
+          [
+            270,
+            312
+          ],
+          [
+            226,
+            204
+          ],
+          [
+            322,
+            165
+          ],
+          [
+            366,
+            273
+          ]
+        ],
+        "grasp_quality": 0.9466278588028101,
+        "grasp_angle_deg": -22.83365249633789,
+        "grasp_angle_quality": 0.09506335926700962,
+        "grasp_angle_stability_deg": 0.6884746551513672,
+        "age": 22,
+        "lost_frames": 0,
+        "command_mode": "world",
+        "command_point": null,
+        "servo_command_mode": "cyl",
+        "servo_command_point": [
+          7.490327429969641,
+          172.56088573699742
+        ],
+        "cylindrical_center": [
+          5.488290717478169,
+          172.2476318733547,
+          85.0
+        ],
+        "world_xyz": [
+          -16.474164133738626,
+          -171.458008276293,
+          0.0
+        ],
+        "mapping_mode": "delta_servo",
+        "camera_to_world_raw": [
+          7.5258358662613745,
+          -0.46200607902736124,
+          0.0
+        ],
+        "undistorted_pixel": [
+          297.0,
+          238.0
+        ],
+        "alignment_target_pixel": [
+          320.0,
+          240.0
+        ],
+        "center_distance_px": 23.08679276123039,
+        "center_tolerance_px": 8.0,
+        "action_tolerance_px": 20.0,
+        "estimated_xy_error_mm": 2.364577548787454,
+        "center_stable_frames": 5,
+        "center_stability_px": 1.0,
+        "grasp_stable_frames": 5,
+        "grasp_stability_px": 1.0,
+        "servo_required": true,
+        "calibration_profile_id": "eye-in-hand-live-20260503",
+        "actionable": false,
+        "invalid_reason": "vision_servo_required",
+        "resolved_base_xy": [
+          -16.474164133738626,
+          -171.458008276293
+        ],
+        "resolved_cyl": [
+          5.488290717478169,
+          172.2476318733547,
+          85.0
+        ]
+      },
+      "decision": {
+        "action": "SERVO",
+        "state": "SERVO",
+        "status": "servo slot=1",
+        "reason": "continuous_servo",
+        "command": null,
+        "raw_command": null,
+        "pending": {
+          "slot_id": 1,
+          "stable_frames": 7,
+          "lost_frames": 0
+        },
+        "theta_rate_deg_s": -0.9993446822970462,
+        "radius_rate_mm_s": -0.13333359997809566,
+        "z_rate_mm_s": 0.0,
+        "trace": {
+          "center_distance_px": 23.08679276123039,
+          "center_allow_descent_px": 24.0,
+          "center_stop_descent_px": 36.0,
+          "stable_frames": 7,
+          "current_z_mm": 178.4709930419922,
+          "confirm_z_mm": 175.0
+        }
+      },
+      "snapshot": {
+        "state": "MOVING_XY",
+        "state_seq": 265,
+        "robot_ts": 1745829156.4623086,
+        "_local_receive_ts": 275561.0561932,
+        "busy": false,
+        "busy_action": "teleop",
+        "carrying": false,
+        "robot_xy": [
+          -24.0,
+          -170.99600219726562
+        ],
+        "robot_z": 178.4709930419922,
+        "robot_cyl": {
+          "theta_deg": 7.989999771118164,
+          "radius_mm": 172.6719970703125,
+          "z_mm": 178.4709930419922
+        },
+        "limits_cyl": {
+          "theta_deg": [
+            -120.0,
+            120.0
+          ],
+          "radius_mm": [
+            50.0,
+            280.0
+          ]
+        },
+        "limits_cyl_auto": {
+          "radius_mm": [
+            80.0,
+            260.0
+          ]
+        },
+        "calibration_ready": true,
+        "last_ack": "MOVE",
+        "last_error_code": "",
+        "last_error": "",
+        "release_mode_effective": "sucker_frozen",
+        "sucker_frozen": true,
+        "pick_tuning": {
+          "pick_approach_z_mm": 130.0,
+          "pick_descend_z_mm": 85.0,
+          "pick_pre_suction_sec": 0.25,
+          "pick_bottom_hold_sec": 0.15000000596046448,
+          "pick_lift_sec": 0.800000011920929,
+          "z_carry_floor_mm": 160.0
+        },
+        "sucker_rotation_supported": true
+      }
+    },
+    {
+      "step": 23,
+      "elapsed_sec": 2.686148799955845,
+      "camera_frames_captured": 2,
+      "camera_frames_processed": 1,
+      "slots": [
+        {
+          "slot_id": 1,
+          "bbox": [
+            233,
+            168,
+            363,
+            308
+          ],
+          "pixel_center": [
+            297,
+            238
+          ],
+          "grasp_pixel": [
+            291,
+            234
+          ],
+          "confidence": 0.9425222277641296,
+          "grasp_quality": 0.9453095966117404,
+          "center_stable_frames": 5,
+          "center_stability_px": 1.0,
+          "grasp_stable_frames": 5,
+          "grasp_stability_px": 1.0,
+          "center_distance_px": 23.08679276123039,
+          "center_tolerance_px": 8.0,
+          "action_tolerance_px": 20.0,
+          "estimated_xy_error_mm": 2.364577548787454,
+          "servo_required": true,
+          "actionable": false,
+          "invalid_reason": "vision_servo_required",
+          "camera_to_world_raw": [
+            7.5258358662613745,
+            -0.46200607902736124,
+            0.0
+          ],
+          "servo_command_point": [
+            7.340185366588536,
+            172.54842928536408
+          ],
+          "command_point": null,
+          "resolved_cyl": [
+            5.337829556820752,
+            172.2509810335662,
+            85.0
+          ]
+        },
+        {
+          "slot_id": 2,
+          "bbox": [
+            333,
+            288,
+            368,
+            338
+          ],
+          "pixel_center": [
+            354,
+            308
+          ],
+          "grasp_pixel": [
+            354,
+            308
+          ],
+          "confidence": 0.7787002325057983,
+          "grasp_quality": 0.8491826468674346,
+          "center_stable_frames": 1,
+          "center_stability_px": 0.0,
+          "grasp_stable_frames": 1,
+          "grasp_stability_px": 0.0,
+          "center_distance_px": 76.02631123499285,
+          "center_tolerance_px": 8.0,
+          "action_tolerance_px": 20.0,
+          "estimated_xy_error_mm": 2.364577548787454,
+          "servo_required": false,
+          "actionable": false,
+          "invalid_reason": "grasp_unstable",
+          "camera_to_world_raw": [
+            -10.334346504559221,
+            24.802431610942236,
+            0.0
+          ],
+          "servo_command_point": null,
+          "command_point": null,
+          "resolved_cyl": null
+        }
+      ],
+      "selected_slot_id": 1,
+      "selected_slot": {
+        "slot_id": 1,
+        "slot": 1,
+        "freq_hz": 8.0,
+        "valid": true,
+        "observed": true,
+        "pixel_center": [
+          297,
+          238
+        ],
+        "grasp_pixel": [
+          291,
+          234
+        ],
+        "bbox": [
+          233,
+          168,
+          363,
+          308
+        ],
+        "area_px": 10732,
+        "area_stability_ratio": 0.014142549405263652,
+        "confidence": 0.9425222277641296,
+        "polygon": [
+          [
+            323,
+            168
+          ],
+          [
+            314,
+            168
+          ],
+          [
+            311,
+            173
+          ],
+          [
+            292,
+            183
+          ],
+          [
+            233,
+            208
+          ],
+          [
+            233,
+            220
+          ],
+          [
+            237,
+            221
+          ],
+          [
+            243,
+            230
+          ],
+          [
+            269,
+            307
+          ],
+          [
+            285,
+            307
+          ],
+          [
+            291,
+            299
+          ],
+          [
+            362,
+            268
+          ],
+          [
+            362,
+            261
+          ],
+          [
+            354,
+            255
+          ]
+        ],
+        "oriented_bbox": [
+          [
+            271,
+            313
+          ],
+          [
+            226,
+            204
+          ],
+          [
+            322,
+            165
+          ],
+          [
+            367,
+            273
+          ]
+        ],
+        "grasp_quality": 0.9453095966117404,
+        "grasp_angle_deg": -22.83365249633789,
+        "grasp_angle_quality": 0.0916065195803094,
+        "grasp_angle_stability_deg": 0.6884746551513672,
+        "age": 23,
+        "lost_frames": 0,
+        "command_mode": "world",
+        "command_point": null,
+        "servo_command_mode": "cyl",
+        "servo_command_point": [
+          7.340185366588536,
+          172.54842928536408
+        ],
+        "cylindrical_center": [
+          5.337829556820752,
+          172.2509810335662,
+          85.0
+        ],
+        "world_xyz": [
+          -16.024163370799172,
+          -171.50401352531642,
+          0.0
+        ],
+        "mapping_mode": "delta_servo",
+        "camera_to_world_raw": [
+          7.5258358662613745,
+          -0.46200607902736124,
+          0.0
+        ],
+        "undistorted_pixel": [
+          297.0,
+          238.0
+        ],
+        "alignment_target_pixel": [
+          320.0,
+          240.0
+        ],
+        "center_distance_px": 23.08679276123039,
+        "center_tolerance_px": 8.0,
+        "action_tolerance_px": 20.0,
+        "estimated_xy_error_mm": 2.364577548787454,
+        "center_stable_frames": 5,
+        "center_stability_px": 1.0,
+        "grasp_stable_frames": 5,
+        "grasp_stability_px": 1.0,
+        "servo_required": true,
+        "calibration_profile_id": "eye-in-hand-live-20260503",
+        "actionable": false,
+        "invalid_reason": "vision_servo_required",
+        "resolved_base_xy": [
+          -16.024163370799172,
+          -171.50401352531642
+        ],
+        "resolved_cyl": [
+          5.337829556820752,
+          172.2509810335662,
+          85.0
+        ]
+      },
+      "decision": {
+        "action": "SERVO",
+        "state": "SERVO",
+        "status": "servo slot=1",
+        "reason": "continuous_servo",
+        "command": null,
+        "raw_command": null,
+        "pending": {
+          "slot_id": 1,
+          "stable_frames": 8,
+          "lost_frames": 0
+        },
+        "theta_rate_deg_s": -0.9996295719987085,
+        "radius_rate_mm_s": -0.12909188881310454,
+        "z_rate_mm_s": 0.0,
+        "trace": {
+          "center_distance_px": 23.08679276123039,
+          "center_allow_descent_px": 24.0,
+          "center_stop_descent_px": 36.0,
+          "stable_frames": 8,
+          "current_z_mm": 178.27699279785156,
+          "confirm_z_mm": 175.0
+        }
+      },
+      "snapshot": {
+        "state": "MOVING_XY",
+        "state_seq": 267,
+        "robot_ts": 1745829156.596125,
+        "_local_receive_ts": 275561.192153,
+        "busy": false,
+        "busy_action": "teleop",
+        "carrying": false,
+        "robot_xy": [
+          -23.549999237060547,
+          -171.04200744628906
+        ],
+        "robot_z": 178.27699279785156,
+        "robot_cyl": {
+          "theta_deg": 7.840000152587891,
+          "radius_mm": 172.656005859375,
+          "z_mm": 178.27699279785156
+        },
+        "limits_cyl": {
+          "theta_deg": [
+            -120.0,
+            120.0
+          ],
+          "radius_mm": [
+            50.0,
+            280.0
+          ]
+        },
+        "limits_cyl_auto": {
+          "radius_mm": [
+            80.0,
+            260.0
+          ]
+        },
+        "calibration_ready": true,
+        "last_ack": "MOVE",
+        "last_error_code": "",
+        "last_error": "",
+        "release_mode_effective": "sucker_frozen",
+        "sucker_frozen": true,
+        "pick_tuning": {
+          "pick_approach_z_mm": 130.0,
+          "pick_descend_z_mm": 85.0,
+          "pick_pre_suction_sec": 0.25,
+          "pick_bottom_hold_sec": 0.15000000596046448,
+          "pick_lift_sec": 0.800000011920929,
+          "z_carry_floor_mm": 160.0
+        },
+        "sucker_rotation_supported": true
+      }
+    },
+    {
+      "step": 24,
+      "elapsed_sec": 2.790585100010503,
+      "camera_frames_captured": 2,
+      "camera_frames_processed": 1,
+      "slots": [
+        {
+          "slot_id": 1,
+          "bbox": [
+            233,
+            168,
+            363,
+            308
+          ],
+          "pixel_center": [
+            297,
+            238
+          ],
+          "grasp_pixel": [
+            291,
+            234
+          ],
+          "confidence": 0.9472662210464478,
+          "grasp_quality": 0.9478497008525295,
+          "center_stable_frames": 5,
+          "center_stability_px": 1.0,
+          "grasp_stable_frames": 5,
+          "grasp_stability_px": 1.4142135623730951,
+          "center_distance_px": 23.08679276123039,
+          "center_tolerance_px": 8.0,
+          "action_tolerance_px": 20.0,
+          "estimated_xy_error_mm": 2.364577548787454,
+          "servo_required": true,
+          "actionable": false,
+          "invalid_reason": "vision_servo_required",
+          "camera_to_world_raw": [
+            7.5258358662613745,
+            -0.46200607902736124,
+            0.0
+          ],
+          "servo_command_point": [
+            7.290190112083132,
+            172.54320862602668
+          ],
+          "command_point": null,
+          "resolved_cyl": [
+            5.287718636796163,
+            172.25102438130835,
+            85.0
+          ]
+        },
+        {
+          "slot_id": 2,
+          "bbox": [
+            333,
+            288,
+            368,
+            338
+          ],
+          "pixel_center": [
+            354,
+            308
+          ],
+          "grasp_pixel": [
+            354,
+            308
+          ],
+          "confidence": 0.7787002325057983,
+          "grasp_quality": 0.8491826468674346,
+          "center_stable_frames": 1,
+          "center_stability_px": 0.0,
+          "grasp_stable_frames": 1,
+          "grasp_stability_px": 0.0,
+          "center_distance_px": 76.02631123499285,
+          "center_tolerance_px": 8.0,
+          "action_tolerance_px": 20.0,
+          "estimated_xy_error_mm": 2.364577548787454,
+          "servo_required": false,
+          "actionable": false,
+          "invalid_reason": "grasp_unstable",
+          "camera_to_world_raw": [
+            -10.334346504559221,
+            24.802431610942236,
+            0.0
+          ],
+          "servo_command_point": null,
+          "command_point": null,
+          "resolved_cyl": null
+        }
+      ],
+      "selected_slot_id": 1,
+      "selected_slot": {
+        "slot_id": 1,
+        "slot": 1,
+        "freq_hz": 8.0,
+        "valid": true,
+        "observed": true,
+        "pixel_center": [
+          297,
+          238
+        ],
+        "grasp_pixel": [
+          291,
+          234
+        ],
+        "bbox": [
+          233,
+          168,
+          363,
+          308
+        ],
+        "area_px": 10719,
+        "area_stability_ratio": 0.01441947565543071,
+        "confidence": 0.9472662210464478,
+        "polygon": [
+          [
+            323,
+            168
+          ],
+          [
+            314,
+            168
+          ],
+          [
+            311,
+            174
+          ],
+          [
+            233,
+            208
+          ],
+          [
+            233,
+            218
+          ],
+          [
+            239,
+            222
+          ],
+          [
+            270,
+            307
+          ],
+          [
+            285,
+            307
+          ],
+          [
+            288,
+            301
+          ],
+          [
+            362,
+            268
+          ],
+          [
+            362,
+            260
+          ],
+          [
+            358,
+            259
+          ],
+          [
+            353,
+            251
+          ],
+          [
+            351,
+            240
+          ],
+          [
+            344,
+            227
+          ]
+        ],
+        "oriented_bbox": [
+          [
+            272,
+            313
+          ],
+          [
+            227,
+            204
+          ],
+          [
+            322,
+            165
+          ],
+          [
+            367,
+            273
+          ]
+        ],
+        "grasp_quality": 0.9478497008525295,
+        "grasp_angle_deg": -22.66455841064453,
+        "grasp_angle_quality": 0.09529448722047495,
+        "grasp_angle_stability_deg": 0.5193805694580078,
+        "age": 24,
+        "lost_frames": 0,
+        "command_mode": "world",
+        "command_point": null,
+        "servo_command_mode": "cyl",
+        "servo_command_point": [
+          7.290190112083132,
+          172.54320862602668
+        ],
+        "cylindrical_center": [
+          5.287718636796163,
+          172.25102438130835,
+          85.0
+        ],
+        "world_xyz": [
+          -15.874163752268899,
+          -171.51800583488674,
+          0.0
+        ],
+        "mapping_mode": "delta_servo",
+        "camera_to_world_raw": [
+          7.5258358662613745,
+          -0.46200607902736124,
+          0.0
+        ],
+        "undistorted_pixel": [
+          297.0,
+          238.0
+        ],
+        "alignment_target_pixel": [
+          320.0,
+          240.0
+        ],
+        "center_distance_px": 23.08679276123039,
+        "center_tolerance_px": 8.0,
+        "action_tolerance_px": 20.0,
+        "estimated_xy_error_mm": 2.364577548787454,
+        "center_stable_frames": 5,
+        "center_stability_px": 1.0,
+        "grasp_stable_frames": 5,
+        "grasp_stability_px": 1.4142135623730951,
+        "servo_required": true,
+        "calibration_profile_id": "eye-in-hand-live-20260503",
+        "actionable": false,
+        "invalid_reason": "vision_servo_required",
+        "resolved_base_xy": [
+          -15.874163752268899,
+          -171.51800583488674
+        ],
+        "resolved_cyl": [
+          5.287718636796163,
+          172.25102438130835,
+          85.0
+        ]
+      },
+      "decision": {
+        "action": "SERVO",
+        "state": "SERVO",
+        "status": "servo slot=1",
+        "reason": "continuous_servo",
+        "command": null,
+        "raw_command": null,
+        "pending": {
+          "slot_id": 1,
+          "stable_frames": 9,
+          "lost_frames": 0
+        },
+        "theta_rate_deg_s": -0.9996196995397906,
+        "radius_rate_mm_s": -0.12695213900235558,
+        "z_rate_mm_s": 0.0,
+        "trace": {
+          "center_distance_px": 23.08679276123039,
+          "center_allow_descent_px": 24.0,
+          "center_stop_descent_px": 36.0,
+          "stable_frames": 9,
+          "current_z_mm": 178.27699279785156,
+          "confirm_z_mm": 175.0
+        }
+      },
+      "snapshot": {
+        "state": "MOVING_XY",
+        "state_seq": 268,
+        "robot_ts": 1745829156.6625905,
+        "_local_receive_ts": 275561.2566826,
+        "busy": false,
+        "busy_action": "teleop",
+        "carrying": false,
+        "robot_xy": [
+          -23.399999618530273,
+          -171.05599975585938
+        ],
+        "robot_z": 178.27699279785156,
+        "robot_cyl": {
+          "theta_deg": 7.789999961853027,
+          "radius_mm": 172.6490020751953,
+          "z_mm": 178.27699279785156
+        },
+        "limits_cyl": {
+          "theta_deg": [
+            -120.0,
+            120.0
+          ],
+          "radius_mm": [
+            50.0,
+            280.0
+          ]
+        },
+        "limits_cyl_auto": {
+          "radius_mm": [
+            80.0,
+            260.0
+          ]
+        },
+        "calibration_ready": true,
+        "last_ack": "MOVE",
+        "last_error_code": "",
+        "last_error": "",
+        "release_mode_effective": "sucker_frozen",
+        "sucker_frozen": true,
+        "pick_tuning": {
+          "pick_approach_z_mm": 130.0,
+          "pick_descend_z_mm": 85.0,
+          "pick_pre_suction_sec": 0.25,
+          "pick_bottom_hold_sec": 0.15000000596046448,
+          "pick_lift_sec": 0.800000011920929,
+          "z_carry_floor_mm": 160.0
+        },
+        "sucker_rotation_supported": true
+      }
+    },
+    {
+      "step": 25,
+      "elapsed_sec": 2.889573799970094,
+      "camera_frames_captured": 2,
+      "camera_frames_processed": 1,
+      "slots": [
+        {
+          "slot_id": 1,
+          "bbox": [
+            238,
+            168,
+            363,
+            308
+          ],
+          "pixel_center": [
+            300,
+            238
+          ],
+          "grasp_pixel": [
+            291,
+            234
+          ],
+          "confidence": 0.9453481435775757,
+          "grasp_quality": 0.9457234674362425,
+          "center_stable_frames": 5,
+          "center_stability_px": 3.0,
+          "grasp_stable_frames": 5,
+          "grasp_stability_px": 3.0,
+          "center_distance_px": 20.09975124224178,
+          "center_tolerance_px": 8.0,
+          "action_tolerance_px": 20.0,
+          "estimated_xy_error_mm": 2.364577548787454,
+          "servo_required": true,
+          "actionable": false,
+          "invalid_reason": "vision_servo_required",
+          "camera_to_world_raw": [
+            6.541033434650444,
+            -0.4984802431611115,
+            0.0
+          ],
+          "servo_command_point": [
+            7.204816692643476,
+            172.5591957288635
+          ],
+          "command_point": null,
+          "resolved_cyl": [
+            5.462349446491268,
+            172.37825585193562,
+            85.0
+          ]
+        },
+        {
+          "slot_id": 2,
+          "bbox": [
+            333,
+            288,
+            368,
+            338
+          ],
+          "pixel_center": [
+            354,
+            308
+          ],
+          "grasp_pixel": [
+            354,
+            308
+          ],
+          "confidence": 0.7787002325057983,
+          "grasp_quality": 0.8491826468674346,
+          "center_stable_frames": 1,
+          "center_stability_px": 0.0,
+          "grasp_stable_frames": 1,
+          "grasp_stability_px": 0.0,
+          "center_distance_px": 76.02631123499285,
+          "center_tolerance_px": 8.0,
+          "action_tolerance_px": 20.0,
+          "estimated_xy_error_mm": 2.364577548787454,
+          "servo_required": false,
+          "actionable": false,
+          "invalid_reason": "grasp_unstable",
+          "camera_to_world_raw": [
+            -10.334346504559221,
+            24.802431610942236,
+            0.0
+          ],
+          "servo_command_point": null,
+          "command_point": null,
+          "resolved_cyl": null
+        }
+      ],
+      "selected_slot_id": 1,
+      "selected_slot": {
+        "slot_id": 1,
+        "slot": 1,
+        "freq_hz": 8.0,
+        "valid": true,
+        "observed": true,
+        "pixel_center": [
+          300,
+          238
+        ],
+        "grasp_pixel": [
+          291,
+          234
+        ],
+        "bbox": [
+          238,
+          168,
+          363,
+          308
+        ],
+        "area_px": 10683,
+        "area_stability_ratio": 0.004586726574932135,
+        "confidence": 0.9453481435775757,
+        "polygon": [
+          [
+            327,
+            168
+          ],
+          [
+            316,
+            168
+          ],
+          [
+            315,
+            172
+          ],
+          [
+            306,
+            178
+          ],
+          [
+            255,
+            199
+          ],
+          [
+            251,
+            203
+          ],
+          [
+            238,
+            206
+          ],
+          [
+            238,
+            222
+          ],
+          [
+            242,
+            223
+          ],
+          [
+            247,
+            231
+          ],
+          [
+            250,
+            246
+          ],
+          [
+            273,
+            307
+          ],
+          [
+            286,
+            307
+          ],
+          [
+            287,
+            303
+          ],
+          [
+            350,
+            273
+          ],
+          [
+            362,
+            270
+          ],
+          [
+            362,
+            255
+          ],
+          [
+            358,
+            254
+          ],
+          [
+            353,
+            246
+          ]
+        ],
+        "oriented_bbox": [
+          [
+            274,
+            312
+          ],
+          [
+            230,
+            203
+          ],
+          [
+            326,
+            164
+          ],
+          [
+            370,
+            273
+          ]
+        ],
+        "grasp_quality": 0.9457234674362425,
+        "grasp_angle_deg": -22.442750930786133,
+        "grasp_angle_quality": 0.10343723197890771,
+        "grasp_angle_stability_deg": 0.406524658203125,
+        "age": 25,
+        "lost_frames": 0,
+        "command_mode": "world",
+        "command_point": null,
+        "servo_command_mode": "cyl",
+        "servo_command_point": [
+          7.204816692643476,
+          172.5591957288635
+        ],
+        "cylindrical_center": [
+          5.462349446491268,
+          172.37825585193562,
+          85.0
+        ],
+        "world_xyz": [
+          -16.40896732828901,
+          -171.59548036523142,
+          0.0
+        ],
+        "mapping_mode": "delta_servo",
+        "camera_to_world_raw": [
+          6.541033434650444,
+          -0.4984802431611115,
+          0.0
+        ],
+        "undistorted_pixel": [
+          300.0,
+          238.0
+        ],
+        "alignment_target_pixel": [
+          320.0,
+          240.0
+        ],
+        "center_distance_px": 20.09975124224178,
+        "center_tolerance_px": 8.0,
+        "action_tolerance_px": 20.0,
+        "estimated_xy_error_mm": 2.364577548787454,
+        "center_stable_frames": 5,
+        "center_stability_px": 3.0,
+        "grasp_stable_frames": 5,
+        "grasp_stability_px": 3.0,
+        "servo_required": true,
+        "calibration_profile_id": "eye-in-hand-live-20260503",
+        "actionable": false,
+        "invalid_reason": "vision_servo_required",
+        "resolved_base_xy": [
+          -16.40896732828901,
+          -171.59548036523142
+        ],
+        "resolved_cyl": [
+          5.462349446491268,
+          172.37825585193562,
+          85.0
+        ]
+      },
+      "decision": {
+        "action": "SERVO",
+        "state": "SERVO",
+        "status": "servo slot=1",
+        "reason": "continuous_servo",
+        "command": null,
+        "raw_command": null,
+        "pending": {
+          "slot_id": 1,
+          "stable_frames": 10,
+          "lost_frames": 0
+        },
+        "theta_rate_deg_s": -0.8703663476842394,
+        "radius_rate_mm_s": -0.08376248864504987,
+        "z_rate_mm_s": 0.0,
+        "trace": {
+          "center_distance_px": 20.09975124224178,
+          "center_allow_descent_px": 24.0,
+          "center_stop_descent_px": 36.0,
+          "stable_frames": 10,
+          "current_z_mm": 178.27699279785156,
+          "confirm_z_mm": 175.0
+        }
+      },
+      "snapshot": {
+        "state": "MOVING_XY",
+        "state_seq": 270,
+        "robot_ts": 1745829156.7994611,
+        "_local_receive_ts": 275561.3943171,
+        "busy": false,
+        "busy_action": "teleop",
+        "carrying": false,
+        "robot_xy": [
+          -22.950000762939453,
+          -171.0970001220703
+        ],
+        "robot_z": 178.27699279785156,
+        "robot_cyl": {
+          "theta_deg": 7.639999866485596,
+          "radius_mm": 172.62899780273438,
+          "z_mm": 178.27699279785156
+        },
+        "limits_cyl": {
+          "theta_deg": [
+            -120.0,
+            120.0
+          ],
+          "radius_mm": [
+            50.0,
+            280.0
+          ]
+        },
+        "limits_cyl_auto": {
+          "radius_mm": [
+            80.0,
+            260.0
+          ]
+        },
+        "calibration_ready": true,
+        "last_ack": "MOVE",
+        "last_error_code": "",
+        "last_error": "",
+        "release_mode_effective": "sucker_frozen",
+        "sucker_frozen": true,
+        "pick_tuning": {
+          "pick_approach_z_mm": 130.0,
+          "pick_descend_z_mm": 85.0,
+          "pick_pre_suction_sec": 0.25,
+          "pick_bottom_hold_sec": 0.15000000596046448,
+          "pick_lift_sec": 0.800000011920929,
+          "z_carry_floor_mm": 160.0
+        },
+        "sucker_rotation_supported": true
+      },
+      "raw_image": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\output\\jetmax_no_suction_test_20260510_04\\continuous_025\\raw.jpg",
+      "overlay_image": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\output\\jetmax_no_suction_test_20260510_04\\continuous_025\\overlay.jpg",
+      "packet": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\output\\jetmax_no_suction_test_20260510_04\\continuous_025\\packet.json"
+    },
+    {
+      "step": 26,
+      "elapsed_sec": 2.9964669999899343,
+      "camera_frames_captured": 2,
+      "camera_frames_processed": 1,
+      "slots": [
+        {
+          "slot_id": 1,
+          "bbox": [
+            238,
+            168,
+            368,
+            308
+          ],
+          "pixel_center": [
+            302,
+            238
+          ],
+          "grasp_pixel": [
+            292,
+            234
+          ],
+          "confidence": 0.944560706615448,
+          "grasp_quality": 0.9416517699200022,
+          "center_stable_frames": 5,
+          "center_stability_px": 5.0,
+          "grasp_stable_frames": 5,
+          "grasp_stability_px": 4.0,
+          "center_distance_px": 18.110770276274835,
+          "center_tolerance_px": 8.0,
+          "action_tolerance_px": 20.0,
+          "estimated_xy_error_mm": 2.364577548787454,
+          "servo_required": false,
+          "actionable": true,
+          "invalid_reason": "",
+          "camera_to_world_raw": [
+            5.884498480243153,
+            -0.5227963525835975,
+            0.0
+          ],
+          "servo_command_point": null,
+          "command_point": [
+            -16.915500756817394,
+            -171.63378878422424
+          ],
+          "resolved_cyl": [
+            5.62865266294218,
+            172.46533454083342,
+            85.0
+          ]
+        },
+        {
+          "slot_id": 2,
+          "bbox": [
+            333,
+            288,
+            368,
+            338
+          ],
+          "pixel_center": [
+            354,
+            308
+          ],
+          "grasp_pixel": [
+            354,
+            308
+          ],
+          "confidence": 0.7787002325057983,
+          "grasp_quality": 0.8491826468674346,
+          "center_stable_frames": 1,
+          "center_stability_px": 0.0,
+          "grasp_stable_frames": 1,
+          "grasp_stability_px": 0.0,
+          "center_distance_px": 76.02631123499285,
+          "center_tolerance_px": 8.0,
+          "action_tolerance_px": 20.0,
+          "estimated_xy_error_mm": 2.364577548787454,
+          "servo_required": false,
+          "actionable": false,
+          "invalid_reason": "grasp_unstable",
+          "camera_to_world_raw": [
+            -10.334346504559221,
+            24.802431610942236,
+            0.0
+          ],
+          "servo_command_point": null,
+          "command_point": null,
+          "resolved_cyl": null
+        }
+      ],
+      "selected_slot_id": 1,
+      "selected_slot": {
+        "slot_id": 1,
+        "slot": 1,
+        "freq_hz": 8.0,
+        "valid": true,
+        "observed": true,
+        "pixel_center": [
+          302,
+          238
+        ],
+        "grasp_pixel": [
+          292,
+          234
+        ],
+        "bbox": [
+          238,
+          168,
+          368,
+          308
+        ],
+        "area_px": 10674,
+        "area_stability_ratio": 0.004586726574932135,
+        "confidence": 0.944560706615448,
+        "polygon": [
+          [
+            330,
+            168
+          ],
+          [
+            319,
+            168
+          ],
+          [
+            316,
+            174
+          ],
+          [
+            238,
+            209
+          ],
+          [
+            238,
+            218
+          ],
+          [
+            244,
+            222
+          ],
+          [
+            274,
+            307
+          ],
+          [
+            287,
+            307
+          ],
+          [
+            295,
+            299
+          ],
+          [
+            367,
+            267
+          ],
+          [
+            367,
+            263
+          ],
+          [
+            359,
+            255
+          ]
+        ],
+        "oriented_bbox": [
+          [
+            275,
+            312
+          ],
+          [
+            232,
+            203
+          ],
+          [
+            329,
+            164
+          ],
+          [
+            372,
+            273
+          ]
+        ],
+        "grasp_quality": 0.9416517699200022,
+        "grasp_angle_deg": -22.145177841186523,
+        "grasp_angle_quality": 0.08417625076498882,
+        "grasp_angle_stability_deg": 0.5193805694580078,
+        "age": 26,
+        "lost_frames": 0,
+        "command_mode": "world",
+        "command_point": [
+          -16.915500756817394,
+          -171.63378878422424
+        ],
+        "servo_command_mode": "cyl",
+        "servo_command_point": null,
+        "cylindrical_center": [
+          5.62865266294218,
+          172.46533454083342,
+          85.0
+        ],
+        "world_xyz": [
+          -16.915500756817394,
+          -171.63378878422424,
+          0.0
+        ],
+        "mapping_mode": "delta_servo",
+        "camera_to_world_raw": [
+          5.884498480243153,
+          -0.5227963525835975,
+          0.0
+        ],
+        "undistorted_pixel": [
+          302.0,
+          238.0
+        ],
+        "alignment_target_pixel": [
+          320.0,
+          240.0
+        ],
+        "center_distance_px": 18.110770276274835,
+        "center_tolerance_px": 8.0,
+        "action_tolerance_px": 20.0,
+        "estimated_xy_error_mm": 2.364577548787454,
+        "center_stable_frames": 5,
+        "center_stability_px": 5.0,
+        "grasp_stable_frames": 5,
+        "grasp_stability_px": 4.0,
+        "servo_required": false,
+        "calibration_profile_id": "eye-in-hand-live-20260503",
+        "actionable": true,
+        "invalid_reason": "",
+        "resolved_base_xy": [
+          -16.915500756817394,
+          -171.63378878422424
+        ],
+        "resolved_cyl": [
+          5.62865266294218,
+          172.46533454083342,
+          85.0
+        ]
+      },
+      "decision": {
+        "action": "PICK_READY",
+        "state": "PICK_READY",
+        "status": "pick_ready slot=1",
+        "reason": "pick_ready",
+        "command": "PICK_CYL 7.59 222.62",
+        "raw_command": "PICK_CYL 7.59 222.62",
+        "pending": {
+          "slot_id": 1,
+          "stable_frames": 11,
+          "lost_frames": 0
+        },
+        "theta_rate_deg_s": 0.0,
+        "radius_rate_mm_s": 0.0,
+        "z_rate_mm_s": 0.0,
+        "trace": {
+          "stable_frames": 11,
+          "center_distance_px": 18.110770276274835,
+          "confirm_z_mm": 175.0
+        }
+      },
+      "snapshot": {
+        "state": "MOVING_XY",
+        "state_seq": 271,
+        "robot_ts": 1745829156.8626077,
+        "_local_receive_ts": 275561.4565985,
+        "busy": false,
+        "busy_action": "teleop",
+        "carrying": false,
+        "robot_xy": [
+          -22.799999237060547,
+          -171.11099243164062
+        ],
+        "robot_z": 178.27699279785156,
+        "robot_cyl": {
+          "theta_deg": 7.590000152587891,
+          "radius_mm": 172.6230010986328,
+          "z_mm": 178.27699279785156
+        },
+        "limits_cyl": {
+          "theta_deg": [
+            -120.0,
+            120.0
+          ],
+          "radius_mm": [
+            50.0,
+            280.0
+          ]
+        },
+        "limits_cyl_auto": {
+          "radius_mm": [
+            80.0,
+            260.0
+          ]
+        },
+        "calibration_ready": true,
+        "last_ack": "MOVE",
+        "last_error_code": "",
+        "last_error": "",
+        "release_mode_effective": "sucker_frozen",
+        "sucker_frozen": true,
+        "pick_tuning": {
+          "pick_approach_z_mm": 130.0,
+          "pick_descend_z_mm": 85.0,
+          "pick_pre_suction_sec": 0.25,
+          "pick_bottom_hold_sec": 0.15000000596046448,
+          "pick_lift_sec": 0.800000011920929,
+          "z_carry_floor_mm": 160.0
+        },
+        "sucker_rotation_supported": true
+      },
+      "raw_image": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\output\\jetmax_no_suction_test_20260510_04\\continuous_026\\raw.jpg",
+      "overlay_image": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\output\\jetmax_no_suction_test_20260510_04\\continuous_026\\overlay.jpg",
+      "packet": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\output\\jetmax_no_suction_test_20260510_04\\continuous_026\\packet.json",
+      "post_execution_snapshot": {
+        "state": "MOVING_XY",
+        "state_seq": 273,
+        "robot_ts": 1745829156.9968977,
+        "_local_receive_ts": 275561.5914457,
+        "busy": false,
+        "busy_action": "teleop",
+        "carrying": false,
+        "robot_xy": [
+          -22.388999938964844,
+          -171.14999389648438
+        ],
+        "robot_z": 178.27699279785156,
+        "robot_cyl": {
+          "theta_deg": 7.453000068664551,
+          "radius_mm": 172.60800170898438,
+          "z_mm": 178.27699279785156
+        },
+        "limits_cyl": {
+          "theta_deg": [
+            -120.0,
+            120.0
+          ],
+          "radius_mm": [
+            50.0,
+            280.0
+          ]
+        },
+        "limits_cyl_auto": {
+          "radius_mm": [
+            80.0,
+            260.0
+          ]
+        },
+        "calibration_ready": true,
+        "last_ack": "MOVE",
+        "last_error_code": "",
+        "last_error": "",
+        "release_mode_effective": "sucker_frozen",
+        "sucker_frozen": true,
+        "pick_tuning": {
+          "pick_approach_z_mm": 130.0,
+          "pick_descend_z_mm": 85.0,
+          "pick_pre_suction_sec": 0.25,
+          "pick_bottom_hold_sec": 0.15000000596046448,
+          "pick_lift_sec": 0.800000011920929,
+          "z_carry_floor_mm": 160.0
+        },
+        "sucker_rotation_supported": true
+      },
+      "execution": {
+        "executed": true,
+        "command": "PICK_CYL 7.59 222.62",
+        "response": {
+          "message": "ACK PICK_STARTED",
+          "ok": true
+        }
+      }
+    }
+  ],
+  "continuous": {
+    "teleop_rate_hz": 10.0,
+    "max_duration_sec": 20.0,
+    "commands_sent": 27,
+    "stop_count": 4,
+    "max_center_distance_px": 24.08318915758459,
+    "mean_frame_age_ms": 87.95781538803847,
+    "frame_age_samples": 26,
+    "max_state_age_ms": 52.58759995922446,
+    "final_pick_command": "PICK_CYL 7.59 222.62",
+    "final_stop_reason": "hold",
+    "locked_slot_id": 1,
+    "release_mode_effective": "sucker_frozen"
+  }
+}

@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 import time
+from pathlib import Path
 
+import numpy as np
+import cv2
 from PyQt5.QtCore import QCoreApplication
 
 from hybrid_controller.config import AppConfig
@@ -35,10 +38,38 @@ class _FakeCapture:
 
 class _FakeCv2:
     CAP_PROP_BUFFERSIZE = 38
+    IMREAD_COLOR = 1
 
     @staticmethod
     def VideoCapture(_source):
         return _FakeCapture()
+
+    @staticmethod
+    def imdecode(buffer, _flags):
+        data = bytes(buffer)
+        if data == b"\xff\xd8FRAME_A\xff\xd9":
+            return np.zeros((48, 64, 3), dtype=np.uint8)
+        if data == b"\xff\xd8FRAME_B\xff\xd9":
+            return np.full((48, 64, 3), 80, dtype=np.uint8)
+        if data == b"\xff\xd8TORN\xff\xd9":
+            frame = np.zeros((480, 640, 3), dtype=np.uint8)
+            frame[210:285] = 255
+            return frame
+        return None
+
+
+class _ChunkedResponse:
+    def __init__(self, chunks: list[bytes]) -> None:
+        self._chunks = list(chunks)
+        self.closed = False
+
+    def read(self, _size: int) -> bytes:
+        if not self._chunks:
+            return b""
+        return self._chunks.pop(0)
+
+    def close(self) -> None:
+        self.closed = True
 
 
 class _FakeYOLO:
@@ -178,6 +209,186 @@ def test_default_vision_stream_url_matches_single_official_candidate() -> None:
 
     assert config.resolve_vision_stream_url() == build_hiwonder_camera_stream_url("192.168.149.1")
     assert config.resolve_vision_stream_url() == config.resolve_vision_stream_candidates()[0]
+
+
+def test_horizontal_tearing_detector_rejects_spliced_mjpeg_frame() -> None:
+    clean = cv2.imread(
+        str(Path("hybrid_controller/logs/vision_debug/live_read_check/frame_03.jpg"))
+    )
+    torn = cv2.imread(
+        str(Path("hybrid_controller/logs/vision_debug/vision_grasp_20260511_152143/continuous_028/raw.jpg"))
+    )
+
+    assert vision_runtime._frame_has_horizontal_tearing(clean) is False  # pylint: disable=protected-access
+    assert vision_runtime._frame_has_horizontal_tearing(torn) is True  # pylint: disable=protected-access
+
+
+def test_horizontal_tearing_detector_rejects_multi_band_low_height_frame() -> None:
+    torn = cv2.imread(
+        str(Path("hybrid_controller/logs/vision_debug/vision_grasp_20260511_223228/step_01/raw.jpg"))
+    )
+    clean = cv2.imread(
+        str(Path("hybrid_controller/logs/vision_debug/vision_grasp_20260511_222734/step_01/raw.jpg"))
+    )
+
+    assert vision_runtime._frame_has_horizontal_tearing(clean) is False  # pylint: disable=protected-access
+    assert vision_runtime._frame_has_horizontal_tearing(torn) is True  # pylint: disable=protected-access
+
+
+def test_temporal_splice_detector_rejects_partial_frame_jump() -> None:
+    previous = cv2.imread(
+        str(Path("hybrid_controller/logs/vision_debug/vision_grasp_20260511_183500/continuous_096/raw.jpg"))
+    )
+    torn = cv2.imread(
+        str(Path("hybrid_controller/logs/vision_debug/vision_grasp_20260511_183500/continuous_097/raw.jpg"))
+    )
+    clean = cv2.imread(
+        str(Path("hybrid_controller/logs/vision_debug/vision_grasp_20260511_183500/continuous_093/raw.jpg"))
+    )
+
+    assert vision_runtime._frame_is_temporal_splice(previous, torn) is True  # pylint: disable=protected-access
+    assert vision_runtime._frame_is_temporal_splice(clean, previous) is False  # pylint: disable=protected-access
+
+
+def test_http_mjpeg_capture_prefers_multipart_content_length(monkeypatch) -> None:
+    payload_a = b"\xff\xd8FRAME_A\xff\xd9"
+    payload_b = b"\xff\xd8FRAME_B\xff\xd9"
+    body = (
+        b"--boundarydonotcross\r\n"
+        b"Content-type: image/jpeg\r\n"
+        b"X-Timestamp: 1.0\r\n"
+        b"Content-Length: "
+        + str(len(payload_a)).encode("ascii")
+        + b"\r\n\r\n"
+        + payload_a
+        + b"\r\n--boundarydonotcross\r\n"
+        b"Content-type: image/jpeg\r\n"
+        b"Content-Length: "
+        + str(len(payload_b)).encode("ascii")
+        + b"\r\n\r\n"
+        + payload_b
+    )
+    response = _ChunkedResponse([body[:17], body[17:53], body[53:]])
+    monkeypatch.setattr(vision_runtime, "urlopen", lambda *_args, **_kwargs: response)
+
+    capture = vision_runtime._HttpMjpegCapture(  # pylint: disable=protected-access
+        "http://camera:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg",
+        cv2_module=_FakeCv2,
+        timeout_sec=0.5,
+    )
+
+    ok_a, frame_a = capture.read()
+    ok_b, frame_b = capture.read()
+    stats = capture.stats()
+
+    assert ok_a is True
+    assert ok_b is True
+    assert frame_a.shape == (48, 64, 3)
+    assert frame_b.shape == (48, 64, 3)
+    assert int(frame_a[0, 0, 0]) == 0
+    assert int(frame_b[0, 0, 0]) == 80
+    assert stats["content_length_payloads"] == 2
+    assert stats["jpeg_marker_payloads"] == 0
+    assert stats["frames_accepted"] == 2
+    assert stats["content_length_preferred"] is True
+
+
+def test_http_mjpeg_capture_waits_for_complete_content_length(monkeypatch) -> None:
+    payload = b"\xff\xd8FRAME_A\xff\xd9"
+    header = (
+        b"--boundarydonotcross\r\n"
+        b"Content-type: image/jpeg\r\n"
+        b"Content-Length: "
+        + str(len(payload)).encode("ascii")
+        + b"\r\n\r\n"
+    )
+    response = _ChunkedResponse([header + payload[:3], payload[3:]])
+    monkeypatch.setattr(vision_runtime, "urlopen", lambda *_args, **_kwargs: response)
+
+    capture = vision_runtime._HttpMjpegCapture(  # pylint: disable=protected-access
+        "http://camera:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg",
+        cv2_module=_FakeCv2,
+        timeout_sec=0.5,
+    )
+
+    ok, frame = capture.read()
+
+    assert ok is True
+    assert frame.shape == (48, 64, 3)
+
+
+def test_http_mjpeg_capture_skips_rejected_content_length_frame(monkeypatch) -> None:
+    payload_bad = b"\xff\xd8TORN\xff\xd9"
+    payload_good = b"\xff\xd8FRAME_B\xff\xd9"
+    body = (
+        b"--boundarydonotcross\r\nContent-Length: "
+        + str(len(payload_bad)).encode("ascii")
+        + b"\r\n\r\n"
+        + payload_bad
+        + b"\r\n--boundarydonotcross\r\nContent-Length: "
+        + str(len(payload_good)).encode("ascii")
+        + b"\r\n\r\n"
+        + payload_good
+    )
+    response = _ChunkedResponse([body])
+    monkeypatch.setattr(vision_runtime, "urlopen", lambda *_args, **_kwargs: response)
+    monkeypatch.setattr(vision_runtime, "_frame_has_horizontal_tearing", lambda frame: int(frame[0, 0, 0]) == 0)
+
+    capture = vision_runtime._HttpMjpegCapture(  # pylint: disable=protected-access
+        "http://camera:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg",
+        cv2_module=_FakeCv2,
+        timeout_sec=0.5,
+    )
+
+    ok, frame = capture.read()
+    stats = capture.stats()
+
+    assert ok is True
+    assert int(frame[0, 0, 0]) == 80
+    assert stats["frames_rejected"] == 1
+    assert stats["last_reject_reason"] == "horizontal_tearing:content_length"
+
+
+def test_http_mjpeg_capture_reopens_after_repeated_rejected_frames(monkeypatch) -> None:
+    payload_bad = b"\xff\xd8TORN\xff\xd9"
+    payload_good = b"\xff\xd8FRAME_B\xff\xd9"
+
+    def _body(payloads):
+        body = bytearray()
+        for payload in payloads:
+            body.extend(b"--boundarydonotcross\r\nContent-Length: ")
+            body.extend(str(len(payload)).encode("ascii"))
+            body.extend(b"\r\n\r\n")
+            body.extend(payload)
+        return bytes(body)
+
+    responses = [
+        _ChunkedResponse([_body([payload_bad, payload_bad, payload_bad])]),
+        _ChunkedResponse([_body([payload_good])]),
+    ]
+    opened = []
+
+    def fake_urlopen(*_args, **_kwargs):
+        opened.append(True)
+        return responses.pop(0)
+
+    monkeypatch.setattr(vision_runtime, "urlopen", fake_urlopen)
+    monkeypatch.setattr(vision_runtime, "_frame_has_horizontal_tearing", lambda frame: int(frame[0, 0, 0]) == 0)
+
+    capture = vision_runtime._HttpMjpegCapture(  # pylint: disable=protected-access
+        "http://camera:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg",
+        cv2_module=_FakeCv2,
+        timeout_sec=0.5,
+    )
+
+    ok, frame = capture.read()
+    stats = capture.stats()
+
+    assert ok is True
+    assert int(frame[0, 0, 0]) == 80
+    assert len(opened) == 2
+    assert stats["buffer_resets"] == 1
+    assert stats["reopen_count"] == 1
 
 
 def test_worker_alignment_target_uses_stage_profile_target_pixel() -> None:
