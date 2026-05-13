@@ -831,6 +831,7 @@ def test_debug_low_height_centering_check_shortcut_sets_safe_continuous_defaults
     assert args.allow_real_pick is False
     assert args.continuous_stop_at_confirm is True
     assert args.process_latest_frames == 1
+    assert args.continuous_drain_frames_each_loop == 2
     assert args.timeout_sec == pytest.approx(5.0)
     assert args.capture_backend == "http"
     assert config.vision_pick_confirm_z_mm == pytest.approx(120.0)
@@ -1219,6 +1220,26 @@ def test_debug_continuous_parser_defaults_low_refine_radius_step_to_live_probe_s
     assert args.continuous_low_height_refine_gain == pytest.approx(0.45)
     assert args.continuous_low_height_discrete_refine is False
     assert args.process_latest_frames == 1
+    assert args.continuous_drain_frames_each_loop == 2
+
+
+def test_debug_continuous_parser_accepts_per_loop_frame_drain() -> None:
+    parser = main.__globals__["build_parser"]()
+
+    args = parser.parse_args(
+        [
+            "--servo-mode",
+            "continuous",
+            "--persistent-camera",
+            "--execute",
+            "--detector",
+            "fallback",
+            "--continuous-drain-frames-each-loop",
+            "4",
+        ]
+    )
+
+    assert args.continuous_drain_frames_each_loop == 4
 
 
 def test_debug_continuous_parser_exposes_low_height_rate_scale_overrides() -> None:
