@@ -15,6 +15,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from hybrid_controller.config import AppConfig
+from hybrid_controller.config import SERVO_MEASUREMENT_POINTS
 from hybrid_controller.cylindrical import cylindrical_to_cartesian
 from hybrid_controller.tools.calibrate_low_height_alignment import (
     _freeze_sucker,
@@ -279,6 +280,7 @@ def _measurement_summary(samples: Sequence[Mapping[str, object]], *, max_repeat_
         except (TypeError, ValueError):
             frames_rejected = 0
         stale_candidate_shift = bool(buffer_bytes > 250_000 or frames_rejected > 0)
+    center_stable = bool(math.isfinite(median_dist) and spread_px <= float(max_repeat_spread_px))
     shape_stable = bool(bottom_span_px <= 3.0 and area_span_ratio <= 0.08)
     point_distance_medians = {
         key: float(_median(values))
@@ -292,9 +294,11 @@ def _measurement_summary(samples: Sequence[Mapping[str, object]], *, max_repeat_
         "repeat_spread_px": float(spread_px),
         "bottom_edge_span_px": float(bottom_span_px),
         "area_span_ratio": float(area_span_ratio),
+        "center_stable": bool(center_stable),
         "shape_stable": bool(shape_stable),
         "stale_candidate_shift": bool(stale_candidate_shift),
-        "stable": bool(math.isfinite(median_dist) and spread_px <= float(max_repeat_spread_px) and shape_stable),
+        "stable": bool(center_stable and not stale_candidate_shift),
+        "shape_warning": "" if shape_stable else "shape_changed_between_repeats",
         "alignment_target_pixel": (
             [float(alignment_targets[-1][0]), float(alignment_targets[-1][1])] if alignment_targets else None
         ),
@@ -306,6 +310,16 @@ def _measurement_summary(samples: Sequence[Mapping[str, object]], *, max_repeat_
         "camera_transport_last": transport_last,
         "samples": list(samples),
     }
+
+
+def _apply_report_alignment_from_summary(report: dict[str, object], summary: Mapping[str, object]) -> None:
+    target = summary.get("alignment_target_pixel")
+    if isinstance(target, Sequence) and not isinstance(target, (str, bytes)) and len(target) >= 2:
+        try:
+            report["alignment_target_pixel"] = [float(target[0]), float(target[1])]
+            report["alignment_target_source"] = "sample_provenance"
+        except (TypeError, ValueError):
+            pass
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -338,6 +352,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-total-move-mm", type=float, default=18.0)
     parser.add_argument("--max-repeat-spread-px", type=float, default=4.0)
     parser.add_argument("--measurement-repeats", type=int, default=2)
+    parser.add_argument(
+        "--low-height-measurement-point",
+        choices=tuple(sorted(SERVO_MEASUREMENT_POINTS)),
+        default=None,
+        help="Temporary override for the stopped low-height visual point used by this search.",
+    )
+    parser.add_argument(
+        "--max-measure-attempts",
+        type=int,
+        default=None,
+        help="Maximum read/recognition attempts used to collect --measurement-repeats valid low-height samples.",
+    )
     parser.add_argument(
         "--fresh-reopen-before-measure",
         action=argparse.BooleanOptionalAction,
@@ -410,35 +436,49 @@ def _measure_repeated(
     label: str,
     debug_slots,
     fresh_reopen_before_measure: bool = False,
+    max_measure_attempts: int | None = None,
 ) -> tuple[dict[str, object], int, object]:
     samples: list[Mapping[str, object]] = []
+    errors: list[str] = []
     packet_for_overlay: Mapping[str, object] | None = None
     frame_for_overlay = None
     next_frame_id = int(frame_id)
     next_debug_slots = debug_slots
     if bool(fresh_reopen_before_measure):
         reader.reopen()
-    for repeat_index in range(1, max(1, int(repeats)) + 1):
-        sample, packet, frame, next_frame_id, next_debug_slots = _measure_slot(
-            reader=reader,
-            cv2_module=cv2_module,
-            model=model,
-            config=config,
-            calibration_profile=calibration_profile,
-            client=client,
-            device=device,
-            half=half,
-            slot_id=int(slot_id),
-            frame_id=next_frame_id,
-            frames=int(frames),
-            drain_frames=int(drain_frames),
-            timeout_sec=float(timeout_sec),
-            ros_timeout_sec=float(ros_timeout_sec),
-            settle_sec=float(settle_sec),
-            debug_slots=next_debug_slots,
-        )
+    target_repeats = max(1, int(repeats))
+    attempt_limit = max(target_repeats, int(max_measure_attempts or (target_repeats + 2)))
+    repeat_index = 0
+    for attempt_index in range(1, attempt_limit + 1):
+        try:
+            sample, packet, frame, next_frame_id, next_debug_slots = _measure_slot(
+                reader=reader,
+                cv2_module=cv2_module,
+                model=model,
+                config=config,
+                calibration_profile=calibration_profile,
+                client=client,
+                device=device,
+                half=half,
+                slot_id=int(slot_id),
+                frame_id=next_frame_id,
+                frames=int(frames),
+                drain_frames=int(drain_frames),
+                timeout_sec=float(timeout_sec),
+                ros_timeout_sec=float(ros_timeout_sec),
+                settle_sec=float(settle_sec),
+                debug_slots=next_debug_slots,
+            )
+        except Exception as error:
+            errors.append(str(error))
+            if bool(fresh_reopen_before_measure):
+                reader.reopen()
+            time.sleep(0.05)
+            continue
+        repeat_index += 1
         sample = dict(sample)
         sample["repeat_index"] = int(repeat_index)
+        sample["attempt_index"] = int(attempt_index)
         samples.append(sample)
         packet_for_overlay = packet
         frame_for_overlay = frame
@@ -458,8 +498,14 @@ def _measure_repeated(
         except Exception:
             pass
         time.sleep(0.05)
+        if repeat_index >= target_repeats:
+            break
+    if not samples:
+        raise RuntimeError("Low-height measurement failed after retries: " + "; ".join(errors[-3:]))
     summary = _measurement_summary(samples, max_repeat_spread_px=float(max_repeat_spread_px))
     summary["label"] = label
+    summary["measure_attempts"] = int(attempt_limit)
+    summary["measurement_errors"] = list(errors)
     if packet_for_overlay is not None:
         summary["packet_frame_id"] = packet_for_overlay.get("frame_id")
     return summary, next_frame_id, next_debug_slots
@@ -480,7 +526,6 @@ def main(argv: list[str] | None = None) -> int:
         vision_calibration_profile_path=Path(args.profile),
         vision_grasp_profile_path=Path(args.vision_grasp_profile),
         vision_pick_confirm_z_mm=float(args.z_mm),
-        vision_servo_measurement_point="geometry_subpixel",
     ).resolved()
     grasp_profile = load_vision_grasp_profile(config)
     if grasp_profile.ready:
@@ -488,7 +533,11 @@ def main(argv: list[str] | None = None) -> int:
         config = replace(
             config,
             vision_pick_confirm_z_mm=float(args.z_mm),
-            vision_servo_measurement_point="geometry_subpixel",
+        ).resolved()
+    if args.low_height_measurement_point is not None:
+        config = replace(
+            config,
+            vision_servo_low_height_measurement_point=str(args.low_height_measurement_point),
         ).resolved()
     calibration_profile = VisionCalibrationProfile.load(Path(args.profile))
     stream_url = config.resolve_vision_stream_url()
@@ -505,9 +554,11 @@ def main(argv: list[str] | None = None) -> int:
         "stream_url": stream_url,
         "slot_id": int(args.slot_id),
         "z_mm": float(args.z_mm),
-        "measurement_point": "geometry_subpixel",
-        "alignment_target_pixel": [320.0, 240.0],
-        "alignment_target_source": "command_bias_roi_center",
+        "measurement_point": str(
+            config.vision_servo_low_height_measurement_point or config.vision_servo_measurement_point
+        ),
+        "alignment_target_pixel": None,
+        "alignment_target_source": "pending_first_sample",
         "coarse_action_tolerance_px": float(args.coarse_action_tolerance_px),
         "final_center_tolerance_px": float(args.center_tolerance_px),
         "settle_sec": float(args.settle_sec),
@@ -580,9 +631,11 @@ def main(argv: list[str] | None = None) -> int:
             label="baseline",
             debug_slots=debug_slots,
             fresh_reopen_before_measure=bool(args.fresh_reopen_before_measure),
+            max_measure_attempts=args.max_measure_attempts,
         )
         baseline["pose_cyl"] = list(start_pose)
         report["baseline"] = baseline
+        _apply_report_alignment_from_summary(report, baseline)
         print(
             "[baseline] pose=({:.2f},{:.2f},{:.2f}) dist={:.1f}px spread={:.1f}px stable={}".format(
                 start_pose[0],
@@ -653,29 +706,46 @@ def main(argv: list[str] | None = None) -> int:
                     command_timeout_sec=float(args.command_timeout_sec),
                     settle_sec=float(args.settle_sec),
                 )
-                summary, frame_id, debug_slots = _measure_repeated(
-                    reader=reader,
-                    cv2_module=cv2,
-                    model=model,
-                    config=config,
-                    calibration_profile=calibration_profile,
-                    client=client,
-                    device=device,
-                    half=half,
-                    slot_id=int(args.slot_id),
-                    repeats=int(args.measurement_repeats),
-                    frame_id=frame_id,
-                    frames=int(args.frames),
-                    drain_frames=int(args.drain_frames),
-                    settle_sec=float(args.settle_sec),
-                    timeout_sec=float(args.timeout_sec),
-                    ros_timeout_sec=float(args.ros_timeout_sec),
-                    max_repeat_spread_px=float(args.max_repeat_spread_px),
-                    output_dir=output_dir,
-                    label=label,
-                    debug_slots=debug_slots,
-                    fresh_reopen_before_measure=bool(args.fresh_reopen_before_measure),
-                )
+                try:
+                    summary, frame_id, debug_slots = _measure_repeated(
+                        reader=reader,
+                        cv2_module=cv2,
+                        model=model,
+                        config=config,
+                        calibration_profile=calibration_profile,
+                        client=client,
+                        device=device,
+                        half=half,
+                        slot_id=int(args.slot_id),
+                        repeats=int(args.measurement_repeats),
+                        frame_id=frame_id,
+                        frames=int(args.frames),
+                        drain_frames=int(args.drain_frames),
+                        settle_sec=float(args.settle_sec),
+                        timeout_sec=float(args.timeout_sec),
+                        ros_timeout_sec=float(args.ros_timeout_sec),
+                        max_repeat_spread_px=float(args.max_repeat_spread_px),
+                        output_dir=output_dir,
+                        label=label,
+                        debug_slots=debug_slots,
+                        fresh_reopen_before_measure=bool(args.fresh_reopen_before_measure),
+                        max_measure_attempts=args.max_measure_attempts,
+                    )
+                except Exception as error:
+                    candidate_record["skipped"] = True
+                    candidate_record["reason"] = "measurement_failed"
+                    candidate_record["measurement_error"] = str(error)
+                    iteration_record["candidates"].append(candidate_record)
+                    print(
+                        "[candidate] iter={} pose=({:.2f},{:.2f},{:.2f}) measurement_failed={}".format(
+                            iteration,
+                            candidate_pose[0],
+                            candidate_pose[1],
+                            candidate_pose[2],
+                            error,
+                        )
+                    )
+                    continue
                 summary["pose_cyl"] = list(candidate_pose)
                 candidate_record["measurement"] = summary
                 iteration_record["candidates"].append(candidate_record)
@@ -764,6 +834,7 @@ def main(argv: list[str] | None = None) -> int:
                     label="final_recheck",
                     debug_slots=debug_slots,
                     fresh_reopen_before_measure=bool(args.fresh_reopen_before_measure),
+                    max_measure_attempts=args.max_measure_attempts,
                 )
                 final_recheck["pose_cyl"] = list(final_pose)
                 report["final_recheck"] = final_recheck
@@ -782,10 +853,26 @@ def main(argv: list[str] | None = None) -> int:
                     or final_regression_px > float(args.max_final_regression_px)
                 ):
                     report["best_recheck_failed"] = True
-                    report["stop_reason"] = str(report.get("stop_reason") or "best_recheck_failed")
-                    best_summary = final_recheck
-                    best_pose = final_pose
-                    target_leave_pose = final_pose
+                    report["previous_stop_reason_before_recheck"] = str(report.get("stop_reason") or "")
+                    report["stop_reason"] = "best_recheck_failed"
+                    report["rejected_best_pose_cyl"] = list(final_pose)
+                    report["rejected_best_measurement"] = final_recheck
+                    if start_pose is not None and not bool(args.return_to_start):
+                        _move_and_wait_for_pose(
+                            client,
+                            target=(float(start_pose[0]), float(start_pose[1]), float(start_pose[2])),
+                            command_timeout_sec=float(args.command_timeout_sec),
+                            settle_sec=float(args.settle_sec),
+                        )
+                        report["reverted_to_start_after_recheck_failed"] = True
+                        report["left_pose_cyl"] = list(start_pose)
+                        best_summary = baseline
+                        best_pose = start_pose
+                        target_leave_pose = start_pose
+                    else:
+                        best_summary = final_recheck
+                        best_pose = final_pose
+                        target_leave_pose = final_pose
                     print(
                         "[recheck] stored best rejected: final dist={:.1f}px stored={:.1f}px stable={}".format(
                             final_px,

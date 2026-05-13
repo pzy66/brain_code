@@ -8,18 +8,20 @@ import time
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
-from typing import Mapping
+from typing import Mapping, Sequence
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from hybrid_controller.config import AppConfig
+from hybrid_controller.config import SERVO_MEASUREMENT_POINTS
 from hybrid_controller.cylindrical import cylindrical_to_cartesian
 from hybrid_controller.tools.debug_vision_grasp_flow import (
     RosBridgeClient,
     _current_cyl_pose,
     _load_model,
+    _point_for_measurement,
     _process_frame_batch,
     _resolve_device,
     _resolve_packet,
@@ -53,6 +55,29 @@ def _read_json(path: Path) -> dict[str, object]:
     if not isinstance(payload, dict):
         raise ValueError(f"Expected JSON object in {path}")
     return payload
+
+
+def _sample_alignment_target(samples: list[object]) -> tuple[float, float] | None:
+    targets: list[tuple[float, float]] = []
+    for sample in samples:
+        if not isinstance(sample, Mapping):
+            continue
+        target = sample.get("alignment_target_pixel")
+        if not isinstance(target, Sequence) or isinstance(target, (str, bytes)) or len(target) < 2:
+            continue
+        try:
+            point = (float(target[0]), float(target[1]))
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(point[0]) and math.isfinite(point[1]):
+            targets.append(point)
+    if not targets:
+        return None
+    reference = targets[0]
+    for point in targets[1:]:
+        if math.hypot(point[0] - reference[0], point[1] - reference[1]) > 0.5:
+            raise ValueError("alignment_target_pixel changed across low-height calibration samples")
+    return reference
 
 
 def _parse_float_list(value: str) -> list[float]:
@@ -174,14 +199,14 @@ def _measure_slot(
     slot = _select_slot(resolved, int(slot_id))
     if slot is None or not bool(slot.get("valid", False)):
         raise RuntimeError(f"Slot {slot_id} not detected in low-height calibration frame.")
-    point = slot.get("geometry_center_f") or slot.get("geometry_center") or slot.get("pixel_center_f") or slot.get("pixel_center")
+    alignment_provenance = _slot_alignment_provenance(slot, resolved)
+    point = _point_for_measurement(slot, alignment_provenance["measurement_point"])
     if not isinstance(point, (tuple, list)) or len(point) < 2:
         raise RuntimeError("Detected slot is missing geometry/pixel center.")
     pose = _current_cyl_pose(snapshot)
     if pose is None:
         raise RuntimeError("Robot pose unavailable after calibration measurement.")
     x_mm, y_mm, _ = cylindrical_to_cartesian(float(pose[0]), float(pose[1]), float(pose[2]))
-    alignment_provenance = _slot_alignment_provenance(slot, resolved)
     sample = {
         "slot_id": int(slot_id),
         "frame_id": int(next_frame_id),
@@ -195,6 +220,10 @@ def _measure_slot(
         "pixel_center_f": slot.get("pixel_center_f"),
         "geometry_center": slot.get("geometry_center"),
         "geometry_center_f": slot.get("geometry_center_f"),
+        "color_block_center": slot.get("color_block_center"),
+        "color_block_center_f": slot.get("color_block_center_f"),
+        "top_face_center": slot.get("top_face_center"),
+        "top_face_center_f": slot.get("top_face_center_f"),
         "grasp_pixel": slot.get("grasp_pixel"),
         "grasp_pixel_f": slot.get("grasp_pixel_f"),
         "center_distance_px": slot.get("center_distance_px"),
@@ -235,6 +264,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--timeout-sec", type=float, default=8.0)
     parser.add_argument("--ros-timeout-sec", type=float, default=3.0)
     parser.add_argument("--command-timeout-sec", type=float, default=12.0)
+    parser.add_argument(
+        "--low-height-measurement-point",
+        choices=tuple(sorted(SERVO_MEASUREMENT_POINTS)),
+        default=None,
+        help="Temporary override for the stopped low-height visual point used by this calibration.",
+    )
     parser.add_argument("--detector", choices=("auto", "yolo", "fallback"), default="auto")
     parser.add_argument("--weights", type=Path, default=None)
     parser.add_argument("--device", default=str(defaults.vision_device))
@@ -272,12 +307,16 @@ def main(argv: list[str] | None = None) -> int:
         vision_calibration_profile_path=Path(args.profile),
         vision_grasp_profile_path=Path(args.vision_grasp_profile),
         vision_pick_confirm_z_mm=float(args.z_mm),
-        vision_servo_measurement_point="geometry_subpixel",
     ).resolved()
     grasp_profile = load_vision_grasp_profile(config)
     if grasp_profile.ready:
         config = apply_vision_grasp_profile(config, grasp_profile).resolved()
         config = replace(config, vision_pick_confirm_z_mm=float(args.z_mm)).resolved()
+    if args.low_height_measurement_point is not None:
+        config = replace(
+            config,
+            vision_servo_low_height_measurement_point=str(args.low_height_measurement_point),
+        ).resolved()
     calibration_profile = VisionCalibrationProfile.load(Path(args.profile))
     output_dir = Path(args.output_dir) if args.output_dir is not None else config.vision_debug_bundle_dir / f"low_height_alignment_{_timestamp()}"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -301,9 +340,11 @@ def main(argv: list[str] | None = None) -> int:
         "stream_url": stream_url,
         "slot_id": int(args.slot_id),
         "z_mm": float(args.z_mm),
-        "measurement_point": "geometry_subpixel",
-        "alignment_target_pixel": [320.0, 240.0],
-        "alignment_target_source": "command_bias_roi_center",
+        "measurement_point": str(
+            config.vision_servo_low_height_measurement_point or config.vision_servo_measurement_point
+        ),
+        "alignment_target_pixel": None,
+        "alignment_target_source": "pending_first_sample",
         "final_center_tolerance_px": 2.0,
         "settle_sec": float(args.settle_sec),
         "drain_frames": int(args.drain_frames),
@@ -387,6 +428,14 @@ def main(argv: list[str] | None = None) -> int:
             sample["raw_image"] = str(step_dir / "raw.jpg")
             sample["packet"] = str(step_dir / "packet.json")
             report["samples"].append(sample)
+            if report.get("alignment_target_pixel") is None:
+                target = sample.get("alignment_target_pixel")
+                if isinstance(target, (list, tuple)) and len(target) >= 2:
+                    try:
+                        report["alignment_target_pixel"] = [float(target[0]), float(target[1])]
+                        report["alignment_target_source"] = "sample_provenance"
+                    except (TypeError, ValueError):
+                        pass
             print(
                 "[sample {index}] pose=({theta:.2f},{radius:.2f},{z:.2f}) pixel=({x:.1f},{y:.1f})".format(
                     index=index,
@@ -408,9 +457,14 @@ def main(argv: list[str] | None = None) -> int:
             _wait_for_idle(client, timeout_sec=float(args.command_timeout_sec))
             return_pose_needed = False
         if len(report["samples"]) >= 4:
+            target_pixel = _sample_alignment_target(report["samples"])
+            if target_pixel is None:
+                target_pixel = (320.0, 240.0)
+                report["alignment_target_pixel"] = [320.0, 240.0]
+                report["alignment_target_source"] = "fallback_frame_center"
             model_result = fit_low_height_response_model(
                 report["samples"],
-                target_pixel=(320.0, 240.0),
+                target_pixel=target_pixel,
                 z_mm=float(args.z_mm),
                 min_samples=4,
             )

@@ -33,6 +33,7 @@ from apps.data_collection_ui import (
     DEFAULT_STABLE_REST_SEC,
     DEFAULT_STABLE_SWITCH_TRIALS,
     DEFAULT_STABLE_TARGET_REPEATS,
+    DEFAULT_COLLECTION_STIMULUS_PROFILE_ID,
     MIN_ACTIVE_SEC_FOR_TRAINING,
     MIN_PREPARE_SEC_FOR_VOICE,
     MIN_REST_SEC_BETWEEN_TRIALS,
@@ -50,8 +51,10 @@ from apps.data_collection_ui import (
     _resolve_cli_protocol,
     _validate_collection_protocol,
     estimate_round_seconds,
+    estimate_custom_ssvep_round_seconds,
     estimate_stimulus_sample_window_frame_offset,
     prompt_text_for_freq,
+    prompt_text_for_trial,
     resolve_collection_stim_refresh_rate_hz,
     resolve_collection_stimulus_mode,
     stimulus_backend_metadata,
@@ -64,7 +67,7 @@ from apps.data_collection_ui import (
     parse_freqs,
 )
 from ssvep_core.stimulus_profiles import (
-    DEFAULT_STIMULUS_PROFILE_ID,
+    STIMULUS_PROFILE_COMMAND_NC_8_10_12_15_V1,
     STIMULUS_PROFILE_COMFORT_FBCCA_V1,
     frame_lock_frequency_report,
     get_stimulus_profile,
@@ -72,6 +75,7 @@ from ssvep_core.stimulus_profiles import (
 )
 from apps.async_fbcca_validation_ui import (
     FourArrowStimWidget,
+    PHASE_IDLE,
     PHASE_VALIDATION,
     STIMULUS_MODE_ELAPSED_TIME_SINE,
     STIMULUS_MODE_FRAME_LOCKED_SINE,
@@ -86,6 +90,13 @@ from ssvep_core.dataset import (
     build_collection_trials,
     build_protocol_signature,
     save_collection_dataset_bundle,
+)
+from ssvep_core.custom_ssvep_protocol import (
+    CUSTOM_SSVEP_PROTOCOL_V1,
+    CUSTOM_SSVEP_SHORT_PROTOCOL_V1,
+    EVENT_CODES,
+    build_custom_ssvep_collection_plan,
+    custom_ssvep_protocol_summary,
 )
 
 
@@ -136,6 +147,244 @@ def test_round_estimate_uses_selected_stim_refresh_rate() -> None:
     assert abs(float(round_sec) - expected) < 1e-9
 
 
+def test_custom_ssvep_protocol_v1_counts_and_roles() -> None:
+    plan = build_custom_ssvep_collection_plan((8.0, 10.0, 12.0, 15.0), protocol_key=CUSTOM_SSVEP_PROTOCOL_V1, seed=7)
+    metadata = [dict(row) for _trial, row in plan]
+    assert all(dict(trial.metadata or {}).get("trial_id") == trial.trial_id for trial, _row in plan)
+    assert all(dict(trial.metadata or {}).get("split_role") for trial, _row in plan)
+    summary = custom_ssvep_protocol_summary(CUSTOM_SSVEP_PROTOCOL_V1, (8.0, 10.0, 12.0, 15.0))
+    assert int(summary["stage_counts"]["command_calibration"]) == 20
+    assert int(summary["stage_counts"]["no_control_calibration"]) == 12
+    assert int(summary["stage_counts"]["pseudo_online_command_test"]) == 8
+    assert int(summary["stage_counts"]["pseudo_online_no_control_test"]) == 6
+    assert int(summary["split_counts"]["test"]) == 14
+    command_freqs = [
+        float(item["target_freq"])
+        for item in metadata
+        if item.get("stage") == "command_calibration"
+    ]
+    assert {freq: command_freqs.count(freq) for freq in (8.0, 10.0, 12.0, 15.0)} == {
+        8.0: 5,
+        10.0: 5,
+        12.0: 5,
+        15.0: 5,
+    }
+    assert not any(
+        command_freqs[index] == command_freqs[index - 1] == command_freqs[index - 2]
+        for index in range(2, len(command_freqs))
+    )
+    roles = {str(item.get("nc_subtype")): str(item.get("trial_role")) for item in metadata if item.get("nc_subtype")}
+    assert roles["blank_center"] == "clean_idle"
+    assert roles["flicker_center"] == "hard_idle"
+    assert roles["flicker_object"] == "hard_idle"
+    assert roles["flicker_free"] == "hard_idle"
+    positions = {str(item.get("nc_subtype")): str(item.get("target_position")) for item in metadata if item.get("nc_subtype")}
+    assert positions["blank_center"] == "center"
+    assert positions["flicker_center"] == "center"
+    assert positions["flicker_object"] == "object_area"
+    assert positions["flicker_free"] == "free_non_target"
+    assert EVENT_CODES["NC_FLICKER_CENTER_ON"] == 302
+
+
+def test_custom_ssvep_protocol_uses_tenp5_command_event_without_fallback() -> None:
+    plan = build_custom_ssvep_collection_plan((8.0, 10.5, 12.0, 15.0), protocol_key=CUSTOM_SSVEP_PROTOCOL_V1, seed=11)
+    tenp5_rows = [
+        dict(metadata)
+        for trial, metadata in plan
+        if trial.expected_freq is not None and abs(float(trial.expected_freq) - 10.5) < 1e-8
+    ]
+    assert tenp5_rows
+    event_names = {str(event.get("event_name", "")) for event in tenp5_rows[0]["events"]}
+    assert "STIM_ON_COMMAND_10P5" in event_names
+    assert "STIM_ON_COMMAND_8" not in event_names
+    assert int(EVENT_CODES["STIM_ON_COMMAND_10P5"]) == int(EVENT_CODES["STIM_ON_COMMAND_10"])
+
+
+def test_custom_ssvep_unknown_command_event_uses_neutral_other_code() -> None:
+    plan = build_custom_ssvep_collection_plan((8.0, 9.0, 12.0, 15.0), protocol_key=CUSTOM_SSVEP_PROTOCOL_V1, seed=11)
+    nine_rows = [
+        dict(metadata)
+        for trial, metadata in plan
+        if trial.expected_freq is not None and abs(float(trial.expected_freq) - 9.0) < 1e-8
+    ]
+    assert nine_rows
+    event_names = {str(event.get("event_name", "")) for event in nine_rows[0]["events"]}
+    assert "STIM_ON_COMMAND_OTHER" in event_names
+    assert "STIM_ON_COMMAND_8" not in event_names
+    assert "STIM_ON_COMMAND_10" not in event_names
+
+
+def test_collection_worker_aligns_custom_protocol_events_to_saved_window() -> None:
+    events = CollectionWorker._trial_aligned_events(
+        {
+            "events": [
+                {"event_name": "TRIAL_START", "event_code": 100, "sample_index": None, "perf_time": ""},
+                {"event_name": "CUE_ON", "event_code": 110, "sample_index": None, "perf_time": ""},
+                {"event_name": "STIM_ON_COMMAND_8", "event_code": 201, "sample_index": None, "perf_time": ""},
+                {"event_name": "STIM_OFF", "event_code": 210, "sample_index": None, "perf_time": ""},
+                {"event_name": "TRIAL_END", "event_code": 230, "sample_index": None, "perf_time": ""},
+            ]
+        },
+        active_samples=750,
+        trial_start_at="prepare",
+        cue_on_at="cue",
+        active_window_started_at="start",
+        active_window_ended_at="end",
+        segment_captured_at="captured",
+    )
+    by_name = {str(item["event_name"]): dict(item) for item in events}
+    assert by_name["TRIAL_START"]["sample_index"] is None
+    assert by_name["CUE_ON"]["sample_index"] is None
+    assert by_name["STIM_ON_COMMAND_8"]["sample_index"] == 0
+    assert by_name["STIM_OFF"]["sample_index"] == 750
+    assert by_name["TRIAL_END"]["sample_index"] == 750
+    assert by_name["TRIAL_START"]["perf_time"] == "prepare"
+    assert by_name["CUE_ON"]["perf_time"] == "cue"
+    assert by_name["STIM_ON_COMMAND_8"]["perf_time"] == "start"
+    assert by_name["STIM_OFF"]["perf_time"] == "end"
+    assert by_name["TRIAL_END"]["perf_time"] == "captured"
+
+
+def test_collection_worker_appends_mark_invalid_event_after_saved_window() -> None:
+    events = CollectionWorker._trial_aligned_events(
+        {
+            "events": [
+                {"event_name": "TRIAL_START", "event_code": 100, "sample_index": None, "perf_time": ""},
+                {"event_name": "STIM_ON_COMMAND_8", "event_code": 201, "sample_index": None, "perf_time": ""},
+                {"event_name": "STIM_OFF", "event_code": 210, "sample_index": None, "perf_time": ""},
+                {"event_name": "TRIAL_END", "event_code": 230, "sample_index": None, "perf_time": ""},
+                {
+                    "event_name": "MARK_INVALID",
+                    "event_code": EVENT_CODES["MARK_INVALID"],
+                    "sample_index": None,
+                    "perf_time": "",
+                    "event_value": "manual_mark_invalid",
+                },
+            ]
+        },
+        active_samples=750,
+        trial_start_at="prepare",
+        cue_on_at="cue",
+        active_window_started_at="start",
+        active_window_ended_at="end",
+        segment_captured_at="captured",
+    )
+    by_name = {str(item["event_name"]): dict(item) for item in events}
+
+    assert by_name["MARK_INVALID"]["sample_index"] == 750
+    assert by_name["MARK_INVALID"]["perf_time"] == "captured"
+
+
+def test_collection_worker_uses_actual_saved_sample_count_for_end_events() -> None:
+    saved_samples = 720
+    events = CollectionWorker._trial_aligned_events(
+        {
+            "events": [
+                {"event_name": "STIM_ON_COMMAND_8", "event_code": 201, "sample_index": None, "perf_time": ""},
+                {"event_name": "STIM_OFF", "event_code": 210, "sample_index": None, "perf_time": ""},
+                {"event_name": "TRIAL_END", "event_code": 230, "sample_index": None, "perf_time": ""},
+            ]
+        },
+        active_samples=saved_samples,
+        active_window_started_at="start",
+        active_window_ended_at="end",
+        segment_captured_at="captured",
+    )
+    by_name = {str(item["event_name"]): dict(item) for item in events}
+
+    assert by_name["STIM_ON_COMMAND_8"]["sample_index"] == 0
+    assert by_name["STIM_OFF"]["sample_index"] == saved_samples
+    assert by_name["TRIAL_END"]["sample_index"] == saved_samples
+
+
+def test_collection_worker_keyboard_request_flags_are_consumed() -> None:
+    config = CollectionConfig(
+        serial_port="auto",
+        board_id=0,
+        freqs=(8.0, 10.0, 12.0, 15.0),
+        subject_id="subject",
+        session_id="subject_session_r01",
+        session_index=1,
+        dataset_dir=PROJECT_DIR / "artifacts" / "datasets",
+        protocol_name=CUSTOM_SSVEP_SHORT_PROTOCOL_V1,
+    )
+    worker = CollectionWorker(config)
+    worker.request_retry_current_trial()
+    assert worker._consume_retry_request() is False
+    worker.request_mark_invalid_current_trial()
+    assert worker._consume_invalid_request() is False
+    worker._trial_control_accepting_input.set()
+    worker.request_retry_current_trial()
+    assert worker._consume_retry_request() is True
+    assert worker._consume_retry_request() is False
+    worker.request_mark_invalid_current_trial()
+    assert worker._consume_invalid_request() is True
+    assert worker._consume_invalid_request() is False
+    worker.request_pause_after_current_trial()
+    assert worker._pause_after_trial_if_requested() is True
+    assert worker._pause_after_trial_if_requested() is False
+    assert worker._paused_after_trial is True
+
+
+def test_custom_ssvep_short_protocol_counts() -> None:
+    summary = custom_ssvep_protocol_summary(CUSTOM_SSVEP_SHORT_PROTOCOL_V1, (8.0, 10.0, 12.0, 15.0))
+    assert int(summary["stage_counts"]["command_calibration"]) == 16
+    assert int(summary["stage_counts"]["no_control_calibration"]) == 8
+    assert int(summary["stage_counts"]["pseudo_online_command_test"]) == 8
+    assert int(summary["stage_counts"]["pseudo_online_no_control_test"]) == 3
+
+
+def test_custom_ssvep_prompt_text_uses_no_control_subtypes() -> None:
+    plan = build_custom_ssvep_collection_plan((8.0, 10.0, 12.0, 15.0), protocol_key=CUSTOM_SSVEP_PROTOCOL_V1, seed=7)
+    by_subtype = {
+        str(metadata.get("nc_subtype")): trial
+        for trial, metadata in plan
+        if metadata.get("stage") == "no_control_calibration"
+    }
+
+    assert prompt_text_for_trial((8.0, 10.0, 12.0, 15.0), by_subtype["flicker_center"]) == "看中心点"
+    assert (
+        prompt_text_for_trial((8.0, 10.0, 12.0, 15.0), by_subtype["flicker_object"])
+        == "看目标物区域，不看闪烁块"
+    )
+    assert (
+        prompt_text_for_trial((8.0, 10.0, 12.0, 15.0), by_subtype["flicker_free"])
+        == "自然看屏幕非闪烁区域"
+    )
+
+
+def test_custom_ssvep_round_estimate_uses_custom_plan_not_legacy_counts() -> None:
+    freqs = (8.0, 10.0, 12.0, 15.0)
+    direct = estimate_custom_ssvep_round_seconds(
+        protocol_name=CUSTOM_SSVEP_SHORT_PROTOCOL_V1,
+        freqs=freqs,
+        prepare_sec=1.0,
+        refresh_rate_hz=240.0,
+    )
+    via_generic = estimate_round_seconds(
+        prepare_sec=1.0,
+        active_sec=3.0,
+        rest_sec=2.0,
+        target_repeats=4,
+        idle_repeats=2,
+        switch_trials=2,
+        refresh_rate_hz=240.0,
+        protocol_name=CUSTOM_SSVEP_SHORT_PROTOCOL_V1,
+        freqs=freqs,
+    )
+    legacy = estimate_round_seconds(
+        prepare_sec=1.0,
+        active_sec=3.0,
+        rest_sec=2.0,
+        target_repeats=4,
+        idle_repeats=2,
+        switch_trials=2,
+        refresh_rate_hz=240.0,
+    )
+    assert abs(float(direct) - float(via_generic)) < 1e-9
+    assert abs(float(via_generic) - float(legacy)) > 1.0
+
+
 def test_resolve_cli_protocol_uses_preset_values() -> None:
     name, prepare, active, rest, long_idle, target, idle, switch = _resolve_cli_protocol(
         preset_name=ENHANCED_45M_PRESET.key,
@@ -176,6 +425,27 @@ def test_resolve_cli_protocol_custom_preserves_manual_values() -> None:
     assert int(target) == 7
     assert int(idle) == 13
     assert int(switch) == 9
+
+
+def test_resolve_cli_protocol_uses_custom_ssvep_preset_values() -> None:
+    name, prepare, active, rest, long_idle, target, idle, switch = _resolve_cli_protocol(
+        preset_name=CUSTOM_SSVEP_PROTOCOL_V1,
+        prepare_sec=9.0,
+        active_sec=9.0,
+        rest_sec=9.0,
+        long_idle_sec=91.0,
+        target_repeats=1,
+        idle_repeats=1,
+        switch_trials=1,
+    )
+    assert name == CUSTOM_SSVEP_PROTOCOL_V1
+    assert abs(float(prepare) - 1.0) < 1e-9
+    assert abs(float(active) - 3.0) < 1e-9
+    assert float(rest) >= float(MIN_REST_SEC_BETWEEN_TRIALS)
+    assert abs(float(long_idle) - 0.0) < 1e-9
+    assert int(target) == 5
+    assert int(idle) == 3
+    assert int(switch) == 2
 
 
 def test_round_session_id_replaces_existing_round_suffix() -> None:
@@ -882,12 +1152,14 @@ def test_validate_stimulus_mode_rejects_unknown_values() -> None:
         validate_stimulus_mode("unknown")
 
 
-def test_collection_cli_defaults_to_auto_comfort_stimulus_mode() -> None:
+def test_collection_cli_defaults_to_command_nc_stimulus_profile() -> None:
     parser = build_parser()
     args = parser.parse_args([])
-    assert str(args.stimulus_profile_id) == DEFAULT_STIMULUS_PROFILE_ID
+    assert str(args.stimulus_profile_id) == DEFAULT_COLLECTION_STIMULUS_PROFILE_ID
+    assert str(args.stimulus_profile_id) == STIMULUS_PROFILE_COMMAND_NC_8_10_12_15_V1
     assert str(args.stimulus_mode) == "auto"
-    assert parse_freqs(str(args.freqs)) == get_stimulus_profile(DEFAULT_STIMULUS_PROFILE_ID).freqs
+    assert parse_freqs(str(args.freqs)) == (8.0, 10.0, 12.0, 15.0)
+    assert parse_freqs(str(args.freqs)) == get_stimulus_profile(DEFAULT_COLLECTION_STIMULUS_PROFILE_ID).freqs
     args = parser.parse_args(["--stimulus-mode", STIMULUS_MODE_FRAME_LOCKED_SINE])
     assert str(args.stimulus_mode) == STIMULUS_MODE_FRAME_LOCKED_SINE
 
@@ -917,6 +1189,16 @@ def test_comfort_fbcca_profile_uses_lower_contrast_and_ramp() -> None:
     assert float(report["luminance_max"]) < 1.0
     peaks = {float(row["target_hz"]): float(row["peak_hz"]) for row in report["rows"]}
     assert peaks == {9.8: 9.8, 12.0: 12.0, 14.8: 14.8, 15.8: 15.8}
+
+
+def test_command_nc_profile_uses_self_collection_frequencies() -> None:
+    profile = get_stimulus_profile(STIMULUS_PROFILE_COMMAND_NC_8_10_12_15_V1)
+    assert profile.freqs == (8.0, 10.0, 12.0, 15.0)
+    assert abs(float(profile.mean) - 0.40) < 1e-12
+    assert abs(float(profile.amp) - 0.20) < 1e-12
+    assert abs(float(profile.ramp_sec) - 0.30) < 1e-12
+    assert abs(float(profile.luminance_min) - 0.20) < 1e-12
+    assert abs(float(profile.luminance_max) - 0.60) < 1e-12
 
 
 def test_frame_lock_frequency_report_distinguishes_integer_cycle_from_sampled_sine() -> None:
@@ -1126,6 +1408,63 @@ def test_four_arrow_stim_widget_emits_active_phase_frame_presented_once() -> Non
         assert str(payloads[0]["mode"]) == PHASE_CAL_ACTIVE
         assert bool(payloads[0]["flicker"]) is True
         assert int(payloads[0]["frame_index"]) == 0
+        assert str(payloads[0].get("presented_wall_time", "")).strip()
+        assert int(payloads[0].get("presented_perf_counter_ns", 0)) > 0
+    finally:
+        widget.stop_clock()
+        widget.close()
+
+
+def test_four_arrow_stim_widget_resets_active_phase_frame_interval_stats() -> None:
+    _ = _get_qapp()
+    widget = FourArrowStimWidget(
+        freqs=(8.0, 10.0, 12.0, 15.0),
+        refresh_rate_hz=240.0,
+        mean=0.4,
+        amp=0.2,
+        phi=0.0,
+        stimulus_mode=STIMULUS_MODE_FRAME_LOCKED_SINE,
+    )
+    try:
+        widget.apply_phase(
+            {
+                "mode": PHASE_CAL_ACTIVE,
+                "flicker": True,
+                "cue_freq": 8.0,
+                "active_sec": 3.0,
+            }
+        )
+        widget._active_phase_frame_intervals_ms = [4.0, 5.0, 6.0]
+        assert int(widget.active_phase_frame_interval_stats()["count"]) == 3
+        widget.apply_phase(
+            {
+                "mode": PHASE_CAL_ACTIVE,
+                "flicker": True,
+                "cue_freq": 8.0,
+                "active_sec": 3.0,
+                "reset_active_frame_stats": True,
+            }
+        )
+        assert int(widget.active_phase_frame_interval_stats()["count"]) == 0
+        widget._active_phase_frame_intervals_ms = [4.0, 5.0]
+
+        widget.apply_phase(
+            {
+                "mode": PHASE_IDLE,
+                "flicker": False,
+                "cue_freq": None,
+            }
+        )
+        widget.apply_phase(
+            {
+                "mode": PHASE_CAL_ACTIVE,
+                "flicker": True,
+                "cue_freq": 10.0,
+                "active_sec": 3.0,
+            }
+        )
+
+        assert int(widget.active_phase_frame_interval_stats()["count"]) == 0
     finally:
         widget.stop_clock()
         widget.close()

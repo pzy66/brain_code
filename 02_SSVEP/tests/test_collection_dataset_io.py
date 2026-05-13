@@ -78,6 +78,7 @@ def test_collection_dataset_bundle_roundtrip() -> None:
                     "active_sec": 4.0,
                     "sample_ratio": 1.0,
                     "retry_count": 0,
+                    "trial_prepare_started_at": "2026-04-24T09:59:59.000+08:00",
                     "active_start_tone_started_at": "2026-04-24T10:00:00+08:00",
                     "active_window_started_at": "2026-04-24T10:00:00.120+08:00",
                     "active_window_ended_at": "2026-04-24T10:00:04.120+08:00",
@@ -85,6 +86,7 @@ def test_collection_dataset_bundle_roundtrip() -> None:
                     "active_end_tone_started_at": "2026-04-24T10:00:04.131+08:00",
                     "stimulus_phase_apply_requested_at": "2026-04-24T10:00:00.010+08:00",
                     "stimulus_first_frame_presented_at": "2026-04-24T10:00:00.026+08:00",
+                    "stimulus_first_frame_ack_received_at": "2026-04-24T10:00:00.030+08:00",
                     "stimulus_first_frame_presented_t_sec": 0.016,
                     "stimulus_first_frame_frame_index": 0,
                     "stimulus_first_frame_cue_freq": 8.0,
@@ -157,6 +159,7 @@ def test_collection_dataset_bundle_roundtrip() -> None:
         assert datetime.fromisoformat(generated_at).tzinfo is not None
         quality_summary = dict(loaded.manifest.get("quality_summary", {}))
         assert int(quality_summary.get("valid_trial_count", 0)) == len(segments)
+        assert int(quality_summary.get("kept_trial_count", 0)) == len(segments)
         assert bool(quality_summary.get("collection_aborted", True)) is False
         assert int(quality_summary.get("planned_trial_count", 0)) == len(segments)
         assert int(quality_summary.get("saved_trial_count", 0)) == len(segments)
@@ -175,8 +178,10 @@ def test_collection_dataset_bundle_roundtrip() -> None:
             assert float(row.get("shortfall_ratio", 0.0)) >= 0.0
             assert int(row.get("retry_count", 0)) >= 0
         assert int(trial_rows[1].get("retry_count", 0)) == 2
+        assert str(trial_rows[0].get("trial_prepare_started_at", "")) == "2026-04-24T09:59:59.000+08:00"
         assert str(trial_rows[0].get("active_start_tone_started_at", "")) == "2026-04-24T10:00:00+08:00"
         assert str(trial_rows[0].get("stimulus_first_frame_presented_at", "")).strip()
+        assert str(trial_rows[0].get("stimulus_first_frame_ack_received_at", "")) == "2026-04-24T10:00:00.030+08:00"
         assert int(trial_rows[0].get("stimulus_first_frame_frame_index", -1)) == 0
         assert int(dict(trial_rows[0].get("stimulus_frame_interval_stats", {})).get("count", 0)) == 240
         assert str(trial_rows[0].get("stimulus_profile_id", "")) == "comfort_fbcca_v1"
@@ -190,6 +195,114 @@ def test_collection_dataset_bundle_roundtrip() -> None:
             assert trial_a.label == trial_b.label
             assert trial_a.expected_freq == trial_b.expected_freq
             assert seg_a.shape == seg_b.shape
+    finally:
+        shutil.rmtree(case_dir, ignore_errors=True)
+
+
+def test_collection_dataset_bundle_exports_custom_protocol_fields_events_and_quality_report() -> None:
+    artifacts = PROJECT_DIR / ".tmp_test_artifacts" / "datasets_test_artifacts"
+    artifacts.mkdir(parents=True, exist_ok=True)
+    case_dir = artifacts / "collection_custom_protocol_case"
+    case_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        segments = [
+            (TrialSpec(label="command_calibration_8Hz_up", expected_freq=8.0, trial_id=0, block_index=0), _mock_segment(750, 4, 91)),
+            (TrialSpec(label="NC_FLICKER_CENTER_calibration_r1", expected_freq=None, trial_id=1, block_index=1), _mock_segment(2500, 4, 92)),
+            (TrialSpec(label="command_test_8Hz_up", expected_freq=8.0, trial_id=2, block_index=2), _mock_segment(750, 4, 93)),
+        ]
+        payload = save_collection_dataset_bundle(
+            dataset_root=case_dir,
+            session_id="custom_session",
+            subject_id="subject_custom",
+            serial_port="COM4",
+            board_id=0,
+            sampling_rate=250,
+            freqs=(8.0, 10.0, 12.0, 15.0),
+            board_eeg_channels=(0, 1, 2, 3),
+            protocol_config={"protocol_name": "custom_ssvep_command_nc_pseudoonline_v1", "active_sec": 3.0},
+            trial_segments=segments,
+            quality_rows=[
+                {
+                    "order_index": 0,
+                    "protocol_name": "custom_ssvep_command_nc_pseudoonline_v1",
+                    "stage": "command_calibration",
+                    "split_role": "calibration",
+                    "state_type": "command",
+                    "trial_role": "control",
+                    "target_freq": 8.0,
+                    "target_position": "up",
+                    "stimulus_active": True,
+                    "all_targets_flickering": True,
+                    "valid": True,
+                    "event_codes": [100, 110, 201, 210, 220, 230],
+                    "events": [
+                        {"sample_index": None, "event_code": 100, "event_name": "TRIAL_START", "event_value": "", "perf_time": "", "trial_id": 0},
+                        {"sample_index": None, "event_code": 201, "event_name": "STIM_ON_COMMAND_8", "event_value": 8.0, "perf_time": "", "trial_id": 0},
+                    ],
+                    "target_samples": 750,
+                    "active_sec": 3.0,
+                    "retry_count": 0,
+                    "stimulus_frame_interval_stats": {"count": 120, "mean_ms": 4.2, "p95_ms": 4.5, "max_ms": 5.0},
+                },
+                {
+                    "order_index": 1,
+                    "stage": "no_control_calibration",
+                    "split_role": "calibration",
+                    "state_type": "no_control",
+                    "trial_role": "hard_idle",
+                    "nc_subtype": "flicker_center",
+                    "stimulus_active": True,
+                    "all_targets_flickering": True,
+                    "valid": True,
+                    "target_samples": 2500,
+                    "active_sec": 10.0,
+                    "retry_count": 1,
+                },
+                {
+                    "order_index": 2,
+                    "stage": "pseudo_online_command_test",
+                    "split_role": "test",
+                    "state_type": "command",
+                    "trial_role": "control",
+                    "target_freq": 8.0,
+                    "target_position": "up",
+                    "valid": False,
+                    "reject_reason": "looked_wrong_target",
+                    "target_samples": 750,
+                    "active_sec": 3.0,
+                },
+            ],
+        )
+        manifest_path = Path(payload["dataset_manifest"])
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        rows = list(manifest["trials"])
+        assert rows[0]["split_role"] == "calibration"
+        assert rows[1]["nc_subtype"] == "flicker_center"
+        assert rows[1]["trial_role"] == "hard_idle"
+        assert rows[2]["split_role"] == "test"
+        assert rows[2]["valid"] is False
+        quality_summary = dict(manifest["quality_summary"])
+        assert int(quality_summary["test_split_trial_count"]) == 1
+        assert int(quality_summary["invalid_trial_count"]) == 1
+        assert int(quality_summary["valid_trial_count"]) == 2
+        assert int(quality_summary["kept_trial_count"]) == 3
+        assert int(quality_summary["valid_no_control_segments"]) == 1
+        files = dict(manifest["files"])
+        assert Path(files["events_csv"]).exists()
+        events_csv = Path(files["events_csv"]).read_text(encoding="utf-8")
+        assert "STIM_ON_COMMAND_8" in events_csv
+        assert Path(files["quality_report_json"]).exists()
+        quality_report = json.loads(Path(files["quality_report_json"]).read_text(encoding="utf-8"))
+        assert "channel_variance" in quality_report
+        assert dict(quality_report["line_noise_50hz"])["status"]
+        assert "command_8_snr" in quality_report
+        assert "command_10_snr" in quality_report
+        assert "command_12_snr" in quality_report
+        assert "command_15_snr" in quality_report
+        assert int(quality_report["retry_total"]) == 1
+        assert int(quality_report["test_split_trial_count"]) == 1
+        loaded = load_collection_dataset(manifest_path)
+        assert dict(loaded.trial_segments[2][0].metadata or {})["split_role"] == "test"
     finally:
         shutil.rmtree(case_dir, ignore_errors=True)
 
@@ -307,6 +420,50 @@ def test_collection_dataset_bundle_falls_back_when_continuous_npz_save_fails(mon
         assert "simulated continuous npz failure" in manifest["continuous_board"]["compressed_npz_save_error"]
         loaded = load_collection_dataset(manifest_path)
         assert loaded.session_id == "fallback_session"
+        assert len(loaded.trial_segments) == 1
+    finally:
+        shutil.rmtree(case_dir, ignore_errors=True)
+
+
+def test_collection_dataset_bundle_retries_transient_windows_replace_error(monkeypatch) -> None:
+    artifacts = PROJECT_DIR / ".tmp_test_artifacts" / "datasets_test_artifacts"
+    artifacts.mkdir(parents=True, exist_ok=True)
+    case_dir = artifacts / "collection_replace_retry_case"
+    case_dir.mkdir(parents=True, exist_ok=True)
+    original_replace = dataset_module.os.replace
+    attempts = {"count": 0}
+
+    def flaky_replace(src: str, dst: str) -> None:
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            error = PermissionError("simulated transient replace lock")
+            error.winerror = 5  # type: ignore[attr-defined]
+            raise error
+        original_replace(src, dst)
+
+    monkeypatch.setattr(dataset_module.os, "replace", flaky_replace)
+    monkeypatch.setattr(dataset_module.time, "sleep", lambda _seconds: None)
+    try:
+        payload = save_collection_dataset_bundle(
+            dataset_root=case_dir,
+            session_id="replace_retry_session",
+            subject_id="subject001",
+            serial_port="COM4",
+            board_id=0,
+            sampling_rate=250,
+            freqs=(8.0, 10.0, 12.0, 15.0),
+            board_eeg_channels=(0, 1, 2, 3),
+            protocol_config={"protocol_name": "custom", "active_sec": 1.5},
+            trial_segments=[
+                (TrialSpec(label="8Hz", expected_freq=8.0, trial_id=0, block_index=0), _mock_segment(375, 4, 51)),
+            ],
+        )
+
+        assert attempts["count"] >= 2
+        manifest_path = Path(payload["dataset_manifest"])
+        assert manifest_path.exists()
+        loaded = load_collection_dataset(manifest_path)
+        assert loaded.session_id == "replace_retry_session"
         assert len(loaded.trial_segments) == 1
     finally:
         shutil.rmtree(case_dir, ignore_errors=True)

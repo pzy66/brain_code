@@ -45,6 +45,23 @@ def test_load_and_apply_vision_grasp_profile(tmp_path) -> None:
     assert applied.sucker_rotation_angle_quality_threshold == pytest.approx(0.3)
     assert applied.vision_servo_low_action_tolerance_px == pytest.approx(7.0)
     assert applied.vision_pick_z_tolerance_mm == pytest.approx(5.0)
+    assert applied.vision_servo_low_height_measurement_point == "geometry_subpixel"
+
+
+def test_vision_grasp_profile_can_override_low_height_measurement_point(tmp_path) -> None:
+    profile_path = tmp_path / "profile.json"
+    _write_profile(profile_path, vision_servo_low_height_measurement_point="color_block_subpixel")
+    config = AppConfig(
+        vision_grasp_profile_path=profile_path,
+        vision_servo_measurement_point="geometry_subpixel",
+    ).resolved()
+
+    result = load_vision_grasp_profile(config)
+    applied = apply_vision_grasp_profile(config, result).resolved()
+
+    assert result.ready is True
+    assert applied.vision_servo_measurement_point == "geometry_subpixel"
+    assert applied.vision_servo_low_height_measurement_point == "color_block_subpixel"
 
 
 def test_missing_required_profile_blocks_real_pick(tmp_path) -> None:

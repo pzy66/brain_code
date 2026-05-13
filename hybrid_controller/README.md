@@ -24,7 +24,59 @@ The smoother visual-grasp path is `--servo-mode continuous` in `hybrid_controlle
 /hybrid_controller/teleop_cyl_cmd
 ```
 
-Continuous mode sends `theta_rate_deg_s`, `radius_rate_mm_s`, and `z_rate_mm_s` at about 10 Hz. The JetMax runtime applies them through the 20 Hz cylindrical teleop kernel with acceleration ramping and deadman timeout. In continuous visual servo mode, `use_auto_z=false` so horizontal centering cannot silently change height through the old radius-to-z auto curve.
+Continuous centering diagnostics log two different ages and they must not be
+merged: `image_age_ms` is camera/inference latency, while `frame_pose_age_ms`
+is the robot-state timestamp distance from the image capture timestamp. A slow
+YOLO frame can raise `image_age_ms`; it should not by itself become
+`robot_pose_stale_for_frame`.
+
+Continuous mode sends `theta_rate_deg_s`, `radius_rate_mm_s`, and `z_rate_mm_s` at about 10 Hz. The JetMax runtime applies them through the 20 Hz cylindrical teleop kernel with acceleration ramping and deadman timeout. In continuous visual servo mode, `use_auto_z=false` so horizontal centering cannot silently change height through the old radius-to-z auto curve. The default horizontal controller is now `ibvs_dls`: it uses the latest target pixel error and a damped 2x2 image Jacobian to compute coupled theta/radius rates. The Jacobian source priority is current fitted low-height model, then `stage_models.confirm` from the calibration profile, then the conservative config constants; every debug report records the source and matrix. If IBVS image feedback or the Jacobian is not usable, the default path stops teleop and reports the blocker; it does not silently fall back to old `servo_command_point` chasing.
+
+For the low-height centering debug path, the default behavior is still continuous: when the target is close enough to the center it descends normally, and while the error remains inside the wider safety band it descends slowly while continuing horizontal visual servo correction. Near `confirm_z` it stops relaxing the gate and requires the strict `vision_continuous_servo_pick_ready_center_px=2.0` stopped-frame confirmation. The optional `--continuous-stopped-step-mode` is only a fallback diagnostic mode for isolating backlash or a bad local pixel-to-motion response; do not use it to judge smoothness.
+
+For the live `z=120` no-suction alignment check, prefer the guarded shortcut:
+
+```powershell
+& $env:BRAIN_PYTHON_EXE .\hybrid_controller\tools\debug_vision_grasp_flow.py `
+  --slot-id 1 `
+  --low-height-centering-check
+```
+
+That shortcut keeps the official 8080 MJPEG reader open, uses `geometry_subpixel` for high/mid-height tracking, processes only the latest frame, sets `confirm_z=120`, stops at confirm height, performs stopped-frame recheck, and blocks the `+40mm`/`PICK_CYL` stage. It is intended only for verifying continuous high-to-low centering; formal profile defaults still stay at `vision_pick_confirm_z_mm=130.0` until z=120 data is stable enough to migrate deliberately.
+
+The main program has the same no-pick safety switch as a launch option:
+
+```text
+--vision-continuous-servo-stop-at-confirm
+```
+
+When that flag is set, a continuous-servo `PICK_READY` decision only stops teleop and records the blocked `PICK_CYL`; it does not send the final pick command. This is the correct main-program mode for validating high-to-low camera centering at `z=120` without the `+40mm` forward extension or suction.
+
+The low-height confirm/pick stage can use a separate `vision_servo_low_height_measurement_point`. Keep it equal to `geometry_subpixel` until a stopped-frame diagnostic sequence proves another point is more stable. To inspect an existing debug bundle without moving the robot:
+
+```powershell
+& $env:BRAIN_PYTHON_EXE .\hybrid_controller\tools\diagnose_vision_centers.py `
+  .\hybrid_controller\logs\vision_debug\<bundle> `
+  --sequence `
+  --slot-id 1 `
+  --output .\hybrid_controller\logs\vision_debug\<bundle>\center_sequence_report.json
+```
+
+Use the reported `recommended_low_height_measurement_point` only after checking that its repeat spread and jump count are lower than the current point. The final 2 px gate always refers to this named low-height point, not to a vague visual center.
+
+Low-height continuous servo also has a mapping guard. Once the arm enters the
+`confirm_z + vision_continuous_servo_low_height_guard_band_mm` band, the
+controller records a local theta/radius/z anchor and the best center error seen
+in that band. If theta/radius drift from the anchor exceeds the configured
+limits, if the image error was already close and then rebounds by
+`vision_continuous_servo_low_height_best_error_rebound_px`, or if the error
+stays fixed in the `vision_continuous_servo_low_height_static_error_min_px` to
+`vision_continuous_servo_low_height_static_error_max_px` window for the
+configured number of frames inside
+`vision_continuous_servo_low_height_static_band_mm`, the controller stops teleop with
+`low_height_local_model_required`. At that point, use
+`search_low_height_center.py` or `calibrate_low_height_alignment.py`; do not
+loosen the 2 px final gate and do not touch the official camera sender.
 
 The legacy stop-and-go mode is still available:
 

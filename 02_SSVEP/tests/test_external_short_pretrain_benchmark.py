@@ -152,15 +152,21 @@ def test_classifier_gate_variant_parser_and_tokens_keep_baseline_recipe_id() -> 
 
 
 def test_frequency_specific_gate_variants_parser_and_grid() -> None:
-    parsed = bench._csv_gate_variant_tuple("freqspec_threshold,frequency-specific-logistic,baseline")
+    parsed = bench._csv_gate_variant_tuple(
+        "freqspec_threshold,frequency-specific-logistic,conditional-frequency-specific-logistic,tenp5_ns2_veto,baseline"
+    )
 
     assert parsed == (
         bench.CLASSIFIER_GATE_VARIANT_FREQUENCY_SPECIFIC_THRESHOLD,
         bench.CLASSIFIER_GATE_VARIANT_FREQUENCY_SPECIFIC_LOGISTIC,
+        bench.CLASSIFIER_GATE_VARIANT_CONDITIONAL_FREQUENCY_SPECIFIC_LOGISTIC,
+        bench.CLASSIFIER_GATE_VARIANT_TENP5_NS2_HARD_NEGATIVE_VETO,
         bench.CLASSIFIER_GATE_VARIANT_BASELINE_LRTMW,
     )
     assert len(bench._gate_variant_param_grid(bench.CLASSIFIER_GATE_VARIANT_FREQUENCY_SPECIFIC_THRESHOLD)) == 108
     assert len(bench._gate_variant_param_grid(bench.CLASSIFIER_GATE_VARIANT_FREQUENCY_SPECIFIC_LOGISTIC)) == 16
+    assert len(bench._gate_variant_param_grid(bench.CLASSIFIER_GATE_VARIANT_CONDITIONAL_FREQUENCY_SPECIFIC_LOGISTIC)) == 48
+    assert len(bench._gate_variant_param_grid(bench.CLASSIFIER_GATE_VARIANT_TENP5_NS2_HARD_NEGATIVE_VETO)) == 16
     token = bench._classifier_gate_variant_token(
         bench.CLASSIFIER_GATE_VARIANT_FREQUENCY_SPECIFIC_THRESHOLD,
         {
@@ -171,6 +177,20 @@ def test_frequency_specific_gate_variants_parser_and_grid() -> None:
         },
     )
     assert token == "fsth0p95_0p975_0p85_1p2"
+    conditional_token = bench._classifier_gate_variant_token(
+        bench.CLASSIFIER_GATE_VARIANT_CONDITIONAL_FREQUENCY_SPECIFIC_LOGISTIC,
+        {
+            "conditional_policy": "balanced",
+            "prob_threshold": 0.6,
+            "ns2_sample_weight": 2.0,
+        },
+    )
+    assert conditional_token == "cfslogbalanced_0p6_2p0"
+    veto_token = bench._classifier_gate_variant_token(
+        bench.CLASSIFIER_GATE_VARIANT_TENP5_NS2_HARD_NEGATIVE_VETO,
+        {"veto_threshold": 0.55, "ns2_weight": 2.0},
+    )
+    assert veto_token == "t105ns2veto_th0p55_w2p0"
 
 
 def test_frequency_specific_gate_grid_can_be_limited_for_smoke() -> None:
@@ -291,6 +311,300 @@ def test_parser_exposes_ns2_and_subject_floor_round2_options() -> None:
     assert bench._csv_float_tuple(args.subject_floor_idle_quantiles, default=()) == (0.95, 0.975)
 
 
+def test_parser_exposes_tenp5_ns2_veto_options() -> None:
+    parser = bench.build_parser()
+    args = parser.parse_args(
+        [
+            "--run-id",
+            "tenp5",
+            "--output-root",
+            "out",
+            "--dataset-root",
+            "data",
+            "--wang-raw-dir",
+            "wang",
+            "--wang-channels-loc",
+            "loc",
+            "--beta-raw-dir",
+            "beta",
+            "--classifier-gate-variants",
+            "baseline_lrtmw,10.5_ns2_hard_negative_veto",
+            "--tenp5-veto-thresholds",
+            "0.50,0.65",
+            "--tenp5-ns2-weights",
+            "1,3",
+        ]
+    )
+
+    assert bench._csv_gate_variant_tuple(args.classifier_gate_variants) == (
+        bench.CLASSIFIER_GATE_VARIANT_BASELINE_LRTMW,
+        bench.CLASSIFIER_GATE_VARIANT_TENP5_NS2_HARD_NEGATIVE_VETO,
+    )
+    assert bench._csv_float_tuple(args.tenp5_veto_thresholds, default=()) == (0.50, 0.65)
+    assert bench._csv_float_tuple(args.tenp5_ns2_weights, default=()) == (1.0, 3.0)
+    grid = bench._gate_variant_param_grid(
+        bench.CLASSIFIER_GATE_VARIANT_TENP5_NS2_HARD_NEGATIVE_VETO,
+        tenp5_veto_thresholds=(0.50, 0.65),
+        tenp5_ns2_weights=(1.0, 3.0),
+    )
+    assert grid == [
+        {
+            "gate_variant": bench.CLASSIFIER_GATE_VARIANT_TENP5_NS2_HARD_NEGATIVE_VETO,
+            "veto_threshold": 0.50,
+            "ns2_weight": 1.0,
+        },
+        {
+            "gate_variant": bench.CLASSIFIER_GATE_VARIANT_TENP5_NS2_HARD_NEGATIVE_VETO,
+            "veto_threshold": 0.50,
+            "ns2_weight": 3.0,
+        },
+        {
+            "gate_variant": bench.CLASSIFIER_GATE_VARIANT_TENP5_NS2_HARD_NEGATIVE_VETO,
+            "veto_threshold": 0.65,
+            "ns2_weight": 1.0,
+        },
+        {
+            "gate_variant": bench.CLASSIFIER_GATE_VARIANT_TENP5_NS2_HARD_NEGATIVE_VETO,
+            "veto_threshold": 0.65,
+            "ns2_weight": 3.0,
+        },
+    ]
+
+
+def test_parser_exposes_nc_calibration_simulation_options() -> None:
+    parser = bench.build_parser()
+    args = parser.parse_args(
+        [
+            "--run-id",
+            "nc",
+            "--output-root",
+            "out",
+            "--dataset-root",
+            "data",
+            "--wang-raw-dir",
+            "wang",
+            "--wang-channels-loc",
+            "loc",
+            "--beta-raw-dir",
+            "beta",
+            "--enable-nc-calibration-simulation",
+            "--nc-calibration-seconds",
+            "0,30,60",
+            "--nc-calibration-sources",
+            "NS1 only,ns2-heavy",
+            "--nc-calibration-gate-types",
+            "baseline,session_logistic,conditional",
+        ]
+    )
+
+    assert args.enable_nc_calibration_simulation is True
+    assert bench._csv_float_tuple(args.nc_calibration_seconds, default=()) == (0.0, 30.0, 60.0)
+    assert bench._csv_nc_calibration_sources(args.nc_calibration_sources) == (
+        bench.NC_CALIBRATION_SOURCE_NS1,
+        bench.NC_CALIBRATION_SOURCE_NS2_HEAVY,
+    )
+    assert bench._csv_nc_gate_types(args.nc_calibration_gate_types) == (
+        bench.NC_GATE_BASELINE_LRT_THRESHOLD,
+        bench.NC_GATE_SESSION_LOGISTIC,
+        bench.NC_GATE_CONDITIONAL_SESSION_LOGISTIC,
+    )
+
+
+def test_select_nc_calibration_segments_uses_calibration_pool_only() -> None:
+    pool = {
+        "ns1": [
+            (
+                TrialSpec(label="ysu_an_ns1_trial01", expected_freq=None, trial_id=1, block_index=0),
+                np.zeros((1000, 8), dtype=np.float64),
+            )
+        ],
+        "ns2": [
+            (
+                TrialSpec(label="ysu_an_ns2_trial01", expected_freq=None, trial_id=2, block_index=0),
+                np.zeros((1000, 8), dtype=np.float64),
+            ),
+            (
+                TrialSpec(label="ysu_an_ns2_trial02", expected_freq=None, trial_id=3, block_index=0),
+                np.zeros((1000, 8), dtype=np.float64),
+            ),
+        ],
+        "ns3": [
+            (
+                TrialSpec(label="ysu_an_ns3_trial01", expected_freq=None, trial_id=4, block_index=0),
+                np.zeros((1000, 8), dtype=np.float64),
+            )
+        ],
+    }
+
+    selected, provenance = bench._select_nc_calibration_segments(
+        pool,
+        source="ns2_heavy",
+        seconds=6.0,
+        sampling_rate=250,
+    )
+
+    assert provenance["fit_split"] == "calibration_no_control_pool"
+    assert provenance["test_split"] == "holdout_blocks"
+    assert provenance["counts"]["ns2"] >= provenance["counts"]["ns1"]
+    assert provenance["selected_seconds"] >= 6.0
+    assert len({item[0].trial_id for item in selected}) == len(selected)
+
+
+def test_ysuan_nc_pool_can_use_all_current_calibration_ns_segments_without_default_cap() -> None:
+    segments = []
+    for trial_id in range(1, 5):
+        segments.append(
+            (
+                TrialSpec(label=f"ysu_an_ns2_trial{trial_id:02d}", expected_freq=None, trial_id=trial_id, block_index=0),
+                np.zeros((250, 8), dtype=np.float64),
+            )
+        )
+
+    pool = bench._ysuan_ns_calibration_pool_from_segments(
+        segments,
+        ns_calibration_trials_per_subtype=None,
+    )
+
+    assert [item[0].trial_id for item in pool["ns2"]] == [1, 2, 3, 4]
+
+
+def test_zero_second_nc_calibration_records_baseline_provenance() -> None:
+    selected, provenance = bench._select_nc_calibration_segments(
+        {"ns1": [], "ns2": [], "ns3": []},
+        source="mixed",
+        seconds=0,
+        sampling_rate=250,
+    )
+
+    assert selected == []
+    assert provenance["selected_seconds"] == 0.0
+    assert provenance["selection_policy"] == "zero_seconds_baseline_no_extra_no_control"
+    assert provenance["trial_ids"] == []
+
+
+def test_nc_csns_feature_row_has_fixed_contract_and_one_hot() -> None:
+    values = np.arange(len(bench.FREQUENCY_SPECIFIC_GATE_FEATURE_NAMES), dtype=np.float64)
+    row = bench._nc_csns_feature_row(values, "10.5")
+
+    assert tuple(bench.NC_CSNS_FEATURE_NAMES[:10]) == (
+        "top1_score",
+        "top2_score",
+        "selected_freq_score",
+        "margin",
+        "ratio",
+        "score_entropy",
+        "lrt_evidence",
+        "multiwindow_same_freq_count",
+        "multiwindow_margin_mean",
+        "multiwindow_entropy_mean",
+    )
+    assert row.shape == (len(bench.NC_CSNS_FEATURE_NAMES),)
+    assert row[-4:].tolist() == [0.0, 1.0, 0.0, 0.0]
+
+
+def test_nc_lrt_threshold_pass_mask_uses_candidate_floor_for_diagnostics() -> None:
+    freqs = (8.0, 10.5, 12.0, 15.0)
+    labels = np.asarray(("idle", "8", "10.5", "12", "15"), dtype=object)
+    feature_names = bench._classifier_feature_names(freqs)
+    feature_count = len(feature_names)
+    model = bench.FBCCARidge5Model(
+        freqs=freqs,
+        labels=tuple(str(item) for item in labels.tolist()),
+        feature_mean=np.zeros(feature_count, dtype=np.float64),
+        feature_std=np.ones(feature_count, dtype=np.float64),
+        weights=np.zeros((feature_count + 1, len(labels)), dtype=np.float64),
+        l2=0.1,
+        command_confidence_th=0.0,
+        gate_policy=bench.CLASSIFIER_LRT_MULTIWINDOW_REJECT_GATE_POLICY,
+        lrt_window_th=0.1,
+        lrt_window_floor_th=2.0,
+        lrt_enter_th=0.0,
+        smoothing_windows=1,
+        fit_summary={},
+    )
+    trial = bench.ScoredTrial(
+        trial=TrialSpec(label="ysu_an_ns2_trial01", expected_freq=None, trial_id=1, block_index=0),
+        score_matrix=np.zeros((2, 4), dtype=np.float64),
+        feature_matrix=np.zeros((2, feature_count), dtype=np.float64),
+        duration_sec=2.0,
+    )
+    probs = np.asarray([[0.05, 0.90, 0.03, 0.01, 0.01], [0.05, 0.90, 0.03, 0.01, 0.01]], dtype=np.float64)
+    evidence = np.asarray([3.0, 0.5], dtype=np.float64)
+
+    candidate_mask, _cs_prob, stats = bench._nc_calibrated_pass_mask(
+        model,
+        trial,
+        probs,
+        labels,
+        feature_names=feature_names,
+        lrt_evidence=evidence,
+        nc_gate_type=bench.NC_GATE_BASELINE_LRT_THRESHOLD,
+        nc_payload={},
+        nc_thresholds={},
+        min_enter_windows=2,
+    )
+
+    assert candidate_mask.tolist() == [True, False]
+    assert stats["baseline_pass_windows"] == 2.0
+    assert stats["candidate_pass_windows"] == 1.0
+    assert stats["detector_veto_windows"] == 1.0
+
+
+def test_nc_csns_fit_ignores_idle_trials_in_command_calibration(monkeypatch: pytest.MonkeyPatch) -> None:
+    command = bench.ScoredTrial(
+        trial=TrialSpec(label="8Hz", expected_freq=8.0, trial_id=1, block_index=0),
+        score_matrix=np.zeros((2, 4), dtype=np.float64),
+        feature_matrix=np.ones((2, len(bench.NC_CSNS_FEATURE_NAMES)), dtype=np.float64),
+        duration_sec=2.0,
+    )
+    idle_in_command_cal = bench.ScoredTrial(
+        trial=TrialSpec(label="ysu_an_ns2_trial01", expected_freq=None, trial_id=2, block_index=0),
+        score_matrix=np.zeros((5, 4), dtype=np.float64),
+        feature_matrix=np.ones((5, len(bench.NC_CSNS_FEATURE_NAMES)), dtype=np.float64),
+        duration_sec=5.0,
+    )
+    nc = bench.ScoredTrial(
+        trial=TrialSpec(label="ysu_an_ns2_trial02", expected_freq=None, trial_id=3, block_index=0),
+        score_matrix=np.zeros((3, 4), dtype=np.float64),
+        feature_matrix=np.ones((3, len(bench.NC_CSNS_FEATURE_NAMES)), dtype=np.float64),
+        duration_sec=3.0,
+    )
+
+    monkeypatch.setattr(
+        bench,
+        "_nc_csns_rows_for_trials",
+        lambda model, scored_trials, **kwargs: [
+            {"x": np.ones(len(bench.NC_CSNS_FEATURE_NAMES), dtype=np.float64), "target": kwargs["target"]}
+            for _item in scored_trials
+        ],
+    )
+    model = bench.FBCCARidge5Model(
+        freqs=(8.0, 10.5, 12.0, 15.0),
+        labels=("idle", "8", "10.5", "12", "15"),
+        feature_mean=np.zeros(len(bench.NC_CSNS_FEATURE_NAMES), dtype=np.float64),
+        feature_std=np.ones(len(bench.NC_CSNS_FEATURE_NAMES), dtype=np.float64),
+        weights=np.zeros((len(bench.NC_CSNS_FEATURE_NAMES) + 1, 5), dtype=np.float64),
+        l2=0.1,
+        command_confidence_th=0.1,
+        fit_summary={},
+    )
+
+    payload, rows, _summary = bench._fit_nc_session_csns_payload(
+        model,
+        command_scored=[command, idle_in_command_cal],
+        nc_scored=[nc],
+        feature_names=bench.NC_CSNS_FEATURE_NAMES,
+        smoothing_windows=1,
+        nc_provenance={},
+    )
+
+    assert payload["command_calibration_trial_count"] == 1
+    assert payload["ignored_idle_calibration_trial_count"] == 1
+    assert payload["positive_windows"] == 1
+    assert payload["negative_windows"] == 1
+    assert [row["target"] for row in rows] == [1, 0]
+
+
 def test_lrt_shape_gate_rejects_low_margin_windows() -> None:
     freqs = (8.0, 10.5, 12.0, 15.0)
     labels = ("idle", "8", "10.5", "12", "15")
@@ -384,6 +698,116 @@ def test_frequency_specific_gate_mask_rejects_selected_freq_when_threshold_not_m
     )
 
     assert pred_label == "idle"
+
+
+def _tenp5_test_model(
+    *,
+    veto_bias: float,
+) -> tuple[bench.FBCCARidge5Model, np.ndarray, tuple[str, ...]]:
+    freqs = (8.0, 10.5, 12.0, 15.0)
+    labels = ("idle", "8", "10.5", "12", "15")
+    feature_names = bench._classifier_feature_names(freqs)
+    feature_count = len(feature_names)
+    margin_index = bench._feature_index(feature_names, "margin")
+    top1_index = bench._feature_index(feature_names, "top1_score")
+    top2_index = bench._feature_index(feature_names, "top2_score")
+    ratio_index = bench._feature_index(feature_names, "ratio")
+    normalized_top1_index = bench._feature_index(feature_names, "normalized_top1")
+    entropy_index = bench._feature_index(feature_names, "score_entropy")
+    features = np.zeros((2, feature_count), dtype=np.float64)
+    features[:, 1] = 0.9
+    features[:, top1_index] = 0.9
+    features[:, top2_index] = 0.1
+    features[:, margin_index] = 3.0
+    features[:, ratio_index] = 9.0
+    features[:, normalized_top1_index] = 0.75
+    features[:, entropy_index] = 0.2
+    weights = np.zeros((feature_count + 1, len(labels)), dtype=np.float64)
+    weights[0, 2] = 5.0
+    model = bench.FBCCARidge5Model(
+        freqs=freqs,
+        labels=labels,
+        feature_mean=np.zeros(feature_count, dtype=np.float64),
+        feature_std=np.ones(feature_count, dtype=np.float64),
+        weights=weights,
+        l2=0.1,
+        command_confidence_th=0.0,
+        gate_policy=bench.CLASSIFIER_LRT_MULTIWINDOW_REJECT_GATE_POLICY,
+        lrt_feature_indices=(margin_index,),
+        lrt_feature_mean_control=np.asarray([3.0], dtype=np.float64),
+        lrt_feature_std_control=np.ones(1, dtype=np.float64),
+        lrt_feature_mean_idle=np.asarray([0.0], dtype=np.float64),
+        lrt_feature_std_idle=np.ones(1, dtype=np.float64),
+        lrt_window_th=0.1,
+        lrt_enter_th=0.0,
+        smoothing_windows=1,
+        gate_variant=bench.CLASSIFIER_GATE_VARIANT_TENP5_NS2_HARD_NEGATIVE_VETO,
+        frequency_specific_control_state_gates={
+            "10.5": {
+                "type": "ns2_hard_negative_veto",
+                "status": "ok",
+                "weights": [veto_bias] + [0.0] * len(bench.TENP5_NS2_VETO_FEATURE_NAMES),
+                "feature_mean": [0.0] * len(bench.TENP5_NS2_VETO_FEATURE_NAMES),
+                "feature_std": [1.0] * len(bench.TENP5_NS2_VETO_FEATURE_NAMES),
+                "veto_threshold": 0.5,
+            }
+        },
+        fit_summary={"score_bank_mode": "command_only", "score_source_name": "fbcca"},
+    )
+    return model, features, labels
+
+
+def test_tenp5_ns2_veto_keeps_low_probability_10p5_and_rejects_high_probability() -> None:
+    low_model, features, labels = _tenp5_test_model(veto_bias=-3.0)
+    probs = np.asarray([[0.01, 0.02, 0.94, 0.02, 0.01], [0.01, 0.02, 0.94, 0.02, 0.01]], dtype=np.float64)
+
+    pred_label, _confidence, _first_index = bench._predict_lrt_multiwindow_reject_trial_from_probs(
+        low_model,
+        probs,
+        np.asarray(labels, dtype=object),
+        np.asarray([3.0, 3.0], dtype=np.float64),
+        min_enter_windows=2,
+        feature_matrix=features,
+    )
+
+    assert pred_label == "10.5"
+
+    high_model, _features, _labels = _tenp5_test_model(veto_bias=3.0)
+    pred_label, _confidence, _first_index = bench._predict_lrt_multiwindow_reject_trial_from_probs(
+        high_model,
+        probs,
+        np.asarray(labels, dtype=object),
+        np.asarray([3.0, 3.0], dtype=np.float64),
+        min_enter_windows=2,
+        feature_matrix=features,
+    )
+
+    assert pred_label == "idle"
+
+
+def test_tenp5_ns2_veto_preserves_baseline_idle_and_non_10p5_command() -> None:
+    model, features, labels = _tenp5_test_model(veto_bias=3.0)
+    idle_probs = np.asarray([[0.95, 0.01, 0.01, 0.02, 0.01], [0.95, 0.01, 0.01, 0.02, 0.01]], dtype=np.float64)
+    pred_label, _confidence, _first_index = bench._predict_lrt_multiwindow_reject_trial_from_probs(
+        model,
+        idle_probs,
+        np.asarray(labels, dtype=object),
+        np.asarray([3.0, 3.0], dtype=np.float64),
+        min_enter_windows=2,
+        feature_matrix=features,
+    )
+    assert pred_label == "idle"
+
+    command_probs = np.asarray([[0.01, 0.94, 0.02, 0.02, 0.01], [0.01, 0.94, 0.02, 0.02, 0.01]], dtype=np.float64)
+    pred_label, _confidence, _first_index = bench._predict_lrt_multiwindow_reject_trial_from_probs(
+        model,
+        command_probs,
+        np.asarray(labels, dtype=object),
+        np.asarray([3.0, 3.0], dtype=np.float64),
+        min_enter_windows=2,
+        feature_matrix=features,
+    )
+    assert pred_label == "8"
 
 
 def test_frequency_specific_logistic_trace_exports_score_space_fields() -> None:
@@ -487,6 +911,180 @@ def test_frequency_specific_logistic_trace_exports_score_space_fields() -> None:
     assert first["selected_freq"] == "8"
     assert first["cs_probability"] > 0.5
     assert trace["logistic_trace_trial_summary"][0]["transition_type"] == "baseline_TP_candidate_TP"
+
+
+def _conditional_gate_model_and_features(
+    *,
+    margin: float,
+    entropy: float,
+    logistic_bias: float,
+) -> tuple[bench.FBCCARidge5Model, np.ndarray, np.ndarray, tuple[str, ...]]:
+    freqs = (8.0, 10.5, 12.0, 15.0)
+    labels = ("idle", "8", "10.5", "12", "15")
+    feature_names = bench._classifier_feature_names(freqs)
+    feature_count = len(feature_names)
+    margin_index = bench._feature_index(feature_names, "margin")
+    top1_index = bench._feature_index(feature_names, "top1_score")
+    top2_index = bench._feature_index(feature_names, "top2_score")
+    ratio_index = bench._feature_index(feature_names, "ratio")
+    normalized_top1_index = bench._feature_index(feature_names, "normalized_top1")
+    entropy_index = bench._feature_index(feature_names, "score_entropy")
+    weights = np.zeros((feature_count + 1, len(labels)), dtype=np.float64)
+    weights[0, 1] = 5.0
+    model = bench.FBCCARidge5Model(
+        freqs=freqs,
+        labels=labels,
+        feature_mean=np.zeros(feature_count, dtype=np.float64),
+        feature_std=np.ones(feature_count, dtype=np.float64),
+        weights=weights,
+        l2=0.1,
+        command_confidence_th=0.0,
+        gate_policy=bench.CLASSIFIER_LRT_MULTIWINDOW_REJECT_GATE_POLICY,
+        lrt_feature_indices=(margin_index,),
+        lrt_feature_mean_control=np.asarray([3.0], dtype=np.float64),
+        lrt_feature_std_control=np.ones(1, dtype=np.float64),
+        lrt_feature_mean_idle=np.asarray([0.0], dtype=np.float64),
+        lrt_feature_std_idle=np.ones(1, dtype=np.float64),
+        lrt_window_th=0.1,
+        lrt_enter_th=0.0,
+        smoothing_windows=1,
+        gate_variant=bench.CLASSIFIER_GATE_VARIANT_CONDITIONAL_FREQUENCY_SPECIFIC_LOGISTIC,
+        frequency_specific_control_state_gates={
+            "8": {
+                "type": "logistic",
+                "weights": [float(logistic_bias)] + [0.0] * len(bench.FREQUENCY_SPECIFIC_GATE_FEATURE_NAMES),
+                "feature_mean": [0.0] * len(bench.FREQUENCY_SPECIFIC_GATE_FEATURE_NAMES),
+                "feature_std": [1.0] * len(bench.FREQUENCY_SPECIFIC_GATE_FEATURE_NAMES),
+                "prob_threshold": 0.5,
+                "conditional_applies": True,
+                "conditional_low_risk_lrt_th": 2.0,
+                "conditional_low_risk_margin_th": 2.0,
+                "conditional_low_risk_ratio_th": 2.0,
+                "conditional_low_risk_entropy_th": 0.3,
+                "conditional_low_risk_same_freq_count": 1.0,
+                "conditional_high_risk_lrt_th": 1.0,
+                "conditional_high_risk_margin_th": 1.0,
+                "conditional_high_risk_ratio_th": 1.5,
+                "conditional_high_risk_entropy_th": 0.7,
+                "conditional_high_risk_same_freq_count": 1.0,
+                "conditional_extra_windows": 1,
+            }
+        },
+        fit_summary={"score_bank_mode": "command_only"},
+    )
+    features = np.zeros((2, feature_count), dtype=np.float64)
+    features[:, 0] = 0.9
+    features[:, top1_index] = 0.9
+    features[:, top2_index] = 0.1
+    features[:, margin_index] = float(margin)
+    features[:, ratio_index] = 9.0
+    features[:, normalized_top1_index] = 0.75
+    features[:, entropy_index] = float(entropy)
+    probs = np.asarray([[0.05, 0.90, 0.03, 0.01, 0.01], [0.05, 0.90, 0.03, 0.01, 0.01]], dtype=np.float64)
+    return model, features, probs, labels
+
+
+def test_conditional_frequency_specific_logistic_keeps_low_risk_command_when_logistic_fails() -> None:
+    model, features, probs, labels = _conditional_gate_model_and_features(
+        margin=3.0,
+        entropy=0.2,
+        logistic_bias=-10.0,
+    )
+
+    pred_label, _confidence, first_index = bench._predict_lrt_multiwindow_reject_trial_from_probs(
+        model,
+        probs[:1],
+        np.asarray(labels, dtype=object),
+        np.asarray([3.0], dtype=np.float64),
+        min_enter_windows=1,
+        feature_matrix=features[:1],
+    )
+
+    assert pred_label == "8"
+    assert first_index == 0.0
+
+
+def test_conditional_frequency_specific_logistic_vetoes_high_risk_command() -> None:
+    model, features, probs, labels = _conditional_gate_model_and_features(
+        margin=0.4,
+        entropy=0.8,
+        logistic_bias=10.0,
+    )
+
+    pred_label, _confidence, _first_index = bench._predict_lrt_multiwindow_reject_trial_from_probs(
+        model,
+        probs,
+        np.asarray(labels, dtype=object),
+        np.asarray([0.4, 0.4], dtype=np.float64),
+        min_enter_windows=1,
+        feature_matrix=features,
+    )
+
+    assert pred_label == "idle"
+
+
+def test_conditional_frequency_specific_logistic_medium_risk_requires_extra_window() -> None:
+    model, features, probs, labels = _conditional_gate_model_and_features(
+        margin=1.5,
+        entropy=0.5,
+        logistic_bias=10.0,
+    )
+
+    first_pred, _confidence, _first_index = bench._predict_lrt_multiwindow_reject_trial_from_probs(
+        model,
+        probs[:1],
+        np.asarray(labels, dtype=object),
+        np.asarray([1.5], dtype=np.float64),
+        min_enter_windows=1,
+        feature_matrix=features[:1],
+    )
+    second_pred, _confidence2, second_index = bench._predict_lrt_multiwindow_reject_trial_from_probs(
+        model,
+        probs,
+        np.asarray(labels, dtype=object),
+        np.asarray([1.5, 1.5], dtype=np.float64),
+        min_enter_windows=1,
+        feature_matrix=features,
+    )
+
+    assert first_pred == "idle"
+    assert second_pred == "8"
+    assert second_index == 1.0
+
+
+def test_trace_separability_outputs_rank_score_space_features() -> None:
+    rows = [
+        {
+            "subject": "S24",
+            "selected_freq": "10.5",
+            "true_state": "10.5",
+            "baseline_pred": "10.5",
+            "transition_type": "baseline_TP_candidate_TP",
+            "margin": 3.0,
+            "ratio": 8.0,
+            "score_entropy": 0.2,
+            "lrt_evidence": 4.0,
+            "cs_probability": 0.9,
+        },
+        {
+            "subject": "S24",
+            "selected_freq": "10.5",
+            "true_state": "ns2",
+            "baseline_pred": "10.5",
+            "transition_type": "baseline_FP_candidate_idle",
+            "margin": 0.3,
+            "ratio": 1.2,
+            "score_entropy": 0.9,
+            "lrt_evidence": 0.5,
+            "cs_probability": 0.1,
+        },
+    ]
+
+    payload = bench._trace_separability_outputs(rows)
+
+    assert payload["summary"]["ns2_top_selected_freq"] == "10.5"
+    assert payload["feature_separability_by_subject_freq"]
+    assert any(row["feature"] == "margin" for row in payload["risk_rule_candidates"])
 
 
 def test_subject_floor_ns2_aware_gate_uses_calibration_only_thresholds() -> None:
@@ -3327,6 +3925,8 @@ def test_artifact_manifest_includes_frequency_specific_reports(tmp_path: Path) -
     assert paths["selected_freq_confusion_csv"].endswith("selected_freq_confusion.csv")
     assert paths["per_frequency_metrics_csv"].endswith("per_frequency_metrics.csv")
     assert paths["gate_params_by_frequency_json"].endswith("gate_params_by_frequency.json")
+    assert paths["nc_calibration_budget_curve_csv"].endswith("nc_calibration_budget_curve.csv")
+    assert paths["csns_feature_summary_csv"].endswith("csns_feature_summary.csv")
 
 
 def test_gate_params_by_frequency_payload_extracts_four_frequency_gates() -> None:
@@ -3547,6 +4147,81 @@ def test_aggregate_recipe_rows_keeps_frequency_sets_separate() -> None:
     assert all(summary["shared_eligible"] for summary in summaries)
 
 
+def test_aggregate_recipe_rows_keeps_nc_calibration_settings_separate() -> None:
+    base = _aggregate_test_row(
+        subject="S1",
+        recipe_id="win2_me2_sm3_lrtmw_nc30s_ns2_nclog",
+        async_macro_f1_5class=0.8,
+        async_acc_5class=0.9,
+        idle_fp_per_min=0.8,
+        control_recall=0.86,
+        detection_latency_s=2.2,
+        ns2_fp_per_min=1.2,
+    )
+    rows = [
+        {
+            **base,
+            "method": "fbcca_ridge5_nc_calibration",
+            "aggregate_recipe_id": "nc30_ns2_logistic",
+            "nc_calibration_simulation": True,
+            "nc_seconds": 30.0,
+            "nc_source": "ns2",
+            "nc_gate_type": bench.NC_GATE_SESSION_LOGISTIC,
+        },
+        {
+            **base,
+            "method": "fbcca_ridge5_nc_calibration",
+            "aggregate_recipe_id": "nc60_ns2_logistic",
+            "nc_calibration_simulation": True,
+            "nc_seconds": 60.0,
+            "nc_source": "ns2",
+            "nc_gate_type": bench.NC_GATE_SESSION_LOGISTIC,
+        },
+    ]
+
+    summaries = bench.aggregate_recipe_rows(rows, expected_subject_count=1)
+
+    assert len(summaries) == 2
+    assert {summary["nc_seconds"] for summary in summaries} == {30.0, 60.0}
+    assert all(summary["nc_calibration_simulation"] is True for summary in summaries)
+
+
+def test_nc_budget_curve_rows_use_required_fields_and_watch_subjects() -> None:
+    summaries = [
+        {
+            "method": "fbcca_ridge5_nc_calibration",
+            "recipe_id": "nc60",
+            "nc_calibration_simulation": True,
+            "nc_seconds": 60.0,
+            "nc_source": "ns2",
+            "nc_gate_type": bench.NC_GATE_SESSION_LOGISTIC,
+            "mean_mixed_idle_fp_per_min": 0.9,
+            "mean_ns1_fp_per_min": 0.4,
+            "mean_ns2_fp_per_min": 1.1,
+            "mean_ns3_fp_per_min": 0.0,
+            "mean_control_recall": 0.86,
+            "mean_control_recall_at_2.5s": 0.76,
+            "mean_detection_latency_s": 2.3,
+            "tp_loss_per_fixed_fp": 0.5,
+            "subjects": [
+                {"subject": "S11", "mean_control_recall": 0.8},
+                {"subject": "S19", "mean_control_recall": 0.82},
+                {"subject": "S24", "mean_ns2_fp_per_min": 1.5},
+            ],
+        }
+    ]
+
+    rows = bench._nc_budget_curve_rows(summaries)
+
+    assert rows[0]["nc_seconds"] == 60.0
+    assert rows[0]["gate_type"] == bench.NC_GATE_SESSION_LOGISTIC
+    assert rows[0]["S11_recall"] == 0.8
+    assert rows[0]["S19_recall"] == 0.82
+    assert rows[0]["S24_NS2_fp"] == 1.5
+    assert rows[0]["deployable"] is True
+    assert rows[0]["ns2_safe"] is True
+
+
 def test_personalized_frequency_policy_can_be_shared_eligible_with_per_subject_freqs() -> None:
     rows = [
         {
@@ -3709,6 +4384,11 @@ def test_run_metadata_and_evaluation_contract_schema_paths(tmp_path: Path) -> No
         "logistic_transition_counts_by_subject_csv",
         "logistic_transition_counts_by_frequency_csv",
         "logistic_feature_summary_tp_fp_csv",
+        "trace_separability_summary_json",
+        "trace_separability_summary_md",
+        "transition_by_subject_freq_csv",
+        "feature_separability_by_subject_freq_csv",
+        "risk_rule_candidates_csv",
         "local_log",
         "server_log_contract",
     }

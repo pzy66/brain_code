@@ -1,0 +1,3495 @@
+{
+  "source": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914",
+  "slot_id": 1,
+  "sample_count": 51,
+  "jump_threshold_px": 12.0,
+  "camera_contract": "Read-only diagnostics only. This report does not start, restart, scan, or repair the JetMax camera sender.",
+  "point_summary": {
+    "pixel_center_f": {
+      "samples": 51,
+      "median_error_px": 23.84060587770969,
+      "min_error_px": 15.736253419558246,
+      "max_error_px": 28.129133495986437,
+      "repeat_spread_px": 14.422402460356011,
+      "jump_count": 0
+    },
+    "pixel_center": {
+      "samples": 51,
+      "median_error_px": 24.041630560342615,
+      "min_error_px": 15.652475842498529,
+      "max_error_px": 27.586228448267445,
+      "repeat_spread_px": 13.92838827718412,
+      "jump_count": 0
+    },
+    "geometry_center_f": {
+      "samples": 51,
+      "median_error_px": 19.029128474731852,
+      "min_error_px": 2.901647622287093,
+      "max_error_px": 30.901333449779617,
+      "repeat_spread_px": 33.05080318025057,
+      "jump_count": 8
+    },
+    "geometry_center": {
+      "samples": 51,
+      "median_error_px": 19.4164878389476,
+      "min_error_px": 3.0,
+      "max_error_px": 30.4138126514911,
+      "repeat_spread_px": 32.55764119219941,
+      "jump_count": 8
+    },
+    "top_face_center_f": {
+      "samples": 51,
+      "median_error_px": 34.04865393852688,
+      "min_error_px": 30.699147720396958,
+      "max_error_px": 39.39546812240378,
+      "repeat_spread_px": 12.77301386146564,
+      "jump_count": 0
+    },
+    "top_face_center": {
+      "samples": 51,
+      "median_error_px": 33.734255586866,
+      "min_error_px": 30.675723300355934,
+      "max_error_px": 39.05124837953327,
+      "repeat_spread_px": 12.36931687685298,
+      "jump_count": 0
+    },
+    "grasp_pixel_f": {
+      "samples": 51,
+      "median_error_px": 26.832815729997478,
+      "min_error_px": 24.20743687382041,
+      "max_error_px": 31.304951684997057,
+      "repeat_spread_px": 9.055385138137417,
+      "jump_count": 0
+    },
+    "grasp_pixel": {
+      "samples": 51,
+      "median_error_px": 26.832815729997478,
+      "min_error_px": 24.20743687382041,
+      "max_error_px": 31.304951684997057,
+      "repeat_spread_px": 9.055385138137417,
+      "jump_count": 0
+    }
+  },
+  "recommended_low_height_packet_key": "pixel_center_f",
+  "recommended_low_height_measurement_point": "center_subpixel",
+  "camera_transport_summary": {},
+  "samples": [
+    {
+      "index": 1,
+      "path": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\baseline\\repeat_01",
+      "raw": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\baseline\\repeat_01\\raw.jpg",
+      "packet": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\baseline\\repeat_01\\packet.json",
+      "slot_id": 1,
+      "target_pixel": [
+        320.0,
+        240.0
+      ],
+      "measurement_point": "top_face_subpixel",
+      "center_distance_px": 30.699147720396958,
+      "bbox": [
+        239,
+        156,
+        440,
+        366
+      ],
+      "area_px": 29710,
+      "confidence": 0.55,
+      "points": {
+        "pixel_center_f": [
+          333.91780867482703,
+          255.61156200106439
+        ],
+        "pixel_center": [
+          334.0,
+          256.0
+        ],
+        "geometry_center_f": [
+          329.8235168457031,
+          252.7941131591797
+        ],
+        "geometry_center": [
+          330.0,
+          253.0
+        ],
+        "top_face_center_f": [
+          349.0559795050692,
+          249.90897198299356
+        ],
+        "top_face_center": [
+          349.0,
+          250.0
+        ],
+        "grasp_pixel_f": [
+          342.0,
+          252.0
+        ],
+        "grasp_pixel": [
+          342.0,
+          252.0
+        ]
+      },
+      "distances_px": {
+        "pixel_center_f": 20.91473801944858,
+        "pixel_center": 21.2602916254693,
+        "geometry_center_f": 16.130431325532122,
+        "geometry_center": 16.401219466856727,
+        "top_face_center_f": 30.699147720396958,
+        "top_face_center": 30.675723300355934,
+        "grasp_pixel_f": 25.059928172283335,
+        "grasp_pixel": 25.059928172283335
+      },
+      "image_age_ms": 542.7369000390172,
+      "frame_pose_age_ms": null
+    },
+    {
+      "index": 2,
+      "path": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\baseline\\repeat_02",
+      "raw": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\baseline\\repeat_02\\raw.jpg",
+      "packet": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\baseline\\repeat_02\\packet.json",
+      "slot_id": 1,
+      "target_pixel": [
+        320.0,
+        240.0
+      ],
+      "measurement_point": "top_face_subpixel",
+      "center_distance_px": 32.90626651643296,
+      "bbox": [
+        224,
+        155,
+        447,
+        366
+      ],
+      "area_px": 30444,
+      "confidence": 0.55,
+      "points": {
+        "pixel_center_f": [
+          332.95306367381363,
+          255.89850465470823
+        ],
+        "pixel_center": [
+          333.0,
+          256.0
+        ],
+        "geometry_center_f": [
+          331.56787109375,
+          252.9970703125
+        ],
+        "geometry_center": [
+          332.0,
+          253.0
+        ],
+        "top_face_center_f": [
+          351.140832975526,
+          250.6334800343495
+        ],
+        "top_face_center": [
+          351.0,
+          251.0
+        ],
+        "grasp_pixel_f": [
+          342.0,
+          253.0
+        ],
+        "grasp_pixel": [
+          342.0,
+          253.0
+        ]
+      },
+      "distances_px": {
+        "pixel_center_f": 20.507177006932224,
+        "pixel_center": 20.615528128088304,
+        "geometry_center_f": 17.39941028741163,
+        "geometry_center": 17.69180601295413,
+        "top_face_center_f": 32.90626651643296,
+        "top_face_center": 32.89376840679705,
+        "grasp_pixel_f": 25.553864678361276,
+        "grasp_pixel": 25.553864678361276
+      },
+      "image_age_ms": 357.8278999775648,
+      "frame_pose_age_ms": null
+    },
+    {
+      "index": 3,
+      "path": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\baseline\\repeat_03",
+      "raw": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\baseline\\repeat_03\\raw.jpg",
+      "packet": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\baseline\\repeat_03\\packet.json",
+      "slot_id": 1,
+      "target_pixel": [
+        320.0,
+        240.0
+      ],
+      "measurement_point": "top_face_subpixel",
+      "center_distance_px": 32.47941943035475,
+      "bbox": [
+        225,
+        155,
+        438,
+        366
+      ],
+      "area_px": 29951,
+      "confidence": 0.55,
+      "points": {
+        "pixel_center_f": [
+          332.657832278481,
+          255.0485891350211
+        ],
+        "pixel_center": [
+          333.0,
+          255.0
+        ],
+        "geometry_center_f": [
+          321.56085205078125,
+          248.11322021484375
+        ],
+        "geometry_center": [
+          322.0,
+          248.0
+        ],
+        "top_face_center_f": [
+          350.6640747340569,
+          250.70640963334952
+        ],
+        "top_face_center": [
+          351.0,
+          251.0
+        ],
+        "grasp_pixel_f": [
+          342.0,
+          253.0
+        ],
+        "grasp_pixel": [
+          342.0,
+          253.0
+        ]
+      },
+      "distances_px": {
+        "pixel_center_f": 19.66419977890865,
+        "pixel_center": 19.849433241279208,
+        "geometry_center_f": 8.26199742065908,
+        "geometry_center": 8.246211251235321,
+        "top_face_center_f": 32.47941943035475,
+        "top_face_center": 32.89376840679705,
+        "grasp_pixel_f": 25.553864678361276,
+        "grasp_pixel": 25.553864678361276
+      },
+      "image_age_ms": 374.3957999977283,
+      "frame_pose_age_ms": null
+    },
+    {
+      "index": 4,
+      "path": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\final_recheck\\repeat_01",
+      "raw": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\final_recheck\\repeat_01\\raw.jpg",
+      "packet": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\final_recheck\\repeat_01\\packet.json",
+      "slot_id": 1,
+      "target_pixel": [
+        320.0,
+        240.0
+      ],
+      "measurement_point": "top_face_subpixel",
+      "center_distance_px": 37.53225988262482,
+      "bbox": [
+        241,
+        155,
+        443,
+        366
+      ],
+      "area_px": 29162,
+      "confidence": 0.55,
+      "points": {
+        "pixel_center_f": [
+          340.34590108401085,
+          259.4240176151761
+        ],
+        "pixel_center": [
+          340.0,
+          259.0
+        ],
+        "geometry_center_f": [
+          337.43035888671875,
+          258.97320556640625
+        ],
+        "geometry_center": [
+          337.0,
+          259.0
+        ],
+        "top_face_center_f": [
+          356.53646241738545,
+          248.58821552593255
+        ],
+        "top_face_center": [
+          357.0,
+          249.0
+        ],
+        "grasp_pixel_f": [
+          348.0,
+          254.0
+        ],
+        "grasp_pixel": [
+          348.0,
+          254.0
+        ]
+      },
+      "distances_px": {
+        "pixel_center_f": 28.129133495986437,
+        "pixel_center": 27.586228448267445,
+        "geometry_center_f": 25.76431525162127,
+        "geometry_center": 25.495097567963924,
+        "top_face_center_f": 37.53225988262482,
+        "top_face_center": 38.07886552931954,
+        "grasp_pixel_f": 31.304951684997057,
+        "grasp_pixel": 31.304951684997057
+      },
+      "image_age_ms": 379.3348000035621,
+      "frame_pose_age_ms": null
+    },
+    {
+      "index": 5,
+      "path": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\final_recheck\\repeat_02",
+      "raw": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\final_recheck\\repeat_02\\raw.jpg",
+      "packet": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\final_recheck\\repeat_02\\packet.json",
+      "slot_id": 1,
+      "target_pixel": [
+        320.0,
+        240.0
+      ],
+      "measurement_point": "top_face_subpixel",
+      "center_distance_px": 38.7129646018226,
+      "bbox": [
+        240,
+        155,
+        444,
+        366
+      ],
+      "area_px": 29741,
+      "confidence": 0.55,
+      "points": {
+        "pixel_center_f": [
+          339.116759702286,
+          258.3883572567783
+        ],
+        "pixel_center": [
+          339.0,
+          258.0
+        ],
+        "geometry_center_f": [
+          340.5458068847656,
+          259.9600524902344
+        ],
+        "geometry_center": [
+          341.0,
+          260.0
+        ],
+        "top_face_center_f": [
+          357.5956552982146,
+          249.23365209220054
+        ],
+        "top_face_center": [
+          358.0,
+          249.0
+        ],
+        "grasp_pixel_f": [
+          348.0,
+          254.0
+        ],
+        "grasp_pixel": [
+          348.0,
+          254.0
+        ]
+      },
+      "distances_px": {
+        "pixel_center_f": 26.525123640010754,
+        "pixel_center": 26.1725046566048,
+        "geometry_center_f": 28.64496248835027,
+        "geometry_center": 29.0,
+        "top_face_center_f": 38.7129646018226,
+        "top_face_center": 39.05124837953327,
+        "grasp_pixel_f": 31.304951684997057,
+        "grasp_pixel": 31.304951684997057
+      },
+      "image_age_ms": 355.5326999630779,
+      "frame_pose_age_ms": null
+    },
+    {
+      "index": 6,
+      "path": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\final_recheck\\repeat_03",
+      "raw": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\final_recheck\\repeat_03\\raw.jpg",
+      "packet": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\final_recheck\\repeat_03\\packet.json",
+      "slot_id": 1,
+      "target_pixel": [
+        320.0,
+        240.0
+      ],
+      "measurement_point": "top_face_subpixel",
+      "center_distance_px": 39.39546812240378,
+      "bbox": [
+        238,
+        155,
+        448,
+        366
+      ],
+      "area_px": 29972,
+      "confidence": 0.55,
+      "points": {
+        "pixel_center_f": [
+          338.73453778188053,
+          258.8962481867335
+        ],
+        "pixel_center": [
+          339.0,
+          259.0
+        ],
+        "geometry_center_f": [
+          340.88458251953125,
+          260.923095703125
+        ],
+        "geometry_center": [
+          341.0,
+          261.0
+        ],
+        "top_face_center_f": [
+          358.3752594670407,
+          248.90743338008414
+        ],
+        "top_face_center": [
+          358.0,
+          249.0
+        ],
+        "grasp_pixel_f": [
+          348.0,
+          254.0
+        ],
+        "grasp_pixel": [
+          348.0,
+          254.0
+        ]
+      },
+      "distances_px": {
+        "pixel_center_f": 26.60922962874607,
+        "pixel_center": 26.870057685088806,
+        "geometry_center_f": 29.562505320375642,
+        "geometry_center": 29.698484809834994,
+        "top_face_center_f": 39.39546812240378,
+        "top_face_center": 39.05124837953327,
+        "grasp_pixel_f": 31.304951684997057,
+        "grasp_pixel": 31.304951684997057
+      },
+      "image_age_ms": 358.8684999849647,
+      "frame_pose_age_ms": null
+    },
+    {
+      "index": 7,
+      "path": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_01_candidate_01\\repeat_01",
+      "raw": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_01_candidate_01\\repeat_01\\raw.jpg",
+      "packet": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_01_candidate_01\\repeat_01\\packet.json",
+      "slot_id": 1,
+      "target_pixel": [
+        320.0,
+        240.0
+      ],
+      "measurement_point": "top_face_subpixel",
+      "center_distance_px": 35.123403659907574,
+      "bbox": [
+        220,
+        154,
+        452,
+        385
+      ],
+      "area_px": 31936,
+      "confidence": 0.55,
+      "points": {
+        "pixel_center_f": [
+          331.87507336813815,
+          255.78758765561767
+        ],
+        "pixel_center": [
+          332.0,
+          256.0
+        ],
+        "geometry_center_f": [
+          323.16278076171875,
+          248.39984130859375
+        ],
+        "geometry_center": [
+          323.0,
+          248.0
+        ],
+        "top_face_center_f": [
+          352.59936585864784,
+          253.07420476628823
+        ],
+        "top_face_center": [
+          353.0,
+          253.0
+        ],
+        "grasp_pixel_f": [
+          343.0,
+          254.0
+        ],
+        "grasp_pixel": [
+          343.0,
+          254.0
+        ]
+      },
+      "distances_px": {
+        "pixel_center_f": 19.755133294475016,
+        "pixel_center": 20.0,
+        "geometry_center_f": 8.975551022430668,
+        "geometry_center": 8.54400374531753,
+        "top_face_center_f": 35.123403659907574,
+        "top_face_center": 35.4682957019364,
+        "grasp_pixel_f": 26.92582403567252,
+        "grasp_pixel": 26.92582403567252
+      },
+      "image_age_ms": 365.3041999787092,
+      "frame_pose_age_ms": null
+    },
+    {
+      "index": 8,
+      "path": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_01_candidate_01\\repeat_02",
+      "raw": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_01_candidate_01\\repeat_02\\raw.jpg",
+      "packet": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_01_candidate_01\\repeat_02\\packet.json",
+      "slot_id": 1,
+      "target_pixel": [
+        320.0,
+        240.0
+      ],
+      "measurement_point": "top_face_subpixel",
+      "center_distance_px": 35.52005863355021,
+      "bbox": [
+        218,
+        155,
+        450,
+        369
+      ],
+      "area_px": 32460,
+      "confidence": 0.55,
+      "points": {
+        "pixel_center_f": [
+          331.8812863184155,
+          255.81557090267424
+        ],
+        "pixel_center": [
+          332.0,
+          256.0
+        ],
+        "geometry_center_f": [
+          325.1419677734375,
+          249.47250366210938
+        ],
+        "geometry_center": [
+          325.0,
+          249.0
+        ],
+        "top_face_center_f": [
+          353.1683357423085,
+          252.70968408011564
+        ],
+        "top_face_center": [
+          353.0,
+          253.0
+        ],
+        "grasp_pixel_f": [
+          343.0,
+          254.0
+        ],
+        "grasp_pixel": [
+          343.0,
+          254.0
+        ]
+      },
+      "distances_px": {
+        "pixel_center_f": 19.781234732889743,
+        "pixel_center": 20.0,
+        "geometry_center_f": 10.778133336146167,
+        "geometry_center": 10.295630140987,
+        "top_face_center_f": 35.52005863355021,
+        "top_face_center": 35.4682957019364,
+        "grasp_pixel_f": 26.92582403567252,
+        "grasp_pixel": 26.92582403567252
+      },
+      "image_age_ms": 382.1466999943368,
+      "frame_pose_age_ms": null
+    },
+    {
+      "index": 9,
+      "path": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_01_candidate_01\\repeat_03",
+      "raw": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_01_candidate_01\\repeat_03\\raw.jpg",
+      "packet": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_01_candidate_01\\repeat_03\\packet.json",
+      "slot_id": 1,
+      "target_pixel": [
+        320.0,
+        240.0
+      ],
+      "measurement_point": "top_face_subpixel",
+      "center_distance_px": 34.958831285342775,
+      "bbox": [
+        220,
+        153,
+        446,
+        375
+      ],
+      "area_px": 33151,
+      "confidence": 0.55,
+      "points": {
+        "pixel_center_f": [
+          330.50580702799283,
+          254.8345443716498
+        ],
+        "pixel_center": [
+          331.0,
+          255.0
+        ],
+        "geometry_center_f": [
+          330.65582275390625,
+          265.2525634765625
+        ],
+        "geometry_center": [
+          331.0,
+          265.0
+        ],
+        "top_face_center_f": [
+          352.1136945713855,
+          253.81414151559284
+        ],
+        "top_face_center": [
+          352.0,
+          254.0
+        ],
+        "grasp_pixel_f": [
+          342.0,
+          254.0
+        ],
+        "grasp_pixel": [
+          342.0,
+          254.0
+        ]
+      },
+      "distances_px": {
+        "pixel_center_f": 18.17789008724253,
+        "pixel_center": 18.601075237738275,
+        "geometry_center_f": 27.408730738589203,
+        "geometry_center": 27.313000567495326,
+        "top_face_center_f": 34.958831285342775,
+        "top_face_center": 34.92849839314596,
+        "grasp_pixel_f": 26.076809620810597,
+        "grasp_pixel": 26.076809620810597
+      },
+      "image_age_ms": 374.51799999689683,
+      "frame_pose_age_ms": null
+    },
+    {
+      "index": 10,
+      "path": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_01_candidate_02\\repeat_01",
+      "raw": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_01_candidate_02\\repeat_01\\raw.jpg",
+      "packet": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_01_candidate_02\\repeat_01\\packet.json",
+      "slot_id": 1,
+      "target_pixel": [
+        320.0,
+        240.0
+      ],
+      "measurement_point": "top_face_subpixel",
+      "center_distance_px": 34.511339294607836,
+      "bbox": [
+        200,
+        151,
+        442,
+        395
+      ],
+      "area_px": 34146,
+      "confidence": 0.55,
+      "points": {
+        "pixel_center_f": [
+          327.1051079698205,
+          254.26083311652647
+        ],
+        "pixel_center": [
+          327.0,
+          254.0
+        ],
+        "geometry_center_f": [
+          317.10089111328125,
+          239.87864685058594
+        ],
+        "geometry_center": [
+          317.0,
+          240.0
+        ],
+        "top_face_center_f": [
+          350.62008261211645,
+          255.91989575137686
+        ],
+        "top_face_center": [
+          351.0,
+          256.0
+        ],
+        "grasp_pixel_f": [
+          340.0,
+          254.0
+        ],
+        "grasp_pixel": [
+          340.0,
+          254.0
+        ]
+      },
+      "distances_px": {
+        "pixel_center_f": 15.932793868001456,
+        "pixel_center": 15.652475842498529,
+        "geometry_center_f": 2.901647622287093,
+        "geometry_center": 3.0,
+        "top_face_center_f": 34.511339294607836,
+        "top_face_center": 34.88552708502482,
+        "grasp_pixel_f": 24.413111231467404,
+        "grasp_pixel": 24.413111231467404
+      },
+      "image_age_ms": 384.74649999989197,
+      "frame_pose_age_ms": null
+    },
+    {
+      "index": 11,
+      "path": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_01_candidate_02\\repeat_02",
+      "raw": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_01_candidate_02\\repeat_02\\raw.jpg",
+      "packet": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_01_candidate_02\\repeat_02\\packet.json",
+      "slot_id": 1,
+      "target_pixel": [
+        320.0,
+        240.0
+      ],
+      "measurement_point": "top_face_subpixel",
+      "center_distance_px": 33.76788713744127,
+      "bbox": [
+        206,
+        151,
+        440,
+        395
+      ],
+      "area_px": 34227,
+      "confidence": 0.55,
+      "points": {
+        "pixel_center_f": [
+          326.800749603575,
+          254.4707798760271
+        ],
+        "pixel_center": [
+          327.0,
+          254.0
+        ],
+        "geometry_center_f": [
+          319.7628173828125,
+          244.09315490722656
+        ],
+        "geometry_center": [
+          320.0,
+          244.0
+        ],
+        "top_face_center_f": [
+          350.2360088736513,
+          255.03509125743673
+        ],
+        "top_face_center": [
+          350.0,
+          255.0
+        ],
+        "grasp_pixel_f": [
+          340.0,
+          255.0
+        ],
+        "grasp_pixel": [
+          340.0,
+          255.0
+        ]
+      },
+      "distances_px": {
+        "pixel_center_f": 15.98917338047708,
+        "pixel_center": 15.652475842498529,
+        "geometry_center_f": 4.100021059512842,
+        "geometry_center": 4.0,
+        "top_face_center_f": 33.76788713744127,
+        "top_face_center": 33.54101966249684,
+        "grasp_pixel_f": 25.0,
+        "grasp_pixel": 25.0
+      },
+      "image_age_ms": 359.5975000062026,
+      "frame_pose_age_ms": null
+    },
+    {
+      "index": 12,
+      "path": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_01_candidate_02\\repeat_03",
+      "raw": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_01_candidate_02\\repeat_03\\raw.jpg",
+      "packet": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_01_candidate_02\\repeat_03\\packet.json",
+      "slot_id": 1,
+      "target_pixel": [
+        320.0,
+        240.0
+      ],
+      "measurement_point": "top_face_subpixel",
+      "center_distance_px": 34.35113757343581,
+      "bbox": [
+        204,
+        154,
+        440,
+        396
+      ],
+      "area_px": 34452,
+      "confidence": 0.55,
+      "points": {
+        "pixel_center_f": [
+          327.6294947525377,
+          254.88805413775304
+        ],
+        "pixel_center": [
+          328.0,
+          255.0
+        ],
+        "geometry_center_f": [
+          326.9369201660156,
+          249.35479736328125
+        ],
+        "geometry_center": [
+          327.0,
+          249.0
+        ],
+        "top_face_center_f": [
+          349.5722559954047,
+          257.478052749988
+        ],
+        "top_face_center": [
+          350.0,
+          257.0
+        ],
+        "grasp_pixel_f": [
+          339.0,
+          255.0
+        ],
+        "grasp_pixel": [
+          339.0,
+          255.0
+        ]
+      },
+      "distances_px": {
+        "pixel_center_f": 16.72911671869337,
+        "pixel_center": 17.0,
+        "geometry_center_f": 11.646162247613077,
+        "geometry_center": 11.40175425099138,
+        "top_face_center_f": 34.35113757343581,
+        "top_face_center": 34.48187929913333,
+        "grasp_pixel_f": 24.20743687382041,
+        "grasp_pixel": 24.20743687382041
+      },
+      "image_age_ms": 351.14549996796995,
+      "frame_pose_age_ms": null
+    },
+    {
+      "index": 13,
+      "path": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_01_candidate_03\\repeat_01",
+      "raw": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_01_candidate_03\\repeat_01\\raw.jpg",
+      "packet": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_01_candidate_03\\repeat_01\\packet.json",
+      "slot_id": 1,
+      "target_pixel": [
+        320.0,
+        240.0
+      ],
+      "measurement_point": "top_face_subpixel",
+      "center_distance_px": 34.04865393852688,
+      "bbox": [
+        213,
+        156,
+        440,
+        381
+      ],
+      "area_px": 33082,
+      "confidence": 0.55,
+      "points": {
+        "pixel_center_f": [
+          329.43563084461175,
+          255.300976965134
+        ],
+        "pixel_center": [
+          329.0,
+          255.0
+        ],
+        "geometry_center_f": [
+          326.1737060546875,
+          250.65060424804688
+        ],
+        "geometry_center": [
+          326.0,
+          251.0
+        ],
+        "top_face_center_f": [
+          351.2768618243071,
+          253.45617885763872
+        ],
+        "top_face_center": [
+          351.0,
+          253.0
+        ],
+        "grasp_pixel_f": [
+          340.0,
+          254.0
+        ],
+        "grasp_pixel": [
+          340.0,
+          254.0
+        ]
+      },
+      "distances_px": {
+        "pixel_center_f": 17.976401907037733,
+        "pixel_center": 17.4928556845359,
+        "geometry_center_f": 12.31056527127001,
+        "geometry_center": 12.529964086141668,
+        "top_face_center_f": 34.04865393852688,
+        "top_face_center": 33.61547262794322,
+        "grasp_pixel_f": 24.413111231467404,
+        "grasp_pixel": 24.413111231467404
+      },
+      "image_age_ms": 371.05980003252625,
+      "frame_pose_age_ms": null
+    },
+    {
+      "index": 14,
+      "path": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_01_candidate_03\\repeat_02",
+      "raw": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_01_candidate_03\\repeat_02\\raw.jpg",
+      "packet": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_01_candidate_03\\repeat_02\\packet.json",
+      "slot_id": 1,
+      "target_pixel": [
+        320.0,
+        240.0
+      ],
+      "measurement_point": "top_face_subpixel",
+      "center_distance_px": 34.4350014383002,
+      "bbox": [
+        206,
+        155,
+        448,
+        371
+      ],
+      "area_px": 33184,
+      "confidence": 0.55,
+      "points": {
+        "pixel_center_f": [
+          327.6508333333333,
+          253.7511607142857
+        ],
+        "pixel_center": [
+          328.0,
+          254.0
+        ],
+        "geometry_center_f": [
+          315.8675842285156,
+          244.2564697265625
+        ],
+        "geometry_center": [
+          316.0,
+          244.0
+        ],
+        "top_face_center_f": [
+          351.0,
+          254.99230883005472
+        ],
+        "top_face_center": [
+          351.0,
+          255.0
+        ],
+        "grasp_pixel_f": [
+          340.0,
+          254.0
+        ],
+        "grasp_pixel": [
+          340.0,
+          254.0
+        ]
+      },
+      "distances_px": {
+        "pixel_center_f": 15.736253419558246,
+        "pixel_center": 16.1245154965971,
+        "geometry_center_f": 5.932486379382244,
+        "geometry_center": 5.656854249492381,
+        "top_face_center_f": 34.4350014383002,
+        "top_face_center": 34.438350715445125,
+        "grasp_pixel_f": 24.413111231467404,
+        "grasp_pixel": 24.413111231467404
+      },
+      "image_age_ms": 382.39809998776764,
+      "frame_pose_age_ms": null
+    },
+    {
+      "index": 15,
+      "path": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_01_candidate_03\\repeat_03",
+      "raw": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_01_candidate_03\\repeat_03\\raw.jpg",
+      "packet": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_01_candidate_03\\repeat_03\\packet.json",
+      "slot_id": 1,
+      "target_pixel": [
+        320.0,
+        240.0
+      ],
+      "measurement_point": "top_face_subpixel",
+      "center_distance_px": 34.58766458010511,
+      "bbox": [
+        212,
+        155,
+        440,
+        371
+      ],
+      "area_px": 33203,
+      "confidence": 0.55,
+      "points": {
+        "pixel_center_f": [
+          328.41505952380953,
+          254.85449404761906
+        ],
+        "pixel_center": [
+          328.0,
+          255.0
+        ],
+        "geometry_center_f": [
+          316.3095703125,
+          246.76943969726562
+        ],
+        "geometry_center": [
+          316.0,
+          247.0
+        ],
+        "top_face_center_f": [
+          351.99963706123293,
+          253.12744335562815
+        ],
+        "top_face_center": [
+          352.0,
+          253.0
+        ],
+        "grasp_pixel_f": [
+          340.0,
+          254.0
+        ],
+        "grasp_pixel": [
+          340.0,
+          254.0
+        ]
+      },
+      "distances_px": {
+        "pixel_center_f": 17.072469657316937,
+        "pixel_center": 17.0,
+        "geometry_center_f": 7.710031458645099,
+        "geometry_center": 8.06225774829855,
+        "top_face_center_f": 34.58766458010511,
+        "top_face_center": 34.539832078341085,
+        "grasp_pixel_f": 24.413111231467404,
+        "grasp_pixel": 24.413111231467404
+      },
+      "image_age_ms": 378.1971000134945,
+      "frame_pose_age_ms": null
+    },
+    {
+      "index": 16,
+      "path": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_01_candidate_04\\repeat_01",
+      "raw": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_01_candidate_04\\repeat_01\\raw.jpg",
+      "packet": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_01_candidate_04\\repeat_01\\packet.json",
+      "slot_id": 1,
+      "target_pixel": [
+        320.0,
+        240.0
+      ],
+      "measurement_point": "top_face_subpixel",
+      "center_distance_px": 34.39769813523229,
+      "bbox": [
+        226,
+        155,
+        445,
+        375
+      ],
+      "area_px": 31014,
+      "confidence": 0.55,
+      "points": {
+        "pixel_center_f": [
+          332.4560906515581,
+          255.25575325460738
+        ],
+        "pixel_center": [
+          332.0,
+          255.0
+        ],
+        "geometry_center_f": [
+          323.0299072265625,
+          249.06680297851562
+        ],
+        "geometry_center": [
+          323.0,
+          249.0
+        ],
+        "top_face_center_f": [
+          352.46525963849126,
+          251.36699404450945
+        ],
+        "top_face_center": [
+          352.0,
+          251.0
+        ],
+        "grasp_pixel_f": [
+          342.0,
+          253.0
+        ],
+        "grasp_pixel": [
+          342.0,
+          253.0
+        ]
+      },
+      "distances_px": {
+        "pixel_center_f": 19.694979098371668,
+        "pixel_center": 19.209372712298546,
+        "geometry_center_f": 9.559668093233963,
+        "geometry_center": 9.486832980505138,
+        "top_face_center_f": 34.39769813523229,
+        "top_face_center": 33.83784863137726,
+        "grasp_pixel_f": 25.553864678361276,
+        "grasp_pixel": 25.553864678361276
+      },
+      "image_age_ms": 367.08870000438765,
+      "frame_pose_age_ms": null
+    },
+    {
+      "index": 17,
+      "path": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_01_candidate_04\\repeat_02",
+      "raw": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_01_candidate_04\\repeat_02\\raw.jpg",
+      "packet": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_01_candidate_04\\repeat_02\\packet.json",
+      "slot_id": 1,
+      "target_pixel": [
+        320.0,
+        240.0
+      ],
+      "measurement_point": "top_face_subpixel",
+      "center_distance_px": 34.647030716075385,
+      "bbox": [
+        225,
+        156,
+        441,
+        366
+      ],
+      "area_px": 30210,
+      "confidence": 0.55,
+      "points": {
+        "pixel_center_f": [
+          333.3369305732692,
+          255.59995421694626
+        ],
+        "pixel_center": [
+          333.0,
+          256.0
+        ],
+        "geometry_center_f": [
+          338.35858154296875,
+          259.9731750488281
+        ],
+        "geometry_center": [
+          338.0,
+          260.0
+        ],
+        "top_face_center_f": [
+          353.25244478628724,
+          249.7309636303703
+        ],
+        "top_face_center": [
+          353.0,
+          250.0
+        ],
+        "grasp_pixel_f": [
+          344.0,
+          253.0
+        ],
+        "grasp_pixel": [
+          344.0,
+          253.0
+        ]
+      },
+      "distances_px": {
+        "pixel_center_f": 20.523944277039508,
+        "pixel_center": 20.615528128088304,
+        "geometry_center_f": 27.128679249107634,
+        "geometry_center": 26.90724809414742,
+        "top_face_center_f": 34.647030716075385,
+        "top_face_center": 34.48187929913333,
+        "grasp_pixel_f": 27.294688127912362,
+        "grasp_pixel": 27.294688127912362
+      },
+      "image_age_ms": 388.3347999653779,
+      "frame_pose_age_ms": null
+    },
+    {
+      "index": 18,
+      "path": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_01_candidate_04\\repeat_03",
+      "raw": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_01_candidate_04\\repeat_03\\raw.jpg",
+      "packet": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_01_candidate_04\\repeat_03\\packet.json",
+      "slot_id": 1,
+      "target_pixel": [
+        320.0,
+        240.0
+      ],
+      "measurement_point": "top_face_subpixel",
+      "center_distance_px": 32.53147653131564,
+      "bbox": [
+        234,
+        155,
+        440,
+        366
+      ],
+      "area_px": 29565,
+      "confidence": 0.55,
+      "points": {
+        "pixel_center_f": [
+          334.33716654409307,
+          256.55335294510934
+        ],
+        "pixel_center": [
+          334.0,
+          257.0
+        ],
+        "geometry_center_f": [
+          330.96478271484375,
+          252.75192260742188
+        ],
+        "geometry_center": [
+          331.0,
+          253.0
+        ],
+        "top_face_center_f": [
+          351.3790889132821,
+          248.58194291986828
+        ],
+        "top_face_center": [
+          351.0,
+          249.0
+        ],
+        "grasp_pixel_f": [
+          343.0,
+          252.0
+        ],
+        "grasp_pixel": [
+          343.0,
+          252.0
+        ]
+      },
+      "distances_px": {
+        "pixel_center_f": 21.899037381547654,
+        "pixel_center": 22.02271554554524,
+        "geometry_center_f": 16.81778790951454,
+        "geometry_center": 17.029386365926403,
+        "top_face_center_f": 32.53147653131564,
+        "top_face_center": 32.28002478313795,
+        "grasp_pixel_f": 25.942243542145693,
+        "grasp_pixel": 25.942243542145693
+      },
+      "image_age_ms": 365.3673000517301,
+      "frame_pose_age_ms": null
+    },
+    {
+      "index": 19,
+      "path": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_01_candidate_05\\repeat_01",
+      "raw": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_01_candidate_05\\repeat_01\\raw.jpg",
+      "packet": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_01_candidate_05\\repeat_01\\packet.json",
+      "slot_id": 1,
+      "target_pixel": [
+        320.0,
+        240.0
+      ],
+      "measurement_point": "top_face_subpixel",
+      "center_distance_px": 32.55720591884721,
+      "bbox": [
+        239,
+        155,
+        440,
+        367
+      ],
+      "area_px": 29038,
+      "confidence": 0.55,
+      "points": {
+        "pixel_center_f": [
+          334.8602585913576,
+          257.04307587614835
+        ],
+        "pixel_center": [
+          335.0,
+          257.0
+        ],
+        "geometry_center_f": [
+          332.6319885253906,
+          258.25830078125
+        ],
+        "geometry_center": [
+          333.0,
+          258.0
+        ],
+        "top_face_center_f": [
+          351.6860742254001,
+          247.48093292475315
+        ],
+        "top_face_center": [
+          352.0,
+          247.0
+        ],
+        "grasp_pixel_f": [
+          342.0,
+          252.0
+        ],
+        "grasp_pixel": [
+          342.0,
+          252.0
+        ]
+      },
+      "distances_px": {
+        "pixel_center_f": 22.611804897490316,
+        "pixel_center": 22.67156809750927,
+        "geometry_center_f": 22.202087323587275,
+        "geometry_center": 22.20360331117452,
+        "top_face_center_f": 32.55720591884721,
+        "top_face_center": 32.7566787083184,
+        "grasp_pixel_f": 25.059928172283335,
+        "grasp_pixel": 25.059928172283335
+      },
+      "image_age_ms": 372.6141999941319,
+      "frame_pose_age_ms": null
+    },
+    {
+      "index": 20,
+      "path": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_01_candidate_05\\repeat_02",
+      "raw": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_01_candidate_05\\repeat_02\\raw.jpg",
+      "packet": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_01_candidate_05\\repeat_02\\packet.json",
+      "slot_id": 1,
+      "target_pixel": [
+        320.0,
+        240.0
+      ],
+      "measurement_point": "top_face_subpixel",
+      "center_distance_px": 32.31394867808004,
+      "bbox": [
+        234,
+        155,
+        441,
+        366
+      ],
+      "area_px": 29596,
+      "confidence": 0.55,
+      "points": {
+        "pixel_center_f": [
+          333.7679191137213,
+          256.30185531233315
+        ],
+        "pixel_center": [
+          334.0,
+          256.0
+        ],
+        "geometry_center_f": [
+          325.9403076171875,
+          252.60658264160156
+        ],
+        "geometry_center": [
+          326.0,
+          253.0
+        ],
+        "top_face_center_f": [
+          351.2389217546601,
+          248.26565464895637
+        ],
+        "top_face_center": [
+          351.0,
+          248.0
+        ],
+        "grasp_pixel_f": [
+          342.0,
+          251.0
+        ],
+        "grasp_pixel": [
+          342.0,
+          251.0
+        ]
+      },
+      "distances_px": {
+        "pixel_center_f": 21.33790250578103,
+        "pixel_center": 21.2602916254693,
+        "geometry_center_f": 13.936038909473009,
+        "geometry_center": 14.317821063276353,
+        "top_face_center_f": 32.31394867808004,
+        "top_face_center": 32.01562118716424,
+        "grasp_pixel_f": 24.596747752497688,
+        "grasp_pixel": 24.596747752497688
+      },
+      "image_age_ms": 337.062300008256,
+      "frame_pose_age_ms": null
+    },
+    {
+      "index": 21,
+      "path": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_01_candidate_05\\repeat_03",
+      "raw": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_01_candidate_05\\repeat_03\\raw.jpg",
+      "packet": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_01_candidate_05\\repeat_03\\packet.json",
+      "slot_id": 1,
+      "target_pixel": [
+        320.0,
+        240.0
+      ],
+      "measurement_point": "top_face_subpixel",
+      "center_distance_px": 31.76438740837723,
+      "bbox": [
+        236,
+        155,
+        434,
+        366
+      ],
+      "area_px": 28856,
+      "confidence": 0.55,
+      "points": {
+        "pixel_center_f": [
+          334.0625984521608,
+          256.687898089172
+        ],
+        "pixel_center": [
+          334.0,
+          257.0
+        ],
+        "geometry_center_f": [
+          329.2088623046875,
+          254.57516479492188
+        ],
+        "geometry_center": [
+          329.0,
+          255.0
+        ],
+        "top_face_center_f": [
+          351.01288123844733,
+          246.8685882624769
+        ],
+        "top_face_center": [
+          351.0,
+          247.0
+        ],
+        "grasp_pixel_f": [
+          342.0,
+          252.0
+        ],
+        "grasp_pixel": [
+          342.0,
+          252.0
+        ]
+      },
+      "distances_px": {
+        "pixel_center_f": 21.822983706663607,
+        "pixel_center": 22.02271554554524,
+        "geometry_center_f": 17.240608276561023,
+        "geometry_center": 17.4928556845359,
+        "top_face_center_f": 31.76438740837723,
+        "top_face_center": 31.78049716414141,
+        "grasp_pixel_f": 25.059928172283335,
+        "grasp_pixel": 25.059928172283335
+      },
+      "image_age_ms": 341.31620003608987,
+      "frame_pose_age_ms": null
+    },
+    {
+      "index": 22,
+      "path": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_02_candidate_01\\repeat_01",
+      "raw": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_02_candidate_01\\repeat_01\\raw.jpg",
+      "packet": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_02_candidate_01\\repeat_01\\packet.json",
+      "slot_id": 1,
+      "target_pixel": [
+        320.0,
+        240.0
+      ],
+      "measurement_point": "top_face_subpixel",
+      "center_distance_px": 32.44653096812172,
+      "bbox": [
+        236,
+        155,
+        438,
+        366
+      ],
+      "area_px": 29046,
+      "confidence": 0.55,
+      "points": {
+        "pixel_center_f": [
+          334.59132800544126,
+          256.571739500085
+        ],
+        "pixel_center": [
+          335.0,
+          257.0
+        ],
+        "geometry_center_f": [
+          330.0528869628906,
+          256.6675109863281
+        ],
+        "geometry_center": [
+          330.0,
+          257.0
+        ],
+        "top_face_center_f": [
+          351.99380165289256,
+          245.4012987012987
+        ],
+        "top_face_center": [
+          352.0,
+          245.0
+        ],
+        "grasp_pixel_f": [
+          344.0,
+          252.0
+        ],
+        "grasp_pixel": [
+          344.0,
+          252.0
+        ]
+      },
+      "distances_px": {
+        "pixel_center_f": 22.080068003089398,
+        "pixel_center": 22.67156809750927,
+        "geometry_center_f": 19.46449225559262,
+        "geometry_center": 19.72308292331602,
+        "top_face_center_f": 32.44653096812172,
+        "top_face_center": 32.38826948140329,
+        "grasp_pixel_f": 26.832815729997478,
+        "grasp_pixel": 26.832815729997478
+      },
+      "image_age_ms": 335.11350001208484,
+      "frame_pose_age_ms": null
+    },
+    {
+      "index": 23,
+      "path": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_02_candidate_01\\repeat_02",
+      "raw": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_02_candidate_01\\repeat_02\\raw.jpg",
+      "packet": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_02_candidate_01\\repeat_02\\packet.json",
+      "slot_id": 1,
+      "target_pixel": [
+        320.0,
+        240.0
+      ],
+      "measurement_point": "top_face_subpixel",
+      "center_distance_px": 31.24301830487502,
+      "bbox": [
+        236,
+        156,
+        436,
+        367
+      ],
+      "area_px": 28346,
+      "confidence": 0.55,
+      "points": {
+        "pixel_center_f": [
+          335.678944436708,
+          257.1885531263055
+        ],
+        "pixel_center": [
+          336.0,
+          257.0
+        ],
+        "geometry_center_f": [
+          330.63232421875,
+          255.7794189453125
+        ],
+        "geometry_center": [
+          331.0,
+          256.0
+        ],
+        "top_face_center_f": [
+          350.8733096940922,
+          244.79217501051747
+        ],
+        "top_face_center": [
+          351.0,
+          245.0
+        ],
+        "grasp_pixel_f": [
+          344.0,
+          252.0
+        ],
+        "grasp_pixel": [
+          344.0,
+          252.0
+        ]
+      },
+      "distances_px": {
+        "pixel_center_f": 23.265331659471425,
+        "pixel_center": 23.345235059857504,
+        "geometry_center_f": 19.02725362589948,
+        "geometry_center": 19.4164878389476,
+        "top_face_center_f": 31.24301830487502,
+        "top_face_center": 31.400636936215164,
+        "grasp_pixel_f": 26.832815729997478,
+        "grasp_pixel": 26.832815729997478
+      },
+      "image_age_ms": 364.19620004016906,
+      "frame_pose_age_ms": null
+    },
+    {
+      "index": 24,
+      "path": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_02_candidate_01\\repeat_03",
+      "raw": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_02_candidate_01\\repeat_03\\raw.jpg",
+      "packet": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_02_candidate_01\\repeat_03\\packet.json",
+      "slot_id": 1,
+      "target_pixel": [
+        320.0,
+        240.0
+      ],
+      "measurement_point": "top_face_subpixel",
+      "center_distance_px": 32.24185621518379,
+      "bbox": [
+        240,
+        155,
+        438,
+        366
+      ],
+      "area_px": 28678,
+      "confidence": 0.55,
+      "points": {
+        "pixel_center_f": [
+          335.27056716829094,
+          257.321257619064
+        ],
+        "pixel_center": [
+          335.0,
+          257.0
+        ],
+        "geometry_center_f": [
+          334.1036376953125,
+          256.4173889160156
+        ],
+        "geometry_center": [
+          334.0,
+          256.0
+        ],
+        "top_face_center_f": [
+          351.39629544934826,
+          247.33552481134234
+        ],
+        "top_face_center": [
+          351.0,
+          247.0
+        ],
+        "grasp_pixel_f": [
+          344.0,
+          252.0
+        ],
+        "grasp_pixel": [
+          344.0,
+          252.0
+        ]
+      },
+      "distances_px": {
+        "pixel_center_f": 23.091474338969086,
+        "pixel_center": 22.67156809750927,
+        "geometry_center_f": 21.643549964373967,
+        "geometry_center": 21.2602916254693,
+        "top_face_center_f": 32.24185621518379,
+        "top_face_center": 31.78049716414141,
+        "grasp_pixel_f": 26.832815729997478,
+        "grasp_pixel": 26.832815729997478
+      },
+      "image_age_ms": 385.6975000235252,
+      "frame_pose_age_ms": null
+    },
+    {
+      "index": 25,
+      "path": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_02_candidate_02\\repeat_01",
+      "raw": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_02_candidate_02\\repeat_01\\raw.jpg",
+      "packet": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_02_candidate_02\\repeat_01\\packet.json",
+      "slot_id": 1,
+      "target_pixel": [
+        320.0,
+        240.0
+      ],
+      "measurement_point": "top_face_subpixel",
+      "center_distance_px": 32.73909378717756,
+      "bbox": [
+        240,
+        156,
+        445,
+        366
+      ],
+      "area_px": 28558,
+      "confidence": 0.55,
+      "points": {
+        "pixel_center_f": [
+          335.88542783059637,
+          258.28826274848745
+        ],
+        "pixel_center": [
+          336.0,
+          258.0
+        ],
+        "geometry_center_f": [
+          332.9414367675781,
+          258.08770751953125
+        ],
+        "geometry_center": [
+          333.0,
+          258.0
+        ],
+        "top_face_center_f": [
+          352.1051173210706,
+          246.41168494281334
+        ],
+        "top_face_center": [
+          352.0,
+          246.0
+        ],
+        "grasp_pixel_f": [
+          344.0,
+          252.0
+        ],
+        "grasp_pixel": [
+          344.0,
+          252.0
+        ]
+      },
+      "distances_px": {
+        "pixel_center_f": 24.224107242967687,
+        "pixel_center": 24.08318915758459,
+        "geometry_center_f": 22.24063733172524,
+        "geometry_center": 22.20360331117452,
+        "top_face_center_f": 32.73909378717756,
+        "top_face_center": 32.55764119219941,
+        "grasp_pixel_f": 26.832815729997478,
+        "grasp_pixel": 26.832815729997478
+      },
+      "image_age_ms": 336.727499961853,
+      "frame_pose_age_ms": null
+    },
+    {
+      "index": 26,
+      "path": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_02_candidate_02\\repeat_02",
+      "raw": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_02_candidate_02\\repeat_02\\raw.jpg",
+      "packet": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_02_candidate_02\\repeat_02\\packet.json",
+      "slot_id": 1,
+      "target_pixel": [
+        320.0,
+        240.0
+      ],
+      "measurement_point": "top_face_subpixel",
+      "center_distance_px": 33.49926336541265,
+      "bbox": [
+        239,
+        155,
+        436,
+        366
+      ],
+      "area_px": 28536,
+      "confidence": 0.55,
+      "points": {
+        "pixel_center_f": [
+          336.07738651708735,
+          257.60375333264085
+        ],
+        "pixel_center": [
+          336.0,
+          258.0
+        ],
+        "geometry_center_f": [
+          333.72222900390625,
+          256.4122314453125
+        ],
+        "geometry_center": [
+          334.0,
+          256.0
+        ],
+        "top_face_center_f": [
+          352.98559402418783,
+          245.84390562010907
+        ],
+        "top_face_center": [
+          353.0,
+          246.0
+        ],
+        "grasp_pixel_f": [
+          344.0,
+          252.0
+        ],
+        "grasp_pixel": [
+          344.0,
+          252.0
+        ]
+      },
+      "distances_px": {
+        "pixel_center_f": 23.84060587770969,
+        "pixel_center": 24.08318915758459,
+        "geometry_center_f": 21.393010771047408,
+        "geometry_center": 21.2602916254693,
+        "top_face_center_f": 33.49926336541265,
+        "top_face_center": 33.54101966249684,
+        "grasp_pixel_f": 26.832815729997478,
+        "grasp_pixel": 26.832815729997478
+      },
+      "image_age_ms": 381.9231999805197,
+      "frame_pose_age_ms": null
+    },
+    {
+      "index": 27,
+      "path": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_02_candidate_02\\repeat_03",
+      "raw": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_02_candidate_02\\repeat_03\\raw.jpg",
+      "packet": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_02_candidate_02\\repeat_03\\packet.json",
+      "slot_id": 1,
+      "target_pixel": [
+        320.0,
+        240.0
+      ],
+      "measurement_point": "top_face_subpixel",
+      "center_distance_px": 33.830654358859,
+      "bbox": [
+        232,
+        155,
+        440,
+        368
+      ],
+      "area_px": 28932,
+      "confidence": 0.55,
+      "points": {
+        "pixel_center_f": [
+          335.2978396641753,
+          256.77908603801916
+        ],
+        "pixel_center": [
+          335.0,
+          257.0
+        ],
+        "geometry_center_f": [
+          331.73968505859375,
+          254.15817260742188
+        ],
+        "geometry_center": [
+          332.0,
+          254.0
+        ],
+        "top_face_center_f": [
+          353.32068616355946,
+          245.85192685687056
+        ],
+        "top_face_center": [
+          353.0,
+          246.0
+        ],
+        "grasp_pixel_f": [
+          344.0,
+          252.0
+        ],
+        "grasp_pixel": [
+          344.0,
+          252.0
+        ]
+      },
+      "distances_px": {
+        "pixel_center_f": 22.705982177876916,
+        "pixel_center": 22.67156809750927,
+        "geometry_center_f": 18.3922281645406,
+        "geometry_center": 18.439088914585774,
+        "top_face_center_f": 33.830654358859,
+        "top_face_center": 33.54101966249684,
+        "grasp_pixel_f": 26.832815729997478,
+        "grasp_pixel": 26.832815729997478
+      },
+      "image_age_ms": 338.3294999948703,
+      "frame_pose_age_ms": null
+    },
+    {
+      "index": 28,
+      "path": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_02_candidate_03\\repeat_01",
+      "raw": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_02_candidate_03\\repeat_01\\raw.jpg",
+      "packet": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_02_candidate_03\\repeat_01\\packet.json",
+      "slot_id": 1,
+      "target_pixel": [
+        320.0,
+        240.0
+      ],
+      "measurement_point": "top_face_subpixel",
+      "center_distance_px": 32.18727054847758,
+      "bbox": [
+        238,
+        155,
+        438,
+        367
+      ],
+      "area_px": 28834,
+      "confidence": 0.55,
+      "points": {
+        "pixel_center_f": [
+          335.5336143092105,
+          257.81763980263156
+        ],
+        "pixel_center": [
+          336.0,
+          258.0
+        ],
+        "geometry_center_f": [
+          330.6348876953125,
+          255.58428955078125
+        ],
+        "geometry_center": [
+          331.0,
+          256.0
+        ],
+        "top_face_center_f": [
+          351.51564881022153,
+          246.54096823350136
+        ],
+        "top_face_center": [
+          352.0,
+          247.0
+        ],
+        "grasp_pixel_f": [
+          344.0,
+          252.0
+        ],
+        "grasp_pixel": [
+          344.0,
+          252.0
+        ]
+      },
+      "distances_px": {
+        "pixel_center_f": 23.638135748058268,
+        "pixel_center": 24.08318915758459,
+        "geometry_center_f": 18.867191552917962,
+        "geometry_center": 19.4164878389476,
+        "top_face_center_f": 32.18727054847758,
+        "top_face_center": 32.7566787083184,
+        "grasp_pixel_f": 26.832815729997478,
+        "grasp_pixel": 26.832815729997478
+      },
+      "image_age_ms": 347.82910003559664,
+      "frame_pose_age_ms": null
+    },
+    {
+      "index": 29,
+      "path": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_02_candidate_03\\repeat_02",
+      "raw": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_02_candidate_03\\repeat_02\\raw.jpg",
+      "packet": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_02_candidate_03\\repeat_02\\packet.json",
+      "slot_id": 1,
+      "target_pixel": [
+        320.0,
+        240.0
+      ],
+      "measurement_point": "top_face_subpixel",
+      "center_distance_px": 31.23561084757943,
+      "bbox": [
+        230,
+        155,
+        434,
+        367
+      ],
+      "area_px": 28566,
+      "confidence": 0.55,
+      "points": {
+        "pixel_center_f": [
+          335.0959671009434,
+          256.6742233127138
+        ],
+        "pixel_center": [
+          335.0,
+          257.0
+        ],
+        "geometry_center_f": [
+          323.421875,
+          249.7871551513672
+        ],
+        "geometry_center": [
+          323.0,
+          250.0
+        ],
+        "top_face_center_f": [
+          350.4729488874835,
+          246.86023112746508
+        ],
+        "top_face_center": [
+          350.0,
+          247.0
+        ],
+        "grasp_pixel_f": [
+          344.0,
+          252.0
+        ],
+        "grasp_pixel": [
+          344.0,
+          252.0
+        ]
+      },
+      "distances_px": {
+        "pixel_center_f": 22.492619807283795,
+        "pixel_center": 22.67156809750927,
+        "geometry_center_f": 10.368106600173354,
+        "geometry_center": 10.44030650891055,
+        "top_face_center_f": 31.23561084757943,
+        "top_face_center": 30.805843601498726,
+        "grasp_pixel_f": 26.832815729997478,
+        "grasp_pixel": 26.832815729997478
+      },
+      "image_age_ms": 345.9562999778427,
+      "frame_pose_age_ms": null
+    },
+    {
+      "index": 30,
+      "path": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_02_candidate_03\\repeat_03",
+      "raw": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_02_candidate_03\\repeat_03\\raw.jpg",
+      "packet": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_02_candidate_03\\repeat_03\\packet.json",
+      "slot_id": 1,
+      "target_pixel": [
+        320.0,
+        240.0
+      ],
+      "measurement_point": "top_face_subpixel",
+      "center_distance_px": 34.3547776342943,
+      "bbox": [
+        240,
+        155,
+        441,
+        366
+      ],
+      "area_px": 28254,
+      "confidence": 0.55,
+      "points": {
+        "pixel_center_f": [
+          337.1957418542861,
+          258.49790239127395
+        ],
+        "pixel_center": [
+          337.0,
+          258.0
+        ],
+        "geometry_center_f": [
+          338.20648193359375,
+          259.2133483886719
+        ],
+        "geometry_center": [
+          338.0,
+          259.0
+        ],
+        "top_face_center_f": [
+          353.852232248872,
+          245.85466635003561
+        ],
+        "top_face_center": [
+          354.0,
+          246.0
+        ],
+        "grasp_pixel_f": [
+          343.0,
+          252.0
+        ],
+        "grasp_pixel": [
+          343.0,
+          252.0
+        ]
+      },
+      "distances_px": {
+        "pixel_center_f": 25.25600781589096,
+        "pixel_center": 24.758836806279895,
+        "geometry_center_f": 26.469392526137728,
+        "geometry_center": 26.1725046566048,
+        "top_face_center_f": 34.3547776342943,
+        "top_face_center": 34.52535300326414,
+        "grasp_pixel_f": 25.942243542145693,
+        "grasp_pixel": 25.942243542145693
+      },
+      "image_age_ms": 393.0388999870047,
+      "frame_pose_age_ms": null
+    },
+    {
+      "index": 31,
+      "path": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_02_candidate_04\\repeat_01",
+      "raw": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_02_candidate_04\\repeat_01\\raw.jpg",
+      "packet": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_02_candidate_04\\repeat_01\\packet.json",
+      "slot_id": 1,
+      "target_pixel": [
+        320.0,
+        240.0
+      ],
+      "measurement_point": "top_face_subpixel",
+      "center_distance_px": 33.25414850542345,
+      "bbox": [
+        242,
+        155,
+        448,
+        366
+      ],
+      "area_px": 28330,
+      "confidence": 0.55,
+      "points": {
+        "pixel_center_f": [
+          337.00080142165234,
+          257.3862852364194
+        ],
+        "pixel_center": [
+          337.0,
+          257.0
+        ],
+        "geometry_center_f": [
+          331.8531188964844,
+          253.19610595703125
+        ],
+        "geometry_center": [
+          332.0,
+          253.0
+        ],
+        "top_face_center_f": [
+          352.456871218669,
+          247.23808700662633
+        ],
+        "top_face_center": [
+          352.0,
+          247.0
+        ],
+        "grasp_pixel_f": [
+          344.0,
+          252.0
+        ],
+        "grasp_pixel": [
+          344.0,
+          252.0
+        ]
+      },
+      "distances_px": {
+        "pixel_center_f": 24.316869932221763,
+        "pixel_center": 24.041630560342615,
+        "geometry_center_f": 17.737915322928753,
+        "geometry_center": 17.69180601295413,
+        "top_face_center_f": 33.25414850542345,
+        "top_face_center": 32.7566787083184,
+        "grasp_pixel_f": 26.832815729997478,
+        "grasp_pixel": 26.832815729997478
+      },
+      "image_age_ms": 476.0153999668546,
+      "frame_pose_age_ms": null
+    },
+    {
+      "index": 32,
+      "path": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_02_candidate_04\\repeat_02",
+      "raw": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_02_candidate_04\\repeat_02\\raw.jpg",
+      "packet": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_02_candidate_04\\repeat_02\\packet.json",
+      "slot_id": 1,
+      "target_pixel": [
+        320.0,
+        240.0
+      ],
+      "measurement_point": "top_face_subpixel",
+      "center_distance_px": 32.68936138184307,
+      "bbox": [
+        238,
+        155,
+        438,
+        366
+      ],
+      "area_px": 28210,
+      "confidence": 0.55,
+      "points": {
+        "pixel_center_f": [
+          336.87964713295526,
+          257.97486522439266
+        ],
+        "pixel_center": [
+          337.0,
+          258.0
+        ],
+        "geometry_center_f": [
+          330.01190185546875,
+          254.38760375976562
+        ],
+        "geometry_center": [
+          330.0,
+          254.0
+        ],
+        "top_face_center_f": [
+          351.9822132097335,
+          246.76257242178448
+        ],
+        "top_face_center": [
+          352.0,
+          247.0
+        ],
+        "grasp_pixel_f": [
+          344.0,
+          252.0
+        ],
+        "grasp_pixel": [
+          344.0,
+          252.0
+        ]
+      },
+      "distances_px": {
+        "pixel_center_f": 24.658026424841164,
+        "pixel_center": 24.758836806279895,
+        "geometry_center_f": 17.528300565415933,
+        "geometry_center": 17.204650534085253,
+        "top_face_center_f": 32.68936138184307,
+        "top_face_center": 32.7566787083184,
+        "grasp_pixel_f": 26.832815729997478,
+        "grasp_pixel": 26.832815729997478
+      },
+      "image_age_ms": 381.23080000514165,
+      "frame_pose_age_ms": null
+    },
+    {
+      "index": 33,
+      "path": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_02_candidate_04\\repeat_03",
+      "raw": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_02_candidate_04\\repeat_03\\raw.jpg",
+      "packet": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_02_candidate_04\\repeat_03\\packet.json",
+      "slot_id": 1,
+      "target_pixel": [
+        320.0,
+        240.0
+      ],
+      "measurement_point": "top_face_subpixel",
+      "center_distance_px": 33.57524817546373,
+      "bbox": [
+        244,
+        156,
+        440,
+        366
+      ],
+      "area_px": 28163,
+      "confidence": 0.55,
+      "points": {
+        "pixel_center_f": [
+          337.70660489927707,
+          258.4502702323296
+        ],
+        "pixel_center": [
+          338.0,
+          258.0
+        ],
+        "geometry_center_f": [
+          336.14337158203125,
+          258.7384033203125
+        ],
+        "geometry_center": [
+          336.0,
+          259.0
+        ],
+        "top_face_center_f": [
+          353.16678823243376,
+          245.22124969608558
+        ],
+        "top_face_center": [
+          353.0,
+          245.0
+        ],
+        "grasp_pixel_f": [
+          344.0,
+          252.0
+        ],
+        "grasp_pixel": [
+          344.0,
+          252.0
+        ]
+      },
+      "distances_px": {
+        "pixel_center_f": 25.57217880246208,
+        "pixel_center": 25.45584412271571,
+        "geometry_center_f": 24.73330153922506,
+        "geometry_center": 24.839484696748443,
+        "top_face_center_f": 33.57524817546373,
+        "top_face_center": 33.37663853655727,
+        "grasp_pixel_f": 26.832815729997478,
+        "grasp_pixel": 26.832815729997478
+      },
+      "image_age_ms": 414.7789999842644,
+      "frame_pose_age_ms": null
+    },
+    {
+      "index": 34,
+      "path": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_02_candidate_05\\repeat_01",
+      "raw": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_02_candidate_05\\repeat_01\\raw.jpg",
+      "packet": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_02_candidate_05\\repeat_01\\packet.json",
+      "slot_id": 1,
+      "target_pixel": [
+        320.0,
+        240.0
+      ],
+      "measurement_point": "top_face_subpixel",
+      "center_distance_px": 32.671538299831006,
+      "bbox": [
+        237,
+        155,
+        444,
+        367
+      ],
+      "area_px": 28786,
+      "confidence": 0.55,
+      "points": {
+        "pixel_center_f": [
+          336.63960470782007,
+          258.1807295062279
+        ],
+        "pixel_center": [
+          337.0,
+          258.0
+        ],
+        "geometry_center_f": [
+          330.8709411621094,
+          256.0472412109375
+        ],
+        "geometry_center": [
+          331.0,
+          256.0
+        ],
+        "top_face_center_f": [
+          352.0186292147873,
+          246.49898438860194
+        ],
+        "top_face_center": [
+          352.0,
+          246.0
+        ],
+        "grasp_pixel_f": [
+          344.0,
+          252.0
+        ],
+        "grasp_pixel": [
+          344.0,
+          252.0
+        ]
+      },
+      "distances_px": {
+        "pixel_center_f": 24.64579822629274,
+        "pixel_center": 24.758836806279895,
+        "geometry_center_f": 19.382758117256035,
+        "geometry_center": 19.4164878389476,
+        "top_face_center_f": 32.671538299831006,
+        "top_face_center": 32.55764119219941,
+        "grasp_pixel_f": 26.832815729997478,
+        "grasp_pixel": 26.832815729997478
+      },
+      "image_age_ms": 469.483399996534,
+      "frame_pose_age_ms": null
+    },
+    {
+      "index": 35,
+      "path": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_02_candidate_05\\repeat_02",
+      "raw": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_02_candidate_05\\repeat_02\\raw.jpg",
+      "packet": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_02_candidate_05\\repeat_02\\packet.json",
+      "slot_id": 1,
+      "target_pixel": [
+        320.0,
+        240.0
+      ],
+      "measurement_point": "top_face_subpixel",
+      "center_distance_px": 32.43876814562726,
+      "bbox": [
+        240,
+        155,
+        439,
+        366
+      ],
+      "area_px": 28476,
+      "confidence": 0.55,
+      "points": {
+        "pixel_center_f": [
+          336.4984221659673,
+          257.0127267052745
+        ],
+        "pixel_center": [
+          336.0,
+          257.0
+        ],
+        "geometry_center_f": [
+          335.73291015625,
+          254.33584594726562
+        ],
+        "geometry_center": [
+          336.0,
+          254.0
+        ],
+        "top_face_center_f": [
+          351.7914587443426,
+          246.4480097481722
+        ],
+        "top_face_center": [
+          352.0,
+          246.0
+        ],
+        "grasp_pixel_f": [
+          344.0,
+          252.0
+        ],
+        "grasp_pixel": [
+          344.0,
+          252.0
+        ]
+      },
+      "distances_px": {
+        "pixel_center_f": 23.698751104538005,
+        "pixel_center": 23.345235059857504,
+        "geometry_center_f": 21.28475842024914,
+        "geometry_center": 21.2602916254693,
+        "top_face_center_f": 32.43876814562726,
+        "top_face_center": 32.55764119219941,
+        "grasp_pixel_f": 26.832815729997478,
+        "grasp_pixel": 26.832815729997478
+      },
+      "image_age_ms": 384.532299998682,
+      "frame_pose_age_ms": null
+    },
+    {
+      "index": 36,
+      "path": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_02_candidate_05\\repeat_03",
+      "raw": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_02_candidate_05\\repeat_03\\raw.jpg",
+      "packet": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_02_candidate_05\\repeat_03\\packet.json",
+      "slot_id": 1,
+      "target_pixel": [
+        320.0,
+        240.0
+      ],
+      "measurement_point": "top_face_subpixel",
+      "center_distance_px": 34.8945085628541,
+      "bbox": [
+        240,
+        155,
+        443,
+        366
+      ],
+      "area_px": 28761,
+      "confidence": 0.55,
+      "points": {
+        "pixel_center_f": [
+          337.05047210300427,
+          258.3263175965665
+        ],
+        "pixel_center": [
+          337.0,
+          258.0
+        ],
+        "geometry_center_f": [
+          331.2550354003906,
+          257.9242858886719
+        ],
+        "geometry_center": [
+          331.0,
+          258.0
+        ],
+        "top_face_center_f": [
+          354.24838995568683,
+          246.68389955686854
+        ],
+        "top_face_center": [
+          354.0,
+          247.0
+        ],
+        "grasp_pixel_f": [
+          346.0,
+          252.0
+        ],
+        "grasp_pixel": [
+          346.0,
+          252.0
+        ]
+      },
+      "distances_px": {
+        "pixel_center_f": 25.031430554116373,
+        "pixel_center": 24.758836806279895,
+        "geometry_center_f": 21.164967434014347,
+        "geometry_center": 21.095023109728988,
+        "top_face_center_f": 34.8945085628541,
+        "top_face_center": 34.713109915419565,
+        "grasp_pixel_f": 28.635642126552707,
+        "grasp_pixel": 28.635642126552707
+      },
+      "image_age_ms": 367.05860000802204,
+      "frame_pose_age_ms": null
+    },
+    {
+      "index": 37,
+      "path": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_03_candidate_01\\repeat_01",
+      "raw": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_03_candidate_01\\repeat_01\\raw.jpg",
+      "packet": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_03_candidate_01\\repeat_01\\packet.json",
+      "slot_id": 1,
+      "target_pixel": [
+        320.0,
+        240.0
+      ],
+      "measurement_point": "top_face_subpixel",
+      "center_distance_px": 34.75613597703241,
+      "bbox": [
+        233,
+        155,
+        442,
+        366
+      ],
+      "area_px": 28764,
+      "confidence": 0.55,
+      "points": {
+        "pixel_center_f": [
+          336.44294634280226,
+          258.32067380266227
+        ],
+        "pixel_center": [
+          336.0,
+          258.0
+        ],
+        "geometry_center_f": [
+          327.603515625,
+          254.56983947753906
+        ],
+        "geometry_center": [
+          328.0,
+          255.0
+        ],
+        "top_face_center_f": [
+          354.0341224018476,
+          247.04751732101616
+        ],
+        "top_face_center": [
+          354.0,
+          247.0
+        ],
+        "grasp_pixel_f": [
+          346.0,
+          252.0
+        ],
+        "grasp_pixel": [
+          346.0,
+          252.0
+        ]
+      },
+      "distances_px": {
+        "pixel_center_f": 24.617424175080338,
+        "pixel_center": 24.08318915758459,
+        "geometry_center_f": 16.43452683410371,
+        "geometry_center": 17.0,
+        "top_face_center_f": 34.75613597703241,
+        "top_face_center": 34.713109915419565,
+        "grasp_pixel_f": 28.635642126552707,
+        "grasp_pixel": 28.635642126552707
+      },
+      "image_age_ms": 385.1421999861486,
+      "frame_pose_age_ms": null
+    },
+    {
+      "index": 38,
+      "path": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_03_candidate_01\\repeat_02",
+      "raw": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_03_candidate_01\\repeat_02\\raw.jpg",
+      "packet": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_03_candidate_01\\repeat_02\\packet.json",
+      "slot_id": 1,
+      "target_pixel": [
+        320.0,
+        240.0
+      ],
+      "measurement_point": "top_face_subpixel",
+      "center_distance_px": 33.907816256067086,
+      "bbox": [
+        238,
+        156,
+        440,
+        366
+      ],
+      "area_px": 28836,
+      "confidence": 0.55,
+      "points": {
+        "pixel_center_f": [
+          337.62544096996265,
+          258.2331061410419
+        ],
+        "pixel_center": [
+          338.0,
+          258.0
+        ],
+        "geometry_center_f": [
+          330.7103271484375,
+          255.7635498046875
+        ],
+        "geometry_center": [
+          331.0,
+          256.0
+        ],
+        "top_face_center_f": [
+          353.3182619943556,
+          246.29550799623706
+        ],
+        "top_face_center": [
+          353.0,
+          246.0
+        ],
+        "grasp_pixel_f": [
+          346.0,
+          252.0
+        ],
+        "grasp_pixel": [
+          346.0,
+          252.0
+        ]
+      },
+      "distances_px": {
+        "pixel_center_f": 25.359462315596083,
+        "pixel_center": 25.45584412271571,
+        "geometry_center_f": 19.057822805121802,
+        "geometry_center": 19.4164878389476,
+        "top_face_center_f": 33.907816256067086,
+        "top_face_center": 33.54101966249684,
+        "grasp_pixel_f": 28.635642126552707,
+        "grasp_pixel": 28.635642126552707
+      },
+      "image_age_ms": 406.3395999837667,
+      "frame_pose_age_ms": null
+    },
+    {
+      "index": 39,
+      "path": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_03_candidate_01\\repeat_03",
+      "raw": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_03_candidate_01\\repeat_03\\raw.jpg",
+      "packet": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_03_candidate_01\\repeat_03\\packet.json",
+      "slot_id": 1,
+      "target_pixel": [
+        320.0,
+        240.0
+      ],
+      "measurement_point": "top_face_subpixel",
+      "center_distance_px": 33.70233223847059,
+      "bbox": [
+        242,
+        156,
+        444,
+        366
+      ],
+      "area_px": 28745,
+      "confidence": 0.55,
+      "points": {
+        "pixel_center_f": [
+          337.4645090359376,
+          257.8166357452072
+        ],
+        "pixel_center": [
+          337.0,
+          258.0
+        ],
+        "geometry_center_f": [
+          335.71649169921875,
+          255.61378479003906
+        ],
+        "geometry_center": [
+          336.0,
+          256.0
+        ],
+        "top_face_center_f": [
+          353.0537760799295,
+          246.5799000881575
+        ],
+        "top_face_center": [
+          353.0,
+          247.0
+        ],
+        "grasp_pixel_f": [
+          345.0,
+          252.0
+        ],
+        "grasp_pixel": [
+          345.0,
+          252.0
+        ]
+      },
+      "distances_px": {
+        "pixel_center_f": 24.948779231532374,
+        "pixel_center": 24.758836806279895,
+        "geometry_center_f": 22.153970000911055,
+        "geometry_center": 22.627416997969522,
+        "top_face_center_f": 33.70233223847059,
+        "top_face_center": 33.734255586866,
+        "grasp_pixel_f": 27.730849247724095,
+        "grasp_pixel": 27.730849247724095
+      },
+      "image_age_ms": 370.7797999959439,
+      "frame_pose_age_ms": null
+    },
+    {
+      "index": 40,
+      "path": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_03_candidate_02\\repeat_01",
+      "raw": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_03_candidate_02\\repeat_01\\raw.jpg",
+      "packet": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_03_candidate_02\\repeat_01\\packet.json",
+      "slot_id": 1,
+      "target_pixel": [
+        320.0,
+        240.0
+      ],
+      "measurement_point": "top_face_subpixel",
+      "center_distance_px": 35.12912990225163,
+      "bbox": [
+        243,
+        156,
+        440,
+        366
+      ],
+      "area_px": 28556,
+      "confidence": 0.55,
+      "points": {
+        "pixel_center_f": [
+          338.44349871981177,
+          259.0435955989205
+        ],
+        "pixel_center": [
+          338.0,
+          259.0
+        ],
+        "geometry_center_f": [
+          341.31939697265625,
+          262.36907958984375
+        ],
+        "geometry_center": [
+          341.0,
+          262.0
+        ],
+        "top_face_center_f": [
+          354.3733341025789,
+          247.24773553337565
+        ],
+        "top_face_center": [
+          354.0,
+          247.0
+        ],
+        "grasp_pixel_f": [
+          345.0,
+          252.0
+        ],
+        "grasp_pixel": [
+          345.0,
+          252.0
+        ]
+      },
+      "distances_px": {
+        "pixel_center_f": 26.510774759763667,
+        "pixel_center": 26.1725046566048,
+        "geometry_center_f": 30.901333449779617,
+        "geometry_center": 30.4138126514911,
+        "top_face_center_f": 35.12912990225163,
+        "top_face_center": 34.713109915419565,
+        "grasp_pixel_f": 27.730849247724095,
+        "grasp_pixel": 27.730849247724095
+      },
+      "image_age_ms": 390.9554000128992,
+      "frame_pose_age_ms": null
+    },
+    {
+      "index": 41,
+      "path": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_03_candidate_02\\repeat_02",
+      "raw": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_03_candidate_02\\repeat_02\\raw.jpg",
+      "packet": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_03_candidate_02\\repeat_02\\packet.json",
+      "slot_id": 1,
+      "target_pixel": [
+        320.0,
+        240.0
+      ],
+      "measurement_point": "top_face_subpixel",
+      "center_distance_px": 33.940952157989834,
+      "bbox": [
+        238,
+        156,
+        441,
+        366
+      ],
+      "area_px": 28230,
+      "confidence": 0.55,
+      "points": {
+        "pixel_center_f": [
+          336.56307724601174,
+          257.8984396865379
+        ],
+        "pixel_center": [
+          337.0,
+          258.0
+        ],
+        "geometry_center_f": [
+          330.438720703125,
+          255.910400390625
+        ],
+        "geometry_center": [
+          330.0,
+          256.0
+        ],
+        "top_face_center_f": [
+          353.22886466426996,
+          246.91598051722139
+        ],
+        "top_face_center": [
+          353.0,
+          247.0
+        ],
+        "grasp_pixel_f": [
+          346.0,
+          252.0
+        ],
+        "grasp_pixel": [
+          346.0,
+          252.0
+        ]
+      },
+      "distances_px": {
+        "pixel_center_f": 24.386259882769803,
+        "pixel_center": 24.758836806279895,
+        "geometry_center_f": 19.029128474731852,
+        "geometry_center": 18.867962264113206,
+        "top_face_center_f": 33.940952157989834,
+        "top_face_center": 33.734255586866,
+        "grasp_pixel_f": 28.635642126552707,
+        "grasp_pixel": 28.635642126552707
+      },
+      "image_age_ms": 366.6234000120312,
+      "frame_pose_age_ms": null
+    },
+    {
+      "index": 42,
+      "path": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_03_candidate_02\\repeat_03",
+      "raw": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_03_candidate_02\\repeat_03\\raw.jpg",
+      "packet": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_03_candidate_02\\repeat_03\\packet.json",
+      "slot_id": 1,
+      "target_pixel": [
+        320.0,
+        240.0
+      ],
+      "measurement_point": "top_face_subpixel",
+      "center_distance_px": 33.24304542426316,
+      "bbox": [
+        240,
+        155,
+        437,
+        366
+      ],
+      "area_px": 28832,
+      "confidence": 0.55,
+      "points": {
+        "pixel_center_f": [
+          336.07552600918376,
+          257.97467617024193
+        ],
+        "pixel_center": [
+          336.0,
+          258.0
+        ],
+        "geometry_center_f": [
+          331.8000183105469,
+          256.3999938964844
+        ],
+        "geometry_center": [
+          332.0,
+          256.0
+        ],
+        "top_face_center_f": [
+          352.52749502749504,
+          246.86018486018486
+        ],
+        "top_face_center": [
+          353.0,
+          247.0
+        ],
+        "grasp_pixel_f": [
+          345.0,
+          252.0
+        ],
+        "grasp_pixel": [
+          345.0,
+          252.0
+        ]
+      },
+      "distances_px": {
+        "pixel_center_f": 24.114549962564237,
+        "pixel_center": 24.08318915758459,
+        "geometry_center_f": 20.203965747693353,
+        "geometry_center": 20.0,
+        "top_face_center_f": 33.24304542426316,
+        "top_face_center": 33.734255586866,
+        "grasp_pixel_f": 27.730849247724095,
+        "grasp_pixel": 27.730849247724095
+      },
+      "image_age_ms": 382.8893000027165,
+      "frame_pose_age_ms": null
+    },
+    {
+      "index": 43,
+      "path": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_03_candidate_03\\repeat_01",
+      "raw": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_03_candidate_03\\repeat_01\\raw.jpg",
+      "packet": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_03_candidate_03\\repeat_01\\packet.json",
+      "slot_id": 1,
+      "target_pixel": [
+        320.0,
+        240.0
+      ],
+      "measurement_point": "top_face_subpixel",
+      "center_distance_px": 35.61280987891867,
+      "bbox": [
+        239,
+        155,
+        448,
+        366
+      ],
+      "area_px": 28544,
+      "confidence": 0.55,
+      "points": {
+        "pixel_center_f": [
+          337.79387860971815,
+          258.30454781255406
+        ],
+        "pixel_center": [
+          338.0,
+          258.0
+        ],
+        "geometry_center_f": [
+          331.55609130859375,
+          254.79510498046875
+        ],
+        "geometry_center": [
+          332.0,
+          255.0
+        ],
+        "top_face_center_f": [
+          354.9292582017365,
+          246.9440009323466
+        ],
+        "top_face_center": [
+          355.0,
+          247.0
+        ],
+        "grasp_pixel_f": [
+          346.0,
+          252.0
+        ],
+        "grasp_pixel": [
+          346.0,
+          252.0
+        ]
+      },
+      "distances_px": {
+        "pixel_center_f": 25.527996133646347,
+        "pixel_center": 25.45584412271571,
+        "geometry_center_f": 18.773342209517388,
+        "geometry_center": 19.209372712298546,
+        "top_face_center_f": 35.61280987891867,
+        "top_face_center": 35.6931365951495,
+        "grasp_pixel_f": 28.635642126552707,
+        "grasp_pixel": 28.635642126552707
+      },
+      "image_age_ms": 354.9594000214711,
+      "frame_pose_age_ms": null
+    },
+    {
+      "index": 44,
+      "path": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_03_candidate_03\\repeat_02",
+      "raw": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_03_candidate_03\\repeat_02\\raw.jpg",
+      "packet": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_03_candidate_03\\repeat_02\\packet.json",
+      "slot_id": 1,
+      "target_pixel": [
+        320.0,
+        240.0
+      ],
+      "measurement_point": "top_face_subpixel",
+      "center_distance_px": 34.84050343475162,
+      "bbox": [
+        243,
+        155,
+        442,
+        366
+      ],
+      "area_px": 28795,
+      "confidence": 0.55,
+      "points": {
+        "pixel_center_f": [
+          338.3100065177867,
+          259.24469143425614
+        ],
+        "pixel_center": [
+          338.0,
+          259.0
+        ],
+        "geometry_center_f": [
+          334.9639587402344,
+          259.90460205078125
+        ],
+        "geometry_center": [
+          335.0,
+          260.0
+        ],
+        "top_face_center_f": [
+          354.3682913636637,
+          245.71674980467577
+        ],
+        "top_face_center": [
+          354.0,
+          246.0
+        ],
+        "grasp_pixel_f": [
+          346.0,
+          252.0
+        ],
+        "grasp_pixel": [
+          346.0,
+          252.0
+        ]
+      },
+      "distances_px": {
+        "pixel_center_f": 26.563405035520628,
+        "pixel_center": 26.1725046566048,
+        "geometry_center_f": 24.90207308597824,
+        "geometry_center": 25.0,
+        "top_face_center_f": 34.84050343475162,
+        "top_face_center": 34.52535300326414,
+        "grasp_pixel_f": 28.635642126552707,
+        "grasp_pixel": 28.635642126552707
+      },
+      "image_age_ms": 408.70949998497963,
+      "frame_pose_age_ms": null
+    },
+    {
+      "index": 45,
+      "path": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_03_candidate_03\\repeat_03",
+      "raw": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_03_candidate_03\\repeat_03\\raw.jpg",
+      "packet": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_03_candidate_03\\repeat_03\\packet.json",
+      "slot_id": 1,
+      "target_pixel": [
+        320.0,
+        240.0
+      ],
+      "measurement_point": "top_face_subpixel",
+      "center_distance_px": 35.125989939825075,
+      "bbox": [
+        234,
+        155,
+        444,
+        366
+      ],
+      "area_px": 28572,
+      "confidence": 0.55,
+      "points": {
+        "pixel_center_f": [
+          337.67396938387645,
+          258.5350219427071
+        ],
+        "pixel_center": [
+          338.0,
+          259.0
+        ],
+        "geometry_center_f": [
+          329.1249084472656,
+          252.9839324951172
+        ],
+        "geometry_center": [
+          329.0,
+          253.0
+        ],
+        "top_face_center_f": [
+          354.13453576087574,
+          248.286654188645
+        ],
+        "top_face_center": [
+          354.0,
+          248.0
+        ],
+        "grasp_pixel_f": [
+          346.0,
+          254.0
+        ],
+        "grasp_pixel": [
+          346.0,
+          254.0
+        ]
+      },
+      "distances_px": {
+        "pixel_center_f": 25.610861605944372,
+        "pixel_center": 26.1725046566048,
+        "geometry_center_f": 15.869670986152787,
+        "geometry_center": 15.811388300841896,
+        "top_face_center_f": 35.125989939825075,
+        "top_face_center": 34.92849839314596,
+        "grasp_pixel_f": 29.5296461204668,
+        "grasp_pixel": 29.5296461204668
+      },
+      "image_age_ms": 376.3355999835767,
+      "frame_pose_age_ms": null
+    },
+    {
+      "index": 46,
+      "path": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_03_candidate_04\\repeat_01",
+      "raw": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_03_candidate_04\\repeat_01\\raw.jpg",
+      "packet": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_03_candidate_04\\repeat_01\\packet.json",
+      "slot_id": 1,
+      "target_pixel": [
+        320.0,
+        240.0
+      ],
+      "measurement_point": "top_face_subpixel",
+      "center_distance_px": 34.60068827063926,
+      "bbox": [
+        244,
+        156,
+        442,
+        366
+      ],
+      "area_px": 28545,
+      "confidence": 0.55,
+      "points": {
+        "pixel_center_f": [
+          337.3134431676589,
+          257.4994462134847
+        ],
+        "pixel_center": [
+          337.0,
+          257.0
+        ],
+        "geometry_center_f": [
+          335.20269775390625,
+          257.7332763671875
+        ],
+        "geometry_center": [
+          335.0,
+          258.0
+        ],
+        "top_face_center_f": [
+          353.9912270440987,
+          246.465610012867
+        ],
+        "top_face_center": [
+          354.0,
+          246.0
+        ],
+        "grasp_pixel_f": [
+          346.0,
+          252.0
+        ],
+        "grasp_pixel": [
+          346.0,
+          252.0
+        ]
+      },
+      "distances_px": {
+        "pixel_center_f": 24.61678151380472,
+        "pixel_center": 24.041630560342615,
+        "geometry_center_f": 23.357891807945272,
+        "geometry_center": 23.430749027719962,
+        "top_face_center_f": 34.60068827063926,
+        "top_face_center": 34.52535300326414,
+        "grasp_pixel_f": 28.635642126552707,
+        "grasp_pixel": 28.635642126552707
+      },
+      "image_age_ms": 348.5495999921113,
+      "frame_pose_age_ms": null
+    },
+    {
+      "index": 47,
+      "path": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_03_candidate_04\\repeat_02",
+      "raw": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_03_candidate_04\\repeat_02\\raw.jpg",
+      "packet": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_03_candidate_04\\repeat_02\\packet.json",
+      "slot_id": 1,
+      "target_pixel": [
+        320.0,
+        240.0
+      ],
+      "measurement_point": "top_face_subpixel",
+      "center_distance_px": 36.077595346745845,
+      "bbox": [
+        240,
+        155,
+        440,
+        366
+      ],
+      "area_px": 28718,
+      "confidence": 0.55,
+      "points": {
+        "pixel_center_f": [
+          337.4768489852081,
+          258.0548675610595
+        ],
+        "pixel_center": [
+          337.0,
+          258.0
+        ],
+        "geometry_center_f": [
+          333.9151916503906,
+          255.7621307373047
+        ],
+        "geometry_center": [
+          334.0,
+          256.0
+        ],
+        "top_face_center_f": [
+          355.14217518835915,
+          248.1621326278254
+        ],
+        "top_face_center": [
+          355.0,
+          248.0
+        ],
+        "grasp_pixel_f": [
+          346.0,
+          252.0
+        ],
+        "grasp_pixel": [
+          346.0,
+          252.0
+        ]
+      },
+      "distances_px": {
+        "pixel_center_f": 25.128041967076705,
+        "pixel_center": 24.758836806279895,
+        "geometry_center_f": 21.025634926132103,
+        "geometry_center": 21.2602916254693,
+        "top_face_center_f": 36.077595346745845,
+        "top_face_center": 35.90264614203248,
+        "grasp_pixel_f": 28.635642126552707,
+        "grasp_pixel": 28.635642126552707
+      },
+      "image_age_ms": 368.6695999931544,
+      "frame_pose_age_ms": null
+    },
+    {
+      "index": 48,
+      "path": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_03_candidate_04\\repeat_03",
+      "raw": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_03_candidate_04\\repeat_03\\raw.jpg",
+      "packet": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_03_candidate_04\\repeat_03\\packet.json",
+      "slot_id": 1,
+      "target_pixel": [
+        320.0,
+        240.0
+      ],
+      "measurement_point": "top_face_subpixel",
+      "center_distance_px": 36.33957228900591,
+      "bbox": [
+        241,
+        155,
+        441,
+        366
+      ],
+      "area_px": 28633,
+      "confidence": 0.55,
+      "points": {
+        "pixel_center_f": [
+          338.58495379947595,
+          259.3268514687629
+        ],
+        "pixel_center": [
+          339.0,
+          259.0
+        ],
+        "geometry_center_f": [
+          339.7000427246094,
+          259.6000061035156
+        ],
+        "geometry_center": [
+          340.0,
+          260.0
+        ],
+        "top_face_center_f": [
+          355.6320804971885,
+          247.13577981651378
+        ],
+        "top_face_center": [
+          356.0,
+          247.0
+        ],
+        "grasp_pixel_f": [
+          346.0,
+          253.0
+        ],
+        "grasp_pixel": [
+          346.0,
+          253.0
+        ]
+      },
+      "distances_px": {
+        "pixel_center_f": 26.81282706885418,
+        "pixel_center": 26.870057685088806,
+        "geometry_center_f": 27.78942105566945,
+        "geometry_center": 28.284271247461902,
+        "top_face_center_f": 36.33957228900591,
+        "top_face_center": 36.6742416417845,
+        "grasp_pixel_f": 29.068883707497267,
+        "grasp_pixel": 29.068883707497267
+      },
+      "image_age_ms": 363.0422999849543,
+      "frame_pose_age_ms": null
+    },
+    {
+      "index": 49,
+      "path": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_03_candidate_05\\repeat_01",
+      "raw": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_03_candidate_05\\repeat_01\\raw.jpg",
+      "packet": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_03_candidate_05\\repeat_01\\packet.json",
+      "slot_id": 1,
+      "target_pixel": [
+        320.0,
+        240.0
+      ],
+      "measurement_point": "top_face_subpixel",
+      "center_distance_px": 34.84559836058495,
+      "bbox": [
+        241,
+        156,
+        444,
+        367
+      ],
+      "area_px": 28810,
+      "confidence": 0.55,
+      "points": {
+        "pixel_center_f": [
+          337.0975693373102,
+          257.97795604923033
+        ],
+        "pixel_center": [
+          337.0,
+          258.0
+        ],
+        "geometry_center_f": [
+          331.696044921875,
+          254.70672607421875
+        ],
+        "geometry_center": [
+          332.0,
+          255.0
+        ],
+        "top_face_center_f": [
+          353.7875538915362,
+          248.52155661447696
+        ],
+        "top_face_center": [
+          354.0,
+          249.0
+        ],
+        "grasp_pixel_f": [
+          346.0,
+          254.0
+        ],
+        "grasp_pixel": [
+          346.0,
+          254.0
+        ]
+      },
+      "distances_px": {
+        "pixel_center_f": 24.809953263804964,
+        "pixel_center": 24.758836806279895,
+        "geometry_center_f": 18.79056302074591,
+        "geometry_center": 19.209372712298546,
+        "top_face_center_f": 34.84559836058495,
+        "top_face_center": 35.17101079013795,
+        "grasp_pixel_f": 29.5296461204668,
+        "grasp_pixel": 29.5296461204668
+      },
+      "image_age_ms": 361.77540000062436,
+      "frame_pose_age_ms": null
+    },
+    {
+      "index": 50,
+      "path": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_03_candidate_05\\repeat_02",
+      "raw": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_03_candidate_05\\repeat_02\\raw.jpg",
+      "packet": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_03_candidate_05\\repeat_02\\packet.json",
+      "slot_id": 1,
+      "target_pixel": [
+        320.0,
+        240.0
+      ],
+      "measurement_point": "top_face_subpixel",
+      "center_distance_px": 37.101753151569106,
+      "bbox": [
+        234,
+        156,
+        445,
+        366
+      ],
+      "area_px": 29415,
+      "confidence": 0.55,
+      "points": {
+        "pixel_center_f": [
+          337.8808389261745,
+          257.6893624161074
+        ],
+        "pixel_center": [
+          338.0,
+          258.0
+        ],
+        "geometry_center_f": [
+          332.497802734375,
+          256.81927490234375
+        ],
+        "geometry_center": [
+          332.0,
+          257.0
+        ],
+        "top_face_center_f": [
+          356.02926529013484,
+          248.85619159532203
+        ],
+        "top_face_center": [
+          356.0,
+          249.0
+        ],
+        "grasp_pixel_f": [
+          347.0,
+          254.0
+        ],
+        "grasp_pixel": [
+          347.0,
+          254.0
+        ]
+      },
+      "distances_px": {
+        "pixel_center_f": 25.15229499254866,
+        "pixel_center": 25.45584412271571,
+        "geometry_center_f": 20.95430937606777,
+        "geometry_center": 20.808652046684813,
+        "top_face_center_f": 37.101753151569106,
+        "top_face_center": 37.107950630558946,
+        "grasp_pixel_f": 30.4138126514911,
+        "grasp_pixel": 30.4138126514911
+      },
+      "image_age_ms": 397.9461999842897,
+      "frame_pose_age_ms": null
+    },
+    {
+      "index": 51,
+      "path": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_03_candidate_05\\repeat_03",
+      "raw": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_03_candidate_05\\repeat_03\\raw.jpg",
+      "packet": "hybrid_controller\\logs\\vision_debug\\live_low_search_z138_topface_20260513_130914\\iter_03_candidate_05\\repeat_03\\packet.json",
+      "slot_id": 1,
+      "target_pixel": [
+        320.0,
+        240.0
+      ],
+      "measurement_point": "top_face_subpixel",
+      "center_distance_px": 37.06319205385514,
+      "bbox": [
+        236,
+        155,
+        448,
+        366
+      ],
+      "area_px": 28886,
+      "confidence": 0.55,
+      "points": {
+        "pixel_center_f": [
+          338.17413309623146,
+          258.7204705560495
+        ],
+        "pixel_center": [
+          338.0,
+          259.0
+        ],
+        "geometry_center_f": [
+          337.1405029296875,
+          258.7752990722656
+        ],
+        "geometry_center": [
+          337.0,
+          259.0
+        ],
+        "top_face_center_f": [
+          356.25065153182373,
+          247.71819076851799
+        ],
+        "top_face_center": [
+          356.0,
+          248.0
+        ],
+        "grasp_pixel_f": [
+          348.0,
+          254.0
+        ],
+        "grasp_pixel": [
+          348.0,
+          254.0
+        ]
+      },
+      "distances_px": {
+        "pixel_center_f": 26.091284591592125,
+        "pixel_center": 26.1725046566048,
+        "geometry_center_f": 25.422602068546095,
+        "geometry_center": 25.495097567963924,
+        "top_face_center_f": 37.06319205385514,
+        "top_face_center": 36.87817782917155,
+        "grasp_pixel_f": 31.304951684997057,
+        "grasp_pixel": 31.304951684997057
+      },
+      "image_age_ms": 355.0830000312999,
+      "frame_pose_age_ms": null
+    }
+  ]
+}

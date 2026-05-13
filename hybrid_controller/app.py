@@ -2958,10 +2958,6 @@ class HybridControllerApplication:
                     cmd_seq=int(self._teleop_cmd_seq),
                     client_ts=float(time.time()),
                 )
-                trace = getattr(decision, "trace", {})
-                if isinstance(trace, dict) and bool(trace.get("fine_pulse", False)):
-                    self._teleop_cmd_seq = next_teleop_cmd_seq(self._teleop_cmd_seq)
-                    self.ros_client.stop_teleop(use_auto_z=False, cmd_seq=int(self._teleop_cmd_seq))
             except Exception as error:
                 self._rt_set("vision_servo_status", f"continuous_stop reason=publish_failed:{error}")
                 return False
@@ -2977,13 +2973,43 @@ class HybridControllerApplication:
             command = str(getattr(decision, "command", "") or "")
             if not command:
                 return False
+            if bool(getattr(self.config, "vision_continuous_servo_stop_at_confirm", False)):
+                trace = getattr(decision, "trace", None)
+                center_distance = None
+                confirm_z = None
+                if isinstance(trace, dict):
+                    center_distance = trace.get("center_distance_px")
+                    confirm_z = trace.get("confirm_z_mm")
+                try:
+                    center_text = f"{float(center_distance):.2f}px"
+                except (TypeError, ValueError):
+                    center_text = "--"
+                try:
+                    confirm_text = f"{float(confirm_z):.1f}"
+                except (TypeError, ValueError):
+                    confirm_text = "--"
+                release_mode = str(self._rt_get("release_mode_effective", "") or "--")
+                self._continuous_vision_servo_pick = None
+                self._rt_set(
+                    "vision_servo_status",
+                    "continuous_stop_at_confirm "
+                    f"slot={getattr(getattr(decision, 'pending', None), 'slot_id', '--')} "
+                    f"z={confirm_text} center={center_text} release_mode={release_mode} no_pick",
+                )
+                self._rt_set("vision_servo_confirm_command_blocked", command)
+                return True
             self._continuous_vision_servo_pick = None
             self._rt_set("vision_servo_status", str(decision.status))
             self._send_robot_text_command(command, apply_pick_command_bias=False)
             return True
         if action == "STOP":
             stop_reason = str(getattr(decision, "reason", "") or "")
-            if pending_dict is not None and stop_reason in {"hold", "lost_target_wait", "settle_near_center"}:
+            if pending_dict is not None and stop_reason in {
+                "hold",
+                "lost_target_wait",
+                "frame_stale_wait",
+                "settle_near_center",
+            }:
                 self._continuous_vision_servo_pick = pending_dict
                 if stop_reason in {"hold", "settle_near_center"} and self._maybe_send_low_height_discrete_refine(
                     decision=decision,
@@ -4729,6 +4755,13 @@ def build_config_from_args(args: argparse.Namespace) -> AppConfig:
                 AppConfig.vision_continuous_servo_command_timeout_ms,
             )
         ),
+        vision_continuous_servo_stop_at_confirm=bool(
+            getattr(
+                args,
+                "vision_continuous_servo_stop_at_confirm",
+                AppConfig.vision_continuous_servo_stop_at_confirm,
+            )
+        ),
         vision_debug_bundle_enabled=bool(
             getattr(args, "vision_debug_bundle_enabled", AppConfig.vision_debug_bundle_enabled)
         ),
@@ -5086,6 +5119,17 @@ def main(argv: list[str] | None = None) -> int:
         "--vision-continuous-servo-command-timeout-ms",
         type=float,
         default=AppConfig.vision_continuous_servo_command_timeout_ms,
+    )
+    parser.add_argument(
+        "--vision-continuous-servo-stop-at-confirm",
+        action="store_true",
+        default=AppConfig.vision_continuous_servo_stop_at_confirm,
+        help="Stop at confirm height after continuous centering; do not issue the final PICK_CYL.",
+    )
+    parser.add_argument(
+        "--no-vision-continuous-servo-stop-at-confirm",
+        action="store_false",
+        dest="vision_continuous_servo_stop_at_confirm",
     )
     parser.add_argument(
         "--vision-debug-bundle-enabled",

@@ -1,0 +1,31 @@
+{
+  "created_at": "2026-05-13T11:04:36",
+  "camera_contract": "PC reads the single official JetMax MJPEG URL only; this tool does not start, restart, scan, repair, or mutate usb_cam.service/web_video_server/uvcvideo/devices.",
+  "measurement_contract": "Low-height search uses stop-settle-measure: wait for IDLE, settle, drain transition frames, then measure repeated subpixel geometry points from the persistent official MJPEG stream.",
+  "stream_url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+  "slot_id": 1,
+  "z_mm": 121.27,
+  "measurement_point": "geometry_subpixel",
+  "alignment_target_pixel": [
+    320.0,
+    240.0
+  ],
+  "alignment_target_source": "command_bias_roi_center",
+  "coarse_action_tolerance_px": 8.0,
+  "final_center_tolerance_px": 2.0,
+  "settle_sec": 1.0,
+  "drain_frames": 0,
+  "fresh_reopen_before_measure": true,
+  "final_recheck_repeats": 3,
+  "max_final_regression_px": 2.0,
+  "theta_direction": "both",
+  "radius_direction": "both",
+  "dry_run": false,
+  "steps": [],
+  "start_pose_cyl": [
+    35.220001220703125,
+    173.8800048828125,
+    121.27
+  ],
+  "error": "Slot 1 not detected in low-height calibration frame."
+}

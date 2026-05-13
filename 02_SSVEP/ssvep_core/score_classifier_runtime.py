@@ -33,6 +33,8 @@ CLASSIFIER_GATE_VARIANT_SUBJECT_FLOOR_NS2_AWARE = "subject_floor_ns2_aware_gate"
 CLASSIFIER_GATE_VARIANT_WEAK_SUBJECT_GUARD = "weak_subject_guard"
 CLASSIFIER_GATE_VARIANT_FREQUENCY_SPECIFIC_THRESHOLD = "frequency_specific_threshold_gate"
 CLASSIFIER_GATE_VARIANT_FREQUENCY_SPECIFIC_LOGISTIC = "frequency_specific_logistic_gate"
+CLASSIFIER_GATE_VARIANT_CONDITIONAL_FREQUENCY_SPECIFIC_LOGISTIC = "conditional_frequency_specific_logistic_gate"
+CLASSIFIER_GATE_VARIANT_TENP5_NS2_HARD_NEGATIVE_VETO = "tenp5_ns2_hard_negative_veto"
 CLASSIFIER_GATE_VARIANTS = (
     CLASSIFIER_GATE_VARIANT_BASELINE_LRTMW,
     CLASSIFIER_GATE_VARIANT_LRTMW_MARGIN,
@@ -43,6 +45,14 @@ CLASSIFIER_GATE_VARIANTS = (
     CLASSIFIER_GATE_VARIANT_WEAK_SUBJECT_GUARD,
     CLASSIFIER_GATE_VARIANT_FREQUENCY_SPECIFIC_THRESHOLD,
     CLASSIFIER_GATE_VARIANT_FREQUENCY_SPECIFIC_LOGISTIC,
+    CLASSIFIER_GATE_VARIANT_CONDITIONAL_FREQUENCY_SPECIFIC_LOGISTIC,
+    CLASSIFIER_GATE_VARIANT_TENP5_NS2_HARD_NEGATIVE_VETO,
+)
+CLASSIFIER_RUNTIME_SAFE_GATE_VARIANTS = (
+    CLASSIFIER_GATE_VARIANT_BASELINE_LRTMW,
+)
+CLASSIFIER_RESEARCH_ONLY_GATE_VARIANTS = tuple(
+    variant for variant in CLASSIFIER_GATE_VARIANTS if variant not in CLASSIFIER_RUNTIME_SAFE_GATE_VARIANTS
 )
 
 
@@ -59,6 +69,17 @@ def parse_classifier_gate_variant(raw: Any) -> str:
         "frequency_specific_logistic": CLASSIFIER_GATE_VARIANT_FREQUENCY_SPECIFIC_LOGISTIC,
         "freq_specific_logistic": CLASSIFIER_GATE_VARIANT_FREQUENCY_SPECIFIC_LOGISTIC,
         "freqspec_logistic": CLASSIFIER_GATE_VARIANT_FREQUENCY_SPECIFIC_LOGISTIC,
+        "conditional-frequency-specific-logistic": CLASSIFIER_GATE_VARIANT_CONDITIONAL_FREQUENCY_SPECIFIC_LOGISTIC,
+        "conditional_frequency_specific_logistic": CLASSIFIER_GATE_VARIANT_CONDITIONAL_FREQUENCY_SPECIFIC_LOGISTIC,
+        "conditional_freq_specific_logistic": CLASSIFIER_GATE_VARIANT_CONDITIONAL_FREQUENCY_SPECIFIC_LOGISTIC,
+        "conditional_freqspec_logistic": CLASSIFIER_GATE_VARIANT_CONDITIONAL_FREQUENCY_SPECIFIC_LOGISTIC,
+        "freqspec_conditional_logistic": CLASSIFIER_GATE_VARIANT_CONDITIONAL_FREQUENCY_SPECIFIC_LOGISTIC,
+        "tenp5-ns2-hard-negative-veto": CLASSIFIER_GATE_VARIANT_TENP5_NS2_HARD_NEGATIVE_VETO,
+        "tenp5_ns2_veto": CLASSIFIER_GATE_VARIANT_TENP5_NS2_HARD_NEGATIVE_VETO,
+        "10p5_ns2_hard_negative_veto": CLASSIFIER_GATE_VARIANT_TENP5_NS2_HARD_NEGATIVE_VETO,
+        "10.5_ns2_hard_negative_veto": CLASSIFIER_GATE_VARIANT_TENP5_NS2_HARD_NEGATIVE_VETO,
+        "10p5-ns2-hard-negative-veto": CLASSIFIER_GATE_VARIANT_TENP5_NS2_HARD_NEGATIVE_VETO,
+        "10.5-ns2-hard-negative-veto": CLASSIFIER_GATE_VARIANT_TENP5_NS2_HARD_NEGATIVE_VETO,
         "subject-floor-ns2-aware": CLASSIFIER_GATE_VARIANT_SUBJECT_FLOOR_NS2_AWARE,
         "subject_floor_ns2_aware": CLASSIFIER_GATE_VARIANT_SUBJECT_FLOOR_NS2_AWARE,
         "subject_threshold_floor_ns2_aware": CLASSIFIER_GATE_VARIANT_SUBJECT_FLOOR_NS2_AWARE,
@@ -69,6 +90,20 @@ def parse_classifier_gate_variant(raw: Any) -> str:
     if value not in CLASSIFIER_GATE_VARIANTS:
         raise ValueError(f"unsupported classifier gate variant: {raw}")
     return value
+
+
+def is_classifier_gate_variant_runtime_safe(raw: Any) -> bool:
+    return parse_classifier_gate_variant(raw) in CLASSIFIER_RUNTIME_SAFE_GATE_VARIANTS
+
+
+def require_runtime_safe_classifier_gate_variant(raw: Any) -> str:
+    variant = parse_classifier_gate_variant(raw)
+    if variant not in CLASSIFIER_RUNTIME_SAFE_GATE_VARIANTS:
+        raise ValueError(
+            "research-only classifier gate variant is not allowed for realtime startup: "
+            f"{variant}. Re-run or export a session no-control/baseline_lrtmw profile for online use."
+        )
+    return variant
 
 
 def freq_label(freq: float) -> str:

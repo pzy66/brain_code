@@ -8,11 +8,13 @@ import numpy as np
 
 
 STIMULUS_PROFILE_COMFORT_FBCCA_V1 = "comfort_fbcca_v1"
+STIMULUS_PROFILE_COMMAND_NC_8_10_12_15_V1 = "command_nc_8_10_12_15_v1"
 STIMULUS_PROFILE_COMFORT_FBCCA_WANG_FAST_V1 = "comfort_fbcca_wang_fast_v1"
 STIMULUS_PROFILE_LEGACY_FULL_CONTRAST = "legacy_full_contrast"
 DEFAULT_STIMULUS_PROFILE_ID = STIMULUS_PROFILE_COMFORT_FBCCA_V1
 
 DEFAULT_COMFORT_FREQS = (9.8, 12.0, 14.8, 15.8)
+COMMAND_NC_8_10_12_15_FREQS = (8.0, 10.0, 12.0, 15.0)
 DEFAULT_WANG_FAST_FREQS = (11.0, 12.0, 14.8, 15.8)
 DEFAULT_COMFORT_REFRESH_RATE_HZ = 240.0
 DEFAULT_SCREEN_BRIGHTNESS_NOTE = "not_recorded"
@@ -73,6 +75,18 @@ STIMULUS_PROFILES: dict[str, StimulusProfile] = {
         phi=0.0,
         ramp_sec=0.30,
         description="Comfort-first FBCCA SSVEP stimulus for 9.8/12/14.8/15.8Hz async control.",
+    ),
+    STIMULUS_PROFILE_COMMAND_NC_8_10_12_15_V1: StimulusProfile(
+        profile_id=STIMULUS_PROFILE_COMMAND_NC_8_10_12_15_V1,
+        freqs=COMMAND_NC_8_10_12_15_FREQS,
+        preferred_mode=STIMULUS_MODE_FRAME_LOCKED_SINE,
+        fallback_mode=STIMULUS_MODE_ELAPSED_TIME_SINE,
+        refresh_rate_hz=DEFAULT_COMFORT_REFRESH_RATE_HZ,
+        mean=0.40,
+        amp=0.20,
+        phi=0.0,
+        ramp_sec=0.30,
+        description="Self-collection command/no-control FBCCA stimulus for 8/10/12/15Hz.",
     ),
     STIMULUS_PROFILE_COMFORT_FBCCA_WANG_FAST_V1: StimulusProfile(
         profile_id=STIMULUS_PROFILE_COMFORT_FBCCA_WANG_FAST_V1,

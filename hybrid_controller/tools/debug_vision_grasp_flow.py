@@ -21,6 +21,7 @@ from hybrid_controller.adapters.teleop_ros_channel import RosTeleopPublishPlanne
 from hybrid_controller.adapters.teleop_ros_channel import new_teleop_cmd_seq_base
 from hybrid_controller.adapters.teleop_ros_channel import next_teleop_cmd_seq
 from hybrid_controller.config import AppConfig
+from hybrid_controller.config import SERVO_MEASUREMENT_POINTS
 from hybrid_controller.vision.calibration_profile import VisionCalibrationProfile
 from hybrid_controller.vision.continuous_servo_controller import ContinuousVisionServoController
 from hybrid_controller.vision.grasp_profile import apply_vision_grasp_profile
@@ -347,8 +348,14 @@ def _open_capture(cv2_module: object, stream_url: str, config: AppConfig):
     source = int(stream_url) if str(stream_url).isdigit() else _normalize_web_video_url(str(stream_url))
     if _is_web_video_mjpeg_stream(source):
         timeout_sec = max(0.2, float(config.vision_open_timeout_ms) / 1000.0)
+        read_timeout_sec = max(0.1, float(config.vision_read_timeout_ms) / 1000.0)
         try:
-            return _HttpMjpegCapture(str(source), cv2_module=cv2_module, timeout_sec=timeout_sec)
+            return _HttpMjpegCapture(
+                str(source),
+                cv2_module=cv2_module,
+                timeout_sec=timeout_sec,
+                read_timeout_sec=read_timeout_sec,
+            )
         except Exception:
             pass
     backend = getattr(cv2_module, "CAP_ANY", 0)
@@ -378,7 +385,13 @@ def _open_capture_with_backend(cv2_module: object, stream_url: str, config: AppC
     source = int(stream_url) if str(stream_url).isdigit() else _normalize_web_video_url(str(stream_url))
     if backend == "http" and _is_web_video_mjpeg_stream(source):
         timeout_sec = max(0.2, float(config.vision_open_timeout_ms) / 1000.0)
-        return _HttpMjpegCapture(str(source), cv2_module=cv2_module, timeout_sec=timeout_sec)
+        read_timeout_sec = max(0.1, float(config.vision_read_timeout_ms) / 1000.0)
+        return _HttpMjpegCapture(
+            str(source),
+            cv2_module=cv2_module,
+            timeout_sec=timeout_sec,
+            read_timeout_sec=read_timeout_sec,
+        )
     return _open_capture(cv2_module, stream_url, config)
 
 
@@ -484,6 +497,7 @@ class _PersistentCaptureReader:
         self._capture_backend = str(capture_backend or "auto")
         self._capture: object | None = None
         self._stream_url: str | None = None
+        self._last_transport_stats: dict[str, object] = {}
 
     @property
     def stream_url(self) -> str | None:
@@ -492,6 +506,12 @@ class _PersistentCaptureReader:
     def transport_stats(self) -> dict[str, object]:
         capture = self._capture
         if capture is None:
+            if self._last_transport_stats:
+                stats = dict(self._last_transport_stats)
+                stats.setdefault("stream_url", self._stream_url)
+                stats.setdefault("capture_backend", self._capture_backend)
+                stats["open"] = False
+                return stats
             return {
                 "stream_url": self._stream_url,
                 "capture_backend": self._capture_backend,
@@ -539,6 +559,7 @@ class _PersistentCaptureReader:
 
     def close(self) -> None:
         capture = self._capture
+        self._last_transport_stats = self.transport_stats() if capture is not None else dict(self._last_transport_stats)
         self._capture = None
         self._stream_url = None
         if capture is None:
@@ -649,6 +670,62 @@ def _resolve_alignment_target_pixel(
     if str(config.pick_tool_offset_source).strip().lower() == "target_pixel":
         return None
     return (float(roi_center[0]), float(roi_center[1]))
+
+
+def _ibvs_jacobian_from_stage_profile(
+    profile: VisionCalibrationProfile | None,
+    *,
+    theta_deg: float,
+    radius_mm: float,
+) -> tuple[float, float, float, float] | None:
+    if profile is None:
+        return None
+    j_xy = _stage_profile_pixel_to_xy_jacobian(profile)
+    if j_xy is None:
+        return None
+    theta_rad = math.radians(float(theta_deg))
+    radius = float(radius_mm)
+    dx_dtheta = -radius * math.sin(theta_rad) * math.pi / 180.0
+    dy_dtheta = radius * math.cos(theta_rad) * math.pi / 180.0
+    dx_dr = math.cos(theta_rad)
+    dy_dr = math.sin(theta_rad)
+    du_dx, du_dy, dv_dx, dv_dy = j_xy
+    return (
+        du_dx * dx_dtheta + du_dy * dy_dtheta,
+        du_dx * dx_dr + du_dy * dy_dr,
+        dv_dx * dx_dtheta + dv_dy * dy_dtheta,
+        dv_dx * dx_dr + dv_dy * dy_dr,
+    )
+
+
+def _stage_profile_pixel_to_xy_jacobian(profile: VisionCalibrationProfile) -> tuple[float, float, float, float] | None:
+    summary = profile.samples_summary if isinstance(profile.samples_summary, Mapping) else {}
+    raw = summary.get("pixel_to_robot_jacobian") if isinstance(summary, Mapping) else None
+    if isinstance(raw, (tuple, list)) and len(raw) >= 2:
+        first = raw[0]
+        second = raw[1]
+        if isinstance(first, (tuple, list)) and isinstance(second, (tuple, list)) and len(first) >= 2 and len(second) >= 2:
+            try:
+                du_dx = float(first[0])
+                dv_dx = float(first[1])
+                du_dy = float(second[0])
+                dv_dy = float(second[1])
+            except (TypeError, ValueError):
+                return None
+            if all(math.isfinite(value) for value in (du_dx, du_dy, dv_dx, dv_dy)):
+                return (du_dx, du_dy, dv_dx, dv_dy)
+    matrix = profile.pixel_to_delta_matrix
+    if matrix is None:
+        return None
+    try:
+        inverse = np.linalg.pinv(np.asarray(matrix, dtype=np.float64)[:, :2])
+    except Exception:
+        return None
+    if inverse.shape != (2, 2) or not np.all(np.isfinite(inverse)):
+        return None
+    # pixel_to_delta stores delta_xy = -J_xy^-1 * pixel_error, so J_xy = -inv(matrix).
+    j_xy = -inverse
+    return (float(j_xy[0, 0]), float(j_xy[0, 1]), float(j_xy[1, 0]), float(j_xy[1, 1]))
 
 
 def _current_calibration_stage(config: AppConfig, snapshot: Mapping[str, object] | None) -> tuple[str, float]:
@@ -875,6 +952,10 @@ def _process_frame_batch(
             fallback_to_frame=bool(config.vision_frame_fallback_enabled),
             prefer_frame_fallback=low_height_shape_fallback,
             fallback_min_area_ratio=float(getattr(config, "vision_low_height_shape_fallback_min_area_ratio", 1.20)),
+            fallback_reject_edge_touch=bool(
+                low_height_shape_fallback
+                and getattr(config, "vision_low_height_reject_edge_fallback_candidates", True)
+            ),
         )
         update_slots(
             slots,
@@ -911,6 +992,11 @@ def _process_frame_batch(
             required_stable_frames=int(config.vision_grasp_stable_frames),
             grasp_angle_stability_tolerance_deg=float(config.vision_grasp_angle_stability_tolerance_deg),
             servo_measurement_point=str(getattr(config, "vision_servo_measurement_point", "center")),
+            low_height_servo_measurement_point=str(
+                getattr(config, "vision_servo_low_height_measurement_point", "")
+            ),
+            low_height_confirm_z_mm=float(getattr(config, "vision_pick_confirm_z_mm", config.robot_approach_z)),
+            low_height_guard_band_mm=float(getattr(config, "vision_continuous_servo_low_height_guard_band_mm", 30.0)),
         )
         calibration_ready = calibration_profile is not None and (
             calibration_profile.has_pixel_to_delta_model or calibration_profile.has_stage_models
@@ -960,6 +1046,50 @@ def _packet_frame_pose_age_ms(packet: Mapping[str, object]) -> float | None:
     if not ages:
         return None
     return max(ages)
+
+
+def _snapshot_frame_pose_age_ms(
+    snapshot: Mapping[str, object] | None,
+    packet: Mapping[str, object],
+) -> float | None:
+    """Approximate how far the robot state sample is from the image capture time."""
+    if not isinstance(snapshot, Mapping):
+        return None
+    try:
+        state_local_ts = float(snapshot.get("_local_receive_ts", 0.0) or 0.0)
+        capture_ts = float(packet.get("capture_ts", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return None
+    if state_local_ts <= 0.0 or capture_ts <= 0.0:
+        return None
+    return abs(state_local_ts - capture_ts) * 1000.0
+
+
+def _frame_pose_age_for_static_snapshot(
+    snapshot: Mapping[str, object] | None,
+    packet: Mapping[str, object],
+) -> float | None:
+    """Only compute pose/image age when the snapshot carries a local timestamp."""
+    if not isinstance(snapshot, Mapping):
+        return None
+    try:
+        capture_ts = float(packet.get("capture_ts", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return None
+    if capture_ts <= 0.0:
+        return None
+    try:
+        local_receive_ts = float(snapshot.get("_local_receive_ts", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return None
+    if local_receive_ts <= 0.0:
+        return None
+    state = str(snapshot.get("state", "")).strip().upper()
+    busy = bool(snapshot.get("busy", False))
+    busy_action = str(snapshot.get("busy_action", "")).strip().lower()
+    if state == "IDLE" and not busy and not busy_action:
+        return None
+    return _snapshot_frame_pose_age_ms(snapshot, packet)
 
 
 def _resolve_packet(
@@ -1038,6 +1168,29 @@ def _pixel_distance_to_target(point: object, target: object) -> float | None:
     return float(math.hypot(px - tx, py - ty))
 
 
+def _point_for_measurement(payload: Mapping[str, object], measurement_point: object) -> object:
+    mode = str(measurement_point or "").strip().lower()
+    if mode == "color_block_subpixel":
+        return payload.get("color_block_center_f")
+    if mode == "color_block":
+        return payload.get("color_block_center")
+    if mode == "top_face_subpixel":
+        return payload.get("top_face_center_f") or payload.get("top_face_center")
+    if mode == "top_face":
+        return payload.get("top_face_center") or payload.get("top_face_center_f")
+    if mode == "grasp_subpixel":
+        return payload.get("grasp_pixel_f") or payload.get("grasp_pixel")
+    if mode == "grasp":
+        return payload.get("grasp_pixel") or payload.get("grasp_pixel_f")
+    if mode == "geometry_subpixel":
+        return payload.get("geometry_center_f") or payload.get("geometry_center")
+    if mode == "geometry":
+        return payload.get("geometry_center") or payload.get("geometry_center_f")
+    if mode == "center_subpixel":
+        return payload.get("pixel_center_f") or payload.get("pixel_center")
+    return payload.get("pixel_center") or payload.get("pixel_center_f")
+
+
 def _slot_alignment_provenance(
     slot: Mapping[str, object] | None,
     packet: Mapping[str, object] | None = None,
@@ -1052,7 +1205,18 @@ def _slot_alignment_provenance(
     if target is None and isinstance(packet, Mapping):
         target = packet.get("alignment_target_pixel")
     distances: dict[str, object] = {}
-    for key in ("pixel_center_f", "pixel_center", "geometry_center_f", "geometry_center", "grasp_pixel_f", "grasp_pixel"):
+    for key in (
+        "pixel_center_f",
+        "pixel_center",
+        "geometry_center_f",
+        "geometry_center",
+        "color_block_center_f",
+        "color_block_center",
+        "top_face_center_f",
+        "top_face_center",
+        "grasp_pixel_f",
+        "grasp_pixel",
+    ):
         distance = _pixel_distance_to_target(slot.get(key), target)
         if distance is not None:
             distances[key] = distance
@@ -1276,6 +1440,14 @@ def _save_overlay(
                     overlay, geometry_point, (255, 160, 0), cv2_module.MARKER_DIAMOND, 24, 2
                 )
                 cv2_module.circle(overlay, geometry_point, 6, (255, 160, 0), 1)
+            top_face = slot.get("top_face_center")
+            if isinstance(top_face, (list, tuple)) and len(top_face) >= 2:
+                top_point = (
+                    int(round(float(top_face[0]))),
+                    int(round(float(top_face[1]))),
+                )
+                cv2_module.drawMarker(overlay, top_point, (0, 255, 180), cv2_module.MARKER_TILTED_CROSS, 26, 2)
+                cv2_module.circle(overlay, top_point, 7, (0, 255, 180), 1)
             grasp = slot.get("grasp_pixel")
             if isinstance(grasp, (list, tuple)) and len(grasp) >= 2:
                 point = (int(round(float(grasp[0]))), int(round(float(grasp[1]))))
@@ -1381,11 +1553,15 @@ def _clamp_refine_target(
     target_radius: float,
     max_theta_step_deg: float,
     max_radius_step_mm: float,
+    step_gain: float = 1.0,
 ) -> tuple[float, float, float]:
     theta_limit = abs(float(max_theta_step_deg))
     radius_limit = abs(float(max_radius_step_mm))
-    theta_delta = max(-theta_limit, min(theta_limit, float(target_theta) - float(current_pose[0])))
-    radius_delta = max(-radius_limit, min(radius_limit, float(target_radius) - float(current_pose[1])))
+    gain = max(0.01, min(1.0, float(step_gain)))
+    theta_delta = (float(target_theta) - float(current_pose[0])) * gain
+    radius_delta = (float(target_radius) - float(current_pose[1])) * gain
+    theta_delta = max(-theta_limit, min(theta_limit, theta_delta))
+    radius_delta = max(-radius_limit, min(radius_limit, radius_delta))
     return (
         float(current_pose[0]) + float(theta_delta),
         float(current_pose[1]) + float(radius_delta),
@@ -1393,11 +1569,90 @@ def _clamp_refine_target(
     )
 
 
+def _continuous_stopped_motion_target(
+    *,
+    current_pose: tuple[float, float, float] | None,
+    selected_slot: Mapping[str, object] | None,
+    center_distance_px: float | None,
+    center_allow_px: float | None,
+    z_rate_mm_s: float,
+    confirm_z_mm: float | None,
+    z_tolerance_mm: float,
+    z_step_mm: float,
+    refine_z_band_above_confirm_mm: float,
+    max_theta_step_deg: float,
+    max_radius_step_mm: float,
+) -> tuple[str, tuple[float, float, float], dict[str, object]] | None:
+    if current_pose is None or confirm_z_mm is None:
+        return None
+    try:
+        current_theta, current_radius, current_z = (
+            float(current_pose[0]),
+            float(current_pose[1]),
+            float(current_pose[2]),
+        )
+        confirm_z = float(confirm_z_mm)
+    except (TypeError, ValueError):
+        return None
+    if not all(math.isfinite(value) for value in (current_theta, current_radius, current_z, confirm_z)):
+        return None
+
+    z_tolerance = max(0.0, float(z_tolerance_mm))
+    center_distance = float("inf") if center_distance_px is None else float(center_distance_px)
+    center_allow = 0.0 if center_allow_px is None else max(0.0, float(center_allow_px))
+
+    if center_distance > center_allow and current_z <= confirm_z + max(0.0, float(refine_z_band_above_confirm_mm)):
+        refine_point = _servo_command_point_from_slot(selected_slot)
+        if refine_point is None:
+            return None
+        target = _clamp_refine_target(
+            current_pose=current_pose,
+            target_theta=float(refine_point[0]),
+            target_radius=float(refine_point[1]),
+            max_theta_step_deg=max_theta_step_deg,
+            max_radius_step_mm=max_radius_step_mm,
+        )
+        if (
+            abs(float(target[0]) - current_theta) < 1e-6
+            and abs(float(target[1]) - current_radius) < 1e-6
+        ):
+            return None
+        return (
+            "stopped_horizontal_refine",
+            target,
+            {
+                "center_distance_px": float(center_distance),
+                "center_allow_px": float(center_allow),
+                "source_point": [float(refine_point[0]), float(refine_point[1])],
+                "max_theta_step_deg": float(abs(float(max_theta_step_deg))),
+                "max_radius_step_mm": float(abs(float(max_radius_step_mm))),
+            },
+        )
+
+    if float(z_rate_mm_s) < -1e-6 and current_z > confirm_z + z_tolerance:
+        z_delta = min(max(0.1, float(z_step_mm)), max(0.0, current_z - confirm_z))
+        if z_delta <= 0.0:
+            return None
+        return (
+            "stopped_descent_step",
+            (current_theta, current_radius, current_z - z_delta),
+            {
+                "center_distance_px": None if not math.isfinite(center_distance) else float(center_distance),
+                "center_allow_px": float(center_allow),
+                "z_step_mm": float(z_delta),
+                "z_rate_before_stopped_move_mm_s": float(z_rate_mm_s),
+            },
+        )
+
+    return None
+
+
 def _wait_for_idle(
     *,
     client: RosBridgeClient,
     timeout_sec: float,
     poll_sec: float = 0.4,
+    min_state_seq: int | None = None,
 ) -> dict[str, object] | None:
     deadline = time.perf_counter() + max(0.1, float(timeout_sec))
     last_snapshot: dict[str, object] | None = None
@@ -1409,6 +1664,14 @@ def _wait_for_idle(
             time.sleep(max(0.05, float(poll_sec)))
             continue
         state = str(last_snapshot.get("state", "")).strip().upper()
+        if min_state_seq is not None:
+            try:
+                state_seq = int(last_snapshot.get("state_seq", 0) or 0)
+            except (TypeError, ValueError):
+                state_seq = 0
+            if state_seq <= int(min_state_seq):
+                time.sleep(max(0.05, float(poll_sec)))
+                continue
         if (
             state in {"IDLE", "CARRY_READY"}
             and not bool(last_snapshot.get("busy", False))
@@ -1435,6 +1698,10 @@ def _slot_summary(packet: Mapping[str, object]) -> list[dict[str, object]]:
                 "grasp_pixel": slot.get("grasp_pixel"),
                 "geometry_center": slot.get("geometry_center"),
                 "geometry_center_f": slot.get("geometry_center_f"),
+                "color_block_center": slot.get("color_block_center"),
+                "color_block_center_f": slot.get("color_block_center_f"),
+                "top_face_center": slot.get("top_face_center"),
+                "top_face_center_f": slot.get("top_face_center_f"),
                 "grasp_pixel_f": slot.get("grasp_pixel_f"),
                 "alignment_target_pixel": slot.get("alignment_target_pixel") or packet.get("alignment_target_pixel"),
                 "measurement_point": slot.get("measurement_point"),
@@ -1510,7 +1777,7 @@ def _continuous_confirm_recheck(
             snapshot_age_ms = 0.0
         _, captured = reader.read(
             frame_count=frames,
-            drain_frames=drain_frames if repeat_index == 1 else 0,
+            drain_frames=drain_frames,
             timeout_sec=float(args.timeout_sec),
         )
         process_frames = _select_latest_frames(captured, int(args.process_latest_frames))
@@ -1532,7 +1799,7 @@ def _continuous_confirm_recheck(
             config=config,
             snapshot=snapshot_for_stage,
             snapshot_age_ms=snapshot_age_ms,
-            frame_pose_age_ms=_packet_frame_pose_age_ms(packet),
+            frame_pose_age_ms=_frame_pose_age_for_static_snapshot(snapshot_for_stage, packet),
         )
         resolved_packet["camera_frames_captured"] = int(len(captured))
         resolved_packet["camera_frames_processed"] = int(len(process_frames))
@@ -1544,6 +1811,8 @@ def _continuous_confirm_recheck(
             "center_distance_px": None if selected_slot is None else selected_slot.get("center_distance_px"),
             "pixel_center_f": None if selected_slot is None else selected_slot.get("pixel_center_f"),
             "geometry_center_f": None if selected_slot is None else selected_slot.get("geometry_center_f"),
+            "color_block_center_f": None if selected_slot is None else selected_slot.get("color_block_center_f"),
+            "top_face_center_f": None if selected_slot is None else selected_slot.get("top_face_center_f"),
             "grasp_pixel_f": None if selected_slot is None else selected_slot.get("grasp_pixel_f"),
             "measurement_point": alignment_provenance["measurement_point"],
             "alignment_target_pixel": alignment_provenance["alignment_target_pixel"],
@@ -1567,7 +1836,7 @@ def _continuous_confirm_recheck(
             distance = float("nan")
         if math.isfinite(distance):
             distances.append(distance)
-        point = sample.get("geometry_center_f") or sample.get("pixel_center_f")
+        point = _point_for_measurement(sample, sample.get("measurement_point"))
         if isinstance(point, (tuple, list)) and len(point) >= 2:
             try:
                 x_value = float(point[0])
@@ -1592,6 +1861,16 @@ def _continuous_confirm_recheck(
     tolerance_px = max(0.1, float(getattr(config, "vision_continuous_servo_pick_ready_center_px", 2.0)))
     max_repeat_spread_px = max(0.1, float(getattr(args, "continuous_confirm_recheck_max_spread_px", 3.0)))
     passed = bool(math.isfinite(median_distance) and median_distance <= tolerance_px and repeat_spread_px <= max_repeat_spread_px)
+    sample_measurement_points = [
+        str(sample.get("measurement_point", "")).strip()
+        for sample in samples
+        if str(sample.get("measurement_point", "")).strip()
+    ]
+    recheck_measurement_point = (
+        sample_measurement_points[-1]
+        if sample_measurement_points
+        else str(getattr(config, "vision_servo_low_height_measurement_point", "") or getattr(config, "vision_servo_measurement_point", ""))
+    )
     recheck: dict[str, object] = {
         "settle_sec": settle_sec,
         "repeats": repeats,
@@ -1600,7 +1879,8 @@ def _continuous_confirm_recheck(
         "tolerance_px": tolerance_px,
         "max_repeat_spread_px": max_repeat_spread_px,
         "passed": passed,
-        "measurement_point": str(getattr(config, "vision_servo_measurement_point", "")),
+        "measurement_point": recheck_measurement_point,
+        "sample_measurement_points": sample_measurement_points,
         "alignment_target_pixel": None if packet_for_overlay is None else packet_for_overlay.get("alignment_target_pixel"),
         "pose_cyl": None if snapshot is None else (None if _current_cyl_pose(snapshot) is None else list(_current_cyl_pose(snapshot))),  # type: ignore[arg-type]
         "samples": samples,
@@ -1630,6 +1910,116 @@ def _continuous_confirm_recheck(
     return recheck, next_frame_id, next_debug_slots
 
 
+def _continuous_stop_reason_is_recoverable(
+    reason: str,
+    *,
+    trace: Mapping[str, object] | None,
+    pending: Mapping[str, object] | None,
+    config: AppConfig,
+    recoveries_used: int = 0,
+) -> bool:
+    if reason in {"hold", "lost_target_wait", "frame_stale_wait", "settle_near_center", "frame_too_dark"}:
+        return True
+    recoverable_low_height_reasons = {"low_height_error_rebounded", "low_height_best_error_rebounded"}
+    if reason not in recoverable_low_height_reasons:
+        return False
+    if not isinstance(pending, Mapping) or not isinstance(trace, Mapping):
+        return False
+    try:
+        current_z = float(trace.get("current_z_mm"))
+        confirm_z = float(trace.get("confirm_z_mm"))
+    except (TypeError, ValueError):
+        return False
+    if not (math.isfinite(current_z) and math.isfinite(confirm_z)):
+        return False
+    recover_band_mm = max(
+        float(getattr(config, "vision_pick_z_tolerance_mm", 4.0)),
+        float(getattr(config, "vision_continuous_servo_low_height_rebound_recover_band_mm", 10.0)),
+    )
+    max_recoveries = max(
+        0,
+        int(getattr(config, "vision_continuous_servo_low_height_rebound_recover_attempts", 3)),
+    )
+    return current_z <= confirm_z + recover_band_mm and int(recoveries_used) < max_recoveries
+
+
+def _finite_float(value: object) -> float | None:
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return result if math.isfinite(result) else None
+
+
+def _continuous_low_height_refine_gate(
+    recheck: Mapping[str, object],
+    *,
+    pick_ready_center_px: float,
+    max_repeat_spread_px: float,
+    best_median_center_distance_px: float | None,
+    min_improvement_px: float,
+) -> tuple[bool, str, float | None]:
+    median = _finite_float(recheck.get("median_center_distance_px"))
+    spread = _finite_float(recheck.get("repeat_spread_px"))
+    if bool(recheck.get("passed", False)):
+        return False, "confirm_recheck_passed_no_pick", median
+    if median is None:
+        return False, "confirm_recheck_no_measurement", None
+    if spread is not None and spread > max(0.1, float(max_repeat_spread_px)):
+        return False, "confirm_recheck_unstable_no_refine", median
+    if median <= max(0.1, float(pick_ready_center_px)):
+        return False, "confirm_recheck_passed_no_pick", median
+    if best_median_center_distance_px is not None:
+        best = _finite_float(best_median_center_distance_px)
+        if best is not None and median >= best - max(0.0, float(min_improvement_px)):
+            return False, "low_height_refine_no_improvement", median
+    return True, "refine_after_confirm_recheck", median
+
+
+def _continuous_low_height_refine_requested(
+    *,
+    enabled: bool,
+    stop_at_confirm: bool,
+    current_z_mm: float | None,
+    confirm_z_mm: float | None,
+    center_distance_px: float | None,
+    pick_ready_center_px: float,
+    guard_band_mm: float,
+) -> bool:
+    if not (bool(enabled) and bool(stop_at_confirm)):
+        return False
+    if current_z_mm is None or confirm_z_mm is None or center_distance_px is None:
+        return False
+    try:
+        current_z = float(current_z_mm)
+        confirm_z = float(confirm_z_mm)
+        center_distance = float(center_distance_px)
+    except (TypeError, ValueError):
+        return False
+    if not all(math.isfinite(value) for value in (current_z, confirm_z, center_distance)):
+        return False
+    if current_z < confirm_z:
+        return False
+    if current_z > confirm_z + max(0.0, float(guard_band_mm)):
+        return False
+    return center_distance > max(0.1, float(pick_ready_center_px))
+
+
+def _pose_from_confirm_recheck(recheck: Mapping[str, object]) -> tuple[float, float, float] | None:
+    raw_pose = recheck.get("pose_cyl")
+    if not isinstance(raw_pose, (tuple, list)) or len(raw_pose) < 3:
+        return None
+    try:
+        theta = float(raw_pose[0])
+        radius = float(raw_pose[1])
+        z_value = float(raw_pose[2])
+    except (TypeError, ValueError):
+        return None
+    if not all(math.isfinite(value) for value in (theta, radius, z_value)):
+        return None
+    return (theta, radius, z_value)
+
+
 def _run_continuous_servo_flow(
     *,
     args: argparse.Namespace,
@@ -1654,14 +2044,28 @@ def _run_continuous_servo_flow(
         "teleop_rate_hz": rate_hz,
         "max_duration_sec": max(0.1, float(args.continuous_max_duration_sec)),
         "z_disabled": bool(args.continuous_disable_z),
+        "stopped_step_mode": bool(args.continuous_stopped_step_mode),
         "commands_sent": 0,
         "stop_count": 0,
+        "stopped_move_count": 0,
+        "min_center_distance_px": None,
+        "final_center_distance_px": None,
         "max_center_distance_px": 0.0,
         "mean_frame_age_ms": None,
         "frame_age_samples": 0,
+        "camera_read_timeouts": 0,
+        "camera_transport": {},
+        "low_height_rebound_recoveries": 0,
+        "low_height_refine_gain": max(0.01, min(1.0, float(args.continuous_low_height_refine_gain))),
+        "low_height_refine_best_median_center_distance_px": None,
+        "low_height_refine_best_pose_cyl": None,
+        "low_height_refine_rollback_recheck": None,
         "max_state_age_ms": 0.0,
         "final_pick_command": None,
+        "final_pose_cyl": None,
+        "final_z_mm": None,
         "final_stop_reason": "",
+        "local_model_required": False,
         "confirm_reached": False,
         "confirm_center_distance_px": None,
         "confirm_pose_cyl": None,
@@ -1697,6 +2101,10 @@ def _run_continuous_servo_flow(
     frame_ages: list[float] = []
     cmd_seq = new_teleop_cmd_seq_base()
     teleop_published = False
+    camera_read_timeouts = 0
+    low_height_rebound_recoveries = 0
+    low_refine_best_median_distance: float | None = None
+    low_refine_best_pose: tuple[float, float, float] | None = None
     exit_code = 0
     loop_index = 0
     started_at = time.perf_counter()
@@ -1757,19 +2165,78 @@ def _run_continuous_servo_flow(
                 exit_code = 1
                 break
 
-            stream_url, frames = reader.read(
-                frame_count=int(args.frames),
-                drain_frames=int(args.drain_frames) if loop_index == 1 else 0,
-                timeout_sec=float(args.timeout_sec),
-            )
+            try:
+                stream_url, frames = reader.read(
+                    frame_count=int(args.frames),
+                    drain_frames=int(args.drain_frames) if loop_index == 1 else 0,
+                    timeout_sec=float(args.timeout_sec),
+                )
+                camera_read_timeouts = 0
+            except Exception as error:
+                camera_read_timeouts += 1
+                metrics["camera_read_timeouts"] = int(metrics["camera_read_timeouts"]) + 1
+                cmd_seq = next_teleop_cmd_seq(cmd_seq)
+                client.stop_teleop(use_auto_z=False, cmd_seq=cmd_seq)
+                teleop_published = True
+                metrics["commands_sent"] = int(metrics["commands_sent"]) + 1
+                metrics["stop_count"] = int(metrics["stop_count"]) + 1
+                step_report = {
+                    "step": loop_index,
+                    "elapsed_sec": max(0.0, time.perf_counter() - started_at),
+                    "decision": {
+                        "action": "STOP",
+                        "reason": "camera_read_timeout_wait",
+                        "pending": servo_pending,
+                        "trace": {"camera_read_timeouts": int(camera_read_timeouts), "error": str(error)},
+                    },
+                    "snapshot": snapshot,
+                    "pre_frame_snapshot": snapshot,
+                    "camera_transport": reader.transport_stats(),
+                }
+                report["steps"].append(step_report)
+                if camera_read_timeouts < max(1, int(getattr(config, "vision_continuous_servo_stale_frames", 3))):
+                    try:
+                        reader.reopen()
+                    except Exception as reopen_error:
+                        step_report["camera_reopen_error"] = str(reopen_error)
+                    print(
+                        "[continuous {step}] camera read timeout; stopped teleop and reopened PC reader "
+                        "({count})".format(step=loop_index, count=camera_read_timeouts)
+                    )
+                    time.sleep(max(0.0, interval_sec - (time.perf_counter() - loop_started)))
+                    continue
+                metrics["final_stop_reason"] = "camera_read_timeout"
+                report["error"] = str(error)
+                exit_code = 1
+                break
             process_frames = _select_latest_frames(frames, int(args.process_latest_frames))
             report["stream_url"] = stream_url
+            frame_snapshot = snapshot
+            frame_snapshot_age_ms = snapshot_age_ms
+            try:
+                state_for_frame, state_for_frame_age_ms = _fetch_fresh_state_snapshot(
+                    client,
+                    timeout_sec=float(args.ros_timeout_sec),
+                    max_age_ms=float(config.vision_snapshot_max_age_ms),
+                )
+                if isinstance(state_for_frame, Mapping):
+                    frame_snapshot = state_for_frame
+                    frame_snapshot_age_ms = state_for_frame_age_ms
+                    release_mode = str(state_for_frame.get("release_mode_effective", release_mode))
+                    metrics["release_mode_effective"] = release_mode
+                    if math.isfinite(state_for_frame_age_ms):
+                        metrics["max_state_age_ms"] = max(
+                            float(metrics["max_state_age_ms"]),
+                            float(state_for_frame_age_ms),
+                        )
+            except Exception as error:
+                print(f"[robot] Could not refresh frame-time state during continuous servo: {error}", file=sys.stderr)
             packet, last_frame, frame_id, debug_slots = _process_frame_batch(
                 frames=process_frames,
                 model=model,
                 config=config,
                 calibration_profile=calibration_profile,
-                snapshot_for_stage=snapshot,
+                snapshot_for_stage=frame_snapshot,
                 frame_id_start=frame_id,
                 slots=debug_slots,
                 device=device,
@@ -1777,28 +2244,88 @@ def _run_continuous_servo_flow(
             )
             packet["camera_frames_captured"] = int(len(frames))
             packet["camera_frames_processed"] = int(len(process_frames))
-            frame_age_ms = _packet_frame_pose_age_ms(packet)
-            if frame_age_ms is not None:
-                frame_ages.append(float(frame_age_ms))
+            image_age_ms = _packet_frame_pose_age_ms(packet)
+            if image_age_ms is not None:
+                frame_ages.append(float(image_age_ms))
+            resolve_snapshot = frame_snapshot
+            resolve_snapshot_age_ms = frame_snapshot_age_ms
+            frame_pose_age_ms = _snapshot_frame_pose_age_ms(frame_snapshot, packet)
+            decision_snapshot = frame_snapshot
+            decision_snapshot_age_ms = frame_snapshot_age_ms
+            try:
+                state_for_decision, state_for_decision_age_ms = _fetch_fresh_state_snapshot(
+                    client,
+                    timeout_sec=float(args.ros_timeout_sec),
+                    max_age_ms=float(config.vision_snapshot_max_age_ms),
+                )
+                if isinstance(state_for_decision, Mapping):
+                    decision_snapshot = state_for_decision
+                    decision_snapshot_age_ms = state_for_decision_age_ms
+                    release_mode = str(state_for_decision.get("release_mode_effective", release_mode))
+                    metrics["release_mode_effective"] = release_mode
+                    if math.isfinite(state_for_decision_age_ms):
+                        metrics["max_state_age_ms"] = max(
+                            float(metrics["max_state_age_ms"]),
+                            float(state_for_decision_age_ms),
+                        )
+            except Exception as error:
+                print(f"[robot] Could not refresh decision-time state during continuous servo: {error}", file=sys.stderr)
             resolved_packet = _resolve_packet(
                 packet=packet,
                 config=config,
-                snapshot=snapshot,
-                snapshot_age_ms=snapshot_age_ms,
-                frame_pose_age_ms=frame_age_ms,
+                snapshot=resolve_snapshot,
+                snapshot_age_ms=resolve_snapshot_age_ms,
+                frame_pose_age_ms=frame_pose_age_ms,
             )
             resolved_packet["camera_frames_captured"] = int(len(frames))
             resolved_packet["camera_frames_processed"] = int(len(process_frames))
+            camera_transport = reader.transport_stats()
+            resolved_packet["camera_transport"] = dict(camera_transport)
+            if frame_pose_age_ms is not None:
+                resolved_packet["frame_pose_age_ms"] = float(frame_pose_age_ms)
+            if image_age_ms is not None:
+                resolved_packet["image_age_ms"] = float(image_age_ms)
             selection_slot_id = _continuous_slot_id_for_selection(locked_slot_id, servo_pending)
             selected_slot = _select_slot(resolved_packet, selection_slot_id)
             selected_slot_id = None if selected_slot is None else int(selected_slot.get("slot_id", selected_slot.get("slot", 0)))
             if locked_slot_id is None and selected_slot_id is not None:
                 locked_slot_id = int(selected_slot_id)
                 metrics["locked_slot_id"] = int(locked_slot_id)
+            decision_config = config
+            if str(config.vision_continuous_servo_horizontal_mode).strip().lower() == "ibvs_dls":
+                pose_for_jacobian = _current_cyl_pose(decision_snapshot)
+                if pose_for_jacobian is not None and calibration_profile is not None:
+                    stage_name, stage_z = _current_calibration_stage(config, decision_snapshot)
+                    try:
+                        active_stage_profile = calibration_profile.model_for_stage(
+                            stage_name,
+                            z_mm=stage_z,
+                            allow_fallback=True,
+                        )
+                    except Exception:
+                        active_stage_profile = calibration_profile
+                    profile_jacobian = None
+                    stage_profile_z = active_stage_profile.z_mm
+                    stage_band_mm = max(
+                        0.0,
+                        float(getattr(config, "vision_continuous_servo_ibvs_profile_stage_band_mm", 15.0)),
+                    )
+                    if stage_profile_z is not None and abs(float(pose_for_jacobian[2]) - float(stage_profile_z)) <= stage_band_mm:
+                        profile_jacobian = _ibvs_jacobian_from_stage_profile(
+                            active_stage_profile,
+                            theta_deg=float(pose_for_jacobian[0]),
+                            radius_mm=float(pose_for_jacobian[1]),
+                        )
+                    if profile_jacobian is not None:
+                        decision_config = replace(
+                            config,
+                            vision_continuous_servo_ibvs_profile_jacobian=profile_jacobian,
+                            vision_continuous_servo_ibvs_jacobian_source=f"profile_{stage_name}",
+                        ).resolved()
             decision = _continuous_decision_for_packet(
                 packet=resolved_packet,
-                config=config,
-                snapshot=snapshot,
+                config=decision_config,
+                snapshot=decision_snapshot,
                 selected_slot=selected_slot,
                 slot_id=locked_slot_id,
                 pending=servo_pending,
@@ -1815,12 +2342,30 @@ def _run_continuous_servo_flow(
             servo_pending = decision.get("pending") if isinstance(decision.get("pending"), dict) else None
             if selected_slot is not None and selected_slot.get("center_distance_px") is not None:
                 try:
+                    current_center_distance = float(selected_slot.get("center_distance_px"))
                     metrics["max_center_distance_px"] = max(
                         float(metrics["max_center_distance_px"]),
-                        float(selected_slot.get("center_distance_px")),
+                        current_center_distance,
                     )
+                    metrics["final_center_distance_px"] = current_center_distance
+                    if metrics["min_center_distance_px"] is None:
+                        metrics["min_center_distance_px"] = current_center_distance
+                    else:
+                        metrics["min_center_distance_px"] = min(
+                            float(metrics["min_center_distance_px"]),
+                            current_center_distance,
+                        )
                 except (TypeError, ValueError):
                     pass
+            current_pose_for_metrics = _current_cyl_pose(decision_snapshot)
+            if current_pose_for_metrics is not None:
+                metrics["final_pose_cyl"] = [
+                    float(current_pose_for_metrics[0]),
+                    float(current_pose_for_metrics[1]),
+                    float(current_pose_for_metrics[2]),
+                ]
+                metrics["final_z_mm"] = float(current_pose_for_metrics[2])
+            metrics["camera_transport"] = dict(camera_transport)
             if frame_ages:
                 metrics["mean_frame_age_ms"] = sum(frame_ages) / float(len(frame_ages))
                 metrics["frame_age_samples"] = int(len(frame_ages))
@@ -1834,7 +2379,12 @@ def _run_continuous_servo_flow(
                 "selected_slot_id": selected_slot_id,
                 "selected_slot": selected_slot,
                 "decision": decision,
-                "snapshot": snapshot,
+                "snapshot": decision_snapshot,
+                "frame_snapshot": frame_snapshot,
+                "pre_frame_snapshot": snapshot,
+                "frame_pose_age_ms": frame_pose_age_ms,
+                "image_age_ms": image_age_ms,
+                "camera_transport": dict(camera_transport),
             }
             should_save = save_every > 0 and (
                 loop_index == 1 or loop_index % save_every == 0 or str(decision.get("action")) != "SERVO"
@@ -1865,6 +2415,14 @@ def _run_continuous_servo_flow(
 
             action = str(decision.get("action", ""))
             reason = str(decision.get("reason", ""))
+            if reason == "low_height_local_model_required":
+                metrics["final_stop_reason"] = reason
+                metrics["local_model_required"] = True
+                print(
+                    "[continuous {step}] low-height residual is static; stop and run local search/calibration "
+                    "before continuing.".format(step=loop_index),
+                    file=sys.stderr,
+                )
             if action == "SERVO":
                 trace = decision.get("trace", {}) if isinstance(decision.get("trace"), Mapping) else {}
                 current_z = None
@@ -1876,13 +2434,23 @@ def _run_continuous_servo_flow(
                     center_distance_px = float(trace.get("center_distance_px"))
                 except (TypeError, ValueError):
                     current_z = confirm_z = center_distance_px = None
-                if (
+                pick_ready_center_px = max(0.1, float(config.vision_continuous_servo_pick_ready_center_px))
+                low_height_refine_requested = _continuous_low_height_refine_requested(
+                    enabled=bool(args.continuous_low_height_discrete_refine),
+                    stop_at_confirm=bool(args.continuous_stop_at_confirm),
+                    current_z_mm=current_z,
+                    confirm_z_mm=confirm_z,
+                    center_distance_px=center_distance_px,
+                    pick_ready_center_px=pick_ready_center_px,
+                    guard_band_mm=float(config.vision_continuous_servo_low_height_guard_band_mm),
+                )
+                at_confirm_z_for_stop = (
                     bool(args.continuous_stop_at_confirm)
                     and current_z is not None
                     and confirm_z is not None
                     and abs(current_z - confirm_z) <= float(config.vision_pick_z_tolerance_mm)
-                ):
-                    pick_ready_center_px = max(0.1, float(config.vision_continuous_servo_pick_ready_center_px))
+                )
+                if at_confirm_z_for_stop or low_height_refine_requested:
                     if center_distance_px is not None and center_distance_px <= pick_ready_center_px:
                         cmd_seq = next_teleop_cmd_seq(cmd_seq)
                         client.stop_teleop(use_auto_z=False, cmd_seq=cmd_seq)
@@ -1892,7 +2460,7 @@ def _run_continuous_servo_flow(
                         metrics["final_stop_reason"] = "confirm_height_centered_no_pick"
                         metrics["confirm_reached"] = True
                         metrics["confirm_center_distance_px"] = center_distance_px
-                        pose = _current_cyl_pose(snapshot)
+                        pose = _current_cyl_pose(decision_snapshot)
                         metrics["confirm_pose_cyl"] = (
                             None if pose is None else [float(pose[0]), float(pose[1]), float(pose[2])]
                         )
@@ -1925,6 +2493,7 @@ def _run_continuous_servo_flow(
                         if not bool(recheck.get("passed", False)):
                             metrics["final_stop_reason"] = "confirm_recheck_failed_no_pick"
                             step_report["confirm_stop"]["reason"] = "confirm_recheck_failed_no_pick"
+                            exit_code = max(int(exit_code), 2)
                         print(
                             "[continuous {step}] confirm height centered; stopped before +r/PICK. "
                             "center={center} recheck={recheck}".format(
@@ -1939,13 +2508,192 @@ def _run_continuous_servo_flow(
                         )
                         break
                     step_report["confirm_continue"] = {
-                        "reason": "confirm_height_not_centered",
+                        "reason": (
+                            "low_height_guard_not_centered"
+                            if low_height_refine_requested and not at_confirm_z_for_stop
+                            else "confirm_height_not_centered"
+                        ),
                         "center_distance_px": center_distance_px,
                         "pick_ready_center_px": pick_ready_center_px,
+                        "current_z_mm": current_z,
+                        "confirm_z_mm": confirm_z,
                     }
                     if bool(args.continuous_low_height_discrete_refine):
+                        if bool(args.continuous_low_height_refine_recheck):
+                            cmd_seq = next_teleop_cmd_seq(cmd_seq)
+                            client.stop_teleop(use_auto_z=False, cmd_seq=cmd_seq)
+                            teleop_published = True
+                            metrics["commands_sent"] = int(metrics["commands_sent"]) + 1
+                            metrics["stop_count"] = int(metrics["stop_count"]) + 1
+                            recheck, frame_id, debug_slots = _continuous_confirm_recheck(
+                                args=args,
+                                config=config,
+                                cv2_module=cv2_module,
+                                model=model,
+                                calibration_profile=calibration_profile,
+                                reader=reader,
+                                client=client,
+                                output_dir=output_dir,
+                                slot_id=locked_slot_id,
+                                frame_id=frame_id,
+                                debug_slots=debug_slots,
+                                device=device,
+                                half=half,
+                            )
+                            step_report["confirm_recheck"] = recheck
+                            metrics["confirm_recheck"] = recheck
+                            allowed, gate_reason, median_distance = _continuous_low_height_refine_gate(
+                                recheck,
+                                pick_ready_center_px=pick_ready_center_px,
+                                max_repeat_spread_px=float(args.continuous_confirm_recheck_max_spread_px),
+                                best_median_center_distance_px=low_refine_best_median_distance,
+                                min_improvement_px=float(args.continuous_low_height_refine_min_improvement_px),
+                            )
+                            step_report["confirm_continue"]["reason"] = gate_reason
+                            step_report["confirm_continue"]["median_center_distance_px"] = median_distance
+                            if median_distance is not None:
+                                recheck_pose = _pose_from_confirm_recheck(recheck)
+                                if (
+                                    recheck_pose is not None
+                                    and (
+                                    low_refine_best_median_distance is None
+                                    or median_distance < low_refine_best_median_distance
+                                    )
+                                ):
+                                    low_refine_best_median_distance = float(median_distance)
+                                    low_refine_best_pose = recheck_pose
+                                if low_refine_best_median_distance is not None:
+                                    metrics["low_height_refine_best_median_center_distance_px"] = (
+                                        float(low_refine_best_median_distance)
+                                    )
+                                metrics["low_height_refine_best_pose_cyl"] = (
+                                    None
+                                    if low_refine_best_pose is None
+                                    else [
+                                        float(low_refine_best_pose[0]),
+                                        float(low_refine_best_pose[1]),
+                                        float(low_refine_best_pose[2]),
+                                    ]
+                                )
+                            if gate_reason == "confirm_recheck_passed_no_pick":
+                                metrics["final_stop_reason"] = "confirm_height_centered_no_pick"
+                                metrics["confirm_reached"] = True
+                                metrics["confirm_center_distance_px"] = median_distance
+                                pose = _pose_from_confirm_recheck(recheck)
+                                if pose is None:
+                                    pose = _current_cyl_pose(decision_snapshot)
+                                metrics["confirm_pose_cyl"] = (
+                                    None if pose is None else [float(pose[0]), float(pose[1]), float(pose[2])]
+                                )
+                                step_report["confirm_stop"] = {
+                                    "reason": "confirm_height_centered_no_pick",
+                                    "center_distance_px": median_distance,
+                                    "pose_cyl": metrics["confirm_pose_cyl"],
+                                    "confirm_recheck": recheck,
+                                }
+                                break
+                            if not allowed:
+                                if low_refine_best_pose is not None:
+                                    cmd_seq = next_teleop_cmd_seq(cmd_seq)
+                                    client.stop_teleop(use_auto_z=False, cmd_seq=cmd_seq)
+                                    teleop_published = True
+                                    metrics["commands_sent"] = int(metrics["commands_sent"]) + 1
+                                    metrics["stop_count"] = int(metrics["stop_count"]) + 1
+                                    rollback_response = client.call_service(
+                                        "/hybrid_controller/move_cyl",
+                                        "hybrid_controller_ros/MoveCyl",
+                                        {
+                                            "theta_deg": float(low_refine_best_pose[0]),
+                                            "radius_mm": float(low_refine_best_pose[1]),
+                                            "z_mm": float(low_refine_best_pose[2]),
+                                        },
+                                        timeout_sec=max(1.0, float(args.command_timeout_sec)),
+                                    )
+                                    settled = _wait_for_idle(
+                                        client=client,
+                                        timeout_sec=max(float(args.command_timeout_sec), float(args.ros_timeout_sec)),
+                                    )
+                                    time.sleep(max(0.0, float(args.continuous_confirm_recheck_settle_sec)))
+                                    planner.reset()
+                                    servo_pending = None
+                                    step_report["low_height_refine_rollback"] = {
+                                        "reason": gate_reason,
+                                        "target_cyl": [
+                                            float(low_refine_best_pose[0]),
+                                            float(low_refine_best_pose[1]),
+                                            float(low_refine_best_pose[2]),
+                                        ],
+                                        "best_median_center_distance_px": float(low_refine_best_median_distance),
+                                        "response": rollback_response,
+                                        "settled_snapshot": settled,
+                                    }
+                                    rollback_recheck, frame_id, debug_slots = _continuous_confirm_recheck(
+                                        args=args,
+                                        config=config,
+                                        cv2_module=cv2_module,
+                                        model=model,
+                                        calibration_profile=calibration_profile,
+                                        reader=reader,
+                                        client=client,
+                                        output_dir=output_dir,
+                                        slot_id=locked_slot_id,
+                                        frame_id=frame_id,
+                                        debug_slots=debug_slots,
+                                        device=device,
+                                        half=half,
+                                    )
+                                    step_report["low_height_refine_rollback"]["recheck"] = rollback_recheck
+                                    metrics["low_height_refine_rollback_recheck"] = rollback_recheck
+                                    metrics["confirm_center_distance_px"] = rollback_recheck.get(
+                                        "median_center_distance_px",
+                                        metrics.get("confirm_center_distance_px"),
+                                    )
+                                    rollback_pose = _pose_from_confirm_recheck(rollback_recheck)
+                                    if rollback_pose is not None:
+                                        metrics["confirm_pose_cyl"] = [
+                                            float(rollback_pose[0]),
+                                            float(rollback_pose[1]),
+                                            float(rollback_pose[2]),
+                                        ]
+                                    if bool(rollback_recheck.get("passed", False)):
+                                        metrics["final_stop_reason"] = "confirm_height_centered_no_pick"
+                                        metrics["confirm_reached"] = True
+                                    else:
+                                        metrics["final_stop_reason"] = gate_reason
+                                        exit_code = max(int(exit_code), 2)
+                                    metrics["low_height_refine_rollback_pose_cyl"] = [
+                                        float(low_refine_best_pose[0]),
+                                        float(low_refine_best_pose[1]),
+                                        float(low_refine_best_pose[2]),
+                                    ]
+                                if not str(metrics.get("final_stop_reason", "")).strip():
+                                    metrics["final_stop_reason"] = gate_reason
+                                if gate_reason != "confirm_recheck_passed_no_pick":
+                                    exit_code = max(int(exit_code), 2)
+                                break
                         refine_point = _servo_command_point_from_slot(selected_slot)
-                        pose = _current_cyl_pose(snapshot)
+                        if (
+                            bool(args.continuous_low_height_refine_recheck)
+                            and isinstance(step_report.get("confirm_recheck"), Mapping)
+                        ):
+                            samples = step_report["confirm_recheck"].get("samples", [])  # type: ignore[index]
+                            if isinstance(samples, list):
+                                for sample in reversed(samples):
+                                    if not isinstance(sample, Mapping):
+                                        continue
+                                    sample_slot = sample.get("selected_slot")
+                                    sample_point = _servo_command_point_from_slot(sample_slot)
+                                    if sample_point is not None:
+                                        refine_point = sample_point
+                                        break
+                        pose = _current_cyl_pose(decision_snapshot)
+                        if (
+                            bool(args.continuous_low_height_refine_recheck)
+                            and isinstance(step_report.get("confirm_recheck"), Mapping)
+                        ):
+                            recheck_pose = _pose_from_confirm_recheck(step_report["confirm_recheck"])  # type: ignore[arg-type]
+                            if recheck_pose is not None:
+                                pose = recheck_pose
                         if refine_point is not None and pose is not None:
                             low_refine_attempts += 1
                             if low_refine_attempts > int(args.continuous_low_height_refine_attempts):
@@ -1963,6 +2711,7 @@ def _run_continuous_servo_flow(
                                 target_radius=float(refine_point[1]),
                                 max_theta_step_deg=float(args.continuous_low_height_refine_max_theta_step_deg),
                                 max_radius_step_mm=float(args.continuous_low_height_refine_max_radius_step_mm),
+                                step_gain=float(args.continuous_low_height_refine_gain),
                             )
                             cmd_seq = next_teleop_cmd_seq(cmd_seq)
                             client.stop_teleop(use_auto_z=False, cmd_seq=cmd_seq)
@@ -1989,10 +2738,15 @@ def _run_continuous_servo_flow(
                                 "attempt": int(low_refine_attempts),
                                 "source": "servo_command_point",
                                 "source_point": [float(refine_point[0]), float(refine_point[1])],
+                                "step_gain": max(
+                                    0.01, min(1.0, float(args.continuous_low_height_refine_gain))
+                                ),
                                 "target_cyl": [float(refine_target[0]), float(refine_target[1]), float(refine_target[2])],
                                 "response": move_response,
                                 "settled_snapshot": settled,
                             }
+                            servo_pending = None
+                            step_report["low_height_refine_move"]["pending_reset"] = "reset_after_stopped_refine_move"
                             print(
                                 "[continuous {step}] low refine MOVE_CYL theta={theta:.3f} r={radius:.2f} "
                                 "center={center:.2f}px".format(
@@ -2006,6 +2760,72 @@ def _run_continuous_servo_flow(
                             if sleep_sec > 0.0:
                                 time.sleep(sleep_sec)
                             continue
+                if bool(args.continuous_stopped_step_mode):
+                    pose = _current_cyl_pose(decision_snapshot)
+                    stopped_target = _continuous_stopped_motion_target(
+                        current_pose=pose,
+                        selected_slot=selected_slot,
+                        center_distance_px=center_distance_px,
+                        center_allow_px=trace.get("center_allow_descent_px"),
+                        z_rate_mm_s=float(decision.get("z_rate_mm_s", 0.0)),
+                        confirm_z_mm=confirm_z,
+                        z_tolerance_mm=float(config.vision_pick_z_tolerance_mm),
+                        z_step_mm=float(args.continuous_stopped_z_step_mm),
+                        refine_z_band_above_confirm_mm=float(args.continuous_stopped_refine_z_band_mm),
+                        max_theta_step_deg=float(args.continuous_stopped_max_theta_step_deg),
+                        max_radius_step_mm=float(args.continuous_stopped_max_radius_step_mm),
+                    )
+                    if stopped_target is not None:
+                        stopped_reason, stopped_pose, stopped_meta = stopped_target
+                        cmd_seq = next_teleop_cmd_seq(cmd_seq)
+                        client.stop_teleop(use_auto_z=False, cmd_seq=cmd_seq)
+                        teleop_published = True
+                        metrics["commands_sent"] = int(metrics["commands_sent"]) + 1
+                        metrics["stop_count"] = int(metrics["stop_count"]) + 1
+                        move_response = client.call_service(
+                            "/hybrid_controller/move_cyl",
+                            "hybrid_controller_ros/MoveCyl",
+                            {
+                                "theta_deg": float(stopped_pose[0]),
+                                "radius_mm": float(stopped_pose[1]),
+                                "z_mm": float(stopped_pose[2]),
+                            },
+                            timeout_sec=max(1.0, float(args.command_timeout_sec)),
+                        )
+                        settled = _wait_for_idle(
+                            client=client,
+                            timeout_sec=max(float(args.command_timeout_sec), float(args.ros_timeout_sec)),
+                        )
+                        time.sleep(max(0.0, float(args.continuous_confirm_recheck_settle_sec)))
+                        planner.reset()
+                        servo_pending = None
+                        low_refine_attempts = 0
+                        metrics["stopped_move_count"] = int(metrics["stopped_move_count"]) + 1
+                        step_report["stopped_step_move"] = {
+                            "reason": stopped_reason,
+                            "target_cyl": [
+                                float(stopped_pose[0]),
+                                float(stopped_pose[1]),
+                                float(stopped_pose[2]),
+                            ],
+                            "meta": stopped_meta,
+                            "response": move_response,
+                            "settled_snapshot": settled,
+                        }
+                        print(
+                            "[continuous {step}] stopped MOVE_CYL reason={reason} theta={theta:.3f} "
+                            "r={radius:.2f} z={z:.2f}".format(
+                                step=loop_index,
+                                reason=stopped_reason,
+                                theta=float(stopped_pose[0]),
+                                radius=float(stopped_pose[1]),
+                                z=float(stopped_pose[2]),
+                            )
+                        )
+                        sleep_sec = max(0.0, interval_sec - (time.perf_counter() - loop_started))
+                        if sleep_sec > 0.0:
+                            time.sleep(sleep_sec)
+                        continue
                 command = planner.next_command(
                     theta_rate_deg_s=float(decision.get("theta_rate_deg_s", 0.0)),
                     radius_rate_mm_s=float(decision.get("radius_rate_mm_s", 0.0)),
@@ -2071,7 +2891,7 @@ def _run_continuous_servo_flow(
                     metrics["final_stop_reason"] = "pick_ready_blocked_by_confirm_stop"
                     metrics["confirm_reached"] = True
                     metrics["confirm_center_distance_px"] = trace.get("center_distance_px")
-                    pose = _current_cyl_pose(snapshot)
+                    pose = _current_cyl_pose(decision_snapshot)
                     metrics["confirm_pose_cyl"] = None if pose is None else [float(pose[0]), float(pose[1]), float(pose[2])]
                     recheck, frame_id, debug_slots = _continuous_confirm_recheck(
                         args=args,
@@ -2095,6 +2915,7 @@ def _run_continuous_servo_flow(
                     )
                     if not bool(recheck.get("passed", False)):
                         metrics["final_stop_reason"] = "confirm_recheck_failed_no_pick"
+                        exit_code = max(int(exit_code), 2)
                     step_report["execution"] = {
                         "executed": False,
                         "reason": "continuous_stop_at_confirm_blocks_pick",
@@ -2139,9 +2960,14 @@ def _run_continuous_servo_flow(
                         timeout_sec=float(args.command_timeout_sec),
                     )
                     if bool(execution.get("executed", False)):
+                        try:
+                            min_state_seq = int(decision_snapshot.get("state_seq", 0) or 0)
+                        except (TypeError, ValueError):
+                            min_state_seq = 0
                         settled = _wait_for_idle(
                             client=client,
                             timeout_sec=max(float(args.command_timeout_sec), float(args.settle_sec)),
+                            min_state_seq=min_state_seq,
                         )
                         step_report["post_execution_snapshot"] = settled
                         initial_snapshot = settled if settled is not None else snapshot
@@ -2157,7 +2983,37 @@ def _run_continuous_servo_flow(
                 metrics["stop_count"] = int(metrics["stop_count"]) + 1
                 planner.reset()
                 metrics["final_stop_reason"] = reason
-                if reason in {"hold", "lost_target_wait", "settle_near_center"}:
+                trace = decision.get("trace", {}) if isinstance(decision.get("trace"), Mapping) else {}
+                if _continuous_stop_reason_is_recoverable(
+                    reason,
+                    trace=trace,
+                    pending=servo_pending,
+                    config=config,
+                    recoveries_used=low_height_rebound_recoveries,
+                ):
+                    if reason in {"low_height_error_rebounded", "low_height_best_error_rebounded"}:
+                        low_height_rebound_recoveries += 1
+                        metrics["low_height_rebound_recoveries"] = int(low_height_rebound_recoveries)
+                        step_report["recovery"] = {
+                            "reason": reason,
+                            "attempt": int(low_height_rebound_recoveries),
+                            "max_attempts": int(
+                                getattr(
+                                    config,
+                                    "vision_continuous_servo_low_height_rebound_recover_attempts",
+                                    3,
+                                )
+                            ),
+                            "settle_sec": float(args.continuous_confirm_recheck_settle_sec),
+                            "pending_preserved": servo_pending,
+                        }
+                        try:
+                            reader.reopen()
+                        except Exception as reopen_error:
+                            step_report["recovery"]["camera_reopen_error"] = str(reopen_error)  # type: ignore[index]
+                        time.sleep(max(0.0, float(args.continuous_confirm_recheck_settle_sec)))
+                    else:
+                        metrics["low_height_rebound_recoveries"] = int(low_height_rebound_recoveries)
                     time.sleep(max(0.0, interval_sec - (time.perf_counter() - loop_started)))
                     continue
                 exit_code = 1
@@ -2214,8 +3070,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--process-latest-frames",
         type=int,
-        default=max(1, int(defaults.vision_grasp_stable_frames)),
-        help="Process only the newest N captured frames; 0 keeps the full captured batch.",
+        default=1,
+        help=(
+            "Process only the newest N captured frames; 0 keeps the full captured batch. "
+            "Continuous visual servo should normally stay at 1 so inference does not age the control frame."
+        ),
     )
     parser.add_argument(
         "--capture-backend",
@@ -2242,6 +3101,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override the camera-centering tolerance for this debug run only.",
     )
     parser.add_argument("--no-ros", action="store_true")
+    parser.add_argument(
+        "--monitor-only",
+        action="store_true",
+        help=(
+            "Continuously read the official MJPEG stream and report recognition/alignment metrics only. "
+            "This mode never sends robot motion or suction commands."
+        ),
+    )
     parser.add_argument("--execute", action="store_true", help="Allow MOVE commands to be sent to the robot.")
     parser.add_argument(
         "--allow-execute-loop",
@@ -2272,6 +3139,15 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=None,
         help="Override the visual confirmation height for this debug run only.",
+    )
+    parser.add_argument(
+        "--confirm-z-tolerance-mm",
+        type=float,
+        default=None,
+        help=(
+            "Override the z tolerance used for continuous stop-at-confirm debug runs. "
+            "Use a small value when validating the actual z=120 low-height scene."
+        ),
     )
     parser.add_argument("--servo-max-attempts", type=int, default=None)
     parser.add_argument("--move-gain", type=float, default=None)
@@ -2309,15 +3185,75 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--continuous-radius-rate-limit", type=float, default=None)
     parser.add_argument("--continuous-z-rate-limit", type=float, default=None)
     parser.add_argument("--continuous-center-allow-descent-px", type=float, default=None)
+    parser.add_argument("--continuous-center-stop-descent-px", type=float, default=None)
+    parser.add_argument("--continuous-soft-descent-rate-scale", type=float, default=None)
+    parser.add_argument("--continuous-soft-descent-min-z-above-confirm-mm", type=float, default=None)
+    parser.add_argument("--continuous-low-height-guard-band-mm", type=float, default=None)
+    parser.add_argument("--continuous-low-height-z-rate-scale", type=float, default=None)
+    parser.add_argument("--continuous-low-height-coarse-rate-scale", type=float, default=None)
+    parser.add_argument("--continuous-low-height-fine-rate-scale", type=float, default=None)
+    parser.add_argument("--continuous-low-height-pause-descent-band-mm", type=float, default=None)
+    parser.add_argument("--continuous-descent-low-error-z-above-confirm-mm", type=float, default=None)
+    parser.add_argument("--continuous-low-height-max-theta-drift-deg", type=float, default=None)
+    parser.add_argument("--continuous-low-height-max-radius-drift-mm", type=float, default=None)
+    parser.add_argument("--continuous-low-height-best-error-rebound-px", type=float, default=None)
+    parser.add_argument("--continuous-low-height-rebound-recover-band-mm", type=float, default=None)
+    parser.add_argument("--continuous-low-height-rebound-recover-attempts", type=int, default=None)
     parser.add_argument("--continuous-fine-pulse-center-px", type=float, default=None)
     parser.add_argument("--continuous-command-timeout-ms", type=float, default=None)
+    parser.add_argument("--continuous-stale-frames", type=int, default=None)
     parser.add_argument("--continuous-theta-gain", type=float, default=None)
     parser.add_argument("--continuous-radius-gain", type=float, default=None)
     parser.add_argument(
+        "--continuous-horizontal-mode",
+        choices=("servo_command_point", "pixel_jacobian", "pixel_axis", "ibvs_dls"),
+        default=None,
+        help=(
+            "Horizontal control source for continuous servo. ibvs_dls uses damped image-Jacobian control; "
+            "pixel_jacobian/pixel_axis are simpler debug modes."
+        ),
+    )
+    parser.add_argument("--continuous-ibvs-gain", type=float, default=None)
+    parser.add_argument("--continuous-ibvs-damping", type=float, default=None)
+    parser.add_argument(
+        "--continuous-ibvs-du-dtheta",
+        type=float,
+        default=None,
+        help="IBVS DLS Jacobian entry du/dtheta in px/deg for this debug run.",
+    )
+    parser.add_argument(
+        "--continuous-ibvs-du-dradius",
+        type=float,
+        default=None,
+        help="IBVS DLS Jacobian entry du/dradius in px/mm for this debug run.",
+    )
+    parser.add_argument(
+        "--continuous-ibvs-dv-dtheta",
+        type=float,
+        default=None,
+        help="IBVS DLS Jacobian entry dv/dtheta in px/deg for this debug run.",
+    )
+    parser.add_argument(
+        "--continuous-ibvs-dv-dradius",
+        type=float,
+        default=None,
+        help="IBVS DLS Jacobian entry dv/dradius in px/mm for this debug run.",
+    )
+    parser.add_argument("--continuous-pixel-jacobian-gain", type=float, default=None)
+    parser.add_argument(
         "--servo-measurement-point",
-        choices=("center", "geometry", "grasp", "center_subpixel", "geometry_subpixel", "grasp_subpixel"),
+        choices=tuple(sorted(SERVO_MEASUREMENT_POINTS)),
         default=None,
         help="Debug override for the visual point used by delta-servo mapping.",
+    )
+    parser.add_argument(
+        "--low-height-measurement-point",
+        choices=tuple(sorted(SERVO_MEASUREMENT_POINTS)),
+        default=None,
+        help=(
+            "Debug override for the visual point used only in the low-height confirm/pick stage. "
+            "Leave unset to use the profile/default low-height measurement point."
+        ),
     )
     parser.add_argument(
         "--continuous-disable-z",
@@ -2333,6 +3269,14 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Continuous-mode safety/debug switch: stop at confirm_z after centering/descent, "
             "then do not execute +radius extension or PICK. Use this for z=120 low-height alignment checks."
+        ),
+    )
+    parser.add_argument(
+        "--low-height-centering-check",
+        action="store_true",
+        help=(
+            "Shortcut for the no-suction z=120 validation flow: continuous servo, persistent official MJPEG, "
+            "--execute, --allow-pick, --continuous-stop-at-confirm, latest-frame processing, and no real PICK."
         ),
     )
     parser.add_argument(
@@ -2356,15 +3300,48 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--continuous-low-height-discrete-refine",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=False,
         help=(
-            "At confirm_z, use stop-settle-measure MOVE_CYL refinements instead of tiny teleop rates "
-            "until the strict center gate is reached."
+            "Diagnostic fallback: at confirm_z, use stop-settle-measure MOVE_CYL refinements instead of continuous "
+            "teleop rates. Disabled by default so high-to-low centering remains smooth."
         ),
     )
     parser.add_argument("--continuous-low-height-refine-attempts", type=int, default=4)
     parser.add_argument("--continuous-low-height-refine-max-theta-step-deg", type=float, default=0.25)
-    parser.add_argument("--continuous-low-height-refine-max-radius-step-mm", type=float, default=1.5)
+    parser.add_argument("--continuous-low-height-refine-max-radius-step-mm", type=float, default=4.0)
+    parser.add_argument(
+        "--continuous-low-height-refine-gain",
+        type=float,
+        default=0.45,
+        help=(
+            "Damping factor for stopped low-height MOVE_CYL refinements. "
+            "Use <1.0 to avoid overshoot from low-height backlash/local mapping error."
+        ),
+    )
+    parser.add_argument(
+        "--continuous-low-height-refine-recheck",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Before each low-height discrete refinement, stop and require a stable multi-frame recheck.",
+    )
+    parser.add_argument(
+        "--continuous-low-height-refine-min-improvement-px",
+        type=float,
+        default=0.25,
+        help="Stop low-height discrete refinement when the stopped-frame median no longer improves by this many pixels.",
+    )
+    parser.add_argument(
+        "--continuous-stopped-step-mode",
+        action="store_true",
+        help=(
+            "Fallback diagnostic mode: convert descent/refine servo decisions into stop-then-MOVE_CYL "
+            "small steps. Leave off when evaluating smooth continuous descent."
+        ),
+    )
+    parser.add_argument("--continuous-stopped-z-step-mm", type=float, default=4.0)
+    parser.add_argument("--continuous-stopped-refine-z-band-mm", type=float, default=45.0)
+    parser.add_argument("--continuous-stopped-max-theta-step-deg", type=float, default=0.20)
+    parser.add_argument("--continuous-stopped-max-radius-step-mm", type=float, default=1.0)
     parser.add_argument(
         "--allow-real-pick",
         action="store_true",
@@ -2376,6 +3353,23 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if bool(args.low_height_centering_check):
+        args.servo_mode = "continuous"
+        args.persistent_camera = True
+        args.execute = True
+        args.allow_pick = True
+        args.allow_execute_loop = True
+        args.continuous_stop_at_confirm = True
+        args.process_latest_frames = 1
+        args.frames = 1
+        args.drain_frames = 0
+        args.timeout_sec = max(float(args.timeout_sec), 5.0)
+        args.capture_backend = "http"
+        args.confirm_z_mm = 120.0 if args.confirm_z_mm is None else float(args.confirm_z_mm)
+        if args.confirm_z_tolerance_mm is None:
+            args.confirm_z_tolerance_mm = 1.0
+        args.servo_measurement_point = args.servo_measurement_point or "geometry_subpixel"
+        args.allow_real_pick = False
     if str(args.servo_mode) == "continuous" and not bool(args.persistent_camera):
         print(
             "[guard] --servo-mode continuous requires --persistent-camera so the official MJPEG stream stays open.",
@@ -2388,6 +3382,15 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
+    if bool(args.monitor_only):
+        args.execute = False
+        args.allow_pick = False
+        args.allow_real_pick = False
+        args.persistent_camera = True
+        args.capture_backend = "http"
+        args.process_latest_frames = 1
+        args.frames = max(1, int(args.frames))
+        args.drain_frames = max(0, int(args.drain_frames))
     if bool(args.execute) and int(args.max_steps) > 1 and not bool(args.allow_execute_loop):
         print(
             "[guard] Refusing --execute with --max-steps > 1 unless --allow-execute-loop is set. "
@@ -2405,6 +3408,8 @@ def main(argv: list[str] | None = None) -> int:
     }
     if args.confirm_z_mm is not None:
         config_kwargs["vision_pick_confirm_z_mm"] = float(args.confirm_z_mm)
+    if args.confirm_z_tolerance_mm is not None:
+        config_kwargs["vision_pick_z_tolerance_mm"] = float(args.confirm_z_tolerance_mm)
     if args.center_tolerance_px is not None:
         config_kwargs["vision_servo_center_tolerance_px"] = float(args.center_tolerance_px)
         config_kwargs["vision_servo_action_tolerance_px"] = float(args.center_tolerance_px)
@@ -2418,6 +3423,8 @@ def main(argv: list[str] | None = None) -> int:
         config_kwargs["vision_servo_fine_threshold_px"] = float(args.fine_threshold_px)
     if args.servo_measurement_point is not None:
         config_kwargs["vision_servo_measurement_point"] = str(args.servo_measurement_point)
+    if args.low_height_measurement_point is not None:
+        config_kwargs["vision_servo_low_height_measurement_point"] = str(args.low_height_measurement_point)
     if args.descent_step_mm is not None:
         config_kwargs["vision_pick_descent_step_mm"] = float(args.descent_step_mm)
         config_kwargs["vision_pick_descent_coarse_step_mm"] = float(args.descent_step_mm)
@@ -2436,20 +3443,99 @@ def main(argv: list[str] | None = None) -> int:
         config_kwargs["vision_continuous_servo_z_rate_limit_mm_s"] = float(args.continuous_z_rate_limit)
     if args.continuous_center_allow_descent_px is not None:
         config_kwargs["vision_continuous_servo_center_allow_descent_px"] = float(args.continuous_center_allow_descent_px)
+    if args.continuous_center_stop_descent_px is not None:
+        config_kwargs["vision_continuous_servo_center_stop_descent_px"] = float(args.continuous_center_stop_descent_px)
+    if args.continuous_soft_descent_rate_scale is not None:
+        config_kwargs["vision_continuous_servo_soft_descent_rate_scale"] = float(args.continuous_soft_descent_rate_scale)
+    if args.continuous_soft_descent_min_z_above_confirm_mm is not None:
+        config_kwargs["vision_continuous_servo_soft_descent_min_z_above_confirm_mm"] = float(
+            args.continuous_soft_descent_min_z_above_confirm_mm
+        )
+    if args.continuous_low_height_guard_band_mm is not None:
+        config_kwargs["vision_continuous_servo_low_height_guard_band_mm"] = float(
+            args.continuous_low_height_guard_band_mm
+        )
+    if args.continuous_low_height_z_rate_scale is not None:
+        config_kwargs["vision_continuous_servo_low_height_z_rate_scale"] = float(
+            args.continuous_low_height_z_rate_scale
+        )
+    if args.continuous_low_height_coarse_rate_scale is not None:
+        config_kwargs["vision_continuous_servo_low_height_coarse_rate_scale"] = float(
+            args.continuous_low_height_coarse_rate_scale
+        )
+    if args.continuous_low_height_fine_rate_scale is not None:
+        config_kwargs["vision_continuous_servo_low_height_fine_rate_scale"] = float(
+            args.continuous_low_height_fine_rate_scale
+        )
+    if args.continuous_low_height_pause_descent_band_mm is not None:
+        config_kwargs["vision_continuous_servo_low_height_pause_descent_band_mm"] = float(
+            args.continuous_low_height_pause_descent_band_mm
+        )
+    if args.continuous_descent_low_error_z_above_confirm_mm is not None:
+        config_kwargs["vision_continuous_servo_descent_low_error_z_above_confirm_mm"] = float(
+            args.continuous_descent_low_error_z_above_confirm_mm
+        )
+    if args.continuous_low_height_max_theta_drift_deg is not None:
+        config_kwargs["vision_continuous_servo_low_height_max_theta_drift_deg"] = float(
+            args.continuous_low_height_max_theta_drift_deg
+        )
+    if args.continuous_low_height_max_radius_drift_mm is not None:
+        config_kwargs["vision_continuous_servo_low_height_max_radius_drift_mm"] = float(
+            args.continuous_low_height_max_radius_drift_mm
+        )
+    if args.continuous_low_height_best_error_rebound_px is not None:
+        config_kwargs["vision_continuous_servo_low_height_best_error_rebound_px"] = float(
+            args.continuous_low_height_best_error_rebound_px
+        )
+    if args.continuous_low_height_rebound_recover_band_mm is not None:
+        config_kwargs["vision_continuous_servo_low_height_rebound_recover_band_mm"] = float(
+            args.continuous_low_height_rebound_recover_band_mm
+        )
+    if args.continuous_low_height_rebound_recover_attempts is not None:
+        config_kwargs["vision_continuous_servo_low_height_rebound_recover_attempts"] = int(
+            args.continuous_low_height_rebound_recover_attempts
+        )
     if args.continuous_fine_pulse_center_px is not None:
         config_kwargs["vision_continuous_servo_fine_pulse_center_px"] = float(args.continuous_fine_pulse_center_px)
     if args.continuous_command_timeout_ms is not None:
         config_kwargs["vision_continuous_servo_command_timeout_ms"] = float(args.continuous_command_timeout_ms)
+    if args.continuous_stale_frames is not None:
+        config_kwargs["vision_continuous_servo_stale_frames"] = int(args.continuous_stale_frames)
     if args.continuous_theta_gain is not None:
         config_kwargs["vision_continuous_servo_theta_gain_deg_s_per_deg"] = float(args.continuous_theta_gain)
     if args.continuous_radius_gain is not None:
         config_kwargs["vision_continuous_servo_radius_gain_mm_s_per_mm"] = float(args.continuous_radius_gain)
+    if args.continuous_horizontal_mode is not None:
+        config_kwargs["vision_continuous_servo_horizontal_mode"] = str(args.continuous_horizontal_mode)
+    if args.continuous_ibvs_gain is not None:
+        config_kwargs["vision_continuous_servo_ibvs_gain"] = float(args.continuous_ibvs_gain)
+    if args.continuous_ibvs_damping is not None:
+        config_kwargs["vision_continuous_servo_ibvs_damping_px_per_unit"] = float(args.continuous_ibvs_damping)
+    if args.continuous_ibvs_du_dtheta is not None:
+        config_kwargs["vision_continuous_servo_ibvs_du_dtheta_px_per_deg"] = float(args.continuous_ibvs_du_dtheta)
+    if args.continuous_ibvs_du_dradius is not None:
+        config_kwargs["vision_continuous_servo_ibvs_du_dradius_px_per_mm"] = float(args.continuous_ibvs_du_dradius)
+    if args.continuous_ibvs_dv_dtheta is not None:
+        config_kwargs["vision_continuous_servo_ibvs_dv_dtheta_px_per_deg"] = float(args.continuous_ibvs_dv_dtheta)
+    if args.continuous_ibvs_dv_dradius is not None:
+        config_kwargs["vision_continuous_servo_ibvs_dv_dradius_px_per_mm"] = float(args.continuous_ibvs_dv_dradius)
+    if args.continuous_pixel_jacobian_gain is not None:
+        config_kwargs["vision_continuous_servo_pixel_jacobian_gain"] = float(args.continuous_pixel_jacobian_gain)
     config = AppConfig(**config_kwargs).resolved()
     grasp_profile = load_vision_grasp_profile(config)
     if grasp_profile.ready:
         config = apply_vision_grasp_profile(config, grasp_profile).resolved()
         if args.confirm_z_mm is not None:
             config = replace(config, vision_pick_confirm_z_mm=float(args.confirm_z_mm)).resolved()
+        if args.confirm_z_tolerance_mm is not None:
+            config = replace(config, vision_pick_z_tolerance_mm=float(args.confirm_z_tolerance_mm)).resolved()
+        if args.servo_measurement_point is not None:
+            config = replace(config, vision_servo_measurement_point=str(args.servo_measurement_point)).resolved()
+        if args.low_height_measurement_point is not None:
+            config = replace(
+                config,
+                vision_servo_low_height_measurement_point=str(args.low_height_measurement_point),
+            ).resolved()
     elif bool(config.vision_grasp_profile_required):
         print(f"[guard] Vision grasp profile unavailable: {grasp_profile.error}", file=sys.stderr)
         return 2
@@ -2513,9 +3599,12 @@ def main(argv: list[str] | None = None) -> int:
         "profile": str(args.profile),
         "detector": str(args.detector),
         "execute": bool(args.execute),
+        "monitor_only": bool(args.monitor_only),
         "allow_pick": bool(args.allow_pick),
+        "low_height_centering_check": bool(args.low_height_centering_check),
         "pick_radius_bias_mm": float(args.pick_radius_bias_mm),
-        "confirm_z_mm": None if args.confirm_z_mm is None else float(args.confirm_z_mm),
+        "confirm_z_mm": float(config.vision_pick_confirm_z_mm),
+        "confirm_z_tolerance_mm": float(config.vision_pick_z_tolerance_mm),
         "center_tolerance_px": None if args.center_tolerance_px is None else float(args.center_tolerance_px),
         "frames_requested": int(args.frames),
         "drain_frames": int(args.drain_frames),
@@ -2524,6 +3613,18 @@ def main(argv: list[str] | None = None) -> int:
         "persistent_camera": bool(args.persistent_camera),
         "continuous_teleop_rate_hz": float(args.continuous_teleop_rate_hz),
         "continuous_max_duration_sec": float(args.continuous_max_duration_sec),
+        "continuous_horizontal_mode": str(config.vision_continuous_servo_horizontal_mode),
+        "servo_measurement_point": str(config.vision_servo_measurement_point),
+        "low_height_measurement_point": str(config.vision_servo_low_height_measurement_point),
+        "continuous_ibvs_jacobian": {
+            "source": str(config.vision_continuous_servo_ibvs_jacobian_source),
+            "du_dtheta_px_per_deg": float(config.vision_continuous_servo_ibvs_du_dtheta_px_per_deg),
+            "du_dradius_px_per_mm": float(config.vision_continuous_servo_ibvs_du_dradius_px_per_mm),
+            "dv_dtheta_px_per_deg": float(config.vision_continuous_servo_ibvs_dv_dtheta_px_per_deg),
+            "dv_dradius_px_per_mm": float(config.vision_continuous_servo_ibvs_dv_dradius_px_per_mm),
+            "gain": float(config.vision_continuous_servo_ibvs_gain),
+            "damping_px_per_unit": float(config.vision_continuous_servo_ibvs_damping_px_per_unit),
+        },
         "camera_contract": (
             "PC reads the single official Hiwonder MJPEG stream from "
             "usb_cam.service -> /usb_cam/image_rect_color -> web_video_server:8080; "
@@ -2614,10 +3715,16 @@ def main(argv: list[str] | None = None) -> int:
                 config=config,
                 snapshot=resolve_snapshot,
                 snapshot_age_ms=snapshot_age_ms,
-                frame_pose_age_ms=_packet_frame_pose_age_ms(packet),
+                frame_pose_age_ms=_frame_pose_age_for_static_snapshot(resolve_snapshot, packet),
             )
             resolved_packet["camera_frames_captured"] = int(len(frames))
             resolved_packet["camera_frames_processed"] = int(len(process_frames))
+            camera_transport = (
+                persistent_reader.transport_stats()
+                if persistent_reader is not None
+                else {"capture_backend": str(args.capture_backend), "persistent": False}
+            )
+            resolved_packet["camera_transport"] = dict(camera_transport)
             selected_slot = _select_slot(resolved_packet, locked_slot_id)
             selected_slot_id = None if selected_slot is None else int(selected_slot.get("slot_id", selected_slot.get("slot", 0)))
             if locked_slot_id is None and selected_slot_id is not None:
@@ -2658,6 +3765,7 @@ def main(argv: list[str] | None = None) -> int:
                 "selected_slot": selected_slot,
                 "decision": decision,
                 "snapshot": resolve_snapshot,
+                "camera_transport": dict(camera_transport),
             }
             print(f"[step {step_index + 1}] valid_slots={len(step_report['slots'])} selected={selected_slot_id}")
             if selected_slot is not None:
@@ -2732,6 +3840,11 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 step_report["execution"] = {"executed": False, "reason": "dry_run"}
                 report["steps"].append(step_report)
+                if bool(args.monitor_only):
+                    sleep_sec = max(0.0, (1.0 / max(0.1, float(args.continuous_teleop_rate_hz))))
+                    time.sleep(sleep_sec)
+                    initial_snapshot = resolve_snapshot
+                    continue
                 break
 
             report["steps"].append(step_report)

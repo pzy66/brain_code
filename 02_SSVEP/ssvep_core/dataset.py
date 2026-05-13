@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import csv
 import json
 import os
 import re
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -27,6 +29,44 @@ from .trial_roles import (
 )
 
 COLLECTION_DATA_SCHEMA_VERSION = "2.0"
+QUALITY_ROW_PASSTHROUGH_KEYS = (
+    "protocol_name",
+    "block_id",
+    "split_role",
+    "state_type",
+    "nc_subtype",
+    "target_freq",
+    "target_position",
+    "target_position_label",
+    "stimulus_active",
+    "all_targets_flickering",
+    "cue_sec",
+    "rest_sec",
+    "trial_start_sample",
+    "cue_on_sample",
+    "active_window_start_sample",
+    "active_window_end_sample",
+    "stim_on_sample",
+    "stim_off_sample",
+    "trial_end_sample",
+    "valid",
+    "reject_reason",
+    "event_codes",
+    "events",
+)
+COLLECTION_TIMESTAMP_PASSTHROUGH_KEYS = (
+    "trial_prepare_started_at",
+    "active_start_tone_started_at",
+    "active_window_started_at",
+    "active_window_ended_at",
+    "segment_captured_at",
+    "active_end_tone_started_at",
+    "stimulus_phase_apply_requested_at",
+    "stimulus_first_frame_presented_at",
+    "stimulus_first_frame_ack_received_at",
+    "stimulus_first_frame_mode",
+    "board_buffer_cleared_at",
+)
 _WINDOWS_RESERVED_NAMES = {
     "CON",
     "PRN",
@@ -98,13 +138,62 @@ def _now_iso_timestamp() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
+def _replace_with_windows_retry(source: Path, target: Path) -> None:
+    source_text = str(source)
+    target_text = str(target)
+    replace_error: OSError | None = None
+    for delay_sec in (0.0, 0.02, 0.05, 0.1, 0.2):
+        if delay_sec > 0.0:
+            time.sleep(delay_sec)
+        try:
+            os.replace(source_text, target_text)
+            replace_error = None
+            break
+        except PermissionError as error:
+            replace_error = error
+            if os.name != "nt":
+                raise
+        except OSError as error:
+            replace_error = error
+            if os.name != "nt" or getattr(error, "winerror", None) != 5:
+                raise
+    if replace_error is not None:
+        raise replace_error
+
+
 def _atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> None:
     target = Path(path).expanduser().resolve()
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = target.parent / f".atomic_{uuid.uuid4().hex[:8]}.tmp"
     try:
         tmp_path.write_text(str(text), encoding=encoding)
-        os.replace(str(tmp_path), str(target))
+        _replace_with_windows_retry(tmp_path, target)
+    except Exception:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
+
+
+def _atomic_write_csv(path: Path, rows: Sequence[Mapping[str, Any]], fieldnames: Sequence[str]) -> None:
+    target = Path(path).expanduser().resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = target.parent / f".atomic_{uuid.uuid4().hex[:8]}.csv"
+    try:
+        with tmp_path.open("w", encoding="utf-8", newline="") as file:
+            writer = csv.DictWriter(file, fieldnames=list(fieldnames), extrasaction="ignore")
+            writer.writeheader()
+            for row in rows:
+                writer.writerow(
+                    {
+                        key: json.dumps(_jsonable(row.get(key)), ensure_ascii=False)
+                        if isinstance(row.get(key), (dict, list, tuple))
+                        else row.get(key)
+                        for key in fieldnames
+                    }
+                )
+        _replace_with_windows_retry(tmp_path, target)
     except Exception:
         try:
             tmp_path.unlink(missing_ok=True)
@@ -119,7 +208,7 @@ def _atomic_save_npz(path: Path, arrays: dict[str, np.ndarray]) -> None:
     tmp_path = target.parent / f".atomic_{uuid.uuid4().hex[:8]}.npz"
     try:
         np.savez_compressed(tmp_path, **arrays)
-        os.replace(str(tmp_path), str(target))
+        _replace_with_windows_retry(tmp_path, target)
     except Exception:
         try:
             tmp_path.unlink(missing_ok=True)
@@ -135,7 +224,7 @@ def _atomic_save_npy(path: Path, array: np.ndarray) -> None:
     try:
         with tmp_path.open("wb") as file:
             np.save(file, array, allow_pickle=False)
-        os.replace(str(tmp_path), str(target))
+        _replace_with_windows_retry(tmp_path, target)
     except Exception:
         try:
             tmp_path.unlink(missing_ok=True)
@@ -243,10 +332,11 @@ def _build_collection_records(
         label_text = str(trial.label)
         label_lower = label_text.strip().lower()
         stage_name = "long_idle" if ("long_idle" in label_lower or "long idle" in label_lower) else "collection"
-        trial_role = infer_trial_role(
+        trial_role = str(quality.get("trial_role", "")).strip().lower() or infer_trial_role(
             label=label_text,
             expected_freq=None if trial.expected_freq is None else float(trial.expected_freq),
         )
+        stage_name = str(quality.get("stage", "")).strip() or stage_name
         record = {
             "stage": stage_name,
             "trial_role": trial_role,
@@ -263,23 +353,16 @@ def _build_collection_records(
             "channels": int(matrix.shape[1]),
             "npz_key": npz_key,
         }
+        for key in QUALITY_ROW_PASSTHROUGH_KEYS:
+            if key in quality:
+                record[key] = _jsonable(quality.get(key))
         if "active_sec" in quality:
             record["active_sec"] = _safe_float(quality.get("active_sec", 0.0), 0.0)
         elif int(sampling_rate) > 0:
             record["active_sec"] = float(used_samples / float(sampling_rate))
         if "available_samples" in quality:
             record["available_samples"] = _safe_int(quality.get("available_samples", 0), 0)
-        for key in (
-            "active_start_tone_started_at",
-            "active_window_started_at",
-            "active_window_ended_at",
-            "segment_captured_at",
-            "active_end_tone_started_at",
-            "stimulus_phase_apply_requested_at",
-            "stimulus_first_frame_presented_at",
-            "stimulus_first_frame_mode",
-            "board_buffer_cleared_at",
-        ):
+        for key in COLLECTION_TIMESTAMP_PASSTHROUGH_KEYS:
             value = str(quality.get(key, "")).strip()
             if value:
                 record[key] = value
@@ -440,8 +523,28 @@ def _build_quality_summary(trial_records: Sequence[dict[str, Any]]) -> dict[str,
         for row in trial_records
     ]
     role_counts = summarize_trial_roles(trial_records)
+    valid_trials = [row for row in trial_records if bool(row.get("valid", True))]
+    invalid_trials = [row for row in trial_records if not bool(row.get("valid", True))]
+    calibration_trials = [row for row in trial_records if str(row.get("split_role", "")).strip().lower() == "calibration"]
+    test_trials = [row for row in trial_records if str(row.get("split_role", "")).strip().lower() == "test"]
+    valid_command_trials = [
+        row
+        for row in valid_trials
+        if str(row.get("state_type", "")).strip().lower() == "command"
+        or row.get("expected_freq") is not None
+    ]
+    valid_nc_segments = [
+        row
+        for row in valid_trials
+        if str(row.get("state_type", "")).strip().lower() == "no_control"
+    ]
+    subtype_counts: dict[str, int] = {}
+    for row in trial_records:
+        subtype = str(row.get("nc_subtype", "")).strip().lower()
+        if subtype:
+            subtype_counts[subtype] = int(subtype_counts.get(subtype, 0) + 1)
     return {
-        "valid_trial_count": total_trials,
+        "valid_trial_count": int(len(valid_trials)),
         "kept_trial_count": total_trials,
         "short_segment_excluded": 0,
         "retry_total": int(np.sum(np.asarray(retries, dtype=int))) if retries else 0,
@@ -450,7 +553,162 @@ def _build_quality_summary(trial_records: Sequence[dict[str, Any]]) -> dict[str,
         "shortfall_ratio_max": float(np.max(np.asarray(shortfalls, dtype=float))) if shortfalls else 0.0,
         "stimulus_first_frame_ack_timeout_count": int(sum(1 for item in ack_timeouts if item)),
         "trial_role_counts": role_counts,
+        "invalid_trial_count": int(len(invalid_trials)),
+        "valid_command_trials": int(len(valid_command_trials)),
+        "valid_no_control_segments": int(len(valid_nc_segments)),
+        "calibration_split_trial_count": int(len(calibration_trials)),
+        "test_split_trial_count": int(len(test_trials)),
+        "no_control_subtype_counts": subtype_counts,
     }
+
+
+def _events_from_trials(trial_records: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    for row in trial_records:
+        raw_events = row.get("events", [])
+        if isinstance(raw_events, list):
+            for item in raw_events:
+                if isinstance(item, dict):
+                    event = {
+                        "sample_index": item.get("sample_index"),
+                        "event_code": item.get("event_code"),
+                        "event_name": item.get("event_name"),
+                        "event_value": item.get("event_value"),
+                        "perf_time": item.get("perf_time"),
+                        "trial_id": item.get("trial_id", row.get("trial_id")),
+                    }
+                    events.append(event)
+    return events
+
+
+def _snr_by_freq_from_trials(
+    trial_segments: Sequence[tuple[TrialSpec, np.ndarray]],
+    *,
+    sampling_rate: int,
+    freqs: Sequence[float],
+) -> dict[str, float]:
+    result = {f"command_{float(freq):g}_snr": 0.0 for freq in freqs}
+    fs = int(sampling_rate)
+    if fs <= 0:
+        return result
+    for freq in freqs:
+        rows: list[float] = []
+        for trial, segment in trial_segments:
+            if trial.expected_freq is None or abs(float(trial.expected_freq) - float(freq)) > 1e-8:
+                continue
+            matrix = np.asarray(segment, dtype=np.float64)
+            if matrix.ndim != 2 or matrix.shape[0] < 4:
+                continue
+            signal = np.mean(matrix, axis=1)
+            signal = signal - float(np.mean(signal))
+            spectrum = np.abs(np.fft.rfft(signal))
+            freqs_fft = np.fft.rfftfreq(int(signal.shape[0]), d=1.0 / float(fs))
+            if spectrum.size <= 1:
+                continue
+            target_index = int(np.argmin(np.abs(freqs_fft - float(freq))))
+            band = np.where((freqs_fft >= max(0.0, float(freq) - 2.0)) & (freqs_fft <= float(freq) + 2.0))[0]
+            band = band[band != target_index]
+            noise = float(np.median(spectrum[band])) if band.size else float(np.median(spectrum))
+            rows.append(float(spectrum[target_index] / max(noise, 1e-12)))
+        result[f"command_{float(freq):g}_snr"] = float(np.median(np.asarray(rows, dtype=float))) if rows else 0.0
+    return result
+
+
+def _line_noise_50hz_from_trials(
+    trial_segments: Sequence[tuple[TrialSpec, np.ndarray]],
+    *,
+    sampling_rate: int,
+) -> dict[str, Any]:
+    fs = int(sampling_rate)
+    if fs <= 100:
+        return {"ratio": 0.0, "db": 0.0, "status": "unavailable_sampling_rate"}
+    rows: list[float] = []
+    for _trial, segment in trial_segments:
+        matrix = np.asarray(segment, dtype=np.float64)
+        if matrix.ndim != 2 or matrix.shape[0] < 8:
+            continue
+        centered = matrix - np.mean(matrix, axis=0, keepdims=True)
+        spectrum = np.abs(np.fft.rfft(centered, axis=0))
+        freqs_fft = np.fft.rfftfreq(int(centered.shape[0]), d=1.0 / float(fs))
+        if spectrum.shape[0] <= 1:
+            continue
+        target_index = int(np.argmin(np.abs(freqs_fft - 50.0)))
+        if abs(float(freqs_fft[target_index]) - 50.0) > 2.0:
+            continue
+        band = np.where((freqs_fft >= 45.0) & (freqs_fft <= 55.0))[0]
+        band = band[band != target_index]
+        if band.size <= 0:
+            continue
+        noise = np.median(spectrum[band, :], axis=0)
+        ratio = spectrum[target_index, :] / np.maximum(noise, 1e-12)
+        rows.extend(float(item) for item in ratio.reshape(-1) if np.isfinite(item))
+    if not rows:
+        return {"ratio": 0.0, "db": 0.0, "status": "unavailable_no_valid_segments"}
+    value = float(np.median(np.asarray(rows, dtype=np.float64)))
+    return {
+        "ratio": value,
+        "db": float(20.0 * np.log10(max(value, 1e-12))),
+        "status": "estimated_from_saved_trial_windows",
+    }
+
+
+def _build_quality_report(
+    *,
+    trial_records: Sequence[dict[str, Any]],
+    trial_segments: Sequence[tuple[TrialSpec, np.ndarray]],
+    sampling_rate: int,
+    freqs: Sequence[float],
+    continuous_board_data: Optional[np.ndarray],
+    quality_summary: Mapping[str, Any],
+) -> dict[str, Any]:
+    matrices = [np.asarray(segment, dtype=np.float64) for _trial, segment in trial_segments if np.asarray(segment).ndim == 2]
+    if matrices:
+        try:
+            stacked = np.vstack(matrices)
+        except Exception:
+            stacked = np.empty((0, 0), dtype=np.float64)
+    else:
+        stacked = np.empty((0, 0), dtype=np.float64)
+    channel_variance: list[float] = []
+    bad_channels: list[int] = []
+    saturation = False
+    if stacked.ndim == 2 and stacked.shape[0] > 0:
+        variance = np.var(stacked, axis=0)
+        channel_variance = [float(item) for item in variance.tolist()]
+        finite = variance[np.isfinite(variance)]
+        if finite.size:
+            median = float(np.median(finite))
+            for index, value in enumerate(variance):
+                if not np.isfinite(value) or value <= 1e-12 or (median > 0.0 and value > median * 20.0):
+                    bad_channels.append(int(index))
+        saturation = bool(np.any(np.abs(stacked) > 1e6))
+    dropped_frame_count = 0
+    for row in trial_records:
+        stats = row.get("stimulus_frame_interval_stats", {})
+        if isinstance(stats, dict):
+            p95 = _safe_float(stats.get("p95_ms", 0.0), 0.0)
+            mean = _safe_float(stats.get("mean_ms", 0.0), 0.0)
+            if mean > 0.0 and p95 > mean * 1.5:
+                dropped_frame_count += 1
+    report = {
+        "generated_at": _now_iso_timestamp(),
+        "channel_variance": channel_variance,
+        "bad_channel_candidates": bad_channels,
+        "saturation_or_dropout": bool(saturation),
+        "line_noise_50hz": _line_noise_50hz_from_trials(trial_segments, sampling_rate=int(sampling_rate)),
+        "dropped_frame_count": int(dropped_frame_count),
+        "invalid_trial_count": int(quality_summary.get("invalid_trial_count", 0) or 0),
+        "retry_total": int(quality_summary.get("retry_total", 0) or 0),
+        "marker_count_check": {
+            "events_in_trials": int(len(_events_from_trials(trial_records))),
+            "trial_count": int(len(trial_records)),
+        },
+        "valid_command_trials": int(quality_summary.get("valid_command_trials", 0) or 0),
+        "valid_no_control_segments": int(quality_summary.get("valid_no_control_segments", 0) or 0),
+        "test_split_trial_count": int(quality_summary.get("test_split_trial_count", 0) or 0),
+    }
+    report.update(_snr_by_freq_from_trials(trial_segments, sampling_rate=int(sampling_rate), freqs=freqs))
+    return _jsonable(report)
 
 
 def save_collection_dataset_bundle(
@@ -584,10 +842,37 @@ def save_collection_dataset_bundle(
         manifest_payload["continuous_board"] = _jsonable(continuous_payload)
     manifest_path = session_dir / "session_manifest.json"
     _atomic_write_text(manifest_path, json_dumps(_jsonable(manifest_payload)) + "\n", encoding="utf-8")
+    events_rows = _events_from_trials(trial_records)
+    if events_rows:
+        events_path = session_dir / "events.csv"
+        _atomic_write_csv(
+            events_path,
+            events_rows,
+            ("sample_index", "event_code", "event_name", "event_value", "perf_time", "trial_id"),
+        )
+        files_payload["events_csv"] = str(events_path)
+        manifest_payload["files"] = files_payload
+        _atomic_write_text(manifest_path, json_dumps(_jsonable(manifest_payload)) + "\n", encoding="utf-8")
+    quality_report = _build_quality_report(
+        trial_records=trial_records,
+        trial_segments=trial_segments,
+        sampling_rate=int(sampling_rate),
+        freqs=freqs,
+        continuous_board_data=continuous_board_data,
+        quality_summary=quality_summary,
+    )
+    quality_report_path = session_dir / "quality_report.json"
+    _atomic_write_text(quality_report_path, json_dumps(_jsonable(quality_report)) + "\n", encoding="utf-8")
+    files_payload["quality_report_json"] = str(quality_report_path)
+    manifest_payload["files"] = files_payload
+    manifest_payload["quality_report"] = quality_report
+    _atomic_write_text(manifest_path, json_dumps(_jsonable(manifest_payload)) + "\n", encoding="utf-8")
     result = {
         "dataset_dir": str(session_dir),
         "dataset_manifest": str(manifest_path),
         "dataset_npz": str(npz_path),
+        "events_csv": str(session_dir / "events.csv") if events_rows else "",
+        "quality_report_json": str(quality_report_path),
         "data_schema_version": COLLECTION_DATA_SCHEMA_VERSION,
     }
     if "continuous_board_npz" in files_payload:
@@ -630,6 +915,7 @@ def load_collection_dataset(manifest_path: Path) -> LoadedDataset:
                 expected_freq=None if row.get("expected_freq") is None else float(row.get("expected_freq")),
                 trial_id=int(row.get("trial_id", -1)),
                 block_index=int(row.get("block_index", -1)),
+                metadata=dict(row),
             )
             segments.append((trial, matrix))
     finally:

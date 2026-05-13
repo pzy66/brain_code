@@ -26,7 +26,7 @@ DEFAULT_CAMERA_IO_METHOD = "mmap"
 DEFAULT_CAMERA_FRAMERATE = 20
 DEFAULT_UVCVIDEO_CONF_PATH = "/etc/modprobe.d/hiwonder-uvcvideo.conf"
 DEFAULT_UVCVIDEO_QUIRKS = 128
-DEFAULT_UVCVIDEO_NODROP = 1
+DEFAULT_UVCVIDEO_NODROP = 0
 DEFAULT_UVCVIDEO_TIMEOUT = 5000
 HIWONDER_CAMERA_TOPIC = "/usb_cam/image_rect_color"
 HIWONDER_CAMERA_WIDTH = 640
@@ -155,7 +155,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_CAMERA_FRAMERATE,
         help="Set usb_cam framerate. The locked JetMax camera sender uses 20 FPS; use 0 only for manual diagnosis.",
     )
-    parser.add_argument("--camera-driver-quirks", type=int, default=DEFAULT_UVCVIDEO_QUIRKS)
+    parser.add_argument(
+        "--camera-driver-quirks",
+        type=int,
+        default=DEFAULT_UVCVIDEO_QUIRKS,
+        help=(
+            "uvcvideo quirks for explicit camera-driver repair. The conservative JetMax recovery state keeps "
+            "nodrop=0 so incomplete UVC frames are dropped; normal runtime startup never applies this unless "
+            "--repair-camera-driver and --allow-camera-sender-mutation are both passed."
+        ),
+    )
     parser.add_argument("--camera-driver-nodrop", type=int, default=DEFAULT_UVCVIDEO_NODROP, choices=(0, 1))
     parser.add_argument("--camera-driver-timeout", type=int, default=DEFAULT_UVCVIDEO_TIMEOUT)
     parser.add_argument("--camera-driver-conf-path", default=DEFAULT_UVCVIDEO_CONF_PATH)
@@ -455,16 +464,20 @@ def persist_and_reload_uvcvideo(
     conf_path = str(args.camera_driver_conf_path or DEFAULT_UVCVIDEO_CONF_PATH).strip()
     if not conf_path.startswith("/etc/modprobe.d/") or not conf_path.endswith(".conf"):
         raise ValueError(f"Refusing to write unexpected modprobe config path: {conf_path}")
-    quirks = max(0, int(args.camera_driver_quirks))
+    quirks = int(args.camera_driver_quirks)
+    if quirks < 0:
+        raise ValueError(f"Refusing invalid uvcvideo quirks value: {quirks}")
     nodrop = 1 if int(args.camera_driver_nodrop) else 0
     timeout = max(0, int(args.camera_driver_timeout))
+    driver_options = [f"quirks={quirks}", f"nodrop={nodrop}", f"timeout={timeout}"]
     remote_tmp = "/tmp/hiwonder-uvcvideo.conf"
     content = (
         "# Hiwonder JetMax USB camera stability for official usb_cam.service chain.\n"
         "# Keep camera output on the official path:\n"
         "# /dev/usb_cam0 -> usb_cam_node -> /usb_cam/image_rect_color -> web_video_server:8080\n"
-        "# Required for the 32e6:9005 icspring UVC camera on this Jetson image.\n"
-        f"options uvcvideo quirks={quirks} nodrop={nodrop} timeout={timeout}\n"
+        "# Conservative recovery state: keep nodrop=0 so incomplete UVC frames are not fed upward.\n"
+        "# Runtime startup must not write this file unless explicit camera-driver repair is requested.\n"
+        f"options uvcvideo {' '.join(driver_options)}\n"
     )
     upload_text(ssh, remote_tmp, content)
     run_remote_command(ssh, f"{sudo} cp {shlex.quote(remote_tmp)} {shlex.quote(conf_path)}", capture=True)
@@ -473,7 +486,7 @@ def persist_and_reload_uvcvideo(
     time.sleep(2.0)
     run_remote_command(
         ssh,
-        f"{sudo} modprobe uvcvideo quirks={quirks} nodrop={nodrop} timeout={timeout}",
+        f"{sudo} modprobe uvcvideo {' '.join(shlex.quote(option) for option in driver_options)}",
         capture=True,
     )
     time.sleep(4.0)

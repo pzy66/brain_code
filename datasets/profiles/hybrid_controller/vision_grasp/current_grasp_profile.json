@@ -6,6 +6,7 @@
   "pick_cyl_radius_bias_mm": 0.0,
   "sucker_rotation_angle_quality_threshold": 0.2,
   "vision_servo_low_action_tolerance_px": 2.0,
+  "vision_servo_low_height_measurement_point": "geometry_subpixel",
   "vision_pick_z_tolerance_mm": 4.0,
   "notes": [
     "Tracked profile for real JetMax wood-block visual grasping.",

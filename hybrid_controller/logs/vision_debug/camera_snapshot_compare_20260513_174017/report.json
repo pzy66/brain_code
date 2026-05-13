@@ -1,0 +1,134 @@
+{
+  "/usb_cam/image_raw": {
+    "out": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_snapshot_compare_20260513_174017\\usb_cam_image_raw",
+    "sheet": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_snapshot_compare_20260513_174017\\usb_cam_image_raw\\sheet.jpg",
+    "frames": [
+      {
+        "idx": 0,
+        "ok": false,
+        "error": "RemoteDisconnected('Remote end closed connection without response')"
+      },
+      {
+        "idx": 1,
+        "ok": false,
+        "error": "RemoteDisconnected('Remote end closed connection without response')"
+      },
+      {
+        "idx": 2,
+        "ok": false,
+        "error": "RemoteDisconnected('Remote end closed connection without response')"
+      },
+      {
+        "idx": 3,
+        "ok": false,
+        "error": "RemoteDisconnected('Remote end closed connection without response')"
+      },
+      {
+        "idx": 4,
+        "ok": false,
+        "error": "RemoteDisconnected('Remote end closed connection without response')"
+      },
+      {
+        "idx": 5,
+        "ok": false,
+        "error": "RemoteDisconnected('Remote end closed connection without response')"
+      },
+      {
+        "idx": 6,
+        "ok": false,
+        "error": "RemoteDisconnected('Remote end closed connection without response')"
+      },
+      {
+        "idx": 7,
+        "ok": false,
+        "error": "RemoteDisconnected('Remote end closed connection without response')"
+      },
+      {
+        "idx": 8,
+        "ok": false,
+        "error": "RemoteDisconnected('Remote end closed connection without response')"
+      },
+      {
+        "idx": 9,
+        "ok": false,
+        "error": "RemoteDisconnected('Remote end closed connection without response')"
+      },
+      {
+        "idx": 10,
+        "ok": false,
+        "error": "RemoteDisconnected('Remote end closed connection without response')"
+      },
+      {
+        "idx": 11,
+        "ok": false,
+        "error": "RemoteDisconnected('Remote end closed connection without response')"
+      }
+    ]
+  },
+  "/usb_cam/image_rect_color": {
+    "out": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_snapshot_compare_20260513_174017\\usb_cam_image_rect_color",
+    "sheet": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_snapshot_compare_20260513_174017\\usb_cam_image_rect_color\\sheet.jpg",
+    "frames": [
+      {
+        "idx": 0,
+        "ok": false,
+        "error": "RemoteDisconnected('Remote end closed connection without response')"
+      },
+      {
+        "idx": 1,
+        "ok": false,
+        "error": "RemoteDisconnected('Remote end closed connection without response')"
+      },
+      {
+        "idx": 2,
+        "ok": false,
+        "error": "RemoteDisconnected('Remote end closed connection without response')"
+      },
+      {
+        "idx": 3,
+        "ok": false,
+        "error": "RemoteDisconnected('Remote end closed connection without response')"
+      },
+      {
+        "idx": 4,
+        "ok": false,
+        "error": "RemoteDisconnected('Remote end closed connection without response')"
+      },
+      {
+        "idx": 5,
+        "ok": false,
+        "error": "RemoteDisconnected('Remote end closed connection without response')"
+      },
+      {
+        "idx": 6,
+        "ok": false,
+        "error": "RemoteDisconnected('Remote end closed connection without response')"
+      },
+      {
+        "idx": 7,
+        "ok": false,
+        "error": "RemoteDisconnected('Remote end closed connection without response')"
+      },
+      {
+        "idx": 8,
+        "ok": false,
+        "error": "RemoteDisconnected('Remote end closed connection without response')"
+      },
+      {
+        "idx": 9,
+        "ok": false,
+        "error": "RemoteDisconnected('Remote end closed connection without response')"
+      },
+      {
+        "idx": 10,
+        "ok": false,
+        "error": "RemoteDisconnected('Remote end closed connection without response')"
+      },
+      {
+        "idx": 11,
+        "ok": false,
+        "error": "RemoteDisconnected('Remote end closed connection without response')"
+      }
+    ]
+  }
+}

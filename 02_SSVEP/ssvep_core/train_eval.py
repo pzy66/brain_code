@@ -210,6 +210,37 @@ def _collect_manifest_stage_values(dataset: LoadedDataset) -> set[str]:
     return stages
 
 
+def _trial_metadata_from_pair(trial: Any, row: dict[str, Any]) -> dict[str, Any]:
+    metadata = getattr(trial, "metadata", None)
+    merged = dict(metadata) if isinstance(metadata, dict) else {}
+    if row:
+        merged.update(dict(row))
+    return merged
+
+
+def _truthy_flag(value: Any, default: bool = True) -> bool:
+    if value is None:
+        return bool(default)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"", "1", "true", "yes", "y", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "off"}:
+            return False
+    return bool(value)
+
+
+def _is_manifest_quality_candidate(metadata: dict[str, Any]) -> bool:
+    if not metadata:
+        return True
+    if not _truthy_flag(metadata.get("valid", True), True):
+        return False
+    state_type = str(metadata.get("state_type", "")).strip().lower()
+    if state_type == "baseline":
+        return False
+    return True
+
+
 def _safe_float(value: Any, *, default: float) -> float:
     try:
         converted = float(value)
@@ -275,6 +306,15 @@ def _sorted_manifest_trial_rows(dataset: LoadedDataset) -> list[dict[str, Any]]:
     return rows
 
 
+def _trial_row_at(dataset: LoadedDataset, idx: int) -> dict[str, Any]:
+    if idx < len(dataset.trial_segments):
+        metadata = getattr(dataset.trial_segments[idx][0], "metadata", None)
+        if isinstance(metadata, dict) and metadata:
+            return dict(metadata)
+    rows = _sorted_manifest_trial_rows(dataset)
+    return dict(rows[idx]) if idx < len(rows) else {}
+
+
 def _apply_trial_quality_filter(
     dataset: LoadedDataset,
     *,
@@ -301,11 +341,18 @@ def _apply_trial_quality_filter(
     sample_ratios_kept: list[float] = []
     dropped_shortfall = 0
     dropped_retry = 0
+    dropped_invalid = 0
+    dropped_nontraining_split = 0
+    dropped_baseline = 0
 
     ratio_th = max(0.0, float(min_sample_ratio))
     retry_th = max(0, int(max_retry_count))
     for idx, (trial, segment) in enumerate(segments):
-        row = rows[idx] if idx < len(rows) else {}
+        row = _trial_row_at(dataset, idx)
+        metadata = _trial_metadata_from_pair(trial, row)
+        valid = _truthy_flag(metadata.get("valid", True), True)
+        state_type = str(metadata.get("state_type", "")).strip().lower()
+        split_role = str(metadata.get("split_role", "")).strip().lower()
         used_samples = _safe_int(row.get("used_samples", int(segment.shape[0])), default=int(segment.shape[0]))
         target_samples = _safe_int(row.get("target_samples", fallback_target), default=fallback_target)
         target_samples = max(1, int(target_samples))
@@ -319,11 +366,18 @@ def _apply_trial_quality_filter(
             dropped_shortfall += 1
         if not pass_retry:
             dropped_retry += 1
-        if pass_ratio and pass_retry:
-            kept_segments.append((trial, segment))
+        if not valid:
+            dropped_invalid += 1
+        if state_type == "baseline":
+            dropped_baseline += 1
+        if split_role and split_role not in {"calibration", "train", "training", "gate", "test", "holdout"}:
+            dropped_nontraining_split += 1
+        pass_manifest = _is_manifest_quality_candidate(metadata)
+        if pass_ratio and pass_retry and pass_manifest:
+            kept_segments.append((replace(trial, metadata=dict(metadata)), segment))
             sample_ratios_kept.append(sample_ratio)
             if idx < len(rows):
-                kept_rows.append(dict(rows[idx]))
+                kept_rows.append(dict(row))
 
     filtered_manifest = dict(dataset.manifest)
     if rows:
@@ -353,6 +407,9 @@ def _apply_trial_quality_filter(
         "drop_ratio": float(max(total_trials - kept_trials, 0) / max(total_trials, 1)),
         "dropped_shortfall": int(dropped_shortfall),
         "dropped_retry": int(dropped_retry),
+        "dropped_invalid": int(dropped_invalid),
+        "dropped_nontraining_split": int(dropped_nontraining_split),
+        "dropped_baseline": int(dropped_baseline),
         "rows_with_quality": int(len(rows)),
         "min_sample_ratio": float(ratio_th),
         "max_retry_count": int(retry_th),
@@ -458,13 +515,30 @@ def _load_session1_dataset(
                 f"manifest={source_path} min_sample_ratio={config.quality_min_sample_ratio} "
                 f"max_retry_count={config.quality_max_retry_count}"
             )
-        merged_trials.extend(list(filtered_ds.trial_segments))
+        source_session_id = str(filtered_ds.session_id)
+        source_manifest_path = str(source_path)
+        for trial, segment in list(filtered_ds.trial_segments):
+            metadata = dict(getattr(trial, "metadata", {}) or {})
+            metadata["source_session_id"] = source_session_id
+            metadata["source_manifest_path"] = source_manifest_path
+            metadata["merged_order_index"] = int(len(merged_trials))
+            merged_trials.append(
+                (
+                    replace(trial, metadata=metadata),
+                    segment,
+                )
+            )
         subjects.add(str(filtered_ds.subject_id))
         session_ids.append(str(filtered_ds.session_id))
         stage_values.update(_collect_manifest_stage_values(filtered_ds))
         for row in list(filtered_ds.manifest.get("trials", [])):
             if isinstance(row, dict):
-                merged_manifest_trials.append(dict(row))
+                merged_row = dict(row)
+                merged_row["source_session_id"] = source_session_id
+                merged_row["source_manifest_path"] = source_manifest_path
+                merged_row["merged_order_index"] = int(len(merged_manifest_trials))
+                merged_row["order_index"] = int(len(merged_manifest_trials))
+                merged_manifest_trials.append(merged_row)
     if not merged_trials:
         raise RuntimeError("selected datasets contain no trial segments")
     if len(datasets) == 1:
@@ -498,6 +572,33 @@ def _load_session1_dataset(
 
 
 def _split_session_for_train_eval(dataset: LoadedDataset, *, seed: int) -> tuple[list[Any], list[Any], list[Any]]:
+    rows = _sorted_manifest_trial_rows(dataset)
+    if rows and any(str(row.get("split_role", "")).strip().lower() for row in rows):
+        train_candidates: list[Any] = []
+        gate_segments: list[Any] = []
+        holdout_segments: list[Any] = []
+        for idx, item in enumerate(dataset.trial_segments):
+            row = _trial_row_at(dataset, idx)
+            split_role = str(row.get("split_role", "")).strip().lower()
+            if split_role in {"test", "holdout"}:
+                holdout_segments.append(item)
+            elif split_role == "gate":
+                gate_segments.append(item)
+            else:
+                train_candidates.append(item)
+        if holdout_segments and train_candidates:
+            train_segments, random_gate, random_holdout = split_trial_segments_for_benchmark(
+                train_candidates,
+                seed=int(seed),
+            )
+            gate_segments = gate_segments or random_gate
+            if not gate_segments and random_holdout:
+                gate_segments = list(random_holdout)
+            if not gate_segments and len(train_candidates) >= 2:
+                train_segments = list(train_candidates[:-1])
+                gate_segments = [train_candidates[-1]]
+            if train_segments and gate_segments:
+                return train_segments, gate_segments, holdout_segments
     train_segments, gate_segments, holdout_segments = split_trial_segments_for_benchmark(
         dataset.trial_segments,
         seed=int(seed),

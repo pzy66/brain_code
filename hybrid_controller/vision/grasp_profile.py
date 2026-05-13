@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 from typing import Mapping
 
+from hybrid_controller.config import normalize_servo_measurement_point
+
 
 @dataclass(frozen=True, slots=True)
 class VisionGraspProfile:
@@ -16,6 +18,7 @@ class VisionGraspProfile:
     sucker_rotation_angle_quality_threshold: float
     vision_servo_low_action_tolerance_px: float
     vision_pick_z_tolerance_mm: float
+    vision_servo_low_height_measurement_point: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,6 +72,7 @@ def apply_vision_grasp_profile(config: object, result: VisionGraspProfileLoadRes
         sucker_rotation_angle_quality_threshold=float(profile.sucker_rotation_angle_quality_threshold),
         vision_servo_low_action_tolerance_px=float(profile.vision_servo_low_action_tolerance_px),
         vision_pick_z_tolerance_mm=float(profile.vision_pick_z_tolerance_mm),
+        vision_servo_low_height_measurement_point=str(profile.vision_servo_low_height_measurement_point),
     )
 
 
@@ -114,6 +118,12 @@ def _profile_from_payload(payload: Mapping[str, object], *, config: object) -> V
             float(getattr(config, "vision_pick_z_tolerance_mm")),
             0.5,
             30.0,
+        ),
+        vision_servo_low_height_measurement_point=normalize_servo_measurement_point(
+            payload.get("vision_servo_low_height_measurement_point")
+            or getattr(config, "vision_servo_low_height_measurement_point", "")
+            or getattr(config, "vision_servo_measurement_point", "geometry_subpixel"),
+            default=getattr(config, "vision_servo_measurement_point", "geometry_subpixel"),
         ),
     )
 

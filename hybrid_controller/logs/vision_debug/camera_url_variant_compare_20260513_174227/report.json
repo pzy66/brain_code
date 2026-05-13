@@ -1,0 +1,797 @@
+{
+  "rect_full": {
+    "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+    "out": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_url_variant_compare_20260513_174227\\rect_full",
+    "sheet": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_url_variant_compare_20260513_174227\\rect_full\\sheet.jpg",
+    "frames": [
+      {
+        "idx": 0,
+        "bytes": 21280,
+        "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_url_variant_compare_20260513_174227\\rect_full\\00.jpg",
+        "soi": "ffd8",
+        "eoi": "ffd9",
+        "valid": true,
+        "size": [
+          640,
+          480
+        ],
+        "mean": [
+          145.69,
+          149.79,
+          146.1
+        ],
+        "row_jump": 19.91,
+        "band_jump": 34.37
+      },
+      {
+        "idx": 1,
+        "bytes": 21238,
+        "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_url_variant_compare_20260513_174227\\rect_full\\01.jpg",
+        "soi": "ffd8",
+        "eoi": "ffd9",
+        "valid": true,
+        "size": [
+          640,
+          480
+        ],
+        "mean": [
+          145.71,
+          149.82,
+          146.09
+        ],
+        "row_jump": 19.9,
+        "band_jump": 34.48
+      },
+      {
+        "idx": 2,
+        "bytes": 21371,
+        "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_url_variant_compare_20260513_174227\\rect_full\\02.jpg",
+        "soi": "ffd8",
+        "eoi": "ffd9",
+        "valid": true,
+        "size": [
+          640,
+          480
+        ],
+        "mean": [
+          145.6,
+          149.74,
+          145.95
+        ],
+        "row_jump": 20.09,
+        "band_jump": 34.26
+      },
+      {
+        "idx": 3,
+        "bytes": 21277,
+        "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_url_variant_compare_20260513_174227\\rect_full\\03.jpg",
+        "soi": "ffd8",
+        "eoi": "ffd9",
+        "valid": true,
+        "size": [
+          640,
+          480
+        ],
+        "mean": [
+          145.66,
+          149.77,
+          146.04
+        ],
+        "row_jump": 19.85,
+        "band_jump": 34.28
+      },
+      {
+        "idx": 4,
+        "bytes": 21263,
+        "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_url_variant_compare_20260513_174227\\rect_full\\04.jpg",
+        "soi": "ffd8",
+        "eoi": "ffd9",
+        "valid": true,
+        "size": [
+          640,
+          480
+        ],
+        "mean": [
+          145.69,
+          149.8,
+          146.1
+        ],
+        "row_jump": 19.91,
+        "band_jump": 34.37
+      },
+      {
+        "idx": 5,
+        "bytes": 21292,
+        "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_url_variant_compare_20260513_174227\\rect_full\\05.jpg",
+        "soi": "ffd8",
+        "eoi": "ffd9",
+        "valid": true,
+        "size": [
+          640,
+          480
+        ],
+        "mean": [
+          145.67,
+          149.76,
+          146.07
+        ],
+        "row_jump": 19.9,
+        "band_jump": 34.48
+      },
+      {
+        "idx": 6,
+        "bytes": 21368,
+        "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_url_variant_compare_20260513_174227\\rect_full\\06.jpg",
+        "soi": "ffd8",
+        "eoi": "ffd9",
+        "valid": true,
+        "size": [
+          640,
+          480
+        ],
+        "mean": [
+          145.65,
+          149.78,
+          145.97
+        ],
+        "row_jump": 20.09,
+        "band_jump": 34.26
+      },
+      {
+        "idx": 7,
+        "bytes": 21261,
+        "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_url_variant_compare_20260513_174227\\rect_full\\07.jpg",
+        "soi": "ffd8",
+        "eoi": "ffd9",
+        "valid": true,
+        "size": [
+          640,
+          480
+        ],
+        "mean": [
+          145.67,
+          149.77,
+          146.04
+        ],
+        "row_jump": 19.85,
+        "band_jump": 34.28
+      }
+    ]
+  },
+  "rect_min": {
+    "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color",
+    "out": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_url_variant_compare_20260513_174227\\rect_min",
+    "sheet": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_url_variant_compare_20260513_174227\\rect_min\\sheet.jpg",
+    "frames": [
+      {
+        "idx": 0,
+        "bytes": 56050,
+        "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_url_variant_compare_20260513_174227\\rect_min\\00.jpg",
+        "soi": "ffd8",
+        "eoi": "ffd9",
+        "valid": true,
+        "size": [
+          640,
+          480
+        ],
+        "mean": [
+          145.76,
+          149.7,
+          146.08
+        ],
+        "row_jump": 19.84,
+        "band_jump": 34.35
+      },
+      {
+        "idx": 1,
+        "bytes": 56031,
+        "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_url_variant_compare_20260513_174227\\rect_min\\01.jpg",
+        "soi": "ffd8",
+        "eoi": "ffd9",
+        "valid": true,
+        "size": [
+          640,
+          480
+        ],
+        "mean": [
+          145.78,
+          149.69,
+          146.1
+        ],
+        "row_jump": 20.02,
+        "band_jump": 34.37
+      },
+      {
+        "idx": 2,
+        "bytes": 55874,
+        "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_url_variant_compare_20260513_174227\\rect_min\\02.jpg",
+        "soi": "ffd8",
+        "eoi": "ffd9",
+        "valid": true,
+        "size": [
+          640,
+          480
+        ],
+        "mean": [
+          145.83,
+          149.74,
+          146.12
+        ],
+        "row_jump": 19.9,
+        "band_jump": 34.52
+      },
+      {
+        "idx": 3,
+        "bytes": 56165,
+        "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_url_variant_compare_20260513_174227\\rect_min\\03.jpg",
+        "soi": "ffd8",
+        "eoi": "ffd9",
+        "valid": true,
+        "size": [
+          640,
+          480
+        ],
+        "mean": [
+          145.74,
+          149.71,
+          146.02
+        ],
+        "row_jump": 20.09,
+        "band_jump": 34.32
+      },
+      {
+        "idx": 4,
+        "bytes": 56069,
+        "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_url_variant_compare_20260513_174227\\rect_min\\04.jpg",
+        "soi": "ffd8",
+        "eoi": "ffd9",
+        "valid": true,
+        "size": [
+          640,
+          480
+        ],
+        "mean": [
+          145.74,
+          149.69,
+          146.06
+        ],
+        "row_jump": 19.84,
+        "band_jump": 34.35
+      },
+      {
+        "idx": 5,
+        "bytes": 56043,
+        "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_url_variant_compare_20260513_174227\\rect_min\\05.jpg",
+        "soi": "ffd8",
+        "eoi": "ffd9",
+        "valid": true,
+        "size": [
+          640,
+          480
+        ],
+        "mean": [
+          145.79,
+          149.7,
+          146.11
+        ],
+        "row_jump": 20.02,
+        "band_jump": 34.37
+      },
+      {
+        "idx": 6,
+        "bytes": 55985,
+        "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_url_variant_compare_20260513_174227\\rect_min\\06.jpg",
+        "soi": "ffd8",
+        "eoi": "ffd9",
+        "valid": true,
+        "size": [
+          640,
+          480
+        ],
+        "mean": [
+          145.79,
+          149.69,
+          146.11
+        ],
+        "row_jump": 19.9,
+        "band_jump": 34.52
+      },
+      {
+        "idx": 7,
+        "bytes": 56218,
+        "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_url_variant_compare_20260513_174227\\rect_min\\07.jpg",
+        "soi": "ffd8",
+        "eoi": "ffd9",
+        "valid": true,
+        "size": [
+          640,
+          480
+        ],
+        "mean": [
+          145.75,
+          149.71,
+          146.02
+        ],
+        "row_jump": 20.09,
+        "band_jump": 34.32
+      }
+    ]
+  },
+  "raw_full": {
+    "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_raw&type=mjpeg&width=640&height=480&quality=80",
+    "out": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_url_variant_compare_20260513_174227\\raw_full",
+    "sheet": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_url_variant_compare_20260513_174227\\raw_full\\sheet.jpg",
+    "frames": [
+      {
+        "idx": 0,
+        "bytes": 24532,
+        "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_url_variant_compare_20260513_174227\\raw_full\\00.jpg",
+        "soi": "ffd8",
+        "eoi": "ffd9",
+        "valid": true,
+        "size": [
+          640,
+          480
+        ],
+        "mean": [
+          144.27,
+          149.38,
+          145.35
+        ],
+        "row_jump": 20.72,
+        "band_jump": 25.28
+      },
+      {
+        "idx": 1,
+        "bytes": 24529,
+        "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_url_variant_compare_20260513_174227\\raw_full\\01.jpg",
+        "soi": "ffd8",
+        "eoi": "ffd9",
+        "valid": true,
+        "size": [
+          640,
+          480
+        ],
+        "mean": [
+          144.26,
+          149.4,
+          145.3
+        ],
+        "row_jump": 20.89,
+        "band_jump": 25.2
+      },
+      {
+        "idx": 2,
+        "bytes": 24541,
+        "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_url_variant_compare_20260513_174227\\raw_full\\02.jpg",
+        "soi": "ffd8",
+        "eoi": "ffd9",
+        "valid": true,
+        "size": [
+          640,
+          480
+        ],
+        "mean": [
+          144.17,
+          149.38,
+          145.22
+        ],
+        "row_jump": 20.43,
+        "band_jump": 24.99
+      },
+      {
+        "idx": 3,
+        "bytes": 24531,
+        "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_url_variant_compare_20260513_174227\\raw_full\\03.jpg",
+        "soi": "ffd8",
+        "eoi": "ffd9",
+        "valid": true,
+        "size": [
+          640,
+          480
+        ],
+        "mean": [
+          144.21,
+          149.38,
+          145.28
+        ],
+        "row_jump": 20.56,
+        "band_jump": 25.24
+      },
+      {
+        "idx": 4,
+        "bytes": 24504,
+        "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_url_variant_compare_20260513_174227\\raw_full\\04.jpg",
+        "soi": "ffd8",
+        "eoi": "ffd9",
+        "valid": true,
+        "size": [
+          640,
+          480
+        ],
+        "mean": [
+          144.29,
+          149.39,
+          145.35
+        ],
+        "row_jump": 20.72,
+        "band_jump": 25.28
+      },
+      {
+        "idx": 5,
+        "bytes": 24547,
+        "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_url_variant_compare_20260513_174227\\raw_full\\05.jpg",
+        "soi": "ffd8",
+        "eoi": "ffd9",
+        "valid": true,
+        "size": [
+          640,
+          480
+        ],
+        "mean": [
+          144.26,
+          149.41,
+          145.31
+        ],
+        "row_jump": 20.89,
+        "band_jump": 25.2
+      },
+      {
+        "idx": 6,
+        "bytes": 24586,
+        "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_url_variant_compare_20260513_174227\\raw_full\\06.jpg",
+        "soi": "ffd8",
+        "eoi": "ffd9",
+        "valid": true,
+        "size": [
+          640,
+          480
+        ],
+        "mean": [
+          144.19,
+          149.39,
+          145.22
+        ],
+        "row_jump": 20.43,
+        "band_jump": 24.99
+      },
+      {
+        "idx": 7,
+        "bytes": 24447,
+        "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_url_variant_compare_20260513_174227\\raw_full\\07.jpg",
+        "soi": "ffd8",
+        "eoi": "ffd9",
+        "valid": true,
+        "size": [
+          640,
+          480
+        ],
+        "mean": [
+          144.2,
+          149.38,
+          145.27
+        ],
+        "row_jump": 20.56,
+        "band_jump": 25.24
+      }
+    ]
+  },
+  "raw_min": {
+    "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_raw",
+    "out": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_url_variant_compare_20260513_174227\\raw_min",
+    "sheet": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_url_variant_compare_20260513_174227\\raw_min\\sheet.jpg",
+    "frames": [
+      {
+        "idx": 0,
+        "bytes": 64610,
+        "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_url_variant_compare_20260513_174227\\raw_min\\00.jpg",
+        "soi": "ffd8",
+        "eoi": "ffd9",
+        "valid": true,
+        "size": [
+          640,
+          480
+        ],
+        "mean": [
+          144.31,
+          149.3,
+          145.33
+        ],
+        "row_jump": 20.44,
+        "band_jump": 25.26
+      },
+      {
+        "idx": 1,
+        "bytes": 64555,
+        "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_url_variant_compare_20260513_174227\\raw_min\\01.jpg",
+        "soi": "ffd8",
+        "eoi": "ffd9",
+        "valid": true,
+        "size": [
+          640,
+          480
+        ],
+        "mean": [
+          144.34,
+          149.31,
+          145.36
+        ],
+        "row_jump": 20.49,
+        "band_jump": 25.21
+      },
+      {
+        "idx": 2,
+        "bytes": 64567,
+        "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_url_variant_compare_20260513_174227\\raw_min\\02.jpg",
+        "soi": "ffd8",
+        "eoi": "ffd9",
+        "valid": true,
+        "size": [
+          640,
+          480
+        ],
+        "mean": [
+          144.38,
+          149.32,
+          145.37
+        ],
+        "row_jump": 20.65,
+        "band_jump": 25.17
+      },
+      {
+        "idx": 3,
+        "bytes": 64885,
+        "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_url_variant_compare_20260513_174227\\raw_min\\03.jpg",
+        "soi": "ffd8",
+        "eoi": "ffd9",
+        "valid": true,
+        "size": [
+          640,
+          480
+        ],
+        "mean": [
+          144.28,
+          149.29,
+          145.24
+        ],
+        "row_jump": 20.37,
+        "band_jump": 25.02
+      },
+      {
+        "idx": 4,
+        "bytes": 64607,
+        "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_url_variant_compare_20260513_174227\\raw_min\\04.jpg",
+        "soi": "ffd8",
+        "eoi": "ffd9",
+        "valid": true,
+        "size": [
+          640,
+          480
+        ],
+        "mean": [
+          144.31,
+          149.3,
+          145.34
+        ],
+        "row_jump": 20.44,
+        "band_jump": 25.26
+      },
+      {
+        "idx": 5,
+        "bytes": 64527,
+        "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_url_variant_compare_20260513_174227\\raw_min\\05.jpg",
+        "soi": "ffd8",
+        "eoi": "ffd9",
+        "valid": true,
+        "size": [
+          640,
+          480
+        ],
+        "mean": [
+          144.37,
+          149.34,
+          145.38
+        ],
+        "row_jump": 20.49,
+        "band_jump": 25.21
+      },
+      {
+        "idx": 6,
+        "bytes": 64523,
+        "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_url_variant_compare_20260513_174227\\raw_min\\06.jpg",
+        "soi": "ffd8",
+        "eoi": "ffd9",
+        "valid": true,
+        "size": [
+          640,
+          480
+        ],
+        "mean": [
+          144.37,
+          149.32,
+          145.37
+        ],
+        "row_jump": 20.65,
+        "band_jump": 25.17
+      },
+      {
+        "idx": 7,
+        "bytes": 64949,
+        "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_url_variant_compare_20260513_174227\\raw_min\\07.jpg",
+        "soi": "ffd8",
+        "eoi": "ffd9",
+        "valid": true,
+        "size": [
+          640,
+          480
+        ],
+        "mean": [
+          144.27,
+          149.29,
+          145.24
+        ],
+        "row_jump": 20.37,
+        "band_jump": 25.02
+      }
+    ]
+  },
+  "color_min": {
+    "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_color",
+    "out": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_url_variant_compare_20260513_174227\\color_min",
+    "sheet": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_url_variant_compare_20260513_174227\\color_min\\sheet.jpg",
+    "frames": [
+      {
+        "idx": 0,
+        "bytes": 64526,
+        "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_url_variant_compare_20260513_174227\\color_min\\00.jpg",
+        "soi": "ffd8",
+        "eoi": "ffd9",
+        "valid": true,
+        "size": [
+          640,
+          480
+        ],
+        "mean": [
+          144.36,
+          149.32,
+          145.37
+        ],
+        "row_jump": 20.49,
+        "band_jump": 25.21
+      },
+      {
+        "idx": 1,
+        "bytes": 64512,
+        "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_url_variant_compare_20260513_174227\\color_min\\01.jpg",
+        "soi": "ffd8",
+        "eoi": "ffd9",
+        "valid": true,
+        "size": [
+          640,
+          480
+        ],
+        "mean": [
+          144.37,
+          149.32,
+          145.37
+        ],
+        "row_jump": 20.65,
+        "band_jump": 25.17
+      },
+      {
+        "idx": 2,
+        "bytes": 64933,
+        "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_url_variant_compare_20260513_174227\\color_min\\02.jpg",
+        "soi": "ffd8",
+        "eoi": "ffd9",
+        "valid": true,
+        "size": [
+          640,
+          480
+        ],
+        "mean": [
+          144.29,
+          149.31,
+          145.25
+        ],
+        "row_jump": 20.37,
+        "band_jump": 25.02
+      },
+      {
+        "idx": 3,
+        "bytes": 64573,
+        "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_url_variant_compare_20260513_174227\\color_min\\03.jpg",
+        "soi": "ffd8",
+        "eoi": "ffd9",
+        "valid": true,
+        "size": [
+          640,
+          480
+        ],
+        "mean": [
+          144.33,
+          149.32,
+          145.36
+        ],
+        "row_jump": 20.44,
+        "band_jump": 25.26
+      },
+      {
+        "idx": 4,
+        "bytes": 64500,
+        "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_url_variant_compare_20260513_174227\\color_min\\04.jpg",
+        "soi": "ffd8",
+        "eoi": "ffd9",
+        "valid": true,
+        "size": [
+          640,
+          480
+        ],
+        "mean": [
+          144.36,
+          149.33,
+          145.38
+        ],
+        "row_jump": 20.49,
+        "band_jump": 25.21
+      },
+      {
+        "idx": 5,
+        "bytes": 64506,
+        "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_url_variant_compare_20260513_174227\\color_min\\05.jpg",
+        "soi": "ffd8",
+        "eoi": "ffd9",
+        "valid": true,
+        "size": [
+          640,
+          480
+        ],
+        "mean": [
+          144.38,
+          149.33,
+          145.37
+        ],
+        "row_jump": 20.65,
+        "band_jump": 25.17
+      },
+      {
+        "idx": 6,
+        "bytes": 65780,
+        "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_url_variant_compare_20260513_174227\\color_min\\06.jpg",
+        "soi": "ffd8",
+        "eoi": "ffd9",
+        "valid": true,
+        "size": [
+          640,
+          480
+        ],
+        "mean": [
+          144.7,
+          149.66,
+          145.68
+        ],
+        "row_jump": 20.37,
+        "band_jump": 31.84
+      },
+      {
+        "idx": 7,
+        "bytes": 64553,
+        "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_url_variant_compare_20260513_174227\\color_min\\07.jpg",
+        "soi": "ffd8",
+        "eoi": "ffd9",
+        "valid": true,
+        "size": [
+          640,
+          480
+        ],
+        "mean": [
+          144.29,
+          149.29,
+          145.33
+        ],
+        "row_jump": 20.44,
+        "band_jump": 25.26
+      }
+    ]
+  }
+}

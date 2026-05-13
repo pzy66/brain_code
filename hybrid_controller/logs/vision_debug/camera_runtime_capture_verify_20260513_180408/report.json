@@ -1,0 +1,327 @@
+{
+  "out_dir": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_runtime_capture_verify_20260513_180408",
+  "requested_reads": 30,
+  "accepted_frames": 30,
+  "temporal_splice_indices": [],
+  "capture_stats": {
+    "open_count": 1,
+    "bytes_read": 633192,
+    "content_length_payloads": 30,
+    "jpeg_marker_payloads": 0,
+    "frames_accepted": 30,
+    "frames_rejected": 0,
+    "read_timeouts": 0,
+    "read_errors": 0,
+    "buffer_resets": 0,
+    "reopen_count": 0,
+    "last_reject_reason": "",
+    "last_read_error": "",
+    "buffer_bytes": 24,
+    "consecutive_rejected_frames": 0,
+    "url": "http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&width=640&height=480&quality=80",
+    "reader": "http_multipart_mjpeg",
+    "content_length_preferred": true
+  },
+  "records": [
+    {
+      "index": 0,
+      "ok": true,
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "temporal_splice": false
+    },
+    {
+      "index": 1,
+      "ok": true,
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "temporal_splice": false
+    },
+    {
+      "index": 2,
+      "ok": true,
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "temporal_splice": false
+    },
+    {
+      "index": 3,
+      "ok": true,
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "temporal_splice": false
+    },
+    {
+      "index": 4,
+      "ok": true,
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "temporal_splice": false
+    },
+    {
+      "index": 5,
+      "ok": true,
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "temporal_splice": false
+    },
+    {
+      "index": 6,
+      "ok": true,
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "temporal_splice": false
+    },
+    {
+      "index": 7,
+      "ok": true,
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "temporal_splice": false
+    },
+    {
+      "index": 8,
+      "ok": true,
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "temporal_splice": false
+    },
+    {
+      "index": 9,
+      "ok": true,
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "temporal_splice": false
+    },
+    {
+      "index": 10,
+      "ok": true,
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "temporal_splice": false
+    },
+    {
+      "index": 11,
+      "ok": true,
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "temporal_splice": false
+    },
+    {
+      "index": 12,
+      "ok": true,
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "temporal_splice": false
+    },
+    {
+      "index": 13,
+      "ok": true,
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "temporal_splice": false
+    },
+    {
+      "index": 14,
+      "ok": true,
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "temporal_splice": false
+    },
+    {
+      "index": 15,
+      "ok": true,
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "temporal_splice": false
+    },
+    {
+      "index": 16,
+      "ok": true,
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "temporal_splice": false
+    },
+    {
+      "index": 17,
+      "ok": true,
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "temporal_splice": false
+    },
+    {
+      "index": 18,
+      "ok": true,
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "temporal_splice": false
+    },
+    {
+      "index": 19,
+      "ok": true,
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "temporal_splice": false
+    },
+    {
+      "index": 20,
+      "ok": true,
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "temporal_splice": false
+    },
+    {
+      "index": 21,
+      "ok": true,
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "temporal_splice": false
+    },
+    {
+      "index": 22,
+      "ok": true,
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "temporal_splice": false
+    },
+    {
+      "index": 23,
+      "ok": true,
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "temporal_splice": false
+    },
+    {
+      "index": 24,
+      "ok": true,
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "temporal_splice": false
+    },
+    {
+      "index": 25,
+      "ok": true,
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "temporal_splice": false
+    },
+    {
+      "index": 26,
+      "ok": true,
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "temporal_splice": false
+    },
+    {
+      "index": 27,
+      "ok": true,
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "temporal_splice": false
+    },
+    {
+      "index": 28,
+      "ok": true,
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "temporal_splice": false
+    },
+    {
+      "index": 29,
+      "ok": true,
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "temporal_splice": false
+    }
+  ]
+}

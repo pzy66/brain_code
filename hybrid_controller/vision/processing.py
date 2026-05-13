@@ -9,6 +9,7 @@ import numpy as np
 
 from hybrid_controller.adapters.vision_adapter import VisionTarget
 from hybrid_controller.cylindrical import cartesian_to_cylindrical
+from hybrid_controller.config import normalize_servo_measurement_point
 from hybrid_controller.vision.calibration_profile import VisionCalibrationProfile
 
 
@@ -67,6 +68,31 @@ def frame_brightness_quality(
         "min_mean": float(min_mean),
         "min_p95": float(min_p95),
     }
+
+
+def is_low_height_measurement_zone(
+    *,
+    calibration_stage: str | None,
+    calibration_z_mm: float | None,
+    confirm_z_mm: float | None = None,
+    guard_band_mm: float = 30.0,
+) -> bool:
+    stage = str(calibration_stage or "").strip().lower()
+    if stage == "pick":
+        return True
+    if stage != "confirm":
+        return False
+    if calibration_z_mm is None or confirm_z_mm is None:
+        return True
+    try:
+        z_value = float(calibration_z_mm)
+        confirm_value = float(confirm_z_mm)
+        guard_band = max(0.0, float(guard_band_mm))
+    except (TypeError, ValueError):
+        return True
+    if not (math.isfinite(z_value) and math.isfinite(confirm_value)):
+        return True
+    return z_value <= confirm_value + guard_band
 
 
 def bbox_iou(
@@ -177,6 +203,8 @@ class GeometryResult:
     center_f: tuple[float, float] | None = None
     mask_center_f: tuple[float, float] | None = None
     geometry_center_f: tuple[float, float] | None = None
+    top_face_center_f: tuple[float, float] | None = None
+    color_block_center_f: tuple[float, float] | None = None
     grasp_pixel_f: tuple[float, float] | None = None
 
     def as_legacy_tuple(self) -> tuple[list[tuple[int, int]], tuple[int, int], tuple[int, int, int, int], int]:
@@ -199,7 +227,7 @@ def _estimate_top_face_grasp_pixel_and_quality(
     component: np.ndarray,
     frame_bgr: np.ndarray | None,
     fallback_pixel: tuple[int, int],
-) -> tuple[tuple[int, int], float]:
+) -> tuple[tuple[int, int], float, tuple[float, float] | None]:
     dist = cv2.distanceTransform(component, cv2.DIST_L2, 5)
     _, max_value, _, max_loc = cv2.minMaxLoc(dist)
     core = np.where(dist >= max(4.0, 0.35 * float(max_value)), 255, 0).astype(np.uint8)
@@ -214,23 +242,23 @@ def _estimate_top_face_grasp_pixel_and_quality(
         core_pixel = (int(max_loc[0]), int(max_loc[1])) if max_value > 0 else fallback_pixel
 
     if frame_bgr is None or frame_bgr.shape[:2] != component.shape[:2]:
-        return core_pixel, 0.0
+        return core_pixel, 0.0, None
 
     hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
     ys, xs = np.where(component > 0)
     if len(xs) < 20:
-        return core_pixel, 0.0
+        return core_pixel, 0.0, None
     values = hsv[ys, xs]
     saturation = values[:, 1]
     brightness = values[:, 2]
     chromatic = saturation > 45
     if int(np.count_nonzero(chromatic)) < 20:
-        return core_pixel, 0.0
+        return core_pixel, 0.0, None
 
     brightness_cutoff = float(np.percentile(brightness[chromatic], 35.0))
     selected_indexes = np.where(chromatic & (brightness >= brightness_cutoff))[0]
     if len(selected_indexes) < 20:
-        return core_pixel, 0.0
+        return core_pixel, 0.0, None
 
     top_mask = np.zeros(component.shape, dtype=np.uint8)
     top_mask[ys[selected_indexes], xs[selected_indexes]] = 255
@@ -243,13 +271,14 @@ def _estimate_top_face_grasp_pixel_and_quality(
     top_mask = cv2.bitwise_and(top_mask, component)
     top_moments = cv2.moments(top_mask, binaryImage=True)
     if top_moments["m00"] <= 0:
-        return core_pixel, 0.0
-    color_pixel = (
-        int(round(top_moments["m10"] / top_moments["m00"])),
-        int(round(top_moments["m01"] / top_moments["m00"])),
+        return core_pixel, 0.0, None
+    top_center_f = (
+        float(top_moments["m10"] / top_moments["m00"]),
+        float(top_moments["m01"] / top_moments["m00"]),
     )
+    color_pixel = rounded_point(top_center_f)
     if euclidean_distance(color_pixel, core_pixel) > 35.0:
-        return core_pixel, 0.0
+        return core_pixel, 0.0, None
     component_area = max(1, int(np.count_nonzero(component)))
     top_area = int(np.count_nonzero(top_mask))
     top_ratio = float(top_area) / float(component_area)
@@ -259,7 +288,57 @@ def _estimate_top_face_grasp_pixel_and_quality(
     return (
         int(round((float(core_pixel[0]) + float(color_pixel[0])) / 2.0)),
         int(round((float(core_pixel[1]) + float(color_pixel[1])) / 2.0)),
-    ), float(quality)
+    ), float(quality), top_center_f
+
+
+def estimate_color_block_center(
+    component: np.ndarray,
+    frame_bgr: np.ndarray | None,
+) -> tuple[float, float] | None:
+    """Estimate the visible colored block-body center inside an existing detection mask.
+
+    This is a low-height measurement candidate only. Target identity still comes
+    from the detector/slot; the color filter only rejects dark guide lines and
+    low-saturation table pixels inside that already-locked region.
+    """
+    if frame_bgr is None or frame_bgr.shape[:2] != component.shape[:2]:
+        return None
+    if component.ndim != 2 or int(np.count_nonzero(component)) < 30:
+        return None
+    hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
+    lab = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2LAB)
+    ys, xs = np.where(component > 0)
+    if len(xs) < 30:
+        return None
+    saturation = hsv[ys, xs, 1]
+    value = hsv[ys, xs, 2]
+    chroma_lab = np.sqrt(
+        np.square(lab[ys, xs, 1].astype(np.float32) - 128.0)
+        + np.square(lab[ys, xs, 2].astype(np.float32) - 128.0)
+    )
+    chromatic = ((saturation > 45) | (chroma_lab > 18.0)) & (value > 35)
+    if int(np.count_nonzero(chromatic)) < 30:
+        return None
+    color_mask = np.zeros(component.shape, dtype=np.uint8)
+    color_mask[ys[chromatic], xs[chromatic]] = 255
+    color_mask = cv2.bitwise_and(color_mask, component)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    color_mask = cv2.morphologyEx(color_mask, cv2.MORPH_OPEN, kernel, iterations=1)
+    color_mask = cv2.morphologyEx(color_mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+    color_mask = cv2.bitwise_and(color_mask, component)
+    color_component, area_px = largest_component(color_mask)
+    if color_component is None or int(area_px) < 30:
+        return None
+    moments = cv2.moments(color_component, binaryImage=True)
+    if moments["m00"] <= 0:
+        return None
+    component_area = max(1, int(np.count_nonzero(component)))
+    if float(area_px) / float(component_area) < 0.12:
+        return None
+    return (
+        float(moments["m10"] / moments["m00"]),
+        float(moments["m01"] / moments["m00"]),
+    )
 
 
 def estimate_top_face_grasp_pixel(
@@ -267,7 +346,7 @@ def estimate_top_face_grasp_pixel(
     frame_bgr: np.ndarray | None,
     fallback_pixel: tuple[int, int],
 ) -> tuple[int, int]:
-    pixel, _ = _estimate_top_face_grasp_pixel_and_quality(component, frame_bgr, fallback_pixel)
+    pixel, _, _ = _estimate_top_face_grasp_pixel_and_quality(component, frame_bgr, fallback_pixel)
     return pixel
 
 
@@ -308,7 +387,12 @@ def contour_to_grasp_geometry(
     oriented_bbox = [(int(round(point[0])), int(round(point[1]))) for point in box_points]
     rect_center_f = (float(rect_center[0]), float(rect_center[1]))
     rect_grasp_pixel = rounded_point(rect_center_f)
-    safe_pixel, top_quality = _estimate_top_face_grasp_pixel_and_quality(component, frame_bgr, rect_grasp_pixel)
+    safe_pixel, top_quality, top_face_center_f = _estimate_top_face_grasp_pixel_and_quality(
+        component,
+        frame_bgr,
+        rect_grasp_pixel,
+    )
+    color_block_center_f = estimate_color_block_center(component, frame_bgr)
     max_top_shift_px = max(8.0, min(rect_w, rect_h) * 0.35)
     bbox = (int(x), int(y), int(x + w), int(y + h))
     edge_touch = x <= 1 or y <= 1 or (x + w) >= component.shape[1] - 1 or (y + h) >= component.shape[0] - 1
@@ -336,6 +420,8 @@ def contour_to_grasp_geometry(
         center_f=center_f,
         mask_center_f=center_f,
         geometry_center_f=rect_center_f,
+        top_face_center_f=top_face_center_f,
+        color_block_center_f=color_block_center_f,
         grasp_pixel_f=(float(grasp_pixel[0]), float(grasp_pixel[1])),
     )
 
@@ -416,6 +502,8 @@ def bbox_to_grasp_geometry(
         center_f=center_f,
         mask_center_f=center_f,
         geometry_center_f=center_f,
+        top_face_center_f=center_f,
+        color_block_center_f=None,
         grasp_pixel_f=center_f,
     )
 
@@ -452,6 +540,7 @@ def frame_to_block_candidates(
     max_det: int,
     min_area_px: int = 700,
     min_area_ratio: float = 0.010,
+    reject_edge_touch: bool = False,
 ) -> list[DetectionCandidate]:
     """Color-agnostic fallback for visible painted blocks on a pale workspace.
 
@@ -511,6 +600,8 @@ def frame_to_block_candidates(
             or geometry.bbox[2] >= frame_w - 1
             or geometry.bbox[3] >= frame_h - 1
         )
+        if bool(reject_edge_touch) and edge_touch:
+            continue
         quality = clamp01(float(geometry.grasp_quality) * (0.35 if edge_touch else 1.0))
         candidates.append(
             DetectionCandidate(
@@ -529,6 +620,8 @@ def frame_to_block_candidates(
                 center_f=geometry.center_f,
                 mask_center_f=geometry.mask_center_f,
                 geometry_center_f=geometry.geometry_center_f,
+                top_face_center_f=geometry.top_face_center_f,
+                color_block_center_f=geometry.color_block_center_f,
                 grasp_pixel_f=geometry.grasp_pixel_f,
             )
         )
@@ -565,6 +658,8 @@ class DetectionCandidate:
     center_f: tuple[float, float] | None = None
     mask_center_f: tuple[float, float] | None = None
     geometry_center_f: tuple[float, float] | None = None
+    top_face_center_f: tuple[float, float] | None = None
+    color_block_center_f: tuple[float, float] | None = None
     grasp_pixel_f: tuple[float, float] | None = None
 
 
@@ -580,6 +675,12 @@ class SlotState:
     mask_center_f: tuple[float, float] | None = None
     geometry_center: tuple[int, int] | None = None
     geometry_center_f: tuple[float, float] | None = None
+    top_face_center: tuple[int, int] | None = None
+    top_face_center_f: tuple[float, float] | None = None
+    color_block_center: tuple[int, int] | None = None
+    color_block_center_f: tuple[float, float] | None = None
+    color_block_history: list[tuple[float, float]] = field(default_factory=list)
+    top_face_history: list[tuple[float, float]] = field(default_factory=list)
     center_history: list[tuple[float, float]] = field(default_factory=list)
     geometry_history: list[tuple[float, float]] = field(default_factory=list)
     grasp_pixel: tuple[int, int] | None = None
@@ -651,6 +752,10 @@ class SlotState:
             or (None if self.geometry_center is None else (float(self.geometry_center[0]), float(self.geometry_center[1])))
             or self.pixel_center_f
         )
+        self.top_face_center_f = candidate.top_face_center_f or self.geometry_center_f
+        self.top_face_center = rounded_point(self.top_face_center_f)
+        self.color_block_center_f = candidate.color_block_center_f
+        self.color_block_center = None if self.color_block_center_f is None else rounded_point(self.color_block_center_f)
         history_len = max(1, int(grasp_history_len))
         self.center_history.append(self.pixel_center_f)
         if len(self.center_history) > history_len:
@@ -682,6 +787,19 @@ class SlotState:
         else:
             self.geometry_stability_px = None
             self.geometry_stable_frames = 0
+        self.top_face_history.append(self.top_face_center_f)
+        if len(self.top_face_history) > history_len:
+            del self.top_face_history[:-history_len]
+        if self.color_block_center_f is not None:
+            self.color_block_history.append(self.color_block_center_f)
+            if len(self.color_block_history) > history_len:
+                del self.color_block_history[:-history_len]
+            if self.color_block_history:
+                color_block_median_f = median_point_f(self.color_block_history) or self.color_block_center_f
+                self.color_block_center_f = color_block_median_f
+                self.color_block_center = rounded_point(color_block_median_f)
+        else:
+            self.color_block_history = []
         previous_median = median_point(self.grasp_history)
         candidate_grasp_f = candidate.grasp_pixel_f or (float(candidate.grasp_pixel[0]), float(candidate.grasp_pixel[1]))
         if previous_median is not None and euclidean_distance(candidate_grasp_f, previous_median) > float(
@@ -763,6 +881,12 @@ class SlotState:
         self.mask_center_f = None
         self.geometry_center = None
         self.geometry_center_f = None
+        self.top_face_center = None
+        self.top_face_center_f = None
+        self.color_block_center = None
+        self.color_block_center_f = None
+        self.color_block_history = []
+        self.top_face_history = []
         self.geometry_history = []
         self.center_history = []
         self.grasp_pixel = None
@@ -831,6 +955,24 @@ class SlotState:
                 None
                 if self.geometry_center_f is None
                 else [float(self.geometry_center_f[0]), float(self.geometry_center_f[1])]
+            ),
+            "top_face_center": (
+                None if self.top_face_center is None else [int(self.top_face_center[0]), int(self.top_face_center[1])]
+            ),
+            "top_face_center_f": (
+                None
+                if self.top_face_center_f is None
+                else [float(self.top_face_center_f[0]), float(self.top_face_center_f[1])]
+            ),
+            "color_block_center": (
+                None
+                if self.color_block_center is None
+                else [int(self.color_block_center[0]), int(self.color_block_center[1])]
+            ),
+            "color_block_center_f": (
+                None
+                if self.color_block_center_f is None
+                else [float(self.color_block_center_f[0]), float(self.color_block_center_f[1])]
             ),
             "grasp_pixel": None if self.grasp_pixel is None else [int(self.grasp_pixel[0]), int(self.grasp_pixel[1])],
             "grasp_pixel_f": (
@@ -979,6 +1121,7 @@ def extract_candidates(
     fallback_to_frame: bool = False,
     prefer_frame_fallback: bool = False,
     fallback_min_area_ratio: float = 1.20,
+    fallback_reject_edge_touch: bool = False,
 ) -> tuple[list[DetectionCandidate], int]:
     boxes = getattr(result, "boxes", None)
     if boxes is None or getattr(boxes, "conf", None) is None:
@@ -988,6 +1131,7 @@ def extract_candidates(
                 roi_center=roi_center,
                 roi_radius=roi_radius,
                 max_det=max_det,
+                reject_edge_touch=bool(fallback_reject_edge_touch),
             )
             return candidates, len(candidates)
         return [], 0
@@ -1030,6 +1174,8 @@ def extract_candidates(
                 center_f=geometry.center_f,
                 mask_center_f=geometry.mask_center_f,
                 geometry_center_f=geometry.geometry_center_f,
+                top_face_center_f=geometry.top_face_center_f,
+                color_block_center_f=geometry.color_block_center_f,
                 grasp_pixel_f=geometry.grasp_pixel_f,
             )
         )
@@ -1055,6 +1201,7 @@ def extract_candidates(
             roi_center=roi_center,
             roi_radius=roi_radius,
             max_det=max_det,
+            reject_edge_touch=bool(fallback_reject_edge_touch),
         )
         if not candidates:
             return frame_candidates, len(frame_candidates)
@@ -1159,6 +1306,9 @@ def annotate_slots_with_cylindrical(
     required_stable_frames: int = 3,
     grasp_angle_stability_tolerance_deg: float = 15.0,
     servo_measurement_point: str = "center",
+    low_height_servo_measurement_point: str | None = None,
+    low_height_confirm_z_mm: float | None = None,
+    low_height_guard_band_mm: float = 30.0,
 ) -> None:
     scale_xy = float(world_scale_xy)
     offset_x = float(world_offset_xy_mm[0])
@@ -1166,9 +1316,22 @@ def annotate_slots_with_cylindrical(
     mapping_mode_text = str(mapping_mode or "absolute_base").strip().lower()
     if mapping_mode_text not in {"absolute_base", "delta_servo"}:
         mapping_mode_text = "delta_servo"
-    measurement_point = str(servo_measurement_point or "center").strip().lower()
-    if measurement_point not in {"center", "geometry", "grasp", "center_subpixel", "geometry_subpixel", "grasp_subpixel"}:
-        measurement_point = "geometry_subpixel"
+    measurement_point = normalize_servo_measurement_point(servo_measurement_point, default="geometry_subpixel")
+    low_height_measurement_point = ""
+    if low_height_servo_measurement_point:
+        low_height_measurement_point = normalize_servo_measurement_point(
+            low_height_servo_measurement_point,
+            default=measurement_point,
+        )
+    is_low_stage = is_low_height_measurement_zone(
+        calibration_stage=calibration_stage,
+        calibration_z_mm=calibration_z_mm,
+        confirm_z_mm=low_height_confirm_z_mm,
+        guard_band_mm=low_height_guard_band_mm,
+    )
+    effective_measurement_point = (
+        low_height_measurement_point if is_low_stage and low_height_measurement_point else measurement_point
+    )
     for slot in slots:
         slot.command_mode = "world"
         slot.command_point = None
@@ -1180,7 +1343,7 @@ def annotate_slots_with_cylindrical(
         slot.camera_to_world_raw = None
         slot.undistorted_pixel = None
         slot.alignment_target_pixel = None
-        slot.measurement_point = measurement_point
+        slot.measurement_point = effective_measurement_point
         slot.center_distance_px = None
         slot.center_tolerance_px = None
         slot.action_tolerance_px = None
@@ -1223,15 +1386,37 @@ def annotate_slots_with_cylindrical(
                 slot.invalid_reason = "calibration_unavailable"
             continue
 
-        if measurement_point in {"grasp", "grasp_subpixel"} and slot.grasp_pixel is not None:
-            point_for_mapping = slot.grasp_pixel_f if measurement_point == "grasp_subpixel" and slot.grasp_pixel_f is not None else slot.grasp_pixel
-        elif measurement_point in {"geometry", "geometry_subpixel"} and slot.geometry_center is not None:
+        if (
+            effective_measurement_point in {"color_block", "color_block_subpixel"}
+            and slot.color_block_center is not None
+        ):
+            point_for_mapping = (
+                slot.color_block_center_f
+                if effective_measurement_point == "color_block_subpixel" and slot.color_block_center_f is not None
+                else slot.color_block_center
+            )
+        elif effective_measurement_point in {"color_block", "color_block_subpixel"}:
+            slot.invalid_reason = "measurement_point_unavailable:color_block"
+            continue
+        elif effective_measurement_point in {"top_face", "top_face_subpixel"} and slot.top_face_center is not None:
+            point_for_mapping = (
+                slot.top_face_center_f
+                if effective_measurement_point == "top_face_subpixel" and slot.top_face_center_f is not None
+                else slot.top_face_center
+            )
+        elif effective_measurement_point in {"grasp", "grasp_subpixel"} and slot.grasp_pixel is not None:
+            point_for_mapping = (
+                slot.grasp_pixel_f
+                if effective_measurement_point == "grasp_subpixel" and slot.grasp_pixel_f is not None
+                else slot.grasp_pixel
+            )
+        elif effective_measurement_point in {"geometry", "geometry_subpixel"} and slot.geometry_center is not None:
             point_for_mapping = (
                 slot.geometry_center_f
-                if measurement_point == "geometry_subpixel" and slot.geometry_center_f is not None
+                if effective_measurement_point == "geometry_subpixel" and slot.geometry_center_f is not None
                 else slot.geometry_center
             )
-        elif measurement_point == "center_subpixel" and slot.pixel_center_f is not None:
+        elif effective_measurement_point == "center_subpixel" and slot.pixel_center_f is not None:
             point_for_mapping = slot.pixel_center_f
         else:
             point_for_mapping = slot.pixel_center

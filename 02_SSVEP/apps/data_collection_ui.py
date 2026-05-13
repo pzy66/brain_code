@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional, Sequence
+from typing import Any, Mapping, Optional, Sequence
 
 import numpy as np
 from PyQt5.QtCore import QObject, QThread, Qt, QTimer, pyqtSignal, pyqtSlot
@@ -74,11 +74,22 @@ from ssvep_core.dataset import (
     save_collection_dataset_bundle,
     sanitize_collection_token,
 )
+from ssvep_core.custom_ssvep_protocol import (
+    CUSTOM_SSVEP_COMMAND_ACTIVE_SEC,
+    CUSTOM_SSVEP_PROTOCOL_V1,
+    CUSTOM_SSVEP_SHORT_PROTOCOL_V1,
+    CUSTOM_PROTOCOL_SPECS,
+    EVENT_CODES,
+    build_custom_ssvep_collection_plan,
+    custom_ssvep_metadata_by_trial_id,
+    custom_ssvep_protocol_summary,
+    is_custom_ssvep_protocol,
+    normalize_custom_ssvep_protocol_key,
+)
 from ssvep_core.stimulus_profiles import (
-    DEFAULT_STIMULUS_PROFILE_ID,
     find_matching_stimulus_profile_id,
     STIMULUS_PROFILES,
-    STIMULUS_PROFILE_COMFORT_FBCCA_V1,
+    STIMULUS_PROFILE_COMMAND_NC_8_10_12_15_V1,
     get_stimulus_profile,
     profile_matches_freqs,
     select_stimulus_mode_for_profile,
@@ -118,13 +129,13 @@ VOICE_PROMPT_GUARD_SEC = 0.8
 VOICE_PROMPT_FINISH_TIMEOUT_SEC = 5.0
 VOICE_PROMPT_RATE = 0.0
 VOICE_PROMPT_DIRECTIONS_CN = ("看上方", "看左方", "看下方", "看右方")
-_DEFAULT_STIMULUS_PROFILE = get_stimulus_profile(DEFAULT_STIMULUS_PROFILE_ID)
+DEFAULT_COLLECTION_STIMULUS_PROFILE_ID = STIMULUS_PROFILE_COMMAND_NC_8_10_12_15_V1
+_DEFAULT_STIMULUS_PROFILE = get_stimulus_profile(DEFAULT_COLLECTION_STIMULUS_PROFILE_ID)
 STIM_REFRESH_RATE_HZ = float(_DEFAULT_STIMULUS_PROFILE.refresh_rate_hz)
 STIM_MEAN = float(_DEFAULT_STIMULUS_PROFILE.mean)
 STIM_AMP = float(_DEFAULT_STIMULUS_PROFILE.amp)
 STIM_PHI = float(_DEFAULT_STIMULUS_PROFILE.phi)
 STIM_RAMP_SEC = float(_DEFAULT_STIMULUS_PROFILE.ramp_sec)
-DEFAULT_COLLECTION_STIMULUS_PROFILE_ID = DEFAULT_STIMULUS_PROFILE_ID
 DEFAULT_COLLECTION_STIMULUS_MODE = _DEFAULT_STIMULUS_PROFILE.fallback_mode
 DEFAULT_COLLECTION_FREQS = tuple(float(freq) for freq in _DEFAULT_STIMULUS_PROFILE.freqs)
 DEFAULT_COLLECTION_FREQS_CSV = ",".join(f"{freq:g}" for freq in DEFAULT_COLLECTION_FREQS)
@@ -212,9 +223,33 @@ CUSTOM_PRESET = ProtocolPreset(
     switch_trials=DEFAULT_STABLE_SWITCH_TRIALS,
     long_idle_sec=DEFAULT_STABLE_LONG_IDLE_SEC,
 )
+CUSTOM_SSVEP_COMMAND_NC_PRESET = ProtocolPreset(
+    key=CUSTOM_SSVEP_PROTOCOL_V1,
+    display="Custom SSVEP command + no-control + pseudo-online (6-8 min)",
+    prepare_sec=DEFAULT_STABLE_PREPARE_SEC,
+    active_sec=CUSTOM_SSVEP_COMMAND_ACTIVE_SEC,
+    rest_sec=MIN_REST_SEC_BETWEEN_TRIALS,
+    target_repeats=int(CUSTOM_PROTOCOL_SPECS[CUSTOM_SSVEP_PROTOCOL_V1].command_calibration_repeats),
+    idle_repeats=int(CUSTOM_PROTOCOL_SPECS[CUSTOM_SSVEP_PROTOCOL_V1].nc_calibration_repeats),
+    switch_trials=int(CUSTOM_PROTOCOL_SPECS[CUSTOM_SSVEP_PROTOCOL_V1].command_test_repeats),
+    long_idle_sec=0.0,
+)
+CUSTOM_SSVEP_COMMAND_NC_SHORT_PRESET = ProtocolPreset(
+    key=CUSTOM_SSVEP_SHORT_PROTOCOL_V1,
+    display="Custom SSVEP short command + no-control (4.5-5.5 min)",
+    prepare_sec=DEFAULT_STABLE_PREPARE_SEC,
+    active_sec=CUSTOM_SSVEP_COMMAND_ACTIVE_SEC,
+    rest_sec=MIN_REST_SEC_BETWEEN_TRIALS,
+    target_repeats=int(CUSTOM_PROTOCOL_SPECS[CUSTOM_SSVEP_SHORT_PROTOCOL_V1].command_calibration_repeats),
+    idle_repeats=int(CUSTOM_PROTOCOL_SPECS[CUSTOM_SSVEP_SHORT_PROTOCOL_V1].nc_calibration_repeats),
+    switch_trials=int(CUSTOM_PROTOCOL_SPECS[CUSTOM_SSVEP_SHORT_PROTOCOL_V1].command_test_repeats),
+    long_idle_sec=0.0,
+)
 COLLECTION_PRESETS: dict[str, ProtocolPreset] = {
     STABLE_12M_PRESET.key: STABLE_12M_PRESET,
     ENHANCED_45M_PRESET.key: ENHANCED_45M_PRESET,
+    CUSTOM_SSVEP_COMMAND_NC_PRESET.key: CUSTOM_SSVEP_COMMAND_NC_PRESET,
+    CUSTOM_SSVEP_COMMAND_NC_SHORT_PRESET.key: CUSTOM_SSVEP_COMMAND_NC_SHORT_PRESET,
     CUSTOM_PRESET.key: CUSTOM_PRESET,
 }
 
@@ -223,6 +258,9 @@ def normalize_preset_name(raw: Optional[str]) -> str:
     value = str(raw or "").strip().lower()
     if value in COLLECTION_PRESETS:
         return value
+    custom_key = normalize_custom_ssvep_protocol_key(value)
+    if custom_key:
+        return custom_key
     return CUSTOM_PRESET.key
 
 
@@ -252,7 +290,17 @@ def estimate_round_seconds(
     switch_trials: int,
     long_idle_sec: float = 0.0,
     refresh_rate_hz: float = STIM_REFRESH_RATE_HZ,
+    protocol_name: str = "",
+    freqs: Optional[Sequence[float]] = None,
 ) -> float:
+    custom_key = normalize_custom_ssvep_protocol_key(protocol_name)
+    if custom_key:
+        return estimate_custom_ssvep_round_seconds(
+            protocol_name=custom_key,
+            freqs=DEFAULT_COLLECTION_FREQS if freqs is None else freqs,
+            prepare_sec=prepare_sec,
+            refresh_rate_hz=refresh_rate_hz,
+        )
     base_trial_count = trial_count_for_protocol(
         target_repeats,
         idle_repeats,
@@ -266,6 +314,30 @@ def estimate_round_seconds(
     if float(long_idle_sec) > 0.0:
         total_sec += float(max(0.0, prepare_sec) + trial_cue_sec + max(0.0, long_idle_sec) + max(0.0, rest_sec))
     return total_sec
+
+
+def estimate_custom_ssvep_round_seconds(
+    *,
+    protocol_name: str,
+    freqs: Sequence[float],
+    prepare_sec: float,
+    refresh_rate_hz: float,
+) -> float:
+    custom_key = normalize_custom_ssvep_protocol_key(protocol_name)
+    if not custom_key:
+        return 0.0
+    frame_arm_sec = float(estimate_active_stimulus_arm_sec(refresh_rate_hz))
+    total_sec = 0.0
+    for _trial, metadata in build_custom_ssvep_collection_plan(freqs, protocol_key=custom_key):
+        active_sec = float(metadata.get("active_sec", 0.0) or 0.0)
+        rest_sec = float(metadata.get("rest_sec", 0.0) or 0.0)
+        total_sec += max(0.0, float(prepare_sec))
+        total_sec += float(ACTIVE_START_CUE_SEC)
+        if bool(metadata.get("stimulus_active", False)):
+            total_sec += frame_arm_sec
+        total_sec += max(0.0, active_sec)
+        total_sec += max(0.0, rest_sec)
+    return float(total_sec)
 
 
 def format_duration(seconds: float) -> str:
@@ -309,7 +381,24 @@ def prompt_text_for_freq(freqs: Sequence[float], target_freq: Optional[float]) -
 
 
 def prompt_text_for_trial(freqs: Sequence[float], trial: Any) -> str:
-    return prompt_text_for_freq(freqs, getattr(trial, "expected_freq", None))
+    expected_freq = getattr(trial, "expected_freq", None)
+    if expected_freq is not None:
+        return prompt_text_for_freq(freqs, expected_freq)
+    raw_metadata = getattr(trial, "metadata", None)
+    metadata = dict(raw_metadata) if isinstance(raw_metadata, Mapping) else {}
+    stage = str(metadata.get("stage", "")).strip().lower()
+    nc_subtype = str(metadata.get("nc_subtype", "")).strip().lower()
+    if stage == "baseline_eyes_closed" or nc_subtype == "eyes_closed":
+        return "闭眼放松"
+    if stage == "signal_check":
+        return "看中心点，保持放松"
+    if nc_subtype in {"blank_center", "flicker_center", "eyes_open_center", "signal_check_center"}:
+        return "看中心点"
+    if nc_subtype == "flicker_object":
+        return "看目标物区域，不看闪烁块"
+    if nc_subtype == "flicker_free":
+        return "自然看屏幕非闪烁区域"
+    return prompt_text_for_freq(freqs, None)
 
 
 def _play_tone_sequence_async(sequence: Sequence[tuple[int, int]]) -> None:
@@ -606,6 +695,9 @@ class SpeechPromptPlayer(QObject):
 
 class CollectionFullscreenStimWindow(QMainWindow):
     escape_requested = pyqtSignal()
+    pause_toggle_requested = pyqtSignal()
+    retry_requested = pyqtSignal()
+    mark_invalid_requested = pyqtSignal()
     active_phase_frame_presented = pyqtSignal(object)
 
     def __init__(
@@ -634,6 +726,9 @@ class CollectionFullscreenStimWindow(QMainWindow):
     def apply_phase(self, phase: dict[str, Any]) -> None:
         self.stim.apply_phase(phase)
 
+    def active_phase_frame_interval_stats(self) -> dict[str, Any]:
+        return dict(self.stim.active_phase_frame_interval_stats())
+
     def close_from_owner(self) -> None:
         self._allow_close = True
         try:
@@ -645,6 +740,18 @@ class CollectionFullscreenStimWindow(QMainWindow):
     def keyPressEvent(self, event) -> None:
         if event.key() == Qt.Key_Escape:
             self.escape_requested.emit()
+            event.accept()
+            return
+        if event.key() == Qt.Key_Space:
+            self.pause_toggle_requested.emit()
+            event.accept()
+            return
+        if event.key() == Qt.Key_R:
+            self.retry_requested.emit()
+            event.accept()
+            return
+        if event.key() == Qt.Key_M:
+            self.mark_invalid_requested.emit()
             event.accept()
             return
         super().keyPressEvent(event)
@@ -810,6 +917,7 @@ class DeviceCheckWorker(QObject):
 
 class CollectionWorker(QObject):
     phase_changed = pyqtSignal(object)
+    frame_stats_requested = pyqtSignal()
     trial_tone_event = pyqtSignal(object)
     voice_prompt_event = pyqtSignal(object)
     log = pyqtSignal(str)
@@ -824,14 +932,69 @@ class CollectionWorker(QObject):
         self._stimulus_phase_applied_event = threading.Event()
         self._stimulus_phase_payload_lock = threading.Lock()
         self._last_stimulus_phase_payload: dict[str, Any] = {}
+        self._stimulus_frame_stats_event = threading.Event()
+        self._stimulus_frame_stats_payload: dict[str, Any] = {}
         self._voice_prompt_finished_event = threading.Event()
         self._voice_prompt_request_id = 0
         self._current_trial_active_sec = float(config.active_sec)
+        self._pause_after_current_trial_event = threading.Event()
+        self._retry_current_trial_event = threading.Event()
+        self._mark_invalid_current_trial_event = threading.Event()
+        self._trial_control_accepting_input = threading.Event()
+        self._paused_after_trial = False
 
     def request_stop(self) -> None:
         self._stop_event.set()
         self._stimulus_phase_applied_event.set()
         self._voice_prompt_finished_event.set()
+
+    def request_pause_after_current_trial(self) -> None:
+        if self._pause_after_current_trial_event.is_set():
+            self._pause_after_current_trial_event.clear()
+            self.log.emit("已取消暂停请求。")
+        else:
+            self._pause_after_current_trial_event.set()
+            self.log.emit("已请求暂停：当前 trial 结束并保存后暂停。")
+
+    def request_retry_current_trial(self) -> None:
+        if not self._trial_control_accepting_input.is_set():
+            self.log.emit("当前不在可重采窗口，已忽略 R。")
+            return
+        self._retry_current_trial_event.set()
+        self.log.emit("已请求重采当前 trial。")
+
+    def request_mark_invalid_current_trial(self) -> None:
+        if not self._trial_control_accepting_input.is_set():
+            self.log.emit("当前不在可标记窗口，已忽略 M。")
+            return
+        self._mark_invalid_current_trial_event.set()
+        self.log.emit("已请求标记当前 trial 为 invalid：本段仍保存，但训练会过滤。")
+
+    def _consume_retry_request(self) -> bool:
+        if not self._retry_current_trial_event.is_set():
+            return False
+        self._retry_current_trial_event.clear()
+        return True
+
+    def _consume_invalid_request(self) -> bool:
+        if not self._mark_invalid_current_trial_event.is_set():
+            return False
+        self._mark_invalid_current_trial_event.clear()
+        return True
+
+    def _pause_after_trial_if_requested(self) -> bool:
+        if not self._pause_after_current_trial_event.is_set():
+            return False
+        self._pause_after_current_trial_event.clear()
+        self._paused_after_trial = True
+        self._emit_phase(
+            PHASE_CAL_REST,
+            "已暂停",
+            "当前 trial 已保存。请休息后按“开始本轮采集”继续下一轮，或按停止安全退出。",
+            flicker=False,
+            cue_freq=None,
+        )
+        return True
 
     def _emit_phase(
         self,
@@ -842,6 +1005,7 @@ class CollectionWorker(QObject):
         flicker: bool,
         cue_freq: Optional[float],
         active_sec: Optional[float] = None,
+        reset_active_frame_stats: bool = False,
     ) -> None:
         phase_active_sec = float(self.config.active_sec if active_sec is None else active_sec)
         if active_sec is None and mode == PHASE_CAL_ACTIVE and bool(flicker):
@@ -854,6 +1018,7 @@ class CollectionWorker(QObject):
                 "flicker": flicker,
                 "cue_freq": cue_freq,
                 "active_sec": float(phase_active_sec),
+                "reset_active_frame_stats": bool(reset_active_frame_stats),
                 "stimulus_profile_id": str(self.config.stimulus_profile_id),
             }
         )
@@ -871,6 +1036,11 @@ class CollectionWorker(QObject):
             with self._stimulus_phase_payload_lock:
                 self._last_stimulus_phase_payload = ack_payload
             self._stimulus_phase_applied_event.set()
+
+    def notify_stimulus_frame_stats(self, payload: Optional[dict[str, Any]] = None) -> None:
+        with self._stimulus_phase_payload_lock:
+            self._stimulus_frame_stats_payload = dict(payload or {})
+        self._stimulus_frame_stats_event.set()
 
     def notify_voice_prompt_finished(self, request_id: int) -> None:
         if int(request_id) <= 0:
@@ -893,6 +1063,19 @@ class CollectionWorker(QObject):
         with self._stimulus_phase_payload_lock:
             payload = dict(self._last_stimulus_phase_payload)
         return bool(ready), payload
+
+    def _request_stimulus_frame_stats(self) -> dict[str, Any]:
+        if not bool(self.config.sync_stimulus_phase) or self._stop_event.is_set():
+            return {}
+        self._stimulus_frame_stats_event.clear()
+        with self._stimulus_phase_payload_lock:
+            self._stimulus_frame_stats_payload = {}
+        self.frame_stats_requested.emit()
+        ready = self._stimulus_frame_stats_event.wait(float(STIMULUS_PHASE_APPLY_TIMEOUT_SEC))
+        if not ready:
+            return {}
+        with self._stimulus_phase_payload_lock:
+            return dict(self._stimulus_frame_stats_payload)
 
     def _sleep_interruptible(self, seconds: float) -> bool:
         return bool(self._stop_event.wait(max(0.0, float(seconds))))
@@ -1091,6 +1274,18 @@ class CollectionWorker(QObject):
             "stim_frame_formula": str(STIM_FRAME_FORMULA),
             "sync_stimulus_phase": bool(self.config.sync_stimulus_phase),
         }
+        if is_custom_ssvep_protocol(self.config.protocol_name):
+            protocol_config["custom_ssvep_protocol"] = custom_ssvep_protocol_summary(
+                str(self.config.protocol_name),
+                self.config.freqs,
+            )
+            protocol_config["custom_ssvep_protocol"]["runtime_estimated_seconds"] = float(
+                self.config.estimated_round_sec
+            )
+            protocol_config["custom_ssvep_protocol"][
+                "estimated_seconds_kind"
+            ] = "runtime_prepare_start_tone_display_arm_active_rest"
+            protocol_config["test_split_excluded_from_training"] = True
         protocol_config.update(
             stimulus_profile_metadata(
                 self.config.stimulus_profile_id,
@@ -1189,6 +1384,15 @@ class CollectionWorker(QObject):
         )
 
     def _build_trial_plan(self) -> list[Any]:
+        if is_custom_ssvep_protocol(self.config.protocol_name):
+            return [
+                trial
+                for trial, _metadata in build_custom_ssvep_collection_plan(
+                    self.config.freqs,
+                    protocol_key=str(self.config.protocol_name),
+                    seed=self.config.seed + int(max(self.config.session_index, 1) - 1) * 1009,
+                )
+            ]
         protocol = CollectionProtocol(
             name=str(self.config.protocol_name),
             prepare_sec=float(self.config.prepare_sec),
@@ -1205,6 +1409,134 @@ class CollectionWorker(QObject):
             seed=self.config.seed,
             session_index=self.config.session_index,
         )
+
+    def _custom_trial_metadata(self) -> dict[int, dict[str, Any]]:
+        if not is_custom_ssvep_protocol(self.config.protocol_name):
+            return {}
+        return custom_ssvep_metadata_by_trial_id(
+            self.config.freqs,
+            protocol_key=str(self.config.protocol_name),
+            seed=self.config.seed + int(max(self.config.session_index, 1) - 1) * 1009,
+        )
+
+    def _trial_metadata(self, metadata_by_id: Mapping[int, dict[str, Any]], trial: Any) -> dict[str, Any]:
+        try:
+            return dict(metadata_by_id.get(int(getattr(trial, "trial_id", -1)), {}))
+        except Exception:
+            return {}
+
+    def _trial_active_sec(self, trial: Any, metadata: Mapping[str, Any]) -> float:
+        if "active_sec" in metadata:
+            return max(0.0, float(metadata.get("active_sec", self.config.active_sec)))
+        trial_label_lower = str(getattr(trial, "label", "")).strip().lower()
+        is_long_idle = "long_idle" in trial_label_lower or "long idle" in trial_label_lower
+        return (
+            float(self.config.long_idle_sec)
+            if is_long_idle and float(self.config.long_idle_sec) > 0.0
+            else float(self.config.active_sec)
+        )
+
+    def _trial_rest_sec(self, metadata: Mapping[str, Any]) -> float:
+        if "rest_sec" in metadata:
+            return max(0.0, float(metadata.get("rest_sec", self.config.rest_sec)))
+        return max(0.0, float(self.config.rest_sec))
+
+    def _trial_flicker_enabled(self, trial: Any, metadata: Mapping[str, Any]) -> bool:
+        if "stimulus_active" in metadata:
+            return bool(metadata.get("stimulus_active"))
+        return True
+
+    @staticmethod
+    def _trial_aligned_events(
+        metadata: Mapping[str, Any],
+        *,
+        active_samples: int,
+        trial_start_at: str = "",
+        cue_on_at: str = "",
+        active_window_started_at: str,
+        active_window_ended_at: str,
+        segment_captured_at: str,
+    ) -> list[dict[str, Any]]:
+        raw_events = metadata.get("events", [])
+        if not isinstance(raw_events, list):
+            return []
+        sample_by_name = {
+            "TRIAL_START": None,
+            "CUE_ON": None,
+            "NC_BLANK_CENTER_ON": 0,
+            "NC_FLICKER_CENTER_ON": 0,
+            "NC_FLICKER_OBJECT_ON": 0,
+            "NC_FLICKER_FREE_ON": 0,
+            "STIM_ON_COMMAND_8": 0,
+            "STIM_ON_COMMAND_10": 0,
+            "STIM_ON_COMMAND_10P5": 0,
+            "STIM_ON_COMMAND_12": 0,
+            "STIM_ON_COMMAND_15": 0,
+            "STIM_ON_COMMAND_OTHER": 0,
+            "STIM_OFF": int(max(active_samples, 0)),
+            "NC_SEGMENT_OFF": int(max(active_samples, 0)),
+            "REST_ON": int(max(active_samples, 0)),
+            "TRIAL_END": int(max(active_samples, 0)),
+            "MARK_INVALID": int(max(active_samples, 0)),
+        }
+        time_by_name = {
+            "TRIAL_START": trial_start_at or cue_on_at or active_window_started_at,
+            "CUE_ON": cue_on_at or trial_start_at or active_window_started_at,
+            "NC_BLANK_CENTER_ON": active_window_started_at,
+            "NC_FLICKER_CENTER_ON": active_window_started_at,
+            "NC_FLICKER_OBJECT_ON": active_window_started_at,
+            "NC_FLICKER_FREE_ON": active_window_started_at,
+            "STIM_ON_COMMAND_8": active_window_started_at,
+            "STIM_ON_COMMAND_10": active_window_started_at,
+            "STIM_ON_COMMAND_10P5": active_window_started_at,
+            "STIM_ON_COMMAND_12": active_window_started_at,
+            "STIM_ON_COMMAND_15": active_window_started_at,
+            "STIM_ON_COMMAND_OTHER": active_window_started_at,
+            "STIM_OFF": active_window_ended_at or segment_captured_at,
+            "NC_SEGMENT_OFF": active_window_ended_at or segment_captured_at,
+            "REST_ON": segment_captured_at or active_window_ended_at,
+            "TRIAL_END": segment_captured_at or active_window_ended_at,
+            "MARK_INVALID": segment_captured_at or active_window_ended_at,
+        }
+        events: list[dict[str, Any]] = []
+        for item in raw_events:
+            if not isinstance(item, Mapping):
+                continue
+            event = dict(item)
+            event_name = str(event.get("event_name", ""))
+            if event_name in sample_by_name:
+                sample_index = sample_by_name[event_name]
+                event["sample_index"] = None if sample_index is None else int(sample_index)
+            if event_name in time_by_name:
+                event["perf_time"] = str(time_by_name[event_name])
+            events.append(event)
+        return events
+
+    def _trial_prompt(self, index: int, total: int, trial: Any, metadata: Mapping[str, Any]) -> str:
+        stage = str(metadata.get("stage", "")).strip()
+        state_type = str(metadata.get("state_type", "")).strip()
+        nc_subtype = str(metadata.get("nc_subtype", "")).strip()
+        cue_freq = None if getattr(trial, "expected_freq", None) is None else float(trial.expected_freq)
+        prefix = f"Round {self.config.round_index} Trial {index}/{total}"
+        if cue_freq is not None:
+            target = str(metadata.get("target_position_label", "")).strip() or str(trial.label)
+            return f"{prefix} command {target} {cue_freq:g}Hz"
+        if stage == "signal_check":
+            return f"{prefix} signal check: look at the center fixation."
+        if stage == "baseline_eyes_open":
+            return f"{prefix} baseline eyes-open: look at the center fixation."
+        if stage == "baseline_eyes_closed":
+            return f"{prefix} baseline eyes-closed: relax without deliberate squeezing."
+        if state_type == "no_control":
+            if nc_subtype == "blank_center":
+                return f"{prefix} no-control blank center: look at the center fixation."
+            if nc_subtype == "flicker_center":
+                return f"{prefix} no-control flicker center: look at center, avoid all targets."
+            if nc_subtype == "flicker_object":
+                return f"{prefix} no-control object: look at the object area, avoid flicker targets."
+            if nc_subtype == "flicker_free":
+                return f"{prefix} no-control free gaze: do not stare at any flicker target."
+        return f"{prefix} idle: look at center."
 
     @staticmethod
     def _append_board_data_chunk(chunks: list[np.ndarray], data: Any) -> int:
@@ -1265,6 +1597,7 @@ class CollectionWorker(QObject):
 
     def _run_simulation_only(self) -> None:
         trials = self._build_trial_plan()
+        metadata_by_id = self._custom_trial_metadata()
         total = len(trials)
         executed_trials = 0
         self.log.emit(
@@ -1274,6 +1607,7 @@ class CollectionWorker(QObject):
         for index, trial in enumerate(trials, start=1):
             if self._stop_event.is_set():
                 break
+            trial_metadata = self._trial_metadata(metadata_by_id, trial)
             cue_freq = None if trial.expected_freq is None else float(trial.expected_freq)
             trial_label_lower = str(trial.label).strip().lower()
             is_long_idle = "long_idle" in trial_label_lower or "long idle" in trial_label_lower
@@ -1282,6 +1616,9 @@ class CollectionWorker(QObject):
                 if is_long_idle and float(self.config.long_idle_sec) > 0.0
                 else float(self.config.active_sec)
             )
+            trial_active_sec = self._trial_active_sec(trial, trial_metadata)
+            trial_rest_sec = self._trial_rest_sec(trial_metadata)
+            trial_flicker = self._trial_flicker_enabled(trial, trial_metadata)
             self._current_trial_active_sec = float(trial_active_sec)
             prompt_base = (
                 f"第 {self.config.round_index} 轮 Trial {index}/{total} 空闲（看中心）"
@@ -1293,6 +1630,8 @@ class CollectionWorker(QObject):
                     f"第 {self.config.round_index} 轮 Trial {index}/{total} Long Idle "
                     "（保持看中心，不看任何目标）"
                 )
+            if trial_metadata:
+                prompt_base = self._trial_prompt(index, total, trial, trial_metadata)
             self._emit_phase(PHASE_CAL_PREPARE, "准备", prompt_base, flicker=False, cue_freq=cue_freq)
             self.log.emit(f"{prompt_base} [流程测试]")
             request_id = self._emit_voice_prompt(
@@ -1309,8 +1648,9 @@ class CollectionWorker(QObject):
             ):
                 break
             self._clear_stimulus_phase_ack()
-            self._emit_phase(PHASE_CAL_ACTIVE, "采样即将开始", prompt_base, flicker=True, cue_freq=cue_freq)
-            self._wait_for_stimulus_phase_applied()
+            self._emit_phase(PHASE_CAL_ACTIVE, "采样即将开始", prompt_base, flicker=trial_flicker, cue_freq=cue_freq)
+            if trial_flicker:
+                self._wait_for_stimulus_phase_applied()
             if self._stop_event.is_set():
                 break
 
@@ -1323,7 +1663,7 @@ class CollectionWorker(QObject):
             play_collection_tone_event_sync(tone_payload)
             if self._stop_event.is_set():
                 break
-            self._emit_phase(PHASE_CAL_ACTIVE, "流程测试中", prompt_base, flicker=True, cue_freq=cue_freq)
+            self._emit_phase(PHASE_CAL_ACTIVE, "流程测试中", prompt_base, flicker=trial_flicker, cue_freq=cue_freq)
             if self._sleep_interruptible(trial_active_sec):
                 break
             self._emit_phase(
@@ -1342,10 +1682,12 @@ class CollectionWorker(QObject):
             play_collection_tone_event(tone_payload)
             executed_trials += 1
             self._emit_phase(PHASE_CAL_REST, "休息", "请放松并正常眨眼。", flicker=False, cue_freq=None)
-            if self._sleep_interruptible(self.config.rest_sec):
+            if self._sleep_interruptible(trial_rest_sec):
+                break
+            if self._pause_after_trial_if_requested():
                 break
 
-        collection_aborted = bool(self._stop_event.is_set() and executed_trials < total)
+        collection_aborted = bool((self._stop_event.is_set() or self._paused_after_trial) and executed_trials < total)
         if collection_aborted:
             self._emit_phase(
                 PHASE_STOPPED,
@@ -1436,11 +1778,13 @@ class CollectionWorker(QObject):
                 return
             self._drain_board_data(board, raw_board_chunks)
             trials = self._build_trial_plan()
+            metadata_by_id = self._custom_trial_metadata()
             minimum_samples = max(1, int(round(1.5 * fs)))
             total = len(trials)
             for index, trial in enumerate(trials, start=1):
                 if self._stop_event.is_set():
                     break
+                trial_metadata = self._trial_metadata(metadata_by_id, trial)
                 cue_freq = None if trial.expected_freq is None else float(trial.expected_freq)
                 trial_label_lower = str(trial.label).strip().lower()
                 is_long_idle = "long_idle" in trial_label_lower or "long idle" in trial_label_lower
@@ -1449,6 +1793,9 @@ class CollectionWorker(QObject):
                     if is_long_idle and float(self.config.long_idle_sec) > 0.0
                     else float(self.config.active_sec)
                 )
+                trial_active_sec = self._trial_active_sec(trial, trial_metadata)
+                trial_rest_sec = self._trial_rest_sec(trial_metadata)
+                trial_flicker = self._trial_flicker_enabled(trial, trial_metadata)
                 self._current_trial_active_sec = float(trial_active_sec)
                 active_samples = int(round(trial_active_sec * fs))
                 prompt_base = (
@@ -1461,12 +1808,15 @@ class CollectionWorker(QObject):
                         f"Round {self.config.round_index} Trial {index}/{total} long-idle "
                         "(keep looking at center, avoid all targets)"
                     )
+                if trial_metadata:
+                    prompt_base = self._trial_prompt(index, total, trial, trial_metadata)
                 voice_text = prompt_text_for_trial(self.config.freqs, trial)
                 accepted_segment: Optional[np.ndarray] = None
                 accepted_used_samples = 0
                 accepted_shortfall_ratio = 1.0
                 retry_count = 0
                 available_samples = 0
+                trial_prepare_started_at = ""
                 active_start_tone_started_at = ""
                 active_window_started_at = ""
                 active_window_ended_at = ""
@@ -1474,6 +1824,7 @@ class CollectionWorker(QObject):
                 active_end_tone_started_at = ""
                 stimulus_phase_apply_requested_at = ""
                 stimulus_first_frame_presented_at = ""
+                stimulus_first_frame_ack_received_at = ""
                 stimulus_first_frame_presented_t_sec: Optional[float] = None
                 stimulus_first_frame_frame_index: Optional[int] = None
                 stimulus_first_frame_cue_freq: Optional[float] = None
@@ -1483,13 +1834,19 @@ class CollectionWorker(QObject):
                 stimulus_frame_interval_stats: dict[str, Any] = {}
                 board_buffer_cleared_at = ""
                 board_buffer_clear_samples = 0
+                accepted_valid = True
+                accepted_reject_reason = ""
                 while retry_count <= MAX_TRIAL_RETRIES:
+                    self._consume_retry_request()
+                    self._consume_invalid_request()
+                    self._trial_control_accepting_input.clear()
                     prompt = (
                         prompt_base
                         if retry_count == 0
                         else f"{prompt_base} | 重采 {retry_count}/{MAX_TRIAL_RETRIES}"
                     )
                     self._emit_phase(PHASE_CAL_PREPARE, "准备", prompt, flicker=False, cue_freq=cue_freq)
+                    trial_prepare_started_at = wallclock_iso_timestamp()
                     self.log.emit(prompt)
                     request_id = self._emit_voice_prompt(
                         text=voice_text,
@@ -1511,14 +1868,17 @@ class CollectionWorker(QObject):
                         PHASE_CAL_ACTIVE,
                         "采样即将开始",
                         prompt,
-                        flicker=True,
+                        flicker=trial_flicker,
                         cue_freq=cue_freq,
                         active_sec=trial_active_sec,
                     )
-                    stimulus_ack_ready, stimulus_ack_payload = self._wait_for_stimulus_phase_applied()
+                    if trial_flicker:
+                        stimulus_ack_ready, stimulus_ack_payload = self._wait_for_stimulus_phase_applied()
+                    else:
+                        stimulus_ack_ready, stimulus_ack_payload = False, {}
                     if self._stop_event.is_set():
                         break
-                    if bool(self.config.sync_stimulus_phase) and not stimulus_ack_ready:
+                    if bool(self.config.sync_stimulus_phase) and bool(trial_flicker) and not stimulus_ack_ready:
                         stimulus_first_frame_ack_timed_out = True
                         retry_count += 1
                         self.log.emit(
@@ -1539,7 +1899,13 @@ class CollectionWorker(QObject):
                         continue
                     if stimulus_ack_ready:
                         stimulus_first_frame_ack_timed_out = False
-                        stimulus_first_frame_presented_at = str(stimulus_ack_payload.get("ack_wall_time", ""))
+                        stimulus_first_frame_presented_at = str(
+                            stimulus_ack_payload.get(
+                                "presented_wall_time",
+                                stimulus_ack_payload.get("ack_wall_time", ""),
+                            )
+                        )
+                        stimulus_first_frame_ack_received_at = str(stimulus_ack_payload.get("ack_wall_time", ""))
                         stimulus_first_frame_mode = str(stimulus_ack_payload.get("mode", ""))
                         try:
                             stimulus_first_frame_presented_t_sec = float(
@@ -1557,8 +1923,15 @@ class CollectionWorker(QObject):
                         except Exception:
                             stimulus_first_frame_cue_freq = None
                         try:
-                            ack_perf = float(stimulus_ack_payload.get("ack_perf_counter_sec"))
-                            stimulus_first_frame_ack_latency_sec = max(0.0, ack_perf - float(stimulus_phase_apply_perf))
+                            if stimulus_ack_payload.get("presented_perf_counter_ns") is not None:
+                                presented_perf = float(stimulus_ack_payload.get("presented_perf_counter_ns")) / 1_000_000_000.0
+                                stimulus_first_frame_ack_latency_sec = max(
+                                    0.0,
+                                    presented_perf - float(stimulus_phase_apply_perf),
+                                )
+                            else:
+                                ack_perf = float(stimulus_ack_payload.get("ack_perf_counter_sec"))
+                                stimulus_first_frame_ack_latency_sec = max(0.0, ack_perf - float(stimulus_phase_apply_perf))
                         except Exception:
                             stimulus_first_frame_ack_latency_sec = None
                         frame_stats = stimulus_ack_payload.get("frame_interval_stats", {})
@@ -1583,12 +1956,19 @@ class CollectionWorker(QObject):
                         PHASE_CAL_ACTIVE,
                         "采集中",
                         prompt,
-                        flicker=True,
+                        flicker=trial_flicker,
                         cue_freq=cue_freq,
                         active_sec=trial_active_sec,
+                        reset_active_frame_stats=True,
                     )
+                    self._trial_control_accepting_input.set()
                     if self._sleep_interruptible(trial_active_sec):
                         break
+                    self._trial_control_accepting_input.clear()
+                    if trial_flicker:
+                        final_frame_stats = self._request_stimulus_frame_stats()
+                        if final_frame_stats:
+                            stimulus_frame_interval_stats = dict(final_frame_stats)
                     active_window_ended_at = wallclock_iso_timestamp()
                     segment, used_samples, available_samples = read_recent_eeg_segment(
                         board,
@@ -1607,6 +1987,24 @@ class CollectionWorker(QObject):
                         retry_index=retry_count,
                     )
                     play_collection_tone_event(tone_payload)
+                    if self._consume_retry_request():
+                        retry_count += 1
+                        self.log.emit(f"Trial {index} 已按 R 请求丢弃并重采。")
+                        if retry_count > MAX_TRIAL_RETRIES:
+                            raise RuntimeError(f"Trial {index} 连续重采超过 {MAX_TRIAL_RETRIES} 次")
+                        self._emit_phase(
+                            PHASE_CAL_REST,
+                            "重采中",
+                            "已丢弃本次 trial，正在重采。",
+                            flicker=False,
+                            cue_freq=None,
+                        )
+                        if self._sleep_interruptible(max(0.2, trial_rest_sec * 0.5)):
+                            break
+                        continue
+                    if self._consume_invalid_request():
+                        accepted_valid = False
+                        accepted_reject_reason = "manual_mark_invalid"
                     shortfall_ratio = float(max(active_samples - int(used_samples), 0) / max(active_samples, 1))
                     sample_ratio = float(int(used_samples) / max(active_samples, 1))
                     if sample_ratio >= float(MIN_TRIAL_QUALITY_RATIO):
@@ -1632,18 +2030,23 @@ class CollectionWorker(QObject):
                         flicker=False,
                         cue_freq=None,
                     )
-                    if self._sleep_interruptible(max(0.2, self.config.rest_sec * 0.5)):
+                    if self._sleep_interruptible(max(0.2, trial_rest_sec * 0.5)):
                         break
 
                 if self._stop_event.is_set():
                     break
+                self._trial_control_accepting_input.clear()
                 if accepted_segment is None:
                     raise RuntimeError(f"Trial {index} 未采到有效片段，流程中止")
 
                 stim_profile = get_stimulus_profile(self.config.stimulus_profile_id)
                 collected.append((trial, accepted_segment))
-                quality_rows.append(
-                    {
+                trial_metadata_for_row = dict(trial_metadata)
+                if not accepted_valid:
+                    trial_metadata_for_row["valid"] = False
+                    trial_metadata_for_row["reject_reason"] = accepted_reject_reason
+                quality_row = {
+                    **trial_metadata_for_row,
                         "order_index": int(index - 1),
                         "target_samples": int(active_samples),
                         "used_samples": int(accepted_used_samples),
@@ -1659,6 +2062,7 @@ class CollectionWorker(QObject):
                         "active_end_tone_started_at": str(active_end_tone_started_at),
                         "stimulus_phase_apply_requested_at": str(stimulus_phase_apply_requested_at),
                         "stimulus_first_frame_presented_at": str(stimulus_first_frame_presented_at),
+                        "stimulus_first_frame_ack_received_at": str(stimulus_first_frame_ack_received_at),
                         "stimulus_first_frame_presented_t_sec": stimulus_first_frame_presented_t_sec,
                         "stimulus_first_frame_frame_index": stimulus_first_frame_frame_index,
                         "stimulus_first_frame_cue_freq": stimulus_first_frame_cue_freq,
@@ -1672,13 +2076,47 @@ class CollectionWorker(QObject):
                         "ramp_sec": float(stim_profile.ramp_sec),
                         "board_buffer_cleared_at": str(board_buffer_cleared_at),
                         "board_buffer_clear_samples": int(board_buffer_clear_samples),
-                    }
+                }
+                quality_row["trial_start_sample"] = None
+                quality_row["cue_on_sample"] = None
+                quality_row["active_window_start_sample"] = 0
+                quality_row["active_window_end_sample"] = int(accepted_used_samples)
+                quality_row["stim_on_sample"] = 0 if bool(trial_flicker) else None
+                quality_row["stim_off_sample"] = int(accepted_used_samples) if bool(trial_flicker) else None
+                quality_row["trial_end_sample"] = int(accepted_used_samples)
+                quality_row["events"] = self._trial_aligned_events(
+                    trial_metadata,
+                    active_samples=int(accepted_used_samples),
+                    trial_start_at=str(trial_prepare_started_at),
+                    cue_on_at=str(stimulus_phase_apply_requested_at),
+                    active_window_started_at=str(active_window_started_at),
+                    active_window_ended_at=str(active_window_ended_at),
+                    segment_captured_at=str(segment_captured_at),
                 )
+                if not accepted_valid:
+                    events = list(quality_row.get("events", []))
+                    events.append(
+                        {
+                            "sample_index": int(accepted_used_samples),
+                            "event_code": int(EVENT_CODES["MARK_INVALID"]),
+                            "event_name": "MARK_INVALID",
+                            "event_value": str(accepted_reject_reason),
+                            "perf_time": str(segment_captured_at),
+                            "trial_id": int(getattr(trial, "trial_id", index - 1)),
+                        }
+                    )
+                    quality_row["events"] = events
+                    event_codes = list(quality_row.get("event_codes", []))
+                    event_codes.append(int(EVENT_CODES["MARK_INVALID"]))
+                    quality_row["event_codes"] = event_codes
+                quality_rows.append(quality_row)
                 self._emit_phase(PHASE_CAL_REST, "休息", "请放松并正常眨眼。", flicker=False, cue_freq=None)
-                if self._sleep_interruptible(self.config.rest_sec):
+                if self._sleep_interruptible(trial_rest_sec):
+                    break
+                if self._pause_after_trial_if_requested():
                     break
 
-            collection_aborted = bool(self._stop_event.is_set() and len(collected) < len(trials))
+            collection_aborted = bool((self._stop_event.is_set() or self._paused_after_trial) and len(collected) < len(trials))
             if not collected:
                 if board is not None:
                     try:
@@ -1938,7 +2376,13 @@ class DatasetCollectionWindow(QMainWindow):
         self.dataset_dir_edit = QLineEdit(str(DEFAULT_DATASET_DIR))
         self._set_dataset_dir_text(DEFAULT_DATASET_DIR)
         self.preset_combo = QComboBox()
-        for preset in (STABLE_12M_PRESET, ENHANCED_45M_PRESET, CUSTOM_PRESET):
+        for preset in (
+            STABLE_12M_PRESET,
+            ENHANCED_45M_PRESET,
+            CUSTOM_SSVEP_COMMAND_NC_PRESET,
+            CUSTOM_SSVEP_COMMAND_NC_SHORT_PRESET,
+            CUSTOM_PRESET,
+        ):
             self.preset_combo.addItem(preset.display, preset.key)
         self.preset_combo.setCurrentText(STABLE_12M_PRESET.display)
         self.simulation_only_check = QCheckBox("流程测试模式（不连接板卡，不保存数据）")
@@ -2184,7 +2628,12 @@ class DatasetCollectionWindow(QMainWindow):
 
     def _on_preset_changed(self, _display: str) -> None:
         key = self._current_preset_name()
-        if key in (STABLE_12M_PRESET.key, ENHANCED_45M_PRESET.key):
+        if key in (
+            STABLE_12M_PRESET.key,
+            ENHANCED_45M_PRESET.key,
+            CUSTOM_SSVEP_COMMAND_NC_PRESET.key,
+            CUSTOM_SSVEP_COMMAND_NC_SHORT_PRESET.key,
+        ):
             self._apply_preset(key)
         self._refresh_estimate_label()
 
@@ -2256,22 +2705,37 @@ class DatasetCollectionWindow(QMainWindow):
         self.completed_rounds_value.setText(f"{self.rounds_completed}（剩余 {remaining}）")
 
     def _refresh_estimate_label(self) -> None:
-        trial_count = trial_count_for_protocol(
-            target_repeats=int(self.target_spin.value()),
-            idle_repeats=int(self.idle_spin.value()),
-            switch_trials=int(self.switch_spin.value()),
-            long_idle_sec=float(self.long_idle_spin.value()),
-        )
-        round_sec = estimate_round_seconds(
-            prepare_sec=float(self.prepare_spin.value()),
-            active_sec=float(self.active_spin.value()),
-            rest_sec=float(self.rest_spin.value()),
-            target_repeats=int(self.target_spin.value()),
-            idle_repeats=int(self.idle_spin.value()),
-            switch_trials=int(self.switch_spin.value()),
-            long_idle_sec=float(self.long_idle_spin.value()),
-            refresh_rate_hz=self._resolve_stim_refresh_rate_hz(),
-        )
+        preset_name = self._current_preset_name()
+        if is_custom_ssvep_protocol(preset_name):
+            try:
+                freqs = parse_freqs(self.freqs_edit.text().strip())
+            except Exception:
+                freqs = self.default_freqs
+            summary = custom_ssvep_protocol_summary(preset_name, freqs)
+            trial_count = int(summary.get("trial_count", 0))
+            round_sec = estimate_custom_ssvep_round_seconds(
+                protocol_name=preset_name,
+                freqs=freqs,
+                prepare_sec=float(self.prepare_spin.value()),
+                refresh_rate_hz=self._resolve_stim_refresh_rate_hz(),
+            )
+        else:
+            trial_count = trial_count_for_protocol(
+                target_repeats=int(self.target_spin.value()),
+                idle_repeats=int(self.idle_spin.value()),
+                switch_trials=int(self.switch_spin.value()),
+                long_idle_sec=float(self.long_idle_spin.value()),
+            )
+            round_sec = estimate_round_seconds(
+                prepare_sec=float(self.prepare_spin.value()),
+                active_sec=float(self.active_spin.value()),
+                rest_sec=float(self.rest_spin.value()),
+                target_repeats=int(self.target_spin.value()),
+                idle_repeats=int(self.idle_spin.value()),
+                switch_trials=int(self.switch_spin.value()),
+                long_idle_sec=float(self.long_idle_spin.value()),
+                refresh_rate_hz=self._resolve_stim_refresh_rate_hz(),
+            )
         planned = int(self.rounds_planned_spin.value())
         total_sec = round_sec * float(planned)
         self.estimate_label.setText(
@@ -2338,6 +2802,9 @@ class DatasetCollectionWindow(QMainWindow):
             stimulus_profile_id=stimulus_profile_id,
         )
         window.escape_requested.connect(self._stop_collection)
+        window.pause_toggle_requested.connect(self._request_pause_after_current_trial)
+        window.retry_requested.connect(self._request_retry_current_trial)
+        window.mark_invalid_requested.connect(self._request_mark_invalid_current_trial)
         window.active_phase_frame_presented.connect(self._on_active_phase_frame_presented)
         if screen is not None:
             window.setGeometry(screen.geometry())
@@ -2356,10 +2823,29 @@ class DatasetCollectionWindow(QMainWindow):
         except Exception:
             pass
         try:
+            window.pause_toggle_requested.disconnect(self._request_pause_after_current_trial)
+        except Exception:
+            pass
+        try:
+            window.retry_requested.disconnect(self._request_retry_current_trial)
+        except Exception:
+            pass
+        try:
+            window.mark_invalid_requested.disconnect(self._request_mark_invalid_current_trial)
+        except Exception:
+            pass
+        try:
             window.active_phase_frame_presented.disconnect(self._on_active_phase_frame_presented)
         except Exception:
             pass
         window.close_from_owner()
+
+    def _active_stimulus_frame_interval_stats(self) -> dict[str, Any]:
+        target = self.fullscreen_window.stim if self.fullscreen_window is not None else self.stim
+        try:
+            return dict(target.active_phase_frame_interval_stats())
+        except Exception:
+            return {}
 
     def _phase_for_embedded_preview(self, phase: dict[str, Any]) -> dict[str, Any]:
         payload = dict(phase)
@@ -2404,7 +2890,10 @@ class DatasetCollectionWindow(QMainWindow):
         stim_refresh_rate_hz = self._resolve_stim_refresh_rate_hz()
         validate_stimulus_frequency_set(freqs, refresh_rate_hz=stim_refresh_rate_hz)
         if not profile_matches_freqs(stimulus_profile_id, freqs):
-            self._log("warning: selected stimulus profile freqs differ from the UI frequency list")
+            raise ValueError(
+                "selected stimulus profile frequencies differ from the UI frequency list; "
+                "choose a matching stimulus profile before collection"
+            )
         target_repeats = int(self.target_spin.value())
         idle_repeats = int(self.idle_spin.value())
         switch_trials = int(self.switch_spin.value())
@@ -2417,6 +2906,8 @@ class DatasetCollectionWindow(QMainWindow):
             switch_trials=switch_trials,
             long_idle_sec=long_idle_sec,
             refresh_rate_hz=stim_refresh_rate_hz,
+            protocol_name=protocol_name,
+            freqs=freqs,
         )
         return CollectionConfig(
             serial_port=serial_port,
@@ -2559,6 +3050,7 @@ class DatasetCollectionWindow(QMainWindow):
         worker.error.connect(self._on_error)
         worker.done.connect(self._on_done)
         worker.phase_changed.connect(self._on_phase_changed)
+        worker.frame_stats_requested.connect(self._on_frame_stats_requested)
         worker.voice_prompt_event.connect(self._on_voice_prompt_event)
         worker.finished.connect(thread.quit)
         worker.finished.connect(worker.deleteLater)
@@ -2593,6 +3085,38 @@ class DatasetCollectionWindow(QMainWindow):
         if self.worker is None:
             self._set_running(False)
 
+    def _request_pause_after_current_trial(self) -> None:
+        if self.worker is not None:
+            self.worker.request_pause_after_current_trial()
+
+    def _request_retry_current_trial(self) -> None:
+        if self.worker is not None:
+            self.worker.request_retry_current_trial()
+
+    def _request_mark_invalid_current_trial(self) -> None:
+        if self.worker is not None:
+            self.worker.request_mark_invalid_current_trial()
+
+    def keyPressEvent(self, event) -> None:
+        if self.worker is not None:
+            if event.key() == Qt.Key_Space:
+                self._request_pause_after_current_trial()
+                event.accept()
+                return
+            if event.key() == Qt.Key_R:
+                self._request_retry_current_trial()
+                event.accept()
+                return
+            if event.key() == Qt.Key_M:
+                self._request_mark_invalid_current_trial()
+                event.accept()
+                return
+            if event.key() == Qt.Key_Escape:
+                self._stop_collection()
+                event.accept()
+                return
+        super().keyPressEvent(event)
+
     def _on_phase_changed(self, phase: dict[str, Any]) -> None:
         self.phase_label.setText(str(phase.get("title", "采集中")))
         self.stim.apply_phase(self._phase_for_embedded_preview(phase))
@@ -2605,6 +3129,10 @@ class DatasetCollectionWindow(QMainWindow):
 
     def _on_active_phase_frame_presented(self, payload: dict[str, Any]) -> None:
         self._notify_active_stimulus_applied(dict(payload))
+
+    def _on_frame_stats_requested(self) -> None:
+        if self.worker is not None:
+            self.worker.notify_stimulus_frame_stats(self._active_stimulus_frame_interval_stats())
 
     def _on_voice_prompt_event(self, payload: dict[str, Any]) -> None:
         if bool(payload.get("stop", False)):
@@ -2717,7 +3245,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--preset",
         type=str,
         default=DEFAULT_PRESET_NAME,
-        help="stable_12m|enhanced_45m|custom",
+        help="stable_12m|enhanced_45m|custom_ssvep_command_nc_pseudoonline_v1|custom_ssvep_command_nc_short_v1|custom",
     )
     parser.add_argument(
         "--protocol",
@@ -2738,7 +3266,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default=DEFAULT_COLLECTION_STIMULUS_PROFILE_ID,
         choices=tuple(sorted(STIMULUS_PROFILES)),
-        help="stimulus profile id, default comfort_fbcca_v1",
+        help=f"stimulus profile id, default {DEFAULT_COLLECTION_STIMULUS_PROFILE_ID}",
     )
     parser.add_argument(
         "--stimulus-mode",
@@ -2774,7 +3302,12 @@ def _resolve_cli_protocol(
     switch_trials: int,
 ) -> tuple[str, float, float, float, float, int, int, int]:
     preset_key = normalize_preset_name(preset_name)
-    if preset_key in (STABLE_12M_PRESET.key, ENHANCED_45M_PRESET.key):
+    if preset_key in (
+        STABLE_12M_PRESET.key,
+        ENHANCED_45M_PRESET.key,
+        CUSTOM_SSVEP_COMMAND_NC_PRESET.key,
+        CUSTOM_SSVEP_COMMAND_NC_SHORT_PRESET.key,
+    ):
         preset = COLLECTION_PRESETS[preset_key]
         return (
             preset_key,
@@ -2847,6 +3380,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         switch_trials=switch_trials,
         long_idle_sec=long_idle_sec,
         refresh_rate_hz=stim_refresh_rate_hz,
+        protocol_name=protocol_name,
+        freqs=freqs,
     )
     _validate_collection_protocol(
         prepare_sec=prepare_sec,

@@ -85,7 +85,7 @@ http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&widt
 - `--skip-camera-check`：兼容参数；默认已经跳过相机检查
 - `--repair-camera-sender`：显式改写/重启官方 `usb_cam.service` 相机发送配置
 - `--skip-camera-repair`：兼容旧参数；默认已经不修复摄像头发送
-- `--repair-camera-driver`：显式写入/重载 `uvcvideo` 兼容参数，仅用于诊断；必须同时带 `--allow-camera-sender-mutation`
+- `--repair-camera-driver`：显式写入/重载 `uvcvideo` 兼容参数，仅用于诊断；必须同时带 `--allow-camera-sender-mutation`。默认不强制 `quirks`，并保持 `nodrop=0`，让驱动丢弃不完整帧，避免条带/拼接坏帧进入视觉识别。
 - `--allow-camera-sender-mutation`：允许本工具改动相机发送链路；修复类参数必须同时带这个开关
 - `--remove-camera-driver-override`：显式移除本工具写过的 `uvcvideo` 覆盖文件；默认不碰
 - `--keep-camera-driver-override`：兼容旧参数；默认已经保留已有覆盖文件
@@ -120,8 +120,9 @@ http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&widt
   web_video_server type=mjpeg
   web_video_server quality=80
 
-/etc/modprobe.d/hiwonder-uvcvideo.conf:
-  options uvcvideo quirks=128 nodrop=1 timeout=5000
+uvcvideo:
+  不保留 hybrid 工具写入的 /etc/modprobe.d/hiwonder-uvcvideo.conf
+  当前修复目标是默认不强制 quirks，nodrop=0，让驱动丢弃不完整帧
 ```
 
 ## ROS 服务探针

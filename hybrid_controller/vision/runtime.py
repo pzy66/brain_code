@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import socket
 import threading
 import time
 from pathlib import Path
@@ -179,10 +180,21 @@ class _HttpMjpegCapture:
     service management.
     """
 
-    def __init__(self, url: str, *, cv2_module: object, timeout_sec: float) -> None:
+    def __init__(
+        self,
+        url: str,
+        *,
+        cv2_module: object,
+        timeout_sec: float,
+        read_timeout_sec: float | None = None,
+    ) -> None:
         self._url = _normalize_web_video_url(str(url))
         self._cv2 = cv2_module
-        self._timeout_sec = max(0.2, float(timeout_sec))
+        self._open_timeout_sec = max(0.2, float(timeout_sec))
+        self._read_timeout_sec = max(
+            0.1,
+            float(self._open_timeout_sec if read_timeout_sec is None else read_timeout_sec),
+        )
         self._response = None
         self._buffer = bytearray()
         self._last_frame = None
@@ -194,16 +206,34 @@ class _HttpMjpegCapture:
             "jpeg_marker_payloads": 0,
             "frames_accepted": 0,
             "frames_rejected": 0,
+            "read_timeouts": 0,
+            "read_errors": 0,
             "buffer_resets": 0,
             "reopen_count": 0,
             "last_reject_reason": "",
+            "last_read_error": "",
         }
         self._open()
 
     def _open(self) -> None:
         request = Request(self._url, headers={"User-Agent": "hybrid-controller/vision"})
-        self._response = urlopen(request, timeout=self._timeout_sec)
+        self._response = urlopen(request, timeout=self._open_timeout_sec)
+        self._set_response_read_timeout()
         self._stats["open_count"] = int(self._stats.get("open_count", 0)) + 1
+
+    def _set_response_read_timeout(self) -> None:
+        response = self._response
+        if response is None:
+            return
+        for attr_path in (("fp", "raw", "_sock"), ("fp", "raw", "_fp", "fp", "raw", "_sock")):
+            target = response
+            try:
+                for attr in attr_path:
+                    target = getattr(target, attr)
+                target.settimeout(self._read_timeout_sec)
+                return
+            except Exception:
+                continue
 
     def isOpened(self) -> bool:
         return self._response is not None
@@ -221,7 +251,7 @@ class _HttpMjpegCapture:
     def read(self):
         if self._response is None:
             return False, None
-        deadline = time.perf_counter() + self._timeout_sec
+        deadline = time.perf_counter() + self._read_timeout_sec
         while time.perf_counter() < deadline:
             while True:
                 read_status, frame = self._read_buffered_frame()
@@ -229,7 +259,23 @@ class _HttpMjpegCapture:
                     return True, frame
                 if read_status == "need_data":
                     break
-            chunk = self._response.read(4096)
+            try:
+                chunk = self._read_response_chunk()
+            except (TimeoutError, socket.timeout):
+                self._stats["read_timeouts"] = int(self._stats.get("read_timeouts", 0)) + 1
+                self._stats["last_read_error"] = "timeout"
+                while True:
+                    read_status, frame = self._read_buffered_frame()
+                    if read_status == "ready" and frame is not None:
+                        return True, frame
+                    if read_status == "need_data":
+                        self._reopen_consumer()
+                        return False, None
+            except OSError as error:
+                self._stats["read_errors"] = int(self._stats.get("read_errors", 0)) + 1
+                self._stats["last_read_error"] = str(error)
+                self._reopen_consumer()
+                return False, None
             if not chunk:
                 return False, None
             self._stats["bytes_read"] = int(self._stats.get("bytes_read", 0)) + len(chunk)
@@ -237,6 +283,15 @@ class _HttpMjpegCapture:
             if len(self._buffer) > 4_000_000:
                 del self._buffer[:-1_000_000]
         return False, None
+
+    def _read_response_chunk(self) -> bytes:
+        response = self._response
+        if response is None:
+            return b""
+        read1 = getattr(response, "read1", None)
+        if callable(read1):
+            return read1(4096)
+        return response.read(1)
 
     def _read_buffered_frame(self):
         header_end = self._buffer.find(b"\r\n\r\n")
@@ -291,6 +346,9 @@ class _HttpMjpegCapture:
         self._consecutive_rejected_frames += 1
         if self._consecutive_rejected_frames < 3:
             return
+        self._reopen_consumer()
+
+    def _reopen_consumer(self) -> None:
         self._buffer.clear()
         self._last_frame = None
         self._consecutive_rejected_frames = 0
@@ -455,6 +513,12 @@ class _VisionWorker(QObject):
         self._capture_window_start = time.perf_counter()
         self._capture_fps = 0.0
         self._capture_total_frames = 0
+        self._capture_drain_remaining = max(0, int(getattr(self.config, "vision_stream_drain_grabs", 0)))
+        self._capture_ready_frames = 0
+        self._capture_drained_frames = 0
+        self._capture_rejected_frames = 0
+        self._capture_startup_reference_frame = None
+        self._capture_transport_stats: dict[str, object] = {}
         self._last_capture_ts = 0.0
         self._robot_pose_lock = threading.Lock()
         self._robot_z_mm: float | None = None
@@ -556,6 +620,12 @@ class _VisionWorker(QObject):
             self._candidate_cursor = (index + 1) % candidate_count
             with self._frame_lock:
                 self._capture_lost = False
+                self._latest_frame = None
+                self._latest_frame_seq = 0
+                self._last_infer_frame_seq = 0
+                self._capture_drain_remaining = max(0, int(getattr(self.config, "vision_stream_drain_grabs", 0)))
+                self._capture_ready_frames = 0
+                self._capture_startup_reference_frame = None
             self._start_capture_pump(capture)
             self.status_changed.emit(f"Vision stream connected: {stream_url}")
             return True
@@ -571,9 +641,15 @@ class _VisionWorker(QObject):
             # Prefer direct multipart MJPEG parsing for the Hiwonder official stream.
             # This stays on the PC side and never starts/restarts JetMax camera nodes.
             timeout_sec = max(0.2, float(self.config.vision_open_timeout_ms) / 1000.0)
+            read_timeout_sec = max(0.1, float(self.config.vision_read_timeout_ms) / 1000.0)
             capture = None
             try:
-                capture = _HttpMjpegCapture(str(source), cv2_module=self._cv2, timeout_sec=timeout_sec)
+                capture = _HttpMjpegCapture(
+                    str(source),
+                    cv2_module=self._cv2,
+                    timeout_sec=timeout_sec,
+                    read_timeout_sec=read_timeout_sec,
+                )
                 ok, frame = capture.read()
                 if ok and frame is not None:
                     return capture
@@ -665,6 +741,11 @@ class _VisionWorker(QObject):
                     self._capture_lost = True
                 return
             if _frame_has_horizontal_tearing(frame):
+                with self._frame_lock:
+                    self._capture_rejected_frames += 1
+                    self._capture_ready_frames = 0
+                continue
+            if not self._frame_is_stable_for_startup(frame):
                 continue
 
             now = time.perf_counter()
@@ -683,7 +764,40 @@ class _VisionWorker(QObject):
                 self._latest_frame = frame
                 self._latest_frame_seq += 1
                 self._last_capture_ts = now
+                stats_getter = getattr(capture, "stats", None)
+                if callable(stats_getter):
+                    try:
+                        self._capture_transport_stats = dict(stats_getter())
+                    except Exception:
+                        pass
             self._emit_frame_from_capture(frame, now)
+
+    def _frame_is_stable_for_startup(self, frame) -> bool:
+        with self._frame_lock:
+            previous_frame = self._capture_startup_reference_frame
+        if _frame_is_temporal_splice(previous_frame, frame):
+            with self._frame_lock:
+                self._capture_rejected_frames += 1
+                self._capture_ready_frames = 0
+                self._capture_startup_reference_frame = None
+            return False
+        try:
+            frame_reference = frame.copy()
+        except Exception:
+            frame_reference = frame
+        with self._frame_lock:
+            self._capture_startup_reference_frame = frame_reference
+            if self._capture_drain_remaining > 0:
+                self._capture_drain_remaining -= 1
+                self._capture_drained_frames += 1
+                self._capture_ready_frames = 0
+                return False
+            self._capture_ready_frames += 1
+            ready_frames = int(self._capture_ready_frames)
+        # Require a short clean run after every open/reopen before the frame can
+        # drive UI, recognition, or servo. This is PC-side only; it does not touch
+        # the Hiwonder camera sender.
+        return ready_frames >= 2
 
     def _latest_frame_snapshot(self) -> tuple[object | None, int, float]:
         with self._frame_lock:
@@ -849,6 +963,10 @@ class _VisionWorker(QObject):
                 fallback_min_area_ratio=float(
                     getattr(self.config, "vision_low_height_shape_fallback_min_area_ratio", 1.20)
                 ),
+                fallback_reject_edge_touch=bool(
+                    low_height_shape_fallback
+                    and getattr(self.config, "vision_low_height_reject_edge_fallback_candidates", True)
+                ),
             )
             update_slots(
                 self._slots,
@@ -889,6 +1007,15 @@ class _VisionWorker(QObject):
                     self.config.vision_grasp_angle_stability_tolerance_deg
                 ),
                 servo_measurement_point=str(getattr(self.config, "vision_servo_measurement_point", "center")),
+                low_height_servo_measurement_point=str(
+                    getattr(self.config, "vision_servo_low_height_measurement_point", "")
+                ),
+                low_height_confirm_z_mm=float(
+                    getattr(self.config, "vision_pick_confirm_z_mm", self.config.robot_approach_z)
+                ),
+                low_height_guard_band_mm=float(
+                    getattr(self.config, "vision_continuous_servo_low_height_guard_band_mm", 30.0)
+                ),
             )
             calibration_ready = self._calibration is not None or (
                 self._calibration_profile is not None
@@ -919,6 +1046,12 @@ class _VisionWorker(QObject):
                 frame_quality=frame_quality,
             )
             packet["infer_interval_ms"] = float(self._infer_interval_dynamic_ms)
+            packet["camera_transport"] = dict(self._capture_transport_stats)
+            packet["camera_startup_drain"] = {
+                "drained_frames": int(self._capture_drained_frames),
+                "ready_frames": int(self._capture_ready_frames),
+                "rejected_frames": int(self._capture_rejected_frames),
+            }
             total_infer_frames = max(1, int(self._infer_total_frames))
             packet["frame_drop_ratio"] = float(self._dropped_total_frames) / float(
                 self._dropped_total_frames + total_infer_frames

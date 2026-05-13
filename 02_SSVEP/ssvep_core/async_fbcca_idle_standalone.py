@@ -53,15 +53,20 @@ from ssvep_core.compute_kernels import (
 from ssvep_core.score_classifier_runtime import (
     CLASSIFIER_CONFIDENCE_GATE_POLICY,
     CLASSIFIER_GATE_VARIANT_BASELINE_LRTMW,
+    CLASSIFIER_GATE_VARIANT_CONDITIONAL_FREQUENCY_SPECIFIC_LOGISTIC,
+    CLASSIFIER_GATE_VARIANT_FREQUENCY_SPECIFIC_LOGISTIC,
+    CLASSIFIER_GATE_VARIANT_TENP5_NS2_HARD_NEGATIVE_VETO,
     CLASSIFIER_LRT_MULTIWINDOW_REJECT_GATE_POLICY,
     DEFAULT_LRT_MULTIWINDOW_DECAY,
     classifier_feature_names,
     command_confidence_from_probs,
     freq_label,
     lrt_window_evidence_from_state,
+    normalize_frequency_specific_control_state_gates,
     normalize_ridge5_state,
     parse_classifier_gate_variant,
     parse_score_bank_mode,
+    require_runtime_safe_classifier_gate_variant,
     ridge5_predict_windows_from_state,
     score_matrices_to_features,
     smooth_classifier_probabilities,
@@ -801,7 +806,24 @@ def atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> None
     try:
         with open(native_tmp, "w", encoding=encoding) as handle:
             handle.write(str(text))
-        os.replace(native_tmp, native_target)
+        replace_error: OSError | None = None
+        for delay_sec in (0.0, 0.02, 0.05, 0.1, 0.2):
+            if delay_sec > 0.0:
+                time.sleep(delay_sec)
+            try:
+                os.replace(native_tmp, native_target)
+                replace_error = None
+                break
+            except PermissionError as error:
+                replace_error = error
+                if os.name != "nt":
+                    raise
+            except OSError as error:
+                replace_error = error
+                if os.name != "nt" or getattr(error, "winerror", None) != 5:
+                    raise
+        if replace_error is not None:
+            raise replace_error
     except Exception:
         try:
             os.remove(native_tmp)
@@ -892,6 +914,16 @@ def profile_is_default_fallback(profile: ThresholdProfile) -> bool:
     return str(metadata.get("source", "")) == "default_fallback"
 
 
+def profile_classifier_gate_variant(profile: ThresholdProfile) -> str:
+    model_params = profile.model_params if isinstance(profile.model_params, dict) else {}
+    state = model_params.get("state") if isinstance(model_params.get("state"), dict) else {}
+    return parse_classifier_gate_variant(state.get("gate_variant"))
+
+
+def validate_realtime_profile_gate_variant(profile: ThresholdProfile) -> str:
+    return require_runtime_safe_classifier_gate_variant(profile_classifier_gate_variant(profile))
+
+
 def profile_log_lr(profile: ThresholdProfile, row: dict[str, Any]) -> Optional[float]:
     if not profile_has_stat_model(profile):
         return None
@@ -914,6 +946,7 @@ class TrialSpec:
     expected_freq: Optional[float]
     trial_id: int = -1
     block_index: int = -1
+    metadata: Optional[dict[str, Any]] = None
 
 
 def build_calibration_trials(
@@ -4082,6 +4115,12 @@ class AsyncDecisionGate:
         self.lrt_window_floor_th: Optional[float] = None
         self.weak_subject_guard_active = False
         self.weak_subject_guard_reasons: list[str] = []
+        self.frequency_specific_control_state_gates: dict[str, dict[str, Any]] = {}
+        self._classifier_streak_margin_values: list[float] = []
+        self._classifier_streak_entropy_values: list[float] = []
+        self.classifier_freqs: tuple[float, ...] = ()
+        self.classifier_score_source_name = "fbcca"
+        self.classifier_score_bank_mode = "command_only"
         self.command_confidence_th = 0.0
         self.classifier_max_gap_windows = 0
         self.classifier_gate_enabled = False
@@ -4138,6 +4177,9 @@ class AsyncDecisionGate:
         )
         model_params = dict(profile.model_params or {})
         state = model_params.get("state") if isinstance(model_params.get("state"), dict) else {}
+        gate.classifier_freqs = tuple(float(freq) for freq in (state.get("freqs") or profile.freqs or ()))
+        gate.classifier_score_source_name = str(model_params.get("score_source_name", "fbcca"))
+        gate.classifier_score_bank_mode = str(model_params.get("score_bank_mode", state.get("score_bank_mode", "command_only")))
         gate.command_confidence_th = float(state.get("command_confidence_th", 0.0))
         gate.classifier_gate_variant = parse_classifier_gate_variant(state.get("gate_variant"))
         gate.lrt_window_th = float(state.get("lrt_window_th", 0.0))
@@ -4166,6 +4208,9 @@ class AsyncDecisionGate:
         )
         gate.weak_subject_guard_active = bool(state.get("weak_subject_guard_active", False))
         gate.weak_subject_guard_reasons = [str(item) for item in (state.get("weak_subject_guard_reasons", []) or [])]
+        gate.frequency_specific_control_state_gates = normalize_frequency_specific_control_state_gates(
+            state.get("frequency_specific_control_state_gates")
+        )
         fit_summary = dict(state.get("fit_summary", {}) or {})
         gate.classifier_max_gap_windows = max(
             0,
@@ -4194,6 +4239,8 @@ class AsyncDecisionGate:
         self._classifier_streak_label = ""
         self._classifier_streak_count = 0
         self._classifier_gap_count = 0
+        self._classifier_streak_margin_values = []
+        self._classifier_streak_entropy_values = []
 
     def _classifier_labels_from_features(self, features: Mapping[str, Any]) -> tuple[str, ...]:
         labels = features.get("classifier_labels")
@@ -4250,6 +4297,146 @@ class AsyncDecisionGate:
                 return False
         return True
 
+    def _classifier_frequency_payload(self, pred_freq: Optional[float]) -> dict[str, Any]:
+        if pred_freq is None or not self.frequency_specific_control_state_gates:
+            return {}
+        key = _frequency_key(pred_freq)
+        if key is None:
+            return {}
+        payload = self.frequency_specific_control_state_gates.get(key)
+        return dict(payload) if isinstance(payload, dict) else {}
+
+    def _classifier_frequency_gate_row(self, features: Mapping[str, Any], pred_freq: float) -> np.ndarray:
+        vector = features.get("classifier_feature_vector")
+        if vector is None:
+            feature_names = ()
+            values = np.asarray([], dtype=float)
+        else:
+            values = np.asarray(vector, dtype=float).reshape(-1)
+            feature_names = tuple(
+                classifier_feature_names(
+                    self.classifier_freqs,
+                    score_source_name=str(self.classifier_score_source_name),
+                    score_bank_mode=str(self.classifier_score_bank_mode),
+                )
+            )
+
+        def feature_value(name: str, fallback: float = 0.0) -> float:
+            if name in feature_names:
+                index = int(list(feature_names).index(name))
+                if values.size > index:
+                    return float(values[index])
+            return float(features.get(name, fallback) or fallback)
+
+        score_values = np.asarray(features.get("scores", []), dtype=float).reshape(-1)
+        selected_score = float(feature_value("top1_score", float(features.get("top1_score", 0.0) or 0.0)))
+        if score_values.size == len(self.classifier_freqs):
+            for index, freq in enumerate(self.classifier_freqs):
+                if abs(float(freq) - float(pred_freq)) <= 1e-8:
+                    selected_score = float(score_values[index])
+                    break
+        margin_value = float(features.get("margin", feature_value("margin", 0.0)) or 0.0)
+        entropy_value = float(features.get("score_entropy", feature_value("score_entropy", 1.0)) or 1.0)
+        margin_history = list(self._classifier_streak_margin_values[-max(1, self.min_enter_windows) + 1 :])
+        entropy_history = list(self._classifier_streak_entropy_values[-max(1, self.min_enter_windows) + 1 :])
+        margin_history.append(margin_value)
+        entropy_history.append(entropy_value)
+        return np.asarray(
+            [
+                selected_score,
+                float(features.get("top1_score", feature_value("top1_score", selected_score)) or selected_score),
+                float(features.get("top2_score", feature_value("top2_score", 0.0)) or 0.0),
+                margin_value,
+                float(features.get("ratio", feature_value("ratio", 1.0)) or 1.0),
+                float(features.get("normalized_top1", feature_value("normalized_top1", 0.0)) or 0.0),
+                entropy_value,
+                float(features.get("lrt_window_evidence", features.get("control_log_lr", 0.0)) or 0.0),
+                float(max(1, self._classifier_streak_count + 1 if freq_label(pred_freq) == self._classifier_streak_label else 1)),
+                float(np.mean(np.asarray(margin_history, dtype=float))) if margin_history else margin_value,
+                float(np.mean(np.asarray(entropy_history, dtype=float))) if entropy_history else entropy_value,
+            ],
+            dtype=float,
+        )
+
+    @staticmethod
+    def _classifier_logistic_probability(payload: Mapping[str, Any], row: np.ndarray) -> Optional[float]:
+        weights = np.asarray(dict(payload).get("weights", []), dtype=float).reshape(-1)
+        mean = np.asarray(dict(payload).get("feature_mean", []), dtype=float).reshape(-1)
+        std = np.asarray(dict(payload).get("feature_std", []), dtype=float).reshape(-1)
+        values = np.asarray(row, dtype=float).reshape(-1)
+        if weights.size != values.size + 1 or mean.size != values.size or std.size != values.size:
+            return None
+        z = (values - mean) / np.maximum(std, 1e-9)
+        logit = float(weights[0] + z @ weights[1:])
+        return float(1.0 / (1.0 + math.exp(-max(-60.0, min(60.0, logit)))))
+
+    def _classifier_payload_gate_pass(self, payload: Mapping[str, Any], row: np.ndarray) -> bool:
+        payload_dict = dict(payload or {})
+        if not payload_dict:
+            return True
+        if str(payload_dict.get("type", "")) == "ns2_hard_negative_veto":
+            values = np.asarray(row, dtype=float).reshape(-1)
+            veto_row = (
+                values[np.asarray([0, 1, 7, 3, 4, 6, 8, 9], dtype=int)]
+                if values.size >= 10
+                else values
+            )
+            prob = self._classifier_logistic_probability(payload_dict, veto_row)
+            if prob is None:
+                return True
+            return bool(prob < float(payload_dict.get("veto_threshold", 0.5)) - 1e-12)
+        if str(payload_dict.get("type", "")) == "logistic":
+            prob = self._classifier_logistic_probability(payload_dict, row)
+            if prob is None:
+                return True
+            return bool(prob + 1e-12 >= float(payload_dict.get("prob_threshold", 0.5)))
+        names = (
+            "selected_freq_score",
+            "top1_score",
+            "top2_score",
+            "margin",
+            "ratio",
+            "normalized_top1",
+            "score_entropy",
+            "lrt_evidence",
+            "multiwindow_same_freq_count",
+            "multiwindow_margin_mean",
+            "multiwindow_entropy_mean",
+        )
+        index = {name: idx for idx, name in enumerate(names)}
+        return bool(
+            row[index["lrt_evidence"]] + 1e-12 >= float(payload_dict.get("theta_lrt_f", payload_dict.get("theta_lrt", 0.0)))
+            and row[index["selected_freq_score"]] + 1e-12 >= float(payload_dict.get("theta_score_f", payload_dict.get("theta_score", 0.0)))
+            and row[index["margin"]] + 1e-12 >= float(payload_dict.get("theta_margin_f", payload_dict.get("theta_margin", 0.0)))
+            and row[index["ratio"]] + 1e-12 >= float(payload_dict.get("theta_ratio_f", payload_dict.get("theta_ratio", 0.0)))
+            and row[index["score_entropy"]] <= float(payload_dict.get("theta_entropy_f", payload_dict.get("theta_entropy", 1.0))) + 1e-12
+            and row[index["multiwindow_same_freq_count"]] + 1e-12
+            >= float(payload_dict.get("theta_multiwindow_same_freq_count", 1.0))
+        )
+
+    def _classifier_conditional_risk_level(self, payload: Mapping[str, Any], row: np.ndarray) -> str:
+        payload_dict = dict(payload or {})
+        if not bool(payload_dict.get("conditional_applies", True)):
+            return "low"
+        lrt, margin, ratio, entropy, same_freq = float(row[7]), float(row[3]), float(row[4]), float(row[6]), float(row[8])
+        low_risk = (
+            lrt + 1e-12 >= float(payload_dict.get("conditional_low_risk_lrt_th", -float("inf")))
+            and margin + 1e-12 >= float(payload_dict.get("conditional_low_risk_margin_th", 0.0))
+            and ratio + 1e-12 >= float(payload_dict.get("conditional_low_risk_ratio_th", 1.0))
+            and entropy <= float(payload_dict.get("conditional_low_risk_entropy_th", 1.0)) + 1e-12
+            and same_freq + 1e-12 >= float(payload_dict.get("conditional_low_risk_same_freq_count", 1.0))
+        )
+        if low_risk:
+            return "low"
+        high_risk = (
+            lrt + 1e-12 < float(payload_dict.get("conditional_high_risk_lrt_th", -float("inf")))
+            or margin + 1e-12 < float(payload_dict.get("conditional_high_risk_margin_th", 0.0))
+            or ratio + 1e-12 < float(payload_dict.get("conditional_high_risk_ratio_th", 1.0))
+            or entropy > float(payload_dict.get("conditional_high_risk_entropy_th", 1.0)) + 1e-12
+            or same_freq + 1e-12 < float(payload_dict.get("conditional_high_risk_same_freq_count", 1.0))
+        )
+        return "high" if high_risk else "medium"
+
     def _classifier_current_window_pass(
         self,
         features: Mapping[str, Any],
@@ -4283,6 +4470,8 @@ class AsyncDecisionGate:
             self._classifier_streak_label = ""
             self._classifier_streak_count = 0
             self._classifier_gap_count = 0
+            self._classifier_streak_margin_values = []
+            self._classifier_streak_entropy_values = []
             return False, None
         pred_label = freq_label(pred_freq)
         command_confidence = self._classifier_control_confidence(features)
@@ -4304,6 +4493,37 @@ class AsyncDecisionGate:
         else:
             passes_gate = True
             score_value = command_confidence
+        conditional_extra_windows = 0
+        payload = self._classifier_frequency_payload(pred_freq)
+        if (
+            passes_gate
+            and payload
+            and self.classifier_gate_variant
+            in {
+                CLASSIFIER_GATE_VARIANT_FREQUENCY_SPECIFIC_LOGISTIC,
+                CLASSIFIER_GATE_VARIANT_CONDITIONAL_FREQUENCY_SPECIFIC_LOGISTIC,
+                CLASSIFIER_GATE_VARIANT_TENP5_NS2_HARD_NEGATIVE_VETO,
+            }
+        ):
+            row = self._classifier_frequency_gate_row(features, pred_freq)
+            if self.classifier_gate_variant == CLASSIFIER_GATE_VARIANT_CONDITIONAL_FREQUENCY_SPECIFIC_LOGISTIC:
+                risk_level = self._classifier_conditional_risk_level(payload, row)
+                if risk_level == "low":
+                    passes_payload = True
+                elif risk_level == "high":
+                    passes_payload = False
+                else:
+                    passes_payload = self._classifier_payload_gate_pass(payload, row)
+                    if passes_payload:
+                        conditional_extra_windows = max(0, int(payload.get("conditional_extra_windows", 0)))
+                passes_gate = bool(passes_gate and passes_payload)
+                features["classifier_conditional_risk_level"] = risk_level
+                features["classifier_conditional_extra_windows"] = int(conditional_extra_windows)
+            elif self.classifier_gate_variant == CLASSIFIER_GATE_VARIANT_TENP5_NS2_HARD_NEGATIVE_VETO:
+                if str(payload.get("status", "")) == "ok" and _frequency_key(pred_freq) == "10.5":
+                    passes_gate = bool(passes_gate and self._classifier_payload_gate_pass(payload, row))
+            else:
+                passes_gate = bool(passes_gate and self._classifier_payload_gate_pass(payload, row))
         labels = self._classifier_labels_from_features(features)
         for label in labels:
             if label != "idle":
@@ -4325,8 +4545,12 @@ class AsyncDecisionGate:
             else:
                 self._classifier_streak_label = pred_label
                 self._classifier_streak_count = 1
+                self._classifier_streak_margin_values = []
+                self._classifier_streak_entropy_values = []
+            self._classifier_streak_margin_values.append(float(features.get("margin", 0.0) or 0.0))
+            self._classifier_streak_entropy_values.append(float(features.get("score_entropy", 1.0) or 1.0))
             self._classifier_gap_count = 0
-            needed = max(1, int(self.min_enter_windows))
+            needed = max(1, int(self.min_enter_windows)) + int(conditional_extra_windows)
             enter_th = float(self.lrt_enter_th if self.gate_policy == CLASSIFIER_LRT_MULTIWINDOW_REJECT_GATE_POLICY else 0.0)
             selected = self._classifier_streak_count >= needed and (
                 enter_th <= 1e-12 or self._classifier_evidence_by_label.get(pred_label, 0.0) + 1e-12 >= enter_th
@@ -4340,6 +4564,8 @@ class AsyncDecisionGate:
             self._classifier_streak_label = ""
             self._classifier_streak_count = 0
             self._classifier_gap_count = 0
+            self._classifier_streak_margin_values = []
+            self._classifier_streak_entropy_values = []
         return False, pred_freq
 
     def _threshold_payload_for_features(
@@ -9964,6 +10190,7 @@ class OnlineRunner:
                 f"profile '{self.profile_path}' is only the default fallback; run calibration first "
                 f"or pass --allow-default-profile explicitly"
             )
+        validate_realtime_profile_gate_variant(loaded_profile)
         resolved_model = normalize_model_name(model_name or loaded_profile.model_name or DEFAULT_MODEL_NAME)
         if resolved_model != normalize_model_name(loaded_profile.model_name or DEFAULT_MODEL_NAME):
             loaded_profile = replace(loaded_profile, model_name=resolved_model)

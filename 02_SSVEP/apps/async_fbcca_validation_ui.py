@@ -6,6 +6,7 @@ import sys
 import threading
 import time
 from dataclasses import asdict, dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional, Sequence
 
@@ -76,6 +77,10 @@ PHASE_CAL_REST = "calibration_rest"
 PHASE_VALIDATION = "validation"
 PHASE_ERROR = "error"
 PHASE_STOPPED = "stopped"
+
+
+def wallclock_iso_timestamp() -> str:
+    return datetime.now().astimezone().isoformat(timespec="milliseconds")
 
 
 def freq_index(freqs: Sequence[float], target_freq: Optional[float]) -> Optional[int]:
@@ -433,6 +438,7 @@ class FourArrowStimWidget(QOpenGLWidget):
         self.clock_start_ns: Optional[int] = None
         self._last_frame_swap_ns: Optional[int] = None
         self._frame_intervals_ms: list[float] = []
+        self._active_phase_frame_intervals_ms: list[float] = []
 
         self.phase_mode = PHASE_IDLE
         self.phase_title = "Ready"
@@ -479,6 +485,7 @@ class FourArrowStimWidget(QOpenGLWidget):
         self.clock_start_ns = time.perf_counter_ns()
         self._last_frame_swap_ns = None
         self._frame_intervals_ms = []
+        self._active_phase_frame_intervals_ms = []
         self.update()
 
     def stop_clock(self) -> None:
@@ -522,12 +529,17 @@ class FourArrowStimWidget(QOpenGLWidget):
         self.flicker_enabled = bool(payload.get("flicker", False))
         self.cue_freq = payload.get("cue_freq")
         requires_ack = bool(self._phase_requires_presented_ack(self.phase_mode) and self.flicker_enabled)
+        reset_active_frame_stats = bool(payload.get("reset_active_frame_stats", False))
         same_ack_phase = bool(
             previous_ack_flicker
             and previous_mode == self.phase_mode
             and self._same_cue_freq(previous_cue_freq, self.cue_freq)
         )
         if requires_ack:
+            if reset_active_frame_stats or not same_ack_phase:
+                self._active_phase_frame_intervals_ms = []
+                if reset_active_frame_stats:
+                    self._last_frame_swap_ns = None
             self._pending_active_phase_frame_presented = bool(previous_pending_ack if same_ack_phase else True)
         else:
             self._pending_active_phase_frame_presented = False
@@ -604,6 +616,7 @@ class FourArrowStimWidget(QOpenGLWidget):
             "cue_freq": self.cue_freq,
             "stimulus_mode": str(self.stimulus_mode),
             "refresh_rate_hz": float(self.refresh_rate_hz),
+            "presented_wall_time": wallclock_iso_timestamp(),
             "presented_perf_counter_ns": int(time.perf_counter_ns()),
             "stimulus_profile_id": str(self.stimulus_profile_id),
             "stim_mean": float(self.mean),
@@ -615,7 +628,14 @@ class FourArrowStimWidget(QOpenGLWidget):
         }
 
     def frame_interval_stats(self) -> dict[str, float | int]:
-        values = np.asarray(self._frame_intervals_ms, dtype=float)
+        return self._frame_interval_stats_from_values(self._frame_intervals_ms)
+
+    def active_phase_frame_interval_stats(self) -> dict[str, float | int]:
+        return self._frame_interval_stats_from_values(self._active_phase_frame_intervals_ms)
+
+    @staticmethod
+    def _frame_interval_stats_from_values(raw_values: Sequence[float]) -> dict[str, float | int]:
+        values = np.asarray(raw_values, dtype=float)
         if values.size <= 0:
             return {
                 "count": 0,
@@ -670,6 +690,7 @@ class FourArrowStimWidget(QOpenGLWidget):
             interval_ms = float((now_ns - int(self._last_frame_swap_ns)) / 1_000_000.0)
             if np.isfinite(interval_ms) and interval_ms > 0.0:
                 self._frame_intervals_ms.append(interval_ms)
+                self._active_phase_frame_intervals_ms.append(interval_ms)
                 if len(self._frame_intervals_ms) > 600:
                     del self._frame_intervals_ms[: len(self._frame_intervals_ms) - 600]
         if payload is not None:
@@ -686,7 +707,7 @@ class FourArrowStimWidget(QOpenGLWidget):
     def paintGL(self) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, False)
-        painter.fillRect(self.rect(), Qt.black)
+        painter.fillRect(self.rect(), QColor(25, 25, 25))
         paint_frame_index = max(0, int(self.current_frame))
         paint_t_sec = self.current_t if int(self.current_frame) >= 0 else 0.0
         if self.clock_running and self.clock_start_ns is not None:
@@ -708,9 +729,9 @@ class FourArrowStimWidget(QOpenGLWidget):
         ]
 
         painter.setBrush(Qt.NoBrush)
-        painter.setPen(QPen(QColor(255, 255, 255, 120), 3))
-        painter.drawLine(cx - 18, cy, cx + 18, cy)
-        painter.drawLine(cx, cy - 18, cx, cy + 18)
+        painter.setPen(QPen(QColor(120, 120, 120, 190), 2))
+        painter.drawLine(cx - 16, cy, cx + 16, cy)
+        painter.drawLine(cx, cy - 16, cx, cy + 16)
 
         for index, freq in enumerate(self.freqs):
             x, y = positions[index]

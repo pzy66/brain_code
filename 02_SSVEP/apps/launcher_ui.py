@@ -35,7 +35,7 @@ class LauncherWindow(QMainWindow):
 
         title = QLabel("02_SSVEP Main Launcher")
         title.setStyleSheet("font-size: 22px; font-weight: 700;")
-        subtitle = QLabel("Open collection, realtime decoding, training/evaluation, and local optimization tools.")
+        subtitle = QLabel("Open the active collection, session-calibration, realtime, and evaluation tools.")
         subtitle.setWordWrap(True)
         info = QLabel(
             "\n".join(
@@ -63,8 +63,8 @@ class LauncherWindow(QMainWindow):
             ("Realtime Decode", "Load a profile and inspect realtime decisions and shadow output.", self._open_realtime),
             ("Training Eval", "Run and inspect training, reports, logs, and generated profiles.", self._open_training_eval),
             ("FBCCA Pretrain", "Calibrate FBCCA realtime thresholds from local collection data.", self._open_fbcca_threshold_pretrain),
-            ("FBCCA Local Opt", "Optimize FBCCA profiles from copied local datasets.", self._open_fbcca_local_opt),
-            ("TDCA Local Opt", "Run local TDCA optimization with organized run artifacts.", self._open_tdca_local_opt),
+            ("FBCCA Local Opt", "Research-only: optimize FBCCA profiles from copied local datasets.", self._open_fbcca_local_opt),
+            ("TDCA Local Opt", "Research-only comparison task; not the current realtime mainline.", self._open_tdca_local_opt),
         ]
 
         for index, (label, desc, handler) in enumerate(buttons):
@@ -84,7 +84,7 @@ class LauncherWindow(QMainWindow):
             card_layout.addWidget(desc_label)
             grid.addWidget(card, index // 2, index % 2)
 
-        footer = QLabel("Run outputs are local artifacts and are ignored by Git.")
+        footer = QLabel("Realtime startup rejects research-only gate variants unless they are promoted by validation.")
         footer.setWordWrap(True)
         footer.setStyleSheet("color: #6b7280;")
         layout.addWidget(footer)

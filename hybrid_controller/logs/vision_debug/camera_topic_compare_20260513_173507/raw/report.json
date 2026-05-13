@@ -1,0 +1,125 @@
+{
+  "topic": "/usb_cam/image_raw",
+  "frames": [
+    {
+      "idx": 0,
+      "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_topic_compare_20260513_173507\\raw\\00.jpg",
+      "bytes": 27458,
+      "size": [
+        640,
+        480
+      ],
+      "mean": [
+        144.01,
+        149.16,
+        145.16
+      ],
+      "max_row_jump": 20.58
+    },
+    {
+      "idx": 1,
+      "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_topic_compare_20260513_173507\\raw\\01.jpg",
+      "bytes": 39178,
+      "size": [
+        640,
+        480
+      ],
+      "mean": [
+        144.79,
+        149.59,
+        145.7
+      ],
+      "max_row_jump": 21.18
+    },
+    {
+      "idx": 2,
+      "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_topic_compare_20260513_173507\\raw\\02.jpg",
+      "bytes": 25280,
+      "size": [
+        640,
+        480
+      ],
+      "mean": [
+        144.16,
+        149.3,
+        145.25
+      ],
+      "max_row_jump": 24.39
+    },
+    {
+      "idx": 3,
+      "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_topic_compare_20260513_173507\\raw\\03.jpg",
+      "bytes": 28458,
+      "size": [
+        640,
+        480
+      ],
+      "mean": [
+        144.57,
+        149.78,
+        145.73
+      ],
+      "max_row_jump": 20.99
+    },
+    {
+      "idx": 4,
+      "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_topic_compare_20260513_173507\\raw\\04.jpg",
+      "bytes": 27487,
+      "size": [
+        640,
+        480
+      ],
+      "mean": [
+        143.99,
+        149.14,
+        145.15
+      ],
+      "max_row_jump": 20.58
+    },
+    {
+      "idx": 5,
+      "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_topic_compare_20260513_173507\\raw\\05.jpg",
+      "bytes": 39182,
+      "size": [
+        640,
+        480
+      ],
+      "mean": [
+        144.79,
+        149.59,
+        145.7
+      ],
+      "max_row_jump": 21.18
+    },
+    {
+      "idx": 6,
+      "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_topic_compare_20260513_173507\\raw\\06.jpg",
+      "bytes": 25247,
+      "size": [
+        640,
+        480
+      ],
+      "mean": [
+        144.16,
+        149.31,
+        145.25
+      ],
+      "max_row_jump": 24.39
+    },
+    {
+      "idx": 7,
+      "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_topic_compare_20260513_173507\\raw\\07.jpg",
+      "bytes": 28373,
+      "size": [
+        640,
+        480
+      ],
+      "mean": [
+        144.6,
+        149.81,
+        145.75
+      ],
+      "max_row_jump": 20.99
+    }
+  ]
+}

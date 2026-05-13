@@ -23,25 +23,28 @@
 - 每次采集自动创建一个 session 目录
 - 自动写入 `manifest.jsonl`
 - 支持记录 `scene tag`、`split`、`note`、`negative sample`
+- 支持在采集界面控制机械臂 `theta/r/z` 位置，便于采不同视角和高度的数据集
 - 异步写盘，尽量减少保存图片时的卡顿
 
 ## 如何启动
 
 最方便的方式：
 
-- 双击运行：
-  - `<repo>\06_Data_Collection\2026-04_jetmax_block_dataset_collection\START_BLOCK_DATASET_COLLECTOR.cmd`
+- 双击或在 PyCharm 里运行：
+  - `<repo>\06_Data_Collection\2026-04_jetmax_block_dataset_collection\START_BLOCK_DATASET_COLLECTOR.py`
 - 或者在 PyCharm 里直接选择运行配置：
   - `Block_Dataset_Collector`
 
-### 方式 1：PowerShell 启动
+### 方式 1：Python 启动脚本
 
 在 PowerShell 中运行：
 
 ```powershell
-& "%BRAIN_PYTHON_EXE%" `
-  "<repo>\06_Data_Collection\2026-04_jetmax_block_dataset_collection\block_dataset_collector.py"
+python "<repo>\06_Data_Collection\2026-04_jetmax_block_dataset_collection\START_BLOCK_DATASET_COLLECTOR.py"
 ```
+
+这个入口会自动优先使用 `BRAIN_PYTHON_EXE`、项目 `.venv` 或
+`brain-vision` conda 环境来启动真正的采集器。
 
 ### 方式 2：PyCharm 启动
 
@@ -59,6 +62,15 @@
   - `<workspace>`
 
 默认情况下不需要额外参数，直接运行即可连接 JetMax 相机流。
+
+如果要使用界面里的机械臂位置控制功能，需要 JetMax 端已经启动
+`hybrid_controller` 的控制 runtime。采集器默认使用 `auto` 链路：
+
+- 优先连接 ROS bridge：`192.168.149.1:9091`
+- 如果 ROS 不通，再回退到 TCP legacy runtime：`192.168.149.1:8888`
+
+位置控制按钮会调用 `move_cyl` / `MOVE_CYL`，按当前界面里的 `theta/r/z` 目标移动。
+如果 runtime 没启动，采集器仍然可以正常预览和保存图片，只是高度调整会提示失败。
 
 ## 数据保存在哪里
 
@@ -115,6 +127,10 @@
 - `frame_size`
 - `sharpness`
 - `delta_from_last_saved`
+- `robot_pose_cyl`
+- `home_height_z_mm`
+- `last_robot_status`
+- `last_robot_height_command`
 
 这份文件后续可以直接用于：
 
@@ -139,6 +155,22 @@
   - 可选短备注
 - `Negative Sample`
   - 勾选后表示当前采集的是负样本
+- `theta`
+  - 机械臂圆柱坐标角度，单位度
+- `r`
+  - 机械臂圆柱坐标半径，单位 mm
+- `z`
+  - 机械臂拍摄高度，单位 mm
+- `步长`
+  - 小步移动按钮使用的步长；`theta` 按度调整，`r/z` 按 mm 调整
+- `读取位置`
+  - 从 JetMax runtime 读取当前机械臂位置，并填回 `theta/r/z`
+- `移动到该位置`
+  - 把机械臂移动到当前 `theta/r/z`
+- `Home 水平位置`
+  - 把 `theta/r` 设回默认 Home 水平位置，并使用当前 `z` 移动
+- `theta -` / `theta +` / `r -` / `r +` / `z -` / `z +`
+  - 按当前步长做小步移动，便于快速调整拍摄视角
 
 ## 快捷键
 
@@ -152,6 +184,8 @@
   - 开关负样本标记
 - `S`
   - 新建 session
+- `H`
+  - 移动机械臂到当前 `theta/r/z`
 - `Esc`
   - 退出程序
 
@@ -168,6 +202,7 @@
   - 堆叠
   - 空场景
 - 同一摆放序列不要同时放到 `train` 和 `val/test`
+- 采不同机械臂位置的数据集时，先设置 `theta/r/z` 或使用小步按钮，等状态显示完成后再采集。
 
 ## 可选参数
 
@@ -181,6 +216,7 @@
   --session-prefix "block_collect" `
   --image-ext "jpg" `
   --jpeg-quality 95 `
+  --home-z-mm 160 `
   --fullscreen
 ```
 
@@ -200,6 +236,22 @@
   - 运行若干秒后自动退出
 - `--fullscreen`
   - 全屏显示
+- `--robot-host`
+  - JetMax runtime 主机地址，默认 `192.168.149.1`
+- `--robot-transport`
+  - 位置控制链路，`auto` / `ros` / `tcp`，默认 `auto`
+- `--rosbridge-port`
+  - JetMax ROS bridge 端口，默认 `9091`
+- `--robot-port`
+  - JetMax TCP legacy runtime 端口，默认 `8888`
+- `--robot-timeout-sec`
+  - 机械臂命令等待超时时间
+- `--home-theta-deg`
+  - 无法从 runtime 读取 `home_pose` 时使用的 Home 角度，默认 `0`
+- `--home-radius-mm`
+  - 无法从 runtime 读取 `home_pose` 时使用的 Home 半径，默认 `120`
+- `--home-z-mm`
+  - 界面默认 Home 高度，默认 `160`
 
 ## 一个最简单的使用流程
 

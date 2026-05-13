@@ -13,7 +13,11 @@ from ssvep_core._train_eval_staged import (  # noqa: E402
     _build_aggregated_fbcca_profile,
     _evaluate_pretrained_profile_result,
 )
-from ssvep_core.async_fbcca_idle_standalone import AsyncDecisionGate, ThresholdProfile, save_profile  # noqa: E402
+from ssvep_core.async_fbcca_idle_standalone import (  # noqa: E402
+    AsyncDecisionGate,
+    ThresholdProfile,
+    save_profile,
+)
 
 
 def test_frequency_specific_threshold_gate_uses_per_freq_values() -> None:
@@ -62,6 +66,107 @@ def test_frequency_specific_threshold_gate_uses_per_freq_values() -> None:
     )
     assert freq12["selected_freq"] is None
     assert freq12["state"] == "idle"
+
+
+def test_conditional_frequency_specific_logistic_gate_is_runtime_loadable() -> None:
+    profile = ThresholdProfile(
+        freqs=(8.0, 10.5, 12.0, 15.0),
+        win_sec=2.0,
+        step_sec=0.25,
+        enter_score_th=0.0,
+        enter_ratio_th=1.0,
+        enter_margin_th=0.0,
+        exit_score_th=0.0,
+        exit_ratio_th=1.0,
+        min_enter_windows=1,
+        min_exit_windows=1,
+        model_name="fbcca_score_ridge_5class",
+        model_params={
+            "state": {
+                "freqs": [8.0, 10.5, 12.0, 15.0],
+                "labels": ["idle", "8", "10.5", "12", "15"],
+                "feature_mean": [0.0] * 10,
+                "feature_std": [1.0] * 10,
+                "weights": [[0.0] * 5 for _ in range(11)],
+                "command_confidence_th": 0.0,
+                "gate_policy": "lrt_multiwindow_reject_gate",
+                "gate_variant": "conditional_frequency_specific_logistic_gate",
+                "lrt_feature_indices": [0],
+                "lrt_feature_mean_control": [2.0],
+                "lrt_feature_std_control": [1.0],
+                "lrt_feature_mean_idle": [0.0],
+                "lrt_feature_std_idle": [1.0],
+                "lrt_window_th": 0.1,
+                "lrt_enter_th": 0.0,
+                "frequency_specific_control_state_gates": {
+                    "8": {
+                        "type": "logistic",
+                        "weights": [-10.0] + [0.0] * 11,
+                        "feature_mean": [0.0] * 11,
+                        "feature_std": [1.0] * 11,
+                        "prob_threshold": 0.5,
+                        "conditional_applies": True,
+                        "conditional_low_risk_lrt_th": 2.0,
+                        "conditional_low_risk_margin_th": 2.0,
+                        "conditional_low_risk_ratio_th": 2.0,
+                        "conditional_low_risk_entropy_th": 0.3,
+                        "conditional_low_risk_same_freq_count": 1.0,
+                        "conditional_high_risk_lrt_th": 1.0,
+                        "conditional_high_risk_margin_th": 1.0,
+                        "conditional_high_risk_ratio_th": 1.5,
+                        "conditional_high_risk_entropy_th": 0.7,
+                        "conditional_high_risk_same_freq_count": 1.0,
+                        "conditional_extra_windows": 0,
+                    }
+                },
+            },
+            "score_source_name": "fbcca",
+            "score_bank_mode": "command_only",
+        },
+        gate_policy="lrt_multiwindow_reject_gate",
+    )
+    gate = AsyncDecisionGate.from_profile(profile)
+
+    low_risk = gate.update(
+        {
+            "pred_freq": 8.0,
+            "classifier_pred_freq": 8.0,
+            "classifier_pred_label": "8",
+            "classifier_labels": ["idle", "8", "10.5", "12", "15"],
+            "classifier_probs": [0.05, 0.90, 0.02, 0.02, 0.01],
+            "scores": [0.9, 0.1, 0.05, 0.02],
+            "top1_score": 0.9,
+            "top2_score": 0.1,
+            "margin": 3.0,
+            "ratio": 9.0,
+            "normalized_top1": 0.75,
+            "score_entropy": 0.2,
+            "lrt_window_evidence": 3.0,
+            "classifier_feature_vector": [3.0] + [0.0] * 9,
+        }
+    )
+    assert low_risk["selected_freq"] == 8.0
+
+    gate.reset()
+    high_risk = gate.update(
+        {
+            "pred_freq": 8.0,
+            "classifier_pred_freq": 8.0,
+            "classifier_pred_label": "8",
+            "classifier_labels": ["idle", "8", "10.5", "12", "15"],
+            "classifier_probs": [0.05, 0.90, 0.02, 0.02, 0.01],
+            "scores": [0.9, 0.1, 0.05, 0.02],
+            "top1_score": 0.9,
+            "top2_score": 0.1,
+            "margin": 0.4,
+            "ratio": 1.2,
+            "normalized_top1": 0.75,
+            "score_entropy": 0.8,
+            "lrt_window_evidence": 0.4,
+            "classifier_feature_vector": [0.4] + [0.0] * 9,
+        }
+    )
+    assert high_risk["selected_freq"] is None
 
 
 def test_profile_eval_rejects_unweighted_fbcca_profile(tmp_path: Path) -> None:

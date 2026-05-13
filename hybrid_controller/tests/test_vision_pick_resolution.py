@@ -848,6 +848,49 @@ def test_continuous_servo_stops_on_stale_frame_in_app_integration() -> None:
 
     assert app.ros_client.teleop_calls == []
     assert app.ros_client.stop_calls
+    assert "fresh frame 1" in app.runtime_info["vision_servo_status"]
+    assert app._continuous_vision_servo_pick is not None
+    assert app._continuous_vision_servo_pick["stale_frames"] == 1
+
+    app._pump_continuous_vision_servo(
+        {
+            "frame_id": 4,
+            "queue_age_ms": 250.0,
+            "slots": [
+                {
+                    "slot_id": 1,
+                    "valid": True,
+                    "actionable": False,
+                    "invalid_reason": "vision_servo_required",
+                    "center_distance_px": 8.0,
+                    "servo_command_mode": "cyl",
+                    "servo_command_point": [0.0, 150.0],
+                }
+            ],
+        }
+    )
+
+    assert app._continuous_vision_servo_pick is not None
+    assert app._continuous_vision_servo_pick["stale_frames"] == 2
+
+    app._pump_continuous_vision_servo(
+        {
+            "frame_id": 5,
+            "queue_age_ms": 250.0,
+            "slots": [
+                {
+                    "slot_id": 1,
+                    "valid": True,
+                    "actionable": False,
+                    "invalid_reason": "vision_servo_required",
+                    "center_distance_px": 8.0,
+                    "servo_command_mode": "cyl",
+                    "servo_command_point": [0.0, 150.0],
+                }
+            ],
+        }
+    )
+
     assert "frame_stale" in app.runtime_info["vision_servo_status"]
     assert app._continuous_vision_servo_pick is None
 
@@ -927,7 +970,7 @@ def test_manual_pick_slot_blocks_on_too_dark_frame_without_legacy_pick_fallback(
     assert "continuous_start_blocked:frame_too_dark" in app.runtime_info["vision_servo_status"]
 
 
-def test_app_continuous_servo_keeps_pending_while_settling_near_center() -> None:
+def test_app_continuous_servo_keeps_streaming_near_center_when_correction_exists() -> None:
     app = _make_manual_servo_stub({"frame_id": 1, "slots": []})
     app.config = AppConfig(
         robot_transport="ros",
@@ -963,14 +1006,14 @@ def test_app_continuous_servo_keeps_pending_while_settling_near_center() -> None
         }
     )
 
-    assert app.ros_client.teleop_calls == []
-    assert app.ros_client.stop_calls
+    assert app.ros_client.teleop_calls
+    assert app.ros_client.stop_calls == []
     assert app._continuous_vision_servo_pick is not None
     assert app._continuous_vision_servo_pick["stable_frames"] == 1
-    assert "settling near center" in app.runtime_info["vision_servo_status"]
+    assert app.runtime_info["vision_servo_status"] == "servo slot=1"
 
 
-def test_app_continuous_servo_sends_stop_after_fine_pulse() -> None:
+def test_app_continuous_servo_keeps_teleop_continuous_near_center() -> None:
     app = _make_manual_servo_stub({"frame_id": 1, "slots": []})
     app.config = AppConfig(
         robot_transport="ros",
@@ -1008,8 +1051,7 @@ def test_app_continuous_servo_sends_stop_after_fine_pulse() -> None:
     )
 
     assert app.ros_client.teleop_calls
-    assert app.ros_client.stop_calls
-    assert app.ros_client.stop_calls[-1]["cmd_seq"] > app.ros_client.teleop_calls[-1]["cmd_seq"]
+    assert app.ros_client.stop_calls == []
 
 
 def test_app_continuous_servo_uses_low_height_discrete_refine_at_confirm_height() -> None:
@@ -1117,7 +1159,7 @@ def test_app_continuous_refine_ack_waits_for_fresh_frame_before_next_motion() ->
     assert "continuous_wait_fresh_frame" in app.runtime_info["vision_servo_status"]
 
 
-def test_app_continuous_low_height_refine_attempt_limit_stops_without_teleop() -> None:
+def test_app_continuous_default_low_height_refine_attempts_do_not_block_teleop() -> None:
     app = _make_manual_servo_stub({"frame_id": 20, "slots": []})
     app.config = AppConfig(
         robot_transport="ros",
@@ -1126,6 +1168,7 @@ def test_app_continuous_low_height_refine_attempt_limit_stops_without_teleop() -
         vision_pick_z_tolerance_mm=4.0,
         vision_continuous_servo_pick_ready_center_px=2.0,
         vision_continuous_servo_low_height_refine_attempts=1,
+        vision_continuous_servo_low_height_discrete_refine_enabled=False,
         vision_continuous_servo_command_timeout_ms=250.0,
     )
     app.ros_client = _ContinuousRosClient()
@@ -1162,10 +1205,10 @@ def test_app_continuous_low_height_refine_attempt_limit_stops_without_teleop() -
     app._pump_continuous_vision_servo(packet)
 
     assert app.sent_commands == []
-    assert app.ros_client.teleop_calls == []
-    assert app.ros_client.stop_calls
-    assert app._continuous_vision_servo_pick is None
-    assert app.runtime_info["vision_servo_status"] == "continuous_stop reason=low_height_refine_attempt_limit"
+    assert app.ros_client.teleop_calls
+    assert app.ros_client.stop_calls == []
+    assert app._continuous_vision_servo_pick is not None
+    assert app.runtime_info["vision_servo_status"] == "servo slot=1"
 
 
 def test_discrete_low_confirm_large_error_is_blocked_until_local_calibration() -> None:
@@ -1224,6 +1267,38 @@ def test_continuous_servo_clears_pending_after_lost_target_threshold() -> None:
     assert app.ros_client.stop_calls
     assert "lost_target" in app.runtime_info["vision_servo_status"]
     assert app._continuous_vision_servo_pick is None
+
+
+def test_app_continuous_servo_stop_at_confirm_blocks_pick_ready_command() -> None:
+    app = _make_manual_servo_stub({"frame_id": 1, "slots": []})
+    app.config = AppConfig(
+        robot_transport="ros",
+        vision_continuous_servo_enabled=True,
+        vision_continuous_servo_stop_at_confirm=True,
+    )
+    app.ros_client = _ContinuousRosClient()
+    app._continuous_vision_servo_pick = {"slot_id": 1, "stable_frames": 2, "source": "manual_pick"}
+    app._teleop_cmd_seq = 0
+    app.runtime_info["release_mode_effective"] = "sucker_frozen"
+    decision = types.SimpleNamespace(
+        action="PICK_READY",
+        command="PICK_CYL 7.00 190.00",
+        status="pick_ready slot=1",
+        pending=types.SimpleNamespace(slot_id=1),
+        pending_dict={"slot_id": 1, "stable_frames": 2},
+        trace={"center_distance_px": 1.2, "confirm_z_mm": 120.0},
+    )
+
+    handled = app._apply_continuous_vision_servo_decision(decision)
+
+    assert handled is True
+    assert app.ros_client.stop_calls
+    assert app.sent_commands == []
+    assert app._continuous_vision_servo_pick is None
+    assert app.runtime_info["vision_servo_confirm_command_blocked"] == "PICK_CYL 7.00 190.00"
+    assert "continuous_stop_at_confirm" in app.runtime_info["vision_servo_status"]
+    assert "no_pick" in app.runtime_info["vision_servo_status"]
+    assert "sucker_frozen" in app.runtime_info["vision_servo_status"]
 
 
 def test_robot_failure_events_clear_continuous_servo_pending() -> None:

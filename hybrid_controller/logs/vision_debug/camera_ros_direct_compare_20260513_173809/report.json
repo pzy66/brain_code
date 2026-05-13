@@ -1,0 +1,434 @@
+{
+  "created_at": "2026-05-13T17:38:09",
+  "host": "192.168.149.1",
+  "topics": {
+    "/usb_cam/image_raw": {
+      "out": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_ros_direct_compare_20260513_173809\\usb_cam_image_raw",
+      "sheet": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_ros_direct_compare_20260513_173809\\usb_cam_image_raw\\sheet.jpg",
+      "frames": [
+        {
+          "idx": 0,
+          "seq": 41250,
+          "stamp": {
+            "secs": 1745829655,
+            "nsecs": 980432616
+          },
+          "width": 640,
+          "height": 480,
+          "encoding": "rgb8",
+          "step": 1920,
+          "data_len": 921600,
+          "valid": true,
+          "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_ros_direct_compare_20260513_173809\\usb_cam_image_raw\\00.png",
+          "mean_rgb": [
+            144.09,
+            149.3,
+            145.4
+          ],
+          "std_rgb": [
+            39.52,
+            34.78,
+            37.86
+          ],
+          "max_row_jump": 20.44
+        },
+        {
+          "idx": 1,
+          "seq": 41251,
+          "stamp": {
+            "secs": 1745829656,
+            "nsecs": 30418345
+          },
+          "width": 640,
+          "height": 480,
+          "encoding": "rgb8",
+          "step": 1920,
+          "data_len": 921600,
+          "valid": true,
+          "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_ros_direct_compare_20260513_173809\\usb_cam_image_raw\\01.png",
+          "mean_rgb": [
+            144.04,
+            149.27,
+            145.33
+          ],
+          "std_rgb": [
+            39.54,
+            34.82,
+            37.88
+          ],
+          "max_row_jump": 20.53
+        },
+        {
+          "idx": 2,
+          "seq": 41252,
+          "stamp": {
+            "secs": 1745829656,
+            "nsecs": 80379908
+          },
+          "width": 640,
+          "height": 480,
+          "encoding": "rgb8",
+          "step": 1920,
+          "data_len": 921600,
+          "valid": true,
+          "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_ros_direct_compare_20260513_173809\\usb_cam_image_raw\\02.png",
+          "mean_rgb": [
+            144.07,
+            149.26,
+            145.39
+          ],
+          "std_rgb": [
+            39.5,
+            34.79,
+            37.9
+          ],
+          "max_row_jump": 20.8
+        },
+        {
+          "idx": 3,
+          "seq": 41253,
+          "stamp": {
+            "secs": 1745829656,
+            "nsecs": 130390949
+          },
+          "width": 640,
+          "height": 480,
+          "encoding": "rgb8",
+          "step": 1920,
+          "data_len": 921600,
+          "valid": true,
+          "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_ros_direct_compare_20260513_173809\\usb_cam_image_raw\\03.png",
+          "mean_rgb": [
+            144.02,
+            149.27,
+            145.37
+          ],
+          "std_rgb": [
+            39.56,
+            34.79,
+            37.92
+          ],
+          "max_row_jump": 20.61
+        },
+        {
+          "idx": 4,
+          "seq": 41254,
+          "stamp": {
+            "secs": 1745829656,
+            "nsecs": 180319595
+          },
+          "width": 640,
+          "height": 480,
+          "encoding": "rgb8",
+          "step": 1920,
+          "data_len": 921600,
+          "valid": true,
+          "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_ros_direct_compare_20260513_173809\\usb_cam_image_raw\\04.png",
+          "mean_rgb": [
+            144.09,
+            149.28,
+            145.32
+          ],
+          "std_rgb": [
+            39.55,
+            34.8,
+            37.93
+          ],
+          "max_row_jump": 20.53
+        },
+        {
+          "idx": 5,
+          "seq": 41255,
+          "stamp": {
+            "secs": 1745829656,
+            "nsecs": 230403605
+          },
+          "width": 640,
+          "height": 480,
+          "encoding": "rgb8",
+          "step": 1920,
+          "data_len": 921600,
+          "valid": true,
+          "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_ros_direct_compare_20260513_173809\\usb_cam_image_raw\\05.png",
+          "mean_rgb": [
+            144.03,
+            149.25,
+            145.39
+          ],
+          "std_rgb": [
+            39.55,
+            34.81,
+            37.86
+          ],
+          "max_row_jump": 20.46
+        },
+        {
+          "idx": 6,
+          "seq": 41256,
+          "stamp": {
+            "secs": 1745829656,
+            "nsecs": 280370428
+          },
+          "width": 640,
+          "height": 480,
+          "encoding": "rgb8",
+          "step": 1920,
+          "data_len": 921600,
+          "valid": true,
+          "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_ros_direct_compare_20260513_173809\\usb_cam_image_raw\\06.png",
+          "mean_rgb": [
+            144.01,
+            149.23,
+            145.32
+          ],
+          "std_rgb": [
+            39.51,
+            34.83,
+            37.92
+          ],
+          "max_row_jump": 20.63
+        },
+        {
+          "idx": 7,
+          "seq": 41257,
+          "stamp": {
+            "secs": 1745829656,
+            "nsecs": 330426105
+          },
+          "width": 640,
+          "height": 480,
+          "encoding": "rgb8",
+          "step": 1920,
+          "data_len": 921600,
+          "valid": true,
+          "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_ros_direct_compare_20260513_173809\\usb_cam_image_raw\\07.png",
+          "mean_rgb": [
+            144.1,
+            149.28,
+            145.39
+          ],
+          "std_rgb": [
+            39.52,
+            34.77,
+            37.86
+          ],
+          "max_row_jump": 20.38
+        }
+      ]
+    },
+    "/usb_cam/image_rect_color": {
+      "out": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_ros_direct_compare_20260513_173809\\usb_cam_image_rect_color",
+      "sheet": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_ros_direct_compare_20260513_173809\\usb_cam_image_rect_color\\sheet.jpg",
+      "frames": [
+        {
+          "idx": 0,
+          "seq": 41292,
+          "stamp": {
+            "secs": 1745829658,
+            "nsecs": 380505063
+          },
+          "width": 640,
+          "height": 480,
+          "encoding": "rgb8",
+          "step": 1920,
+          "data_len": 921600,
+          "valid": true,
+          "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_ros_direct_compare_20260513_173809\\usb_cam_image_rect_color\\00.png",
+          "mean_rgb": [
+            145.6,
+            149.71,
+            146.03
+          ],
+          "std_rgb": [
+            35.63,
+            32.87,
+            36.52
+          ],
+          "max_row_jump": 19.92
+        },
+        {
+          "idx": 1,
+          "seq": 41293,
+          "stamp": {
+            "secs": 1745829658,
+            "nsecs": 430952771
+          },
+          "width": 640,
+          "height": 480,
+          "encoding": "rgb8",
+          "step": 1920,
+          "data_len": 921600,
+          "valid": true,
+          "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_ros_direct_compare_20260513_173809\\usb_cam_image_rect_color\\01.png",
+          "mean_rgb": [
+            145.55,
+            149.68,
+            145.96
+          ],
+          "std_rgb": [
+            35.68,
+            32.87,
+            36.55
+          ],
+          "max_row_jump": 19.94
+        },
+        {
+          "idx": 2,
+          "seq": 41294,
+          "stamp": {
+            "secs": 1745829658,
+            "nsecs": 480433761
+          },
+          "width": 640,
+          "height": 480,
+          "encoding": "rgb8",
+          "step": 1920,
+          "data_len": 921600,
+          "valid": true,
+          "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_ros_direct_compare_20260513_173809\\usb_cam_image_rect_color\\02.png",
+          "mean_rgb": [
+            145.63,
+            149.7,
+            146.06
+          ],
+          "std_rgb": [
+            35.61,
+            32.88,
+            36.5
+          ],
+          "max_row_jump": 19.83
+        },
+        {
+          "idx": 3,
+          "seq": 41295,
+          "stamp": {
+            "secs": 1745829658,
+            "nsecs": 530494802
+          },
+          "width": 640,
+          "height": 480,
+          "encoding": "rgb8",
+          "step": 1920,
+          "data_len": 921600,
+          "valid": true,
+          "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_ros_direct_compare_20260513_173809\\usb_cam_image_rect_color\\03.png",
+          "mean_rgb": [
+            144.37,
+            149.85,
+            145.75
+          ],
+          "std_rgb": [
+            38.92,
+            33.59,
+            37.33
+          ],
+          "max_row_jump": 19.91
+        },
+        {
+          "idx": 4,
+          "seq": 41296,
+          "stamp": {
+            "secs": 1745829658,
+            "nsecs": 580447563
+          },
+          "width": 640,
+          "height": 480,
+          "encoding": "rgb8",
+          "step": 1920,
+          "data_len": 921600,
+          "valid": true,
+          "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_ros_direct_compare_20260513_173809\\usb_cam_image_rect_color\\04.png",
+          "mean_rgb": [
+            146.73,
+            151.26,
+            147.92
+          ],
+          "std_rgb": [
+            36.66,
+            32.9,
+            35.42
+          ],
+          "max_row_jump": 4.89
+        },
+        {
+          "idx": 5,
+          "seq": 41297,
+          "stamp": {
+            "secs": 1745829658,
+            "nsecs": 630518813
+          },
+          "width": 640,
+          "height": 480,
+          "encoding": "rgb8",
+          "step": 1920,
+          "data_len": 921600,
+          "valid": true,
+          "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_ros_direct_compare_20260513_173809\\usb_cam_image_rect_color\\05.png",
+          "mean_rgb": [
+            145.53,
+            149.71,
+            146.03
+          ],
+          "std_rgb": [
+            35.7,
+            32.87,
+            36.55
+          ],
+          "max_row_jump": 19.94
+        },
+        {
+          "idx": 6,
+          "seq": 41298,
+          "stamp": {
+            "secs": 1745829658,
+            "nsecs": 680467407
+          },
+          "width": 640,
+          "height": 480,
+          "encoding": "rgb8",
+          "step": 1920,
+          "data_len": 921600,
+          "valid": true,
+          "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_ros_direct_compare_20260513_173809\\usb_cam_image_rect_color\\06.png",
+          "mean_rgb": [
+            145.6,
+            149.68,
+            145.99
+          ],
+          "std_rgb": [
+            35.64,
+            32.9,
+            36.56
+          ],
+          "max_row_jump": 19.98
+        },
+        {
+          "idx": 7,
+          "seq": 41299,
+          "stamp": {
+            "secs": 1745829658,
+            "nsecs": 730587511
+          },
+          "width": 640,
+          "height": 480,
+          "encoding": "rgb8",
+          "step": 1920,
+          "data_len": 921600,
+          "valid": true,
+          "path": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_ros_direct_compare_20260513_173809\\usb_cam_image_rect_color\\07.png",
+          "mean_rgb": [
+            145.51,
+            149.66,
+            146.01
+          ],
+          "std_rgb": [
+            35.64,
+            32.88,
+            36.53
+          ],
+          "max_row_jump": 19.85
+        }
+      ]
+    }
+  }
+}

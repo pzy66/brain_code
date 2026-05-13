@@ -72,6 +72,32 @@ class _ChunkedResponse:
         self.closed = True
 
 
+class _TimeoutThenFrameResponse:
+    def __init__(self, *, fail_first_read: bool = True) -> None:
+        self.closed = False
+        self._fail_first_read = bool(fail_first_read)
+        payload = b"\xff\xd8FRAME_A\xff\xd9"
+        self._body = (
+            b"--boundarydonotcross\r\nContent-Length: "
+            + str(len(payload)).encode("ascii")
+            + b"\r\n\r\n"
+            + payload
+        )
+
+    def read(self, _size: int) -> bytes:
+        if self._fail_first_read:
+            self._fail_first_read = False
+            raise OSError("cannot read from timed out object")
+        if not self._body:
+            return b""
+        payload = self._body
+        self._body = b""
+        return payload
+
+    def close(self) -> None:
+        self.closed = True
+
+
 class _FakeYOLO:
     def __init__(self, _weights_path: str) -> None:
         self.weights_path = _weights_path
@@ -250,6 +276,44 @@ def test_temporal_splice_detector_rejects_partial_frame_jump() -> None:
     assert vision_runtime._frame_is_temporal_splice(clean, previous) is False  # pylint: disable=protected-access
 
 
+def test_camera_restore_bad_frame_fixture_is_rejected() -> None:
+    torn = cv2.imread(
+        str(Path("hybrid_controller/logs/vision_debug/camera_restore_verify_20260513/frame_after_runtime.jpg"))
+    )
+    clean = cv2.imread(
+        str(Path("hybrid_controller/logs/vision_debug/camera_live_single_reader_20260513_175524/decoded_000.png"))
+    )
+
+    assert torn is not None
+    assert clean is not None
+    assert vision_runtime._frame_has_horizontal_tearing(torn) is True  # pylint: disable=protected-access
+    assert vision_runtime._frame_has_horizontal_tearing(clean) is False  # pylint: disable=protected-access
+
+
+def test_worker_startup_gate_drains_and_requires_clean_consecutive_frames() -> None:
+    worker = vision_runtime._VisionWorker(  # pylint: disable=protected-access
+        AppConfig(vision_stream_drain_grabs=2),
+        calibration_params=None,
+        cv2_module=_FakeCv2,
+        yolo_class=_FakeYOLO,
+    )
+    frames = [
+        cv2.imread(str(Path("hybrid_controller/logs/vision_debug/camera_decode_diagnosis_20260513_173317/content_length_00.jpg"))),
+        cv2.imread(str(Path("hybrid_controller/logs/vision_debug/camera_decode_diagnosis_20260513_173317/content_length_01.jpg"))),
+        cv2.imread(str(Path("hybrid_controller/logs/vision_debug/camera_decode_diagnosis_20260513_173317/content_length_02.jpg"))),
+        cv2.imread(str(Path("hybrid_controller/logs/vision_debug/camera_live_single_reader_20260513_175524/decoded_000.png"))),
+        cv2.imread(str(Path("hybrid_controller/logs/vision_debug/camera_live_single_reader_20260513_175524/decoded_001.png"))),
+    ]
+    assert all(frame is not None for frame in frames)
+
+    accepted = [worker._frame_is_stable_for_startup(frame) for frame in frames]  # pylint: disable=protected-access
+
+    assert accepted[:4] == [False, False, False, False]
+    assert accepted[4] is True
+    assert worker._capture_drained_frames == 2  # pylint: disable=protected-access
+    assert worker._capture_rejected_frames >= 1  # pylint: disable=protected-access
+
+
 def test_http_mjpeg_capture_prefers_multipart_content_length(monkeypatch) -> None:
     payload_a = b"\xff\xd8FRAME_A\xff\xd9"
     payload_b = b"\xff\xd8FRAME_B\xff\xd9"
@@ -389,6 +453,36 @@ def test_http_mjpeg_capture_reopens_after_repeated_rejected_frames(monkeypatch) 
     assert len(opened) == 2
     assert stats["buffer_resets"] == 1
     assert stats["reopen_count"] == 1
+
+
+def test_http_mjpeg_capture_reopens_after_urllib_timeout_object_error(monkeypatch) -> None:
+    responses = [_TimeoutThenFrameResponse(fail_first_read=True), _TimeoutThenFrameResponse(fail_first_read=False)]
+    opened = []
+
+    def fake_urlopen(*_args, **_kwargs):
+        opened.append(True)
+        return responses.pop(0)
+
+    monkeypatch.setattr(vision_runtime, "urlopen", fake_urlopen)
+
+    capture = vision_runtime._HttpMjpegCapture(  # pylint: disable=protected-access
+        "http://camera:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg",
+        cv2_module=_FakeCv2,
+        timeout_sec=0.5,
+    )
+
+    first_ok, first_frame = capture.read()
+    second_ok, second_frame = capture.read()
+    stats = capture.stats()
+
+    assert first_ok is False
+    assert first_frame is None
+    assert second_ok is True
+    assert second_frame.shape == (48, 64, 3)
+    assert len(opened) == 2
+    assert stats["read_errors"] == 1
+    assert stats["reopen_count"] == 1
+    assert "timed out object" in stats["last_read_error"]
 
 
 def test_worker_alignment_target_uses_stage_profile_target_pixel() -> None:

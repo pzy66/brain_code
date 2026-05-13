@@ -16,6 +16,7 @@ from ssvep_core.train_eval import (
     OfflineTrainEvalConfig,
     _apply_trial_quality_filter,
     _load_session1_dataset,
+    _split_session_for_train_eval,
     run_offline_train_eval,
 )
 
@@ -106,6 +107,88 @@ def test_apply_trial_quality_filter_drops_shortfall_and_retry() -> None:
     assert int(summary["kept_trials"]) == 1
     assert int(summary["dropped_shortfall"]) == 1
     assert int(summary["dropped_retry"]) == 1
+
+
+def test_apply_trial_quality_filter_keeps_valid_test_for_split_layer_but_drops_invalid_and_baseline() -> None:
+    dataset = _build_dataset(session_id="s1")
+    rows = list(dataset.manifest["trials"])
+    rows[0] = {**rows[0], "split_role": "calibration", "state_type": "command", "valid": "false"}
+    rows[1] = {**rows[1], "split_role": "test", "state_type": "command", "valid": True, "used_samples": 1200}
+    rows[2] = {**rows[2], "split_role": "calibration", "state_type": "baseline", "valid": True, "retry_count": 0}
+    dataset.manifest["trials"] = rows
+
+    filtered, summary = _apply_trial_quality_filter(
+        dataset,
+        min_sample_ratio=0.0,
+        max_retry_count=10,
+    )
+
+    assert len(filtered.trial_segments) == 1
+    assert filtered.trial_segments[0][0].label == "10Hz"
+    assert dict(filtered.trial_segments[0][0].metadata or {})["split_role"] == "test"
+    assert int(summary["dropped_invalid"]) == 1
+    assert int(summary["dropped_nontraining_split"]) == 0
+    assert int(summary["dropped_baseline"]) == 1
+
+
+def test_split_session_for_train_eval_uses_manifest_test_split_as_holdout() -> None:
+    dataset = _build_dataset(session_id="s1")
+    rows = list(dataset.manifest["trials"])
+    rows[0] = {**rows[0], "split_role": "calibration", "state_type": "command"}
+    rows[1] = {**rows[1], "split_role": "calibration", "state_type": "command", "used_samples": 1200}
+    rows[2] = {**rows[2], "split_role": "test", "state_type": "no_control", "retry_count": 0}
+    dataset.manifest["trials"] = rows
+
+    train, gate, holdout = _split_session_for_train_eval(dataset, seed=1)
+
+    assert holdout == [dataset.trial_segments[2]]
+    assert not any(item == dataset.trial_segments[2] for item in train)
+    assert not any(item == dataset.trial_segments[2] for item in gate)
+
+
+def test_load_session1_dataset_preserves_split_roles_when_merging_duplicate_order_indices(monkeypatch) -> None:
+    import ssvep_core.train_eval as module
+
+    ds_a = _build_dataset(session_id="sA", active_sec=5.0)
+    ds_b = _build_dataset(session_id="sB", active_sec=5.0)
+    rows_a = list(ds_a.manifest["trials"])
+    rows_b = list(ds_b.manifest["trials"])
+    rows_a[0] = {**rows_a[0], "split_role": "calibration", "state_type": "command", "used_samples": 1200}
+    rows_a[1] = {**rows_a[1], "split_role": "calibration", "state_type": "command", "used_samples": 1200}
+    rows_a[2] = {**rows_a[2], "split_role": "test", "state_type": "no_control", "retry_count": 0}
+    rows_b[0] = {**rows_b[0], "split_role": "calibration", "state_type": "command", "used_samples": 1200}
+    rows_b[1] = {**rows_b[1], "split_role": "calibration", "state_type": "command", "used_samples": 1200}
+    rows_b[2] = {**rows_b[2], "split_role": "test", "state_type": "no_control", "retry_count": 0}
+    ds_a.manifest["trials"] = rows_a
+    ds_b.manifest["trials"] = rows_b
+
+    def _fake_loader(path: Path) -> LoadedDataset:
+        return ds_a if str(path).endswith("a.json") else ds_b
+
+    monkeypatch.setattr(module, "load_collection_dataset", _fake_loader)
+    config = OfflineTrainEvalConfig(
+        dataset_manifest_session1=PROJECT_DIR / "a.json",
+        dataset_manifest_session2=None,
+        output_profile_path=OUTPUT_PROFILE_PATH,
+        report_path=REPORT_PATH,
+        dataset_manifests=(PROJECT_DIR / "a.json", PROJECT_DIR / "b.json"),
+        strict_protocol_consistency=True,
+        strict_subject_consistency=True,
+        data_policy="legacy-compatible",
+        quality_min_sample_ratio=0.0,
+        quality_max_retry_count=10,
+    )
+
+    merged, _paths, _stages, _quality_rows, _protocol_check = _load_session1_dataset(config)
+    train, gate, holdout = _split_session_for_train_eval(merged, seed=1)
+
+    holdout_labels = [item[0].label for item in holdout]
+    assert holdout_labels == ["idle", "idle"]
+    assert all(dict(item[0].metadata or {}).get("split_role") == "test" for item in holdout)
+    assert not any(dict(item[0].metadata or {}).get("split_role") == "test" for item in train)
+    assert not any(dict(item[0].metadata or {}).get("split_role") == "test" for item in gate)
+    merged_rows = list(merged.manifest["trials"])
+    assert [int(row["order_index"]) for row in merged_rows] == list(range(len(merged_rows)))
 
 
 def test_load_session1_dataset_strict_protocol_consistency(monkeypatch) -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import Any
 
 from brain_workspace.paths import HYBRID_SSVEP_PROFILE_DIR, PROFILE_DATASET_DIR, VISION_DATASET_DIR
 from hybrid_controller.cylindrical import cartesian_to_cylindrical, cylindrical_to_cartesian
@@ -22,6 +23,20 @@ HIWONDER_CAMERA_WIDTH = 640
 HIWONDER_CAMERA_HEIGHT = 480
 HIWONDER_CAMERA_QUALITY = 80
 HIWONDER_CAMERA_STREAM_TYPE = "mjpeg"
+SERVO_MEASUREMENT_POINTS = frozenset(
+    {
+        "center",
+        "geometry",
+        "grasp",
+        "top_face",
+        "color_block",
+        "center_subpixel",
+        "geometry_subpixel",
+        "grasp_subpixel",
+        "top_face_subpixel",
+        "color_block_subpixel",
+    }
+)
 
 
 def build_hiwonder_camera_stream_url(host: str) -> str:
@@ -35,6 +50,16 @@ def build_hiwonder_camera_stream_url(host: str) -> str:
         f"&height={HIWONDER_CAMERA_HEIGHT}"
         f"&quality={HIWONDER_CAMERA_QUALITY}"
     )
+
+
+def normalize_servo_measurement_point(value: object, *, default: str = "geometry_subpixel") -> str:
+    measurement_point = str(value or "").strip().lower()
+    fallback = str(default or "geometry_subpixel").strip().lower()
+    if fallback not in SERVO_MEASUREMENT_POINTS:
+        fallback = "geometry_subpixel"
+    if measurement_point not in SERVO_MEASUREMENT_POINTS:
+        return fallback
+    return measurement_point
 
 
 def _default_vision_calibration_profile_path() -> Path:
@@ -214,7 +239,7 @@ class AppConfig:
     vision_read_fail_threshold: int = 10
     vision_stream_drain_grabs: int = 12
     vision_open_timeout_ms: int = 1200
-    vision_read_timeout_ms: int = 1200
+    vision_read_timeout_ms: int = 3000
     vision_probe_reads: int = 3
     vision_probe_sleep_ms: int = 60
     vision_endpoint_probe_timeout_ms: int = 250
@@ -241,6 +266,7 @@ class AppConfig:
     vision_frame_min_brightness_p95: float = 45.0
     vision_low_height_shape_fallback_enabled: bool = True
     vision_low_height_shape_fallback_min_area_ratio: float = 1.20
+    vision_low_height_reject_edge_fallback_candidates: bool = True
     vision_servo_center_tolerance_px: float = 20.0
     vision_servo_action_tolerance_px: float = 20.0
     vision_servo_low_action_tolerance_px: float = 8.0
@@ -252,6 +278,7 @@ class AppConfig:
     vision_servo_fine_threshold_px: float = 3.0
     vision_servo_max_attempts: int = 12
     vision_servo_measurement_point: str = "geometry_subpixel"
+    vision_servo_low_height_measurement_point: str = ""
     vision_low_confirm_untrusted_error_px: float = 12.0
     vision_eye_in_hand_pick_flow_enabled: bool = True
     vision_eye_in_hand_pick_radius_bias_mm: float = 40.0
@@ -266,31 +293,86 @@ class AppConfig:
     vision_continuous_servo_theta_rate_limit_deg_s: float = 10.0
     vision_continuous_servo_radius_rate_limit_mm_s: float = 18.0
     vision_continuous_servo_z_rate_limit_mm_s: float = 18.0
+    # Hiwonder's object-tracking demo keeps motion smooth by updating PID output
+    # every image cycle and issuing short-duration corrections, not by stopping
+    # between visual updates. These gains are intentionally modest because the
+    # JetMax-side 20 Hz teleop kernel applies the final acceleration ramp.
     vision_continuous_servo_theta_gain_deg_s_per_deg: float = 1.0
     vision_continuous_servo_radius_gain_mm_s_per_mm: float = 0.55
     vision_continuous_servo_z_slow_band_mm: float = 20.0
-    vision_continuous_servo_z_pulse_mm: float = 8.0
+    vision_continuous_servo_z_pulse_mm: float = 0.0
     vision_continuous_servo_center_allow_descent_px: float = 8.0
-    vision_continuous_servo_center_stop_descent_px: float = 36.0
+    vision_continuous_servo_center_stop_descent_px: float = 48.0
+    vision_continuous_servo_descent_high_error_px: float = 80.0
+    vision_continuous_servo_descent_high_error_z_above_confirm_mm: float = 70.0
+    vision_continuous_servo_descent_low_error_z_above_confirm_mm: float = 12.0
+    vision_continuous_servo_soft_descent_enabled: bool = True
+    vision_continuous_servo_soft_descent_rate_scale: float = 0.35
+    vision_continuous_servo_soft_descent_min_z_above_confirm_mm: float = 18.0
+    # Allow slow descent through small residual image error. Final confirm/pick
+    # still uses vision_continuous_servo_pick_ready_center_px.
+    vision_continuous_servo_low_height_descent_allow_px: float = 12.0
     vision_continuous_servo_pick_ready_center_px: float = 2.0
-    vision_continuous_servo_fine_pulse_center_px: float = 8.0
+    vision_continuous_servo_fine_pulse_center_px: float = 0.0
     vision_continuous_servo_settle_stop_band_px: float = 8.0
     # Slow low-height servo before the strict 2 px final gate so backlash does not
     # turn the last few pixels into radius-direction overshoot.
-    vision_continuous_servo_low_height_fine_band_px: float = 10.0
+    vision_continuous_servo_low_height_fine_band_px: float = 3.0
     vision_continuous_servo_low_height_fine_rate_scale: float = 0.35
-    vision_continuous_servo_low_height_error_growth_stop_px: float = 2.0
-    vision_continuous_servo_low_height_discrete_refine_enabled: bool = True
+    vision_continuous_servo_low_height_coarse_rate_scale: float = 0.35
+    vision_continuous_servo_low_height_z_rate_scale: float = 0.35
+    vision_continuous_servo_low_height_error_growth_stop_px: float = 1000000.0
+    vision_continuous_servo_low_height_guard_band_mm: float = 30.0
+    vision_continuous_servo_low_height_pause_descent_band_mm: float = 4.0
+    vision_continuous_servo_low_height_unstable_servo_px: float = 60.0
+    vision_continuous_servo_low_height_descent_rebound_pause_px: float = 10.0
+    vision_continuous_servo_low_height_max_theta_drift_deg: float = 8.0
+    vision_continuous_servo_low_height_max_radius_drift_mm: float = 8.0
+    vision_continuous_servo_low_height_best_error_rebound_px: float = 8.0
+    vision_continuous_servo_low_height_static_stop_enabled: bool = True
+    vision_continuous_servo_low_height_static_error_min_px: float = 8.0
+    vision_continuous_servo_low_height_static_error_max_px: float = 30.0
+    vision_continuous_servo_low_height_static_frames: int = 12
+    vision_continuous_servo_low_height_static_improvement_px: float = 1.0
+    vision_continuous_servo_low_height_static_band_mm: float = 6.0
+    vision_continuous_servo_low_height_static_pose_band_mm: float = 1.5
+    vision_continuous_servo_low_height_rebound_recover_band_mm: float = 10.0
+    vision_continuous_servo_low_height_rebound_recover_attempts: int = 3
+    vision_continuous_servo_low_height_discrete_refine_enabled: bool = False
     vision_continuous_servo_low_height_refine_attempts: int = 4
     vision_continuous_servo_low_height_refine_max_theta_step_deg: float = 0.25
     vision_continuous_servo_low_height_refine_max_radius_step_mm: float = 1.5
+    vision_continuous_servo_stop_at_confirm: bool = False
     vision_continuous_servo_max_center_jump_px: float = 45.0
     vision_continuous_servo_max_error_growth_px: float = 35.0
     vision_continuous_servo_stable_frames: int = 2
     vision_continuous_servo_lost_frames: int = 3
+    vision_continuous_servo_stale_frames: int = 3
     vision_continuous_servo_command_timeout_ms: float = 250.0
     vision_continuous_servo_min_confidence: float = 0.55
+    vision_continuous_servo_hard_min_confidence: float = 0.20
+    vision_continuous_servo_low_confidence_large_area_ratio: float = 12.0
     vision_continuous_servo_min_area_px: int = 1500
+    vision_continuous_servo_horizontal_mode: str = "ibvs_dls"
+    vision_continuous_servo_ibvs_gain: float = 0.45
+    vision_continuous_servo_ibvs_damping_px_per_unit: float = 2.0
+    vision_continuous_servo_ibvs_du_dtheta_px_per_deg: float = 14.0
+    vision_continuous_servo_ibvs_du_dradius_px_per_mm: float = 0.0
+    vision_continuous_servo_ibvs_dv_dtheta_px_per_deg: float = 0.0
+    vision_continuous_servo_ibvs_dv_dradius_px_per_mm: float = 3.5
+    vision_continuous_servo_ibvs_jacobian_source: str = "config"
+    vision_continuous_servo_ibvs_profile_jacobian: Any = None
+    vision_continuous_servo_ibvs_fitted_jacobian: Any = None
+    vision_continuous_servo_ibvs_profile_stage_band_mm: float = 15.0
+    vision_continuous_servo_pixel_jacobian_gain: float = 0.35
+    vision_continuous_servo_pixel_jacobian_dtheta_dx: float = 0.11998811664170087
+    vision_continuous_servo_pixel_jacobian_dtheta_dy: float = 0.08965988766661396
+    vision_continuous_servo_pixel_jacobian_dr_dx: float = 0.05790918576393915
+    vision_continuous_servo_pixel_jacobian_dr_dy: float = 0.24030828155353375
+    vision_continuous_servo_pixel_axis_theta_deg_s_per_px: float = 0.08
+    vision_continuous_servo_pixel_axis_radius_mm_s_per_px: float = -0.06
+    vision_continuous_servo_pixel_axis_fine_band_px: float = 24.0
+    vision_continuous_servo_pixel_axis_fine_rate_scale: float = 0.35
     vision_debug_bundle_enabled: bool = True
     vision_debug_bundle_dir: Path = LOGS_ROOT / "vision_debug"
     pick_tool_offset_source: str = "command_bias"
@@ -359,9 +441,18 @@ class AppConfig:
         residual_model = str(config.vision_residual_model or "grid").strip().lower()
         if residual_model not in {"grid", "idw", "none"}:
             residual_model = "grid"
-        servo_measurement = str(config.vision_servo_measurement_point or "center").strip().lower()
-        if servo_measurement not in {"center", "geometry", "grasp", "center_subpixel", "geometry_subpixel", "grasp_subpixel"}:
-            servo_measurement = "geometry_subpixel"
+        servo_measurement = normalize_servo_measurement_point(config.vision_servo_measurement_point)
+        low_height_servo_measurement = str(config.vision_servo_low_height_measurement_point or "").strip().lower()
+        if low_height_servo_measurement:
+            low_height_servo_measurement = normalize_servo_measurement_point(
+                low_height_servo_measurement,
+                default=servo_measurement,
+            )
+        continuous_horizontal_mode = str(
+            config.vision_continuous_servo_horizontal_mode or "servo_command_point"
+        ).strip().lower()
+        if continuous_horizontal_mode not in {"servo_command_point", "pixel_jacobian", "pixel_axis", "ibvs_dls"}:
+            continuous_horizontal_mode = "servo_command_point"
         return replace(
             config,
             motion_bounds_x=config.robot_limits_x,
@@ -371,6 +462,8 @@ class AppConfig:
             pick_tool_offset_source=offset_source,
             vision_residual_model=residual_model,
             vision_servo_measurement_point=servo_measurement,
+            vision_servo_low_height_measurement_point=low_height_servo_measurement,
+            vision_continuous_servo_horizontal_mode=continuous_horizontal_mode,
             vision_calibration_grid_size=max(2, int(config.vision_calibration_grid_size)),
             vision_frame_pose_max_age_ms=max(1.0, float(config.vision_frame_pose_max_age_ms)),
             vision_frame_min_brightness_mean=max(0.0, float(config.vision_frame_min_brightness_mean)),
@@ -386,15 +479,39 @@ class AppConfig:
                 0.1, float(config.vision_continuous_servo_radius_rate_limit_mm_s)
             ),
             vision_continuous_servo_z_rate_limit_mm_s=max(0.1, float(config.vision_continuous_servo_z_rate_limit_mm_s)),
-            vision_continuous_servo_z_pulse_mm=max(0.5, float(config.vision_continuous_servo_z_pulse_mm)),
+            vision_continuous_servo_z_pulse_mm=max(0.0, float(config.vision_continuous_servo_z_pulse_mm)),
             vision_continuous_servo_center_allow_descent_px=max(
                 0.1, float(config.vision_continuous_servo_center_allow_descent_px)
+            ),
+            vision_continuous_servo_center_stop_descent_px=max(
+                max(0.1, float(config.vision_continuous_servo_center_allow_descent_px)),
+                float(config.vision_continuous_servo_center_stop_descent_px),
+            ),
+            vision_continuous_servo_descent_high_error_px=max(
+                max(0.1, float(config.vision_continuous_servo_center_allow_descent_px)),
+                float(config.vision_continuous_servo_descent_high_error_px),
+            ),
+            vision_continuous_servo_descent_high_error_z_above_confirm_mm=max(
+                0.1, float(config.vision_continuous_servo_descent_high_error_z_above_confirm_mm)
+            ),
+            vision_continuous_servo_descent_low_error_z_above_confirm_mm=max(
+                0.0, float(config.vision_continuous_servo_descent_low_error_z_above_confirm_mm)
+            ),
+            vision_continuous_servo_soft_descent_rate_scale=max(
+                0.0, min(1.0, float(config.vision_continuous_servo_soft_descent_rate_scale))
+            ),
+            vision_continuous_servo_soft_descent_min_z_above_confirm_mm=max(
+                0.0, float(config.vision_continuous_servo_soft_descent_min_z_above_confirm_mm)
+            ),
+            vision_continuous_servo_low_height_descent_allow_px=max(
+                max(0.1, float(config.vision_continuous_servo_center_allow_descent_px)),
+                float(config.vision_continuous_servo_low_height_descent_allow_px),
             ),
             vision_continuous_servo_pick_ready_center_px=max(
                 0.1, float(config.vision_continuous_servo_pick_ready_center_px)
             ),
             vision_continuous_servo_fine_pulse_center_px=max(
-                0.1, float(config.vision_continuous_servo_fine_pulse_center_px)
+                0.0, float(config.vision_continuous_servo_fine_pulse_center_px)
             ),
             vision_continuous_servo_settle_stop_band_px=max(
                 0.1, float(config.vision_continuous_servo_settle_stop_band_px)
@@ -405,8 +522,61 @@ class AppConfig:
             vision_continuous_servo_low_height_fine_rate_scale=max(
                 0.05, min(1.0, float(config.vision_continuous_servo_low_height_fine_rate_scale))
             ),
+            vision_continuous_servo_low_height_coarse_rate_scale=max(
+                max(0.05, min(1.0, float(config.vision_continuous_servo_low_height_fine_rate_scale))),
+                min(1.0, float(config.vision_continuous_servo_low_height_coarse_rate_scale)),
+            ),
+            vision_continuous_servo_low_height_z_rate_scale=max(
+                0.05, min(1.0, float(config.vision_continuous_servo_low_height_z_rate_scale))
+            ),
             vision_continuous_servo_low_height_error_growth_stop_px=max(
                 0.1, float(config.vision_continuous_servo_low_height_error_growth_stop_px)
+            ),
+            vision_continuous_servo_low_height_guard_band_mm=max(
+                0.0, float(config.vision_continuous_servo_low_height_guard_band_mm)
+            ),
+            vision_continuous_servo_low_height_pause_descent_band_mm=max(
+                0.0, float(config.vision_continuous_servo_low_height_pause_descent_band_mm)
+            ),
+            vision_continuous_servo_low_height_unstable_servo_px=max(
+                1.0, float(config.vision_continuous_servo_low_height_unstable_servo_px)
+            ),
+            vision_continuous_servo_low_height_descent_rebound_pause_px=max(
+                0.1, float(config.vision_continuous_servo_low_height_descent_rebound_pause_px)
+            ),
+            vision_continuous_servo_low_height_max_theta_drift_deg=max(
+                0.1, float(config.vision_continuous_servo_low_height_max_theta_drift_deg)
+            ),
+            vision_continuous_servo_low_height_max_radius_drift_mm=max(
+                0.1, float(config.vision_continuous_servo_low_height_max_radius_drift_mm)
+            ),
+            vision_continuous_servo_low_height_best_error_rebound_px=max(
+                0.1, float(config.vision_continuous_servo_low_height_best_error_rebound_px)
+            ),
+            vision_continuous_servo_low_height_static_error_min_px=max(
+                0.0, float(config.vision_continuous_servo_low_height_static_error_min_px)
+            ),
+            vision_continuous_servo_low_height_static_error_max_px=max(
+                max(0.0, float(config.vision_continuous_servo_low_height_static_error_min_px)),
+                float(config.vision_continuous_servo_low_height_static_error_max_px),
+            ),
+            vision_continuous_servo_low_height_static_frames=max(
+                1, int(config.vision_continuous_servo_low_height_static_frames)
+            ),
+            vision_continuous_servo_low_height_static_improvement_px=max(
+                0.05, float(config.vision_continuous_servo_low_height_static_improvement_px)
+            ),
+            vision_continuous_servo_low_height_static_band_mm=max(
+                0.0, float(config.vision_continuous_servo_low_height_static_band_mm)
+            ),
+            vision_continuous_servo_low_height_static_pose_band_mm=max(
+                0.0, float(config.vision_continuous_servo_low_height_static_pose_band_mm)
+            ),
+            vision_continuous_servo_low_height_rebound_recover_band_mm=max(
+                0.0, float(config.vision_continuous_servo_low_height_rebound_recover_band_mm)
+            ),
+            vision_continuous_servo_low_height_rebound_recover_attempts=max(
+                0, int(config.vision_continuous_servo_low_height_rebound_recover_attempts)
             ),
             vision_continuous_servo_low_height_refine_attempts=max(
                 1, int(config.vision_continuous_servo_low_height_refine_attempts)
@@ -425,13 +595,38 @@ class AppConfig:
             ),
             vision_continuous_servo_stable_frames=max(1, int(config.vision_continuous_servo_stable_frames)),
             vision_continuous_servo_lost_frames=max(1, int(config.vision_continuous_servo_lost_frames)),
+            vision_continuous_servo_stale_frames=max(1, int(config.vision_continuous_servo_stale_frames)),
             vision_continuous_servo_command_timeout_ms=max(
                 1.0, float(config.vision_continuous_servo_command_timeout_ms)
             ),
             vision_continuous_servo_min_confidence=max(
                 0.0, min(1.0, float(config.vision_continuous_servo_min_confidence))
             ),
+            vision_continuous_servo_hard_min_confidence=max(
+                0.0, min(1.0, float(config.vision_continuous_servo_hard_min_confidence))
+            ),
+            vision_continuous_servo_low_confidence_large_area_ratio=max(
+                1.0, float(config.vision_continuous_servo_low_confidence_large_area_ratio)
+            ),
             vision_continuous_servo_min_area_px=max(1, int(config.vision_continuous_servo_min_area_px)),
+            vision_continuous_servo_ibvs_gain=max(
+                0.01, min(1.0, float(config.vision_continuous_servo_ibvs_gain))
+            ),
+            vision_continuous_servo_ibvs_damping_px_per_unit=max(
+                0.0, float(config.vision_continuous_servo_ibvs_damping_px_per_unit)
+            ),
+            vision_continuous_servo_ibvs_profile_stage_band_mm=max(
+                0.0, float(config.vision_continuous_servo_ibvs_profile_stage_band_mm)
+            ),
+            vision_continuous_servo_pixel_jacobian_gain=max(
+                0.01, min(1.0, float(config.vision_continuous_servo_pixel_jacobian_gain))
+            ),
+            vision_continuous_servo_pixel_axis_fine_band_px=max(
+                0.1, float(config.vision_continuous_servo_pixel_axis_fine_band_px)
+            ),
+            vision_continuous_servo_pixel_axis_fine_rate_scale=max(
+                0.05, min(1.0, float(config.vision_continuous_servo_pixel_axis_fine_rate_scale))
+            ),
         )
 
     def resolve_vision_stream_url(self) -> str:

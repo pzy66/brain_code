@@ -12,10 +12,11 @@ PROJECT_DIR = Path(__file__).resolve().parents[1]
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
-from ssvep_core.async_fbcca_idle_standalone import ThresholdProfile, load_decoder_from_profile, load_profile
+from ssvep_core.async_fbcca_idle_standalone import OnlineRunner, ThresholdProfile, load_decoder_from_profile, load_profile, save_profile
 import apps.realtime_online_ui as realtime_ui
 from apps.realtime_online_ui import (
     DEFAULT_REALTIME_PROFILE_PATH,
+    SSVEP_SESSION_NC_CLASSIFIER_PROFILE_PATH,
     RealtimeConfig,
     RealtimeOnlineWindow,
     RealtimePretrainConfig,
@@ -25,14 +26,21 @@ from apps.realtime_online_ui import (
     build_pretrain_profile_path,
     pretrain_estimated_seconds,
     pretrain_trial_count,
+    realtime_pretrain_trial_metadata,
     realtime_pretrain_protocol_config,
     save_no_train_fbcca_profile,
     _profile_model_name,
+    _profile_freqs,
+    _validate_realtime_profile_gate_variant,
     _read_probe_window,
     _validate_loaded_profile,
+    build_session_nc_profile_history_path,
     resolve_realtime_model_choice,
 )
-from ssvep_core.stimulus_profiles import STIMULUS_PROFILE_COMFORT_FBCCA_V1
+from ssvep_core.stimulus_profiles import (
+    STIMULUS_PROFILE_COMMAND_NC_8_10_12_15_V1,
+    STIMULUS_PROFILE_COMFORT_FBCCA_V1,
+)
 
 
 def _get_qapp() -> QApplication:
@@ -40,6 +48,62 @@ def _get_qapp() -> QApplication:
     if app is None:
         app = QApplication([])
     return app
+
+
+def _ridge5_profile_with_gate_variant(gate_variant: str) -> ThresholdProfile:
+    return ThresholdProfile(
+        freqs=realtime_ui.DEMO_EXPECTED_FREQS,
+        win_sec=2.0,
+        step_sec=0.25,
+        enter_score_th=0.1,
+        enter_ratio_th=1.0,
+        enter_margin_th=0.01,
+        exit_score_th=0.08,
+        exit_ratio_th=1.0,
+        min_enter_windows=1,
+        min_exit_windows=1,
+        model_name="fbcca_score_ridge_5class",
+        model_params={
+            "state": {
+                "freqs": list(realtime_ui.DEMO_EXPECTED_FREQS),
+                "labels": ["idle", "8", "10", "12", "15"],
+                "feature_mean": [0.0],
+                "feature_std": [1.0],
+                "weights": [[0.0] * 5 for _ in range(2)],
+                "gate_variant": gate_variant,
+            }
+        },
+    )
+
+
+def test_realtime_profile_gate_guard_allows_baseline_lrtmw() -> None:
+    profile = _ridge5_profile_with_gate_variant("baseline_lrtmw")
+    assert _validate_realtime_profile_gate_variant(profile) == "baseline_lrtmw"
+
+
+def test_realtime_profile_gate_guard_rejects_research_only_gate() -> None:
+    profile = _ridge5_profile_with_gate_variant("conditional_frequency_specific_logistic_gate")
+    with pytest.raises(ValueError, match="research-only classifier gate variant"):
+        _validate_realtime_profile_gate_variant(profile)
+
+
+def test_online_runner_rejects_research_only_gate_before_board_start(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    profile_path = tmp_path / "research_only_gate_profile.json"
+    save_profile(_ridge5_profile_with_gate_variant("tenp5_ns2_hard_negative_veto"), profile_path)
+
+    def fail_prepare_board_session(*_args, **_kwargs):
+        raise AssertionError("prepare_board_session should not be reached for research-only gates")
+
+    monkeypatch.setattr(realtime_ui, "prepare_board_session", fail_prepare_board_session)
+    with pytest.raises(ValueError, match="research-only classifier gate variant"):
+        OnlineRunner(
+            serial_port="loopback",
+            board_id=realtime_ui.DEFAULT_BOARD_ID,
+            freqs=realtime_ui.DEMO_EXPECTED_FREQS,
+            profile_path=profile_path,
+            sampling_rate=250,
+            compute_backend="cpu",
+        )
 
 
 def test_resolve_realtime_model_choice_uses_profile_model() -> None:
@@ -56,6 +120,7 @@ def test_realtime_window_constructor_smoke() -> None:
         assert "未加载" in window.profile_meta_label.text()
         assert "60" in window.btn_pretrain_then_start.text()
         assert "5" in window.btn_full_pretrain_then_start.text()
+        assert "90" in window.btn_session_nc_pretrain_then_start.text()
         assert "FBCCA" in window.btn_no_train_start.text()
     finally:
         window.close()
@@ -65,6 +130,12 @@ def test_realtime_cli_default_freqs_follow_stimulus_profile() -> None:
     args = realtime_ui.build_parser().parse_args([])
     assert realtime_ui.parse_freqs(str(args.freqs)) == realtime_ui.DEFAULT_REALTIME_FREQS
     assert realtime_ui.DEFAULT_REALTIME_FREQS == realtime_ui.DEMO_EXPECTED_FREQS
+
+
+def test_realtime_default_freqs_follow_default_profile_when_present() -> None:
+    profile_freqs = _profile_freqs(DEFAULT_REALTIME_PROFILE_PATH)
+    if len(profile_freqs) == 4:
+        assert realtime_ui.DEFAULT_REALTIME_FREQS == profile_freqs
 
 
 def test_fbcca_demo_window_locks_model_and_freqs() -> None:
@@ -82,6 +153,24 @@ def test_fbcca_demo_window_locks_model_and_freqs() -> None:
         assert cfg.model_name == "fbcca"
         assert cfg.freqs == realtime_ui.DEMO_EXPECTED_FREQS
         assert realtime_ui.parse_freqs(window.freqs_edit.text()) == realtime_ui.DEMO_EXPECTED_FREQS
+    finally:
+        window.close()
+
+
+def test_realtime_read_config_syncs_freqs_from_selected_profile(tmp_path: Path) -> None:
+    _ = _get_qapp()
+    profile_path = tmp_path / "profile.json"
+    profile_path.write_text(
+        json.dumps({"model_name": "fbcca", "freqs": [8.0, 10.0, 12.0, 15.0]}),
+        encoding="utf-8",
+    )
+    window = RealtimeOnlineWindow(serial_port="auto", board_id=0, freqs=(9.8, 12.0, 14.8, 15.8))
+    try:
+        window.profile_edit.setText(str(profile_path))
+        cfg = window._read_config()
+
+        assert cfg.freqs == (8.0, 10.0, 12.0, 15.0)
+        assert realtime_ui.parse_freqs(window.freqs_edit.text()) == cfg.freqs
     finally:
         window.close()
 
@@ -233,8 +322,85 @@ def test_realtime_pretrain_protocol_records_comfort_stimulus_provenance(tmp_path
     assert frame_locked_payload["stimulus_mode_selection_reason"] == "stable_240hz_frame_locked"
     frame_report = frame_locked_payload["frame_lock_frequency_report"]
     assert frame_report["all_frame_sequences_repeat_exactly"] is True
-    assert frame_report["all_integer_frames_per_cycle"] is False
-    assert int(frame_report["max_frame_sequence_repeat_frames"]) == 1200
+    expected_integer_cycles = all(abs(240.0 / float(freq) - round(240.0 / float(freq))) < 1e-12 for freq in cfg.freqs)
+    assert frame_report["all_integer_frames_per_cycle"] is expected_integer_cycles
+
+
+def test_session_no_control_pretrain_config_uses_recommended_mainline(tmp_path: Path) -> None:
+    _ = _get_qapp()
+    window = RealtimeOnlineWindow(serial_port="auto", board_id=0, freqs=(8.0, 10.0, 12.0, 15.0))
+    try:
+        cfg = window._read_pretrain_config(mode="session_nc_classifier")
+
+        assert cfg.mode == "session_nc_classifier"
+        assert cfg.freqs == realtime_ui.SESSION_NC_DEFAULT_FREQS
+        assert cfg.stimulus_profile_id == STIMULUS_PROFILE_COMMAND_NC_8_10_12_15_V1
+        assert Path(cfg.output_profile_path) == SSVEP_SESSION_NC_CLASSIFIER_PROFILE_PATH
+        assert cfg.history_profile_path.name.startswith("ssvep_fbcca_ridge5_session_nc_profile_")
+        assert cfg.target_repeats == realtime_ui.DEFAULT_SESSION_NC_TARGET_REPEATS
+        assert cfg.idle_repeats == realtime_ui.DEFAULT_SESSION_NC_IDLE_REPEATS
+        assert cfg.win_sec == realtime_ui.SESSION_NC_WIN_SEC
+        assert cfg.step_sec == realtime_ui.SESSION_NC_STEP_SEC
+        assert pretrain_trial_count(cfg) == 16
+        assert pretrain_estimated_seconds(cfg) == 84.0
+        assert realtime_ui.parse_freqs(window.freqs_edit.text()) == realtime_ui.SESSION_NC_DEFAULT_FREQS
+    finally:
+        window.close()
+
+
+def test_session_no_control_pretrain_protocol_marks_no_control_calibration(tmp_path: Path) -> None:
+    cfg = RealtimePretrainConfig(
+        serial_port="auto",
+        board_id=0,
+        freqs=realtime_ui.SESSION_NC_DEFAULT_FREQS,
+        base_profile_path=tmp_path / "base.json",
+        fallback_profile_path=tmp_path / "fallback.json",
+        output_profile_path=tmp_path / "profile.json",
+        history_profile_path=build_session_nc_profile_history_path(timestamp=0),
+        compute_backend="cpu",
+        gpu_device=0,
+        gpu_precision="float32",
+        gpu_warmup=False,
+        gpu_cache_policy="windows",
+        prepare_sec=realtime_ui.DEFAULT_SESSION_NC_PRETRAIN_PREPARE_SEC,
+        active_sec=realtime_ui.DEFAULT_SESSION_NC_PRETRAIN_ACTIVE_SEC,
+        rest_sec=realtime_ui.DEFAULT_SESSION_NC_PRETRAIN_REST_SEC,
+        target_repeats=realtime_ui.DEFAULT_SESSION_NC_TARGET_REPEATS,
+        idle_repeats=realtime_ui.DEFAULT_SESSION_NC_IDLE_REPEATS,
+        win_sec=realtime_ui.SESSION_NC_WIN_SEC,
+        step_sec=realtime_ui.SESSION_NC_STEP_SEC,
+        mode="session_nc_classifier",
+    )
+    payload = realtime_pretrain_protocol_config(cfg, saved_trial_count=pretrain_trial_count(cfg))
+
+    assert payload["protocol_name"] == "session-no-control-fbcca-ridge5-pretrain-v1"
+    assert payload["session_no_control_calibration"] is True
+    assert payload["stimulus_profile_id"] == STIMULUS_PROFILE_COMMAND_NC_8_10_12_15_V1
+    assert payload["target_repeats"] == 2
+    assert payload["idle_repeats"] == 8
+
+
+def test_realtime_pretrain_trial_metadata_marks_session_nc_training_split() -> None:
+    command = realtime_pretrain_trial_metadata(
+        realtime_ui.TrialSpec(label="8Hz", expected_freq=8.0, trial_id=1),
+        freqs=realtime_ui.SESSION_NC_DEFAULT_FREQS,
+        mode="session_nc_classifier",
+    )
+    idle = realtime_pretrain_trial_metadata(
+        realtime_ui.TrialSpec(label="idle", expected_freq=None, trial_id=2),
+        freqs=realtime_ui.SESSION_NC_DEFAULT_FREQS,
+        mode="session_nc_classifier",
+    )
+
+    assert command["split_role"] == "calibration"
+    assert command["state_type"] == "command"
+    assert command["trial_role"] == "control"
+    assert command["target_position"] == "up"
+    assert idle["split_role"] == "calibration"
+    assert idle["state_type"] == "no_control"
+    assert idle["trial_role"] == "hard_idle"
+    assert idle["nc_subtype"] == "flicker_center"
+    assert idle["all_targets_flickering"] is True
 
 
 def test_no_train_fbcca_profile_is_direct_runtime_safe(tmp_path: Path) -> None:

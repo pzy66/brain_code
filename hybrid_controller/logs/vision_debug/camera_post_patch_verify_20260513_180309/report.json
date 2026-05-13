@@ -1,0 +1,278 @@
+{
+  "out_dir": "C:\\Users\\P1233\\Desktop\\brain\\brain_code\\hybrid_controller\\logs\\vision_debug\\camera_post_patch_verify_20260513_180309",
+  "frame_count": 30,
+  "bad_spatial": [],
+  "bad_temporal": [],
+  "records": [
+    {
+      "index": 0,
+      "bytes": 20970,
+      "soi": true,
+      "eoi": true,
+      "decode_ok": true,
+      "horizontal_tearing": false,
+      "temporal_splice": false
+    },
+    {
+      "index": 1,
+      "bytes": 21016,
+      "soi": true,
+      "eoi": true,
+      "decode_ok": true,
+      "horizontal_tearing": false,
+      "temporal_splice": false
+    },
+    {
+      "index": 2,
+      "bytes": 21027,
+      "soi": true,
+      "eoi": true,
+      "decode_ok": true,
+      "horizontal_tearing": false,
+      "temporal_splice": false
+    },
+    {
+      "index": 3,
+      "bytes": 20975,
+      "soi": true,
+      "eoi": true,
+      "decode_ok": true,
+      "horizontal_tearing": false,
+      "temporal_splice": false
+    },
+    {
+      "index": 4,
+      "bytes": 21030,
+      "soi": true,
+      "eoi": true,
+      "decode_ok": true,
+      "horizontal_tearing": false,
+      "temporal_splice": false
+    },
+    {
+      "index": 5,
+      "bytes": 21065,
+      "soi": true,
+      "eoi": true,
+      "decode_ok": true,
+      "horizontal_tearing": false,
+      "temporal_splice": false
+    },
+    {
+      "index": 6,
+      "bytes": 20983,
+      "soi": true,
+      "eoi": true,
+      "decode_ok": true,
+      "horizontal_tearing": false,
+      "temporal_splice": false
+    },
+    {
+      "index": 7,
+      "bytes": 21026,
+      "soi": true,
+      "eoi": true,
+      "decode_ok": true,
+      "horizontal_tearing": false,
+      "temporal_splice": false
+    },
+    {
+      "index": 8,
+      "bytes": 20973,
+      "soi": true,
+      "eoi": true,
+      "decode_ok": true,
+      "horizontal_tearing": false,
+      "temporal_splice": false
+    },
+    {
+      "index": 9,
+      "bytes": 21069,
+      "soi": true,
+      "eoi": true,
+      "decode_ok": true,
+      "horizontal_tearing": false,
+      "temporal_splice": false
+    },
+    {
+      "index": 10,
+      "bytes": 20920,
+      "soi": true,
+      "eoi": true,
+      "decode_ok": true,
+      "horizontal_tearing": false,
+      "temporal_splice": false
+    },
+    {
+      "index": 11,
+      "bytes": 21088,
+      "soi": true,
+      "eoi": true,
+      "decode_ok": true,
+      "horizontal_tearing": false,
+      "temporal_splice": false
+    },
+    {
+      "index": 12,
+      "bytes": 21051,
+      "soi": true,
+      "eoi": true,
+      "decode_ok": true,
+      "horizontal_tearing": false,
+      "temporal_splice": false
+    },
+    {
+      "index": 13,
+      "bytes": 20951,
+      "soi": true,
+      "eoi": true,
+      "decode_ok": true,
+      "horizontal_tearing": false,
+      "temporal_splice": false
+    },
+    {
+      "index": 14,
+      "bytes": 20879,
+      "soi": true,
+      "eoi": true,
+      "decode_ok": true,
+      "horizontal_tearing": false,
+      "temporal_splice": false
+    },
+    {
+      "index": 15,
+      "bytes": 20952,
+      "soi": true,
+      "eoi": true,
+      "decode_ok": true,
+      "horizontal_tearing": false,
+      "temporal_splice": false
+    },
+    {
+      "index": 16,
+      "bytes": 21058,
+      "soi": true,
+      "eoi": true,
+      "decode_ok": true,
+      "horizontal_tearing": false,
+      "temporal_splice": false
+    },
+    {
+      "index": 17,
+      "bytes": 20914,
+      "soi": true,
+      "eoi": true,
+      "decode_ok": true,
+      "horizontal_tearing": false,
+      "temporal_splice": false
+    },
+    {
+      "index": 18,
+      "bytes": 20992,
+      "soi": true,
+      "eoi": true,
+      "decode_ok": true,
+      "horizontal_tearing": false,
+      "temporal_splice": false
+    },
+    {
+      "index": 19,
+      "bytes": 20985,
+      "soi": true,
+      "eoi": true,
+      "decode_ok": true,
+      "horizontal_tearing": false,
+      "temporal_splice": false
+    },
+    {
+      "index": 20,
+      "bytes": 21072,
+      "soi": true,
+      "eoi": true,
+      "decode_ok": true,
+      "horizontal_tearing": false,
+      "temporal_splice": false
+    },
+    {
+      "index": 21,
+      "bytes": 20969,
+      "soi": true,
+      "eoi": true,
+      "decode_ok": true,
+      "horizontal_tearing": false,
+      "temporal_splice": false
+    },
+    {
+      "index": 22,
+      "bytes": 21049,
+      "soi": true,
+      "eoi": true,
+      "decode_ok": true,
+      "horizontal_tearing": false,
+      "temporal_splice": false
+    },
+    {
+      "index": 23,
+      "bytes": 21015,
+      "soi": true,
+      "eoi": true,
+      "decode_ok": true,
+      "horizontal_tearing": false,
+      "temporal_splice": false
+    },
+    {
+      "index": 24,
+      "bytes": 21118,
+      "soi": true,
+      "eoi": true,
+      "decode_ok": true,
+      "horizontal_tearing": false,
+      "temporal_splice": false
+    },
+    {
+      "index": 25,
+      "bytes": 20944,
+      "soi": true,
+      "eoi": true,
+      "decode_ok": true,
+      "horizontal_tearing": false,
+      "temporal_splice": false
+    },
+    {
+      "index": 26,
+      "bytes": 21088,
+      "soi": true,
+      "eoi": true,
+      "decode_ok": true,
+      "horizontal_tearing": false,
+      "temporal_splice": false
+    },
+    {
+      "index": 27,
+      "bytes": 21058,
+      "soi": true,
+      "eoi": true,
+      "decode_ok": true,
+      "horizontal_tearing": false,
+      "temporal_splice": false
+    },
+    {
+      "index": 28,
+      "bytes": 21036,
+      "soi": true,
+      "eoi": true,
+      "decode_ok": true,
+      "horizontal_tearing": false,
+      "temporal_splice": false
+    },
+    {
+      "index": 29,
+      "bytes": 21063,
+      "soi": true,
+      "eoi": true,
+      "decode_ok": true,
+      "horizontal_tearing": false,
+      "temporal_splice": false
+    }
+  ]
+}

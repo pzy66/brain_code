@@ -21,10 +21,7 @@ if RUNTIME_DIR not in sys.path:
     sys.path.insert(0, RUNTIME_DIR)
 
 from robot_runtime_py36 import JetMaxExecutor, cylindrical_to_cartesian
-try:
-    from hybrid_controller.robot.runtime.teleop_kernel import CylindricalPose, CylindricalTeleopKernel
-except ImportError:
-    from teleop_kernel import CylindricalPose, CylindricalTeleopKernel
+from teleop_kernel import CylindricalPose, CylindricalTeleopKernel
 from hybrid_controller_ros.msg import CylindricalTeleop, RobotState
 from hybrid_controller_ros.srv import (
     GetPickTuning,
