@@ -43,8 +43,9 @@
 python "<repo>\06_Data_Collection\2026-04_jetmax_block_dataset_collection\START_BLOCK_DATASET_COLLECTOR.py"
 ```
 
-这个入口会自动优先使用 `BRAIN_PYTHON_EXE`、项目 `.venv` 或
-`brain-vision` conda 环境来启动真正的采集器。
+这个入口会自动检查并优先使用 `BRAIN_PYTHON_EXE`、项目 `.venv`、
+`brain-vision` conda 环境或当前 Python。只有能导入 `PyQt5`、`cv2`、`numpy`
+的解释器才会被用于启动真正的采集器；如果都不可用，会打印每个候选解释器的失败原因。
 
 ### 方式 2：PyCharm 启动
 
@@ -57,7 +58,7 @@ python "<repo>\06_Data_Collection\2026-04_jetmax_block_dataset_collection\START_
 - `Script path`
   - `<repo>\06_Data_Collection\2026-04_jetmax_block_dataset_collection\block_dataset_collector.py`
 - `Python interpreter`
-  - `%BRAIN_PYTHON_EXE%`
+  - 推荐选择 `brain-vision` 环境，或任意已安装 `PyQt5`、`opencv-python`、`numpy` 的 Python
 - `Working directory`
   - `<workspace>`
 
