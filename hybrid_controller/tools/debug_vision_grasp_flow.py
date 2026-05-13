@@ -2045,6 +2045,8 @@ def _run_continuous_servo_flow(
         "max_duration_sec": max(0.1, float(args.continuous_max_duration_sec)),
         "z_disabled": bool(args.continuous_disable_z),
         "stopped_step_mode": bool(args.continuous_stopped_step_mode),
+        "drain_frames_first_loop": max(0, int(args.drain_frames)),
+        "drain_frames_each_loop": max(0, int(args.continuous_drain_frames_each_loop)),
         "commands_sent": 0,
         "stop_count": 0,
         "stopped_move_count": 0,
@@ -2165,10 +2167,15 @@ def _run_continuous_servo_flow(
                 exit_code = 1
                 break
 
+            loop_drain_frames = (
+                max(0, int(args.drain_frames))
+                if loop_index == 1
+                else max(0, int(args.continuous_drain_frames_each_loop))
+            )
             try:
                 stream_url, frames = reader.read(
                     frame_count=int(args.frames),
-                    drain_frames=int(args.drain_frames) if loop_index == 1 else 0,
+                    drain_frames=loop_drain_frames,
                     timeout_sec=float(args.timeout_sec),
                 )
                 camera_read_timeouts = 0
@@ -2187,7 +2194,11 @@ def _run_continuous_servo_flow(
                         "action": "STOP",
                         "reason": "camera_read_timeout_wait",
                         "pending": servo_pending,
-                        "trace": {"camera_read_timeouts": int(camera_read_timeouts), "error": str(error)},
+                        "trace": {
+                            "camera_read_timeouts": int(camera_read_timeouts),
+                            "drain_frames": int(loop_drain_frames),
+                            "error": str(error),
+                        },
                     },
                     "snapshot": snapshot,
                     "pre_frame_snapshot": snapshot,
@@ -2373,6 +2384,7 @@ def _run_continuous_servo_flow(
             step_report: dict[str, object] = {
                 "step": loop_index,
                 "elapsed_sec": max(0.0, time.perf_counter() - started_at),
+                "drain_frames": int(loop_drain_frames),
                 "camera_frames_captured": int(len(frames)),
                 "camera_frames_processed": int(len(process_frames)),
                 "slots": _slot_summary(resolved_packet),
@@ -3077,6 +3089,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--continuous-drain-frames-each-loop",
+        type=int,
+        default=2,
+        help=(
+            "Continuous-mode PC-side MJPEG buffer drain after the first loop. This only consumes frames from the "
+            "already-open reader before processing the newest frame; it does not restart, scan, or modify the robot "
+            "camera sender."
+        ),
+    )
+    parser.add_argument(
         "--capture-backend",
         choices=("auto", "http"),
         default="http",
@@ -3363,6 +3385,7 @@ def main(argv: list[str] | None = None) -> int:
         args.process_latest_frames = 1
         args.frames = 1
         args.drain_frames = 0
+        args.continuous_drain_frames_each_loop = max(0, int(args.continuous_drain_frames_each_loop))
         args.timeout_sec = max(float(args.timeout_sec), 5.0)
         args.capture_backend = "http"
         args.confirm_z_mm = 120.0 if args.confirm_z_mm is None else float(args.confirm_z_mm)
@@ -3608,6 +3631,7 @@ def main(argv: list[str] | None = None) -> int:
         "center_tolerance_px": None if args.center_tolerance_px is None else float(args.center_tolerance_px),
         "frames_requested": int(args.frames),
         "drain_frames": int(args.drain_frames),
+        "continuous_drain_frames_each_loop": int(args.continuous_drain_frames_each_loop),
         "process_latest_frames": int(args.process_latest_frames),
         "capture_backend": str(args.capture_backend),
         "persistent_camera": bool(args.persistent_camera),
