@@ -20,7 +20,10 @@ from hybrid_controller.cylindrical import cylindrical_to_cartesian
 from hybrid_controller.tools.debug_vision_grasp_flow import (
     RosBridgeClient,
     _current_cyl_pose,
+    _frame_pose_age_for_static_snapshot,
     _load_model,
+    _low_height_local_synthetic_slot,
+    _patch_low_height_local_center,
     _point_for_measurement,
     _process_frame_batch,
     _resolve_device,
@@ -30,6 +33,7 @@ from hybrid_controller.tools.debug_vision_grasp_flow import (
     _slot_alignment_provenance,
     _state_message_to_snapshot,
     _PersistentCaptureReader,
+    _upsert_packet_slot,
 )
 from hybrid_controller.vision.calibration_profile import VisionCalibrationProfile
 from hybrid_controller.vision.grasp_profile import apply_vision_grasp_profile
@@ -177,7 +181,10 @@ def _measure_slot(
     snapshot_age_ms = 0.0
     _, captured = reader.read(frame_count=int(frames), drain_frames=int(drain_frames), timeout_sec=float(timeout_sec))
     capture_stats = reader.transport_stats()
-    process_frames = _select_latest_frames(captured, max(1, min(int(frames), 3)))
+    # Low-height stop-settle measurements must represent the current stopped
+    # pose only. Reusing multiple buffered frames or slot history can smear the
+    # center across previous poses and make the search chase stale geometry.
+    process_frames = _select_latest_frames(captured, 1)
     packet, last_frame, next_frame_id, next_debug_slots = _process_frame_batch(
         frames=process_frames,
         model=model,
@@ -185,7 +192,7 @@ def _measure_slot(
         calibration_profile=calibration_profile,
         snapshot_for_stage=snapshot,
         frame_id_start=frame_id,
-        slots=debug_slots,
+        slots=None,
         device=device,
         half=half,
     )
@@ -194,9 +201,31 @@ def _measure_slot(
         config=config,
         snapshot=snapshot,
         snapshot_age_ms=snapshot_age_ms,
-        frame_pose_age_ms=packet.get("queue_age_ms") if isinstance(packet, dict) else None,
+        frame_pose_age_ms=_frame_pose_age_for_static_snapshot(snapshot, packet),
     )
     slot = _select_slot(resolved, int(slot_id))
+    pose_for_patch = _current_cyl_pose(snapshot)
+    measurement_point = str(config.vision_servo_low_height_measurement_point or config.vision_servo_measurement_point)
+    slot = _patch_low_height_local_center(
+        packet=resolved,
+        frame_bgr=last_frame,
+        selected_slot=slot,
+        pending=None,
+        current_z_mm=None if pose_for_patch is None else float(pose_for_patch[2]),
+        confirm_z_mm=float(config.vision_pick_confirm_z_mm),
+        measurement_point=measurement_point,
+    )
+    if slot is None:
+        slot = _low_height_local_synthetic_slot(
+            packet=resolved,
+            frame_bgr=last_frame,
+            pending=None,
+            current_z_mm=None if pose_for_patch is None else float(pose_for_patch[2]),
+            confirm_z_mm=float(config.vision_pick_confirm_z_mm),
+            measurement_point=measurement_point,
+            slot_id=int(slot_id),
+        )
+    _upsert_packet_slot(resolved, slot)
     if slot is None or not bool(slot.get("valid", False)):
         raise RuntimeError(f"Slot {slot_id} not detected in low-height calibration frame.")
     alignment_provenance = _slot_alignment_provenance(slot, resolved)
@@ -236,6 +265,7 @@ def _measure_slot(
         "drain_frames": int(drain_frames),
         "captured_frames": int(len(captured)),
         "processed_frames": int(len(process_frames)),
+        "slot_history_reused": False,
         "camera_transport": capture_stats,
     }
     return sample, resolved, last_frame, next_frame_id, next_debug_slots
@@ -419,7 +449,7 @@ def main(argv: list[str] | None = None) -> int:
                 timeout_sec=float(args.timeout_sec),
                 ros_timeout_sec=float(args.ros_timeout_sec),
                 settle_sec=float(args.settle_sec),
-                debug_slots=debug_slots,
+                debug_slots=None,
             )
             step_dir = output_dir / f"sample_{index:02d}"
             step_dir.mkdir(parents=True, exist_ok=True)

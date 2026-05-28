@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import math
 import time
@@ -6,7 +6,7 @@ from pathlib import Path
 
 try:
     from PyQt5.QtCore import QEvent, QPointF, Qt, pyqtSignal
-    from PyQt5.QtGui import QBrush, QColor, QFont, QPainter, QPainterPath, QPen
+    from PyQt5.QtGui import QBrush, QColor, QFont, QPainter, QPainterPath, QPen, QPalette
     from PyQt5.QtWidgets import (
         QApplication,
         QComboBox,
@@ -16,6 +16,7 @@ try:
         QLabel,
         QLineEdit,
         QMainWindow,
+        QProgressBar,
         QPushButton,
         QScrollArea,
         QSizePolicy,
@@ -282,6 +283,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Hybrid Controller v1")
         self.resize(1360, 860)
         self.setFocusPolicy(Qt.StrongFocus)
+        self._apply_ui_theme()
 
         root = QWidget(self)
         main_layout = QVBoxLayout(root)
@@ -290,11 +292,128 @@ class MainWindow(QMainWindow):
 
         self.top_status_label = QLabel("State: idle | Sources: --")
         self.top_status_label.setObjectName("topStatus")
-        self.top_status_label.setStyleSheet("font: 12pt 'Consolas'; color: #E6E6E6;")
         self.top_status_label.setWordWrap(True)
         self.top_status_label.setMinimumWidth(0)
         self.top_status_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         main_layout.addWidget(self.top_status_label)
+
+        self._workflow_steps: list[tuple[str, str, str]] = [
+            ("Step 1 · 接近目标区", "W/A/S/D 或 ⬅/➡/⬆/⬇", "先移动机械臂到可见目标区域。"),
+            ("Step 2 · 进入选择", "N 或 Enter", "进入目标槽位选择状态。"),
+            ("Step 3 · 选择槽位", "1 / 2 / 3 / 4", "用数字键直接选中目标槽位。"),
+            ("Step 4 · 抓取确认", "Enter 或 C", "确认抓取，执行吸附动作。"),
+            ("Step 5 · 搬运到放置位", "W/A/S/D 或 ⬅/➡/⬆/⬇", "保持抓取后移动到放置目标。"),
+            ("Step 6 · 放置确认", "Enter 或 C", "对准放置位后确认释放。"),
+        ]
+        self._workflow_steps_total = len(self._workflow_steps)
+
+        workflow_card = QFrame()
+        workflow_card.setObjectName("flowCard")
+        workflow_layout = QVBoxLayout(workflow_card)
+        workflow_layout.setSpacing(8)
+        workflow_layout.setContentsMargins(10, 10, 10, 10)
+
+        flow_header = QHBoxLayout()
+        self.flow_title_label = QLabel("全流程控制总览")
+        self.flow_title_label.setObjectName("flowTitle")
+        flow_header.addWidget(self.flow_title_label, stretch=1)
+
+        self.workflow_progress_label = QLabel("进度 0/6")
+        self.workflow_progress_label.setObjectName("workflowProgressLabel")
+        flow_header.addWidget(self.workflow_progress_label)
+        workflow_layout.addLayout(flow_header)
+
+        self.flow_subtitle_label = QLabel("按流程推进控制：每一阶段状态会自动联动。")
+        self.flow_subtitle_label.setObjectName("flowSubtitle")
+        self.flow_subtitle_label.setWordWrap(True)
+        workflow_layout.addWidget(self.flow_subtitle_label)
+
+        self.workflow_progress = QProgressBar()
+        self.workflow_progress.setObjectName("workflowProgressBar")
+        self.workflow_progress.setRange(0, self._workflow_steps_total)
+        self.workflow_progress.setTextVisible(False)
+        workflow_layout.addWidget(self.workflow_progress)
+
+        self.workflow_status_label = QLabel("系统待机")
+        self.workflow_status_label.setObjectName("workflowStatusLabel")
+        self.workflow_status_label.setWordWrap(True)
+        workflow_layout.addWidget(self.workflow_status_label)
+
+        self.workflow_steps_layout = QVBoxLayout()
+        self.workflow_steps_layout.setSpacing(6)
+        self._workflow_step_rows: list[tuple[QFrame, QLabel, QLabel, QLabel]] = []
+        for step_idx, (step_text, shortcut_text, description) in enumerate(self._workflow_steps, start=1):
+            step_row = QFrame()
+            step_row.setObjectName("workflowStep")
+            row_layout = QVBoxLayout(step_row)
+            row_layout.setContentsMargins(8, 6, 8, 6)
+            row_layout.setSpacing(2)
+
+            title_row = QHBoxLayout()
+            title_row.setSpacing(8)
+            index_label = QLabel(str(step_idx))
+            index_label.setObjectName("workflowStepIndex")
+            title_label = QLabel(step_text)
+            title_label.setObjectName("workflowStepTitle")
+            title_label.setWordWrap(True)
+            title_row.addWidget(index_label)
+            title_row.addWidget(title_label, stretch=1)
+            status_tag = QLabel("待开始")
+            status_tag.setObjectName("workflowStepState")
+            status_tag.setAlignment(Qt.AlignRight)
+            title_row.addWidget(status_tag)
+
+            detail_label = QLabel(f"{shortcut_text} | {description}")
+            detail_label.setObjectName("workflowStepDetail")
+            detail_label.setWordWrap(True)
+            row_layout.addLayout(title_row)
+            row_layout.addWidget(detail_label)
+            self._workflow_step_rows.append((step_row, detail_label, status_tag, title_label))
+            self.workflow_steps_layout.addWidget(step_row)
+
+        workflow_layout.addLayout(self.workflow_steps_layout)
+
+        self.quick_guide_label = QLabel(
+            "当前控制策略：键盘替代 MI 控制；1~4 替代 SSVEP 目标选择。"
+        )
+        self.quick_guide_label.setWordWrap(True)
+        workflow_layout.addWidget(self.quick_guide_label)
+        self.quick_guide_label.setObjectName("quickGuideLabel")
+
+        control_keys_card = QFrame()
+        control_keys_card.setObjectName("shortcutCard")
+        control_keys_layout = QVBoxLayout(control_keys_card)
+        control_keys_layout.setSpacing(6)
+        control_keys_layout.setContentsMargins(8, 8, 8, 8)
+        control_keys_title = QLabel("手动控制映射（演示）")
+        control_keys_title.setObjectName("shortcutTitle")
+        control_keys_layout.addWidget(control_keys_title)
+        self._append_shortcut_row(
+            control_keys_layout,
+            [("W", "move"), ("A", "move"), ("S", "move"), ("D", "move"), ("↑", "move"), ("↓", "move"), ("←", "move"), ("→", "move")],
+            "移动：按住保持微调前后左右",
+            chip_width=28,
+        )
+        self._append_shortcut_row(
+            control_keys_layout,
+            [("N", "logic"), ("R", "logic")],
+            "N=开始选择  R=复位",
+            chip_width=30,
+        )
+        self._append_shortcut_row(
+            control_keys_layout,
+            [("1", "target"), ("2", "target"), ("3", "target"), ("4", "target")],
+            "1~4=目标槽位选择（代替 SSVEP）",
+            chip_width=26,
+        )
+        self._append_shortcut_row(
+            control_keys_layout,
+            [("Enter", "action"), ("C", "action"), ("Esc", "danger"), ("X", "danger")],
+            "Enter/C=确认  Esc/X=取消",
+            chip_width=46,
+        )
+        workflow_layout.addWidget(control_keys_card)
+        main_layout.addWidget(workflow_card)
 
         content_layout = QHBoxLayout()
         content_layout.setSpacing(10)
@@ -314,12 +433,11 @@ class MainWindow(QMainWindow):
         # Floating robot pose card anchored to top-right of the camera panel.
         self.pose_overlay = QFrame(self.vision_widget)
         self.pose_overlay.setObjectName("poseOverlay")
-        self.pose_overlay.setStyleSheet("QFrame#poseOverlay { background: rgba(23, 27, 34, 230); border: 1px solid #2E3540; border-radius: 6px; }")
         pose_overlay_layout = QVBoxLayout(self.pose_overlay)
         pose_overlay_layout.setContentsMargins(8, 8, 8, 8)
         pose_overlay_layout.setSpacing(6)
         self.pose_title_label = QLabel("Robot Pose")
-        self.pose_title_label.setStyleSheet("font: bold 11pt 'Arial'; color: #F0F4F8; border: none;")
+        self.pose_title_label.setObjectName("poseTitle")
         pose_overlay_layout.addWidget(self.pose_title_label)
         self.scene_widget = ControlSceneWidget(self.pose_overlay)
         pose_overlay_layout.addWidget(self.scene_widget, stretch=1)
@@ -327,18 +445,20 @@ class MainWindow(QMainWindow):
         self.pose_overlay.raise_()
 
         right_panel = QFrame()
+        right_panel.setObjectName("sidePanel")
         right_panel.setFrameShape(QFrame.StyledPanel)
         right_panel.setMinimumWidth(320)
         right_panel.setMaximumWidth(440)
-        right_panel.setStyleSheet("QFrame { background: #171B22; border: 1px solid #2E3540; }")
         right_shell_layout = QVBoxLayout(right_panel)
         right_shell_layout.setContentsMargins(0, 0, 0, 0)
         right_shell_layout.setSpacing(0)
         right_scroll = QScrollArea(right_panel)
+        right_scroll.setObjectName("sideScroll")
         right_scroll.setWidgetResizable(True)
         right_scroll.setFrameShape(QFrame.NoFrame)
         right_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         right_content = QWidget()
+        right_content.setObjectName("sideContent")
         right_content.setMinimumWidth(0)
         right_content.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         right_layout = QVBoxLayout(right_content)
@@ -348,11 +468,16 @@ class MainWindow(QMainWindow):
         controls_row = QGridLayout()
         controls_row.setHorizontalSpacing(6)
         controls_row.setVerticalSpacing(6)
-        self.robot_start_button = QPushButton("启动机械臂")
+        self.robot_start_button = QPushButton("启动机器人")
+        self.robot_start_button.setProperty("controlType", "primary")
         self.robot_connect_button = QPushButton("连接机器人")
-        self.abort_button = QPushButton("Abort")
-        self.reset_button = QPushButton("Reset")
-        self.sucker_off_button = QPushButton("Sucker Off")
+        self.robot_connect_button.setProperty("controlType", "primary")
+        self.abort_button = QPushButton("中止")
+        self.abort_button.setProperty("controlType", "danger")
+        self.reset_button = QPushButton("复位")
+        self.reset_button.setProperty("controlType", "warning")
+        self.sucker_off_button = QPushButton("吸嘴关断")
+        self.sucker_off_button.setProperty("controlType", "neutral")
         controls_row.addWidget(self.robot_start_button, 0, 0)
         controls_row.addWidget(self.robot_connect_button, 0, 1)
         controls_row.addWidget(self.abort_button, 1, 0)
@@ -368,17 +493,17 @@ class MainWindow(QMainWindow):
         self.reset_button.clicked.connect(self.reset_requested.emit)
         self.sucker_off_button.clicked.connect(self.sucker_off_requested.emit)
 
-        pick_title = QLabel("Pick/Place Debug")
-        pick_title.setStyleSheet("font: bold 11pt 'Arial'; color: #F0F4F8;")
+        pick_title = QLabel("抓取放置调试")
+        pick_title.setObjectName("panelSectionTitle")
         right_layout.addWidget(pick_title)
 
         pick_row = QGridLayout()
         pick_row.setHorizontalSpacing(6)
         pick_row.setVerticalSpacing(6)
-        self.pick_slot1_button = QPushButton("Pick 1")
-        self.pick_slot2_button = QPushButton("Pick 2")
-        self.pick_slot3_button = QPushButton("Pick 3")
-        self.pick_slot4_button = QPushButton("Pick 4")
+        self.pick_slot1_button = QPushButton("选槽 1")
+        self.pick_slot2_button = QPushButton("选槽 2")
+        self.pick_slot3_button = QPushButton("选槽 3")
+        self.pick_slot4_button = QPushButton("选槽 4")
         pick_row.addWidget(self.pick_slot1_button, 0, 0)
         pick_row.addWidget(self.pick_slot2_button, 0, 1)
         pick_row.addWidget(self.pick_slot3_button, 1, 0)
@@ -388,54 +513,54 @@ class MainWindow(QMainWindow):
         right_layout.addLayout(pick_row)
 
         pick_row2 = QHBoxLayout()
-        self.place_now_button = QPushButton("Place")
+        self.place_now_button = QPushButton("立即放置")
         pick_row2.addWidget(self.place_now_button)
         right_layout.addLayout(pick_row2)
 
         pick_bias_row = QHBoxLayout()
-        self.pick_r_minus_1_button = QPushButton("r-1")
-        self.pick_r_plus_1_button = QPushButton("r+1")
-        self.pick_r_reset_button = QPushButton("r reset")
+        self.pick_r_minus_1_button = QPushButton("R-")
+        self.pick_r_plus_1_button = QPushButton("R+")
+        self.pick_r_reset_button = QPushButton("R重置")
         pick_bias_row.addWidget(self.pick_r_minus_1_button)
         pick_bias_row.addWidget(self.pick_r_plus_1_button)
         pick_bias_row.addWidget(self.pick_r_reset_button)
         right_layout.addLayout(pick_bias_row)
 
         pick_tangent_bias_row = QHBoxLayout()
-        self.pick_tangent_minus_1_button = QPushButton("tan-1")
-        self.pick_tangent_plus_1_button = QPushButton("tan+1")
-        self.pick_tangent_reset_button = QPushButton("tan reset")
+        self.pick_tangent_minus_1_button = QPushButton("切向-")
+        self.pick_tangent_plus_1_button = QPushButton("切向+")
+        self.pick_tangent_reset_button = QPushButton("切向归零")
         pick_tangent_bias_row.addWidget(self.pick_tangent_minus_1_button)
         pick_tangent_bias_row.addWidget(self.pick_tangent_plus_1_button)
         pick_tangent_bias_row.addWidget(self.pick_tangent_reset_button)
         right_layout.addLayout(pick_tangent_bias_row)
 
         pick_theta_bias_row = QHBoxLayout()
-        self.pick_theta_minus_1_button = QPushButton("th-1")
-        self.pick_theta_plus_1_button = QPushButton("th+1")
-        self.pick_theta_reset_button = QPushButton("th reset")
+        self.pick_theta_minus_1_button = QPushButton("角度-")
+        self.pick_theta_plus_1_button = QPushButton("角度+")
+        self.pick_theta_reset_button = QPushButton("角度归零")
         pick_theta_bias_row.addWidget(self.pick_theta_minus_1_button)
         pick_theta_bias_row.addWidget(self.pick_theta_plus_1_button)
         pick_theta_bias_row.addWidget(self.pick_theta_reset_button)
         right_layout.addLayout(pick_theta_bias_row)
 
-        self.pick_r_bias_label = QLabel("Pick r bias: +0.0 mm")
-        self.pick_r_bias_label.setStyleSheet("font: 10pt 'Consolas'; color: #D8DEE9; border: none;")
+        self.pick_r_bias_label = QLabel("半径偏差: +0.0 mm")
+        self.pick_r_bias_label.setObjectName("rightInfoLabel")
         right_layout.addWidget(self.pick_r_bias_label)
-        self.pick_tangent_bias_label = QLabel("Pick tangent bias: +0.0 mm")
-        self.pick_tangent_bias_label.setStyleSheet("font: 10pt 'Consolas'; color: #D8DEE9; border: none;")
+        self.pick_tangent_bias_label = QLabel("切向偏差: +0.0 mm")
+        self.pick_tangent_bias_label.setObjectName("rightInfoLabel")
         right_layout.addWidget(self.pick_tangent_bias_label)
-        self.pick_theta_bias_label = QLabel("Pick theta bias: +0.0 deg")
-        self.pick_theta_bias_label.setStyleSheet("font: 10pt 'Consolas'; color: #D8DEE9; border: none;")
+        self.pick_theta_bias_label = QLabel("角度偏差: +0.0 deg")
+        self.pick_theta_bias_label.setObjectName("rightInfoLabel")
         right_layout.addWidget(self.pick_theta_bias_label)
 
-        pick_tuning_title = QLabel("Pick Tuning")
-        pick_tuning_title.setStyleSheet("font: bold 10pt 'Arial'; color: #F0F4F8;")
+        pick_tuning_title = QLabel("参数微调")
+        pick_tuning_title.setObjectName("panelSectionTitle")
         right_layout.addWidget(pick_tuning_title)
 
         self.pick_tuning_label = QLabel("approach=130.0 descend=85.0 pre=0.25 hold=0.15 lift=0.80\nplace_z=85.0 release=release rel=0.25 post=0.10 floor=160.0")
         self.pick_tuning_label.setWordWrap(True)
-        self.pick_tuning_label.setStyleSheet("font: 9pt 'Consolas'; color: #D8DEE9; border: none;")
+        self.pick_tuning_label.setObjectName("rightInfoLabel")
         right_layout.addWidget(self.pick_tuning_label)
 
         pick_tuning_buttons = QGridLayout()
@@ -485,9 +610,9 @@ class MainWindow(QMainWindow):
         right_layout.addLayout(pick_tuning_buttons)
 
         pick_tuning_action_row = QHBoxLayout()
-        self.pick_tune_apply_button = QPushButton("应用到机器人")
-        self.pick_tune_reset_button = QPushButton("恢复默认")
-        self.pick_tune_save_button = QPushButton("保存配置")
+        self.pick_tune_apply_button = QPushButton("应用参数")
+        self.pick_tune_reset_button = QPushButton("重置参数")
+        self.pick_tune_save_button = QPushButton("保存参数")
         pick_tuning_action_row.addWidget(self.pick_tune_apply_button)
         pick_tuning_action_row.addWidget(self.pick_tune_reset_button)
         pick_tuning_action_row.addWidget(self.pick_tune_save_button)
@@ -531,7 +656,7 @@ class MainWindow(QMainWindow):
         self.pick_tune_save_button.clicked.connect(self.pick_tuning_save_requested.emit)
 
         ssvep_title = QLabel("SSVEP")
-        ssvep_title.setStyleSheet("font: bold 11pt 'Arial'; color: #F0F4F8;")
+        ssvep_title.setObjectName("panelSectionTitle")
         right_layout.addWidget(ssvep_title)
 
         ssvep_config_row = QHBoxLayout()
@@ -560,12 +685,11 @@ class MainWindow(QMainWindow):
 
         self.ssvep_pretrain_hint_label = QLabel("")
         self.ssvep_pretrain_hint_label.setWordWrap(True)
-        self.ssvep_pretrain_hint_label.setStyleSheet("font: 9pt 'Consolas'; color: #C9D4DF; border: none;")
         right_layout.addWidget(self.ssvep_pretrain_hint_label)
         self._update_ssvep_pretrain_hint()
 
         ssvep_row_1 = QHBoxLayout()
-        self.ssvep_connect_button = QPushButton("连接设备")
+        self.ssvep_connect_button = QPushButton("连接SSVEP")
         self.ssvep_pretrain_button = QPushButton("开始预训练")
         ssvep_row_1.addWidget(self.ssvep_connect_button)
         ssvep_row_1.addWidget(self.ssvep_pretrain_button)
@@ -573,24 +697,22 @@ class MainWindow(QMainWindow):
 
         ssvep_row_2 = QHBoxLayout()
         self.ssvep_profile_combo = QComboBox()
-        self.ssvep_profile_combo.addItem("自动（最新训练）", AUTO_PROFILE_VALUE)
+        self.ssvep_profile_combo.addItem("自动（推荐）", AUTO_PROFILE_VALUE)
         self.ssvep_profile_combo.setMinimumContentsLength(18)
         self.ssvep_profile_combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
-        self.ssvep_load_profile_button = QPushButton("加载选中")
+        self.ssvep_load_profile_button = QPushButton("加载Profile")
         ssvep_row_2.addWidget(self.ssvep_profile_combo, stretch=1)
         ssvep_row_2.addWidget(self.ssvep_load_profile_button)
         right_layout.addLayout(ssvep_row_2)
 
         ssvep_row_3 = QHBoxLayout()
-        self.ssvep_open_profile_dir_button = QPushButton("打开 Profile 目录")
+        self.ssvep_open_profile_dir_button = QPushButton("打开Profile目录")
         ssvep_row_3.addWidget(self.ssvep_open_profile_dir_button)
         right_layout.addLayout(ssvep_row_3)
 
-        self.ssvep_profile_hint_label = QLabel("当前没有已训练 Profile，可先预训练，或直接用默认 fallback 启动。")
+        self.ssvep_profile_hint_label = QLabel("当前无Profile，可直接预训练，或直接使用fallback自动模式。")
+        self.ssvep_profile_hint_label.setObjectName("helpLabel")
         self.ssvep_profile_hint_label.setWordWrap(True)
-        self.ssvep_profile_hint_label.setStyleSheet(
-            "font: 9pt 'Microsoft YaHei'; color: #C9D4DF; border: none;"
-        )
         right_layout.addWidget(self.ssvep_profile_hint_label)
 
         ssvep_row_4 = QHBoxLayout()
@@ -667,24 +789,43 @@ class MainWindow(QMainWindow):
         self.ssvep_recognition_toggle_button.toggled.connect(self._on_ssvep_recognition_toggled)
 
         self.robot_label = QLabel("Robot: disconnected")
+        self.robot_label.setObjectName("rightStatusLabel")
         self.robot_label.setWordWrap(True)
         self.preflight_label = QLabel("Preflight: --")
+        self.preflight_label.setObjectName("rightStatusLabel")
         self.preflight_label.setWordWrap(True)
         self.cyl_label = QLabel("Robot Cyl: --")
+        self.cyl_label.setObjectName("rightStatusLabel")
         self.cyl_label.setWordWrap(True)
         self.selection_label = QLabel("Selection: none")
+        self.selection_label.setObjectName("rightStatusLabel")
         self.selection_label.setWordWrap(True)
         self.targets_label = QLabel("Slots: []")
+        self.targets_label.setObjectName("rightStatusLabel")
         self.targets_label.setWordWrap(True)
         self.raw_input_label = QLabel("Input: mi=-- ssvep=--")
+        self.raw_input_label.setObjectName("rightStatusLabel")
         self.raw_input_label.setWordWrap(True)
         self.status_label = QLabel("Status: ready")
+        self.status_label.setObjectName("rightStatusLabel")
         self.status_label.setWordWrap(True)
+        self.vision_servo_status_label = QLabel("连续对中状态: --")
+        self.vision_servo_status_label.setObjectName("rightStatusLabel")
+        self.vision_servo_status_label.setWordWrap(True)
+        self.vision_servo_command_label = QLabel("连续对中命令: --")
+        self.vision_servo_command_label.setObjectName("rightStatusLabel")
+        self.vision_servo_command_label.setWordWrap(True)
+        self.vision_servo_debug_label = QLabel("连续对中Trace: --")
+        self.vision_servo_debug_label.setObjectName("rightStatusLabel")
+        self.vision_servo_debug_label.setWordWrap(True)
         self.ssvep_profile_label = QLabel("SSVEP Profile: --")
+        self.ssvep_profile_label.setObjectName("rightStatusLabel")
         self.ssvep_profile_label.setWordWrap(True)
         self.ssvep_runtime_label = QLabel("SSVEP Runtime: --")
+        self.ssvep_runtime_label.setObjectName("rightStatusLabel")
         self.ssvep_runtime_label.setWordWrap(True)
         self.ssvep_result_label = QLabel("SSVEP Raw: --")
+        self.ssvep_result_label.setObjectName("rightStatusLabel")
         self.ssvep_result_label.setWordWrap(True)
         for label in (
             self.robot_label,
@@ -694,11 +835,13 @@ class MainWindow(QMainWindow):
             self.targets_label,
             self.raw_input_label,
             self.status_label,
+            self.vision_servo_status_label,
+            self.vision_servo_command_label,
+            self.vision_servo_debug_label,
             self.ssvep_profile_label,
             self.ssvep_runtime_label,
             self.ssvep_result_label,
         ):
-            label.setStyleSheet("font: 10pt 'Consolas'; color: #D8DEE9; border: none;")
             label.setMinimumWidth(0)
             label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
             right_layout.addWidget(label)
@@ -709,16 +852,16 @@ class MainWindow(QMainWindow):
         content_layout.addWidget(right_panel, stretch=0)
 
         self.bottom_status_label = QLabel("Vision: --")
-        self.bottom_status_label.setStyleSheet("font: 10pt 'Consolas'; color: #E6E6E6;")
+        self.bottom_status_label.setObjectName("bottomStatusLabel")
         self.bottom_status_label.setWordWrap(True)
         self.bottom_status_label.setMinimumWidth(0)
         self.bottom_status_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         main_layout.addWidget(self.bottom_status_label)
 
         self.log_view = QTextEdit()
+        self.log_view.setObjectName("logView")
         self.log_view.setReadOnly(True)
         self.log_view.setMinimumHeight(110)
-        self.log_view.setStyleSheet("background: #11151B; color: #D8DEE9; font: 9pt 'Consolas';")
         main_layout.addWidget(self.log_view)
 
         self.setCentralWidget(root)
@@ -726,6 +869,397 @@ class MainWindow(QMainWindow):
         app = QApplication.instance()
         if app is not None:
             app.installEventFilter(self)
+
+    @staticmethod
+    def _ui_stylesheet() -> str:
+        return (
+            "QWidget {"
+            "  color: #DCE8F4;"
+            "  font-family: 'Microsoft YaHei', 'Segoe UI', 'PingFang SC', 'Consolas', sans-serif;"
+            "  background-color: transparent;"
+            "}"
+            "QMainWindow {"
+            "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #0B111C, stop:1 #080C12);"
+            "}"
+            "QFrame#flowCard, QFrame#sidePanel, QFrame#poseOverlay, QFrame#shortcutCard {"
+            "  border: 1px solid #2D3B4E;"
+            "  border-radius: 10px;"
+            "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #1A2230, stop:1 #161D29);"
+            "}"
+            "QFrame#flowCard {"
+            "  border: 1px solid #314A68;"
+            "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #1C2840, stop:1 #151E2F);"
+            "}"
+            "QFrame#shortcutCard {"
+            "  border: 1px solid #406487;"
+            "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #202A3E, stop:1 #161D2D);"
+            "}"
+            "QFrame#sidePanel {"
+            "  border-top-left-radius: 12px;"
+            "  border-top-right-radius: 12px;"
+            "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #171F2D, stop:1 #111927);"
+            "  border: 1px solid #2A3B53;"
+            "}"
+            "QWidget#sideContent {"
+            "  background: transparent;"
+            "}"
+            "QScrollArea#sideScroll {"
+            "  background: transparent;"
+            "  border: none;"
+            "}"
+            "QLabel#topStatus {"
+            "  background: rgba(10, 16, 26, 0.84);"
+            "  border: 1px solid #2C3A4C;"
+            "  border-radius: 10px;"
+            "  padding: 8px 10px;"
+            "  font-size: 10pt;"
+            "  font-weight: 600;"
+            "}"
+            "QLabel#flowTitle,"
+            "QLabel#flowSubtitle,"
+            "QLabel#quickGuideLabel,"
+            "QLabel#workflowStatusLabel,"
+            "QLabel#workflowProgressLabel,"
+            "QLabel#poseTitle,"
+            "QLabel#panelSectionTitle,"
+            "QLabel#bottomStatusLabel,"
+            "QLabel#leftPanelTitle,"
+            "QLabel#rightInfoLabel,"
+            "QLabel#rightStatusLabel,"
+            "QLabel#workflowStepTitle,"
+            "QLabel#workflowStepDetail {"
+            "  color: #E6F0FC;"
+            "}"
+            "QLabel#flowSubtitle,"
+            "QLabel#quickGuideLabel,"
+            "QLabel#workflowStepDetail,"
+            "QLabel#rightStatusLabel,"
+            "QLabel#bottomStatusLabel,"
+            "QLabel#shortcutTitle,"
+            "QLabel#keyHintLabel {"
+            "  color: #B8C4D6;"
+            "}"
+            "QLabel#helpLabel {"
+            "  color: #C9D4DF;"
+            "  font-size: 9pt;"
+            "}"
+            "QLabel#flowTitle,"
+            "QLabel#panelSectionTitle,"
+            "QLabel#poseTitle,"
+            "QLabel#quickGuideLabel {"
+            "  font-weight: 700;"
+            "}"
+            "QLabel#flowTitle {"
+            "  font-size: 13pt;"
+            "}"
+            "QLabel#panelSectionTitle {"
+            "  font-size: 11pt;"
+            "  margin-top: 6px;"
+            "  margin-bottom: 2px;"
+            "}"
+            "QLabel#poseTitle {"
+            "  font-size: 11pt;"
+            "}"
+            "QLabel#panelSectionTitle {"
+            "  padding: 4px 0px 4px 0px;"
+            "}"
+            "QLabel#shortcutTitle {"
+            "  font-size: 10pt;"
+            "  font-weight: 700;"
+            "  color: #E8F3FF;"
+            "}"
+            "QLabel#keyHintLabel {"
+            "  color: #BDD0E6;"
+            "  font-size: 9pt;"
+            "}"
+            "QLabel#workflowProgressLabel {"
+            "  font-size: 10pt;"
+            "  font-weight: 700;"
+            "  color: #B6D7FF;"
+            "  border: 1px solid #2D3C53;"
+            "  border-radius: 8px;"
+            "  padding: 2px 8px;"
+            "  background: rgba(13, 24, 39, 0.55);"
+            "}"
+            "QLabel#workflowStatusLabel {"
+            "  font-size: 10pt;"
+            "}"
+            "QLabel#workflowStatusLabel[statusTone='active'] {"
+            "  color: #D7F7C6;"
+            "}"
+            "QLabel#workflowStatusLabel[statusTone='idle'] {"
+            "  color: #C8D4DE;"
+            "}"
+            "QLabel#workflowStatusLabel[statusTone='error'] {"
+            "  color: #FFD1D6;"
+            "}"
+            "QProgressBar#workflowProgressBar {"
+            "  border: 1px solid #2E3A4A;"
+            "  border-radius: 6px;"
+            "  background: #121822;"
+            "  text-align: center;"
+            "  min-height: 14px;"
+            "}"
+            "QProgressBar#workflowProgressBar::chunk {"
+            "  background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #5CC6FF, stop:1 #8EE5C0);"
+            "  border-radius: 5px;"
+            "}"
+            "QFrame#workflowStep {"
+            "  border-radius: 8px;"
+            "}"
+            "QFrame#shortcutRow {"
+            "  border: 1px solid #2D415A;"
+            "  border-radius: 8px;"
+            "  background: rgba(18, 31, 46, 0.55);"
+            "}"
+            "QLabel#workflowStepIndex {"
+            "  font-size: 11pt;"
+            "  font-weight: 700;"
+            "  color: #1A2230;"
+            "  background: #8BC6FF;"
+            "  border-radius: 9px;"
+            "  min-width: 18px;"
+            "  min-height: 18px;"
+            "  padding: 1px 0px 1px 0px;"
+            "  text-align: center;"
+            "}"
+            "QLabel#workflowStepTitle {"
+            "  font-size: 10pt;"
+            "  font-weight: 700;"
+            "}"
+            "QLabel#workflowStepDetail {"
+            "  font-size: 9pt;"
+            "}"
+            "QLabel#workflowStepState {"
+            "  font-size: 9pt;"
+            "  font-weight: 700;"
+            "}"
+            "QLabel#keyChip {"
+            "  font-family: 'Consolas', 'Microsoft YaHei', 'Segoe UI', sans-serif;"
+            "  font-size: 9pt;"
+            "  font-weight: 700;"
+            "  border: 1px solid #46688B;"
+            "  border-radius: 8px;"
+            "  padding: 4px 6px;"
+            "  color: #EAF4FF;"
+            "  background: #25344A;"
+            "}"
+            "QLabel#keyChip[tone='move'] {"
+            "  background: #1F436D;"
+            "  border-color: #4F7CAA;"
+            "  color: #D8ECFF;"
+            "}"
+            "QLabel#keyChip[tone='target'] {"
+            "  background: #2E5E75;"
+            "  border-color: #5AA0B9;"
+            "  color: #DDF5FF;"
+            "}"
+            "QLabel#keyChip[tone='action'] {"
+            "  background: #2D6F6A;"
+            "  border-color: #63B0A8;"
+            "  color: #E1FFF4;"
+            "}"
+            "QLabel#keyChip[tone='logic'] {"
+            "  background: #6F4A6B;"
+            "  border-color: #B27FB0;"
+            "  color: #F8E6FF;"
+            "}"
+            "QLabel#keyChip[tone='danger'] {"
+            "  background: #6B2A3C;"
+            "  border-color: #B54F64;"
+            "  color: #FFE3EB;"
+            "}"
+            "QLabel#workflowStepTitle[stepState='done'] {"
+            "  color: #D8F1E1;"
+            "}"
+            "QLabel#workflowStepDetail[stepState='done'] {"
+            "  color: #B8DCC6;"
+            "}"
+            "QLabel#workflowStepState[stepState='done'] {"
+            "  color: #B8E5C8;"
+            "}"
+            "QLabel#workflowStepTitle[stepState='active'] {"
+            "  color: #F8FFF9;"
+            "}"
+            "QLabel#workflowStepDetail[stepState='active'] {"
+            "  color: #D8ECF4;"
+            "}"
+            "QLabel#workflowStepState[stepState='active'] {"
+            "  color: #74C7FF;"
+            "}"
+            "QLabel#workflowStepTitle[stepState='pending'] {"
+            "  color: #A8B8CB;"
+            "}"
+            "QLabel#workflowStepDetail[stepState='pending'] {"
+            "  color: #8B97A3;"
+            "}"
+            "QLabel#workflowStepState[stepState='pending'] {"
+            "  color: #8B97A3;"
+            "}"
+            "QLabel#workflowStepTitle[stepState='error'] {"
+            "  color: #FFD1D1;"
+            "}"
+            "QLabel#workflowStepDetail[stepState='error'] {"
+            "  color: #FFCACA;"
+            "}"
+            "QLabel#workflowStepState[stepState='error'] {"
+            "  color: #FFD1D1;"
+            "}"
+            "QFrame#workflowStep {"
+            "  border: 1px solid #344A64;"
+            "  background: #151E2A;"
+            "}"
+            "QFrame#workflowStep[stepState='pending'] {"
+            "  background: #151A24;"
+            "  border-color: #262F3A;"
+            "}"
+            "QFrame#workflowStep[stepState='active'] {"
+            "  background: #1F3B54;"
+            "  border: 1px solid #74C7FF;"
+            "}"
+            "QFrame#workflowStep[stepState='done'] {"
+            "  background: #1F3B54;"
+            "  border: 1px solid #3E86A8;"
+            "}"
+            "QFrame#workflowStep[stepState='error'] {"
+            "  background: #3B1F2E;"
+            "  border: 1px solid #B64B5E;"
+            "}"
+            "QLabel#rightInfoLabel,"
+            "QLabel#rightStatusLabel,"
+            "QLabel#bottomStatusLabel {"
+            "  font-size: 10pt;"
+            "}"
+            "QPushButton {"
+            "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #2F3F57, stop:1 #25324A);"
+            "  border: 1px solid #445A77;"
+            "  border-radius: 8px;"
+            "  padding: 7px 10px;"
+            "  color: #EDF4FF;"
+            "  font-weight: 600;"
+            "}"
+            "QPushButton:focus {"
+            "  outline: 0;"
+            "  border: 1px solid #84D0FF;"
+            "}"
+            "QPushButton[controlType='primary'] {"
+            "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #2C4E80, stop:1 #25405E);"
+            "  border: 1px solid #4C6A92;"
+            "  color: #F0F8FF;"
+            "}"
+            "QPushButton[controlType='primary']:hover {"
+            "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #3569AA, stop:1 #2B4B74);"
+            "  border-color: #89D1FF;"
+            "}"
+            "QPushButton[controlType='warning'] {"
+            "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #7A5A27, stop:1 #4A3A15);"
+            "  border: 1px solid #B98D34;"
+            "}"
+            "QPushButton[controlType='warning']:hover {"
+            "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #8D6B2F, stop:1 #574217);"
+            "}"
+            "QPushButton[controlType='danger'] {"
+            "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #6A2A35, stop:1 #4D1F2A);"
+            "  border: 1px solid #B14C5A;"
+            "  color: #FFE5EA;"
+            "}"
+            "QPushButton[controlType='danger']:hover {"
+            "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #8B3745, stop:1 #6A2A35);"
+            "  border-color: #F18CA0;"
+            "}"
+            "QPushButton[controlType='neutral'] {"
+            "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #2F3F57, stop:1 #25324A);"
+            "  border-color: #445A77;"
+            "}"
+            "QPushButton:hover {"
+            "  border: 1px solid #73B8FF;"
+            "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #395675, stop:1 #30435D);"
+            "}"
+            "QPushButton:pressed {"
+            "  background: #1D2A3F;"
+            "  border-color: #5A91D9;"
+            "}"
+            "QPushButton:disabled {"
+            "  background: #1A2330;"
+            "  border-color: #2B3440;"
+            "  color: #768395;"
+            "}"
+            "QLineEdit, QTextEdit, QComboBox, QScrollArea, QPlainTextEdit {"
+            "  background: #121B27;"
+            "  border: 1px solid #2F3F53;"
+            "  border-radius: 8px;"
+            "  color: #DCE8F4;"
+            "  padding: 4px 6px;"
+            "}"
+            "QTextEdit#logView {"
+            "  background: #11151B;"
+            "  color: #D8DEE9;"
+            "  font: 9pt 'Consolas';"
+            "}"
+            "QComboBox::down-arrow {"
+            "  image: none;"
+            "  border: 1px solid #8EA9C6;"
+            "  width: 0px;"
+            "  height: 0px;"
+            "}"
+            "QProgressBar {"
+            "  border: 1px solid #2F3F54;"
+            "  border-radius: 7px;"
+            "  background: #101724;"
+            "  text-align: center;"
+            "  min-height: 12px;"
+            "}"
+            "QProgressBar::chunk {"
+            "  background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #6FD2FF, stop:1 #A3FFC2);"
+            "  border-radius: 6px;"
+            "}"
+            "QScrollBar:vertical {"
+            "  background: #121B27;"
+            "  width: 10px;"
+            "  margin: 0;"
+            "}"
+            "QScrollBar::handle:vertical {"
+            "  background: #456182;"
+            "  min-height: 24px;"
+            "  border-radius: 5px;"
+            "}"
+            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical, QScrollBar::up-arrow:vertical, QScrollBar::down-arrow:vertical {"
+            "  background: none;"
+            "  border: none;"
+            "  height: 0px;"
+            "}"
+            "QFrame#poseOverlay {"
+            "  background: rgba(23, 31, 44, 0.88);"
+            "}"
+            "QLabel {"
+            "  border: none;"
+            "}"
+        )
+
+    @staticmethod
+    def _apply_fusion_dark_palette() -> None:
+        app = QApplication.instance()
+        if app is None:
+            return
+        app.setStyle("Fusion")
+        palette = QPalette()
+        palette.setColor(QPalette.Window, QColor(14, 20, 31))
+        palette.setColor(QPalette.WindowText, QColor(224, 234, 245))
+        palette.setColor(QPalette.Base, QColor(18, 24, 34))
+        palette.setColor(QPalette.AlternateBase, QColor(22, 29, 42))
+        palette.setColor(QPalette.ToolTipBase, QColor(26, 34, 48))
+        palette.setColor(QPalette.ToolTipText, QColor(232, 242, 255))
+        palette.setColor(QPalette.Text, QColor(225, 234, 245))
+        palette.setColor(QPalette.Button, QColor(27, 38, 54))
+        palette.setColor(QPalette.ButtonText, QColor(235, 244, 255))
+        palette.setColor(QPalette.BrightText, QColor(255, 94, 94))
+        palette.setColor(QPalette.Highlight, QColor(97, 179, 255))
+        palette.setColor(QPalette.HighlightedText, QColor(18, 24, 36))
+        app.setPalette(palette)
+
+    def _apply_ui_theme(self) -> None:
+        self._apply_fusion_dark_palette()
+        self.setStyleSheet(self._ui_stylesheet())
 
     def shutdown(self) -> None:
         app = QApplication.instance()
@@ -753,6 +1287,39 @@ class MainWindow(QMainWindow):
         y_pos = margin
         self.pose_overlay.setGeometry(int(x_pos), int(y_pos), int(width), int(height))
         self.pose_overlay.raise_()
+
+    def _make_key_chip(self, text: str, tone: str) -> QLabel:
+        chip = QLabel(text)
+        chip.setObjectName("keyChip")
+        chip.setAlignment(Qt.AlignCenter)
+        chip.setProperty("tone", tone)
+        chip.setMinimumHeight(22)
+        chip.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
+        return chip
+
+    def _append_shortcut_row(
+        self,
+        container: QVBoxLayout,
+        keys: list[tuple[str, str]],
+        description: str,
+        *,
+        chip_width: int = 34,
+    ) -> None:
+        row = QFrame()
+        row.setObjectName("shortcutRow")
+        row_layout = QHBoxLayout(row)
+        row_layout.setSpacing(6)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        for text, tone in keys:
+            chip = self._make_key_chip(text, tone)
+            chip.setMinimumWidth(chip_width)
+            row_layout.addWidget(chip)
+        row_layout.addSpacing(4)
+        hint_label = QLabel(description)
+        hint_label.setObjectName("keyHintLabel")
+        hint_label.setWordWrap(True)
+        row_layout.addWidget(hint_label, stretch=1)
+        container.addWidget(row)
 
     def _toggle_fullscreen(self) -> None:
         if self.isFullScreen():
@@ -816,6 +1383,13 @@ class MainWindow(QMainWindow):
                 self._format_timer(snapshot.motion_deadline_ts),
             )
         )
+        self._update_workflow_panel(
+            state=str(state).strip(),
+            robot_connected=bool(robot.connected),
+            keyboard_mode=keyboard_mode,
+            frozen_targets_count=len(snapshot.frozen_targets),
+            carrying=bool(snapshot.carrying),
+        )
         self._set_label_text(
             self.robot_label,
             "Robot: connected={} health={} ack={} err={}".format(
@@ -869,7 +1443,7 @@ class MainWindow(QMainWindow):
         if keyboard_mode:
             self._set_label_text(
                 self.raw_input_label,
-                "Input: keyboard active | N=start R=reset WASD/Arrows=move 1-4=target Enter/C=confirm Esc/X=cancel",
+                "Input: keyboard active | 键盘控制已生效 | N=开始/选择 | R=复位 | WASD/方向键=移动 | 1-4=目标选择 | Enter/C=确认 | Esc/X=取消",
             )
         else:
             self._set_label_text(self.raw_input_label, "Input: ssvep={}".format(snapshot.last_ssvep_raw))
@@ -882,6 +1456,7 @@ class MainWindow(QMainWindow):
                 vision_health_compact,
             )
         )
+        self.update_vision_servo_debug()
         self._set_label_text(
             self.ssvep_profile_label,
             "SSVEP Profile: model={} source={} debug={} count={}\n{}\nlatest={}\nlast_pretrain={}".format(
@@ -927,7 +1502,7 @@ class MainWindow(QMainWindow):
         if keyboard_mode:
             self._set_label_text(
                 self.ssvep_profile_hint_label,
-                "Keyboard operator mode is active. SSVEP controls are disabled here; use 02_SSVEP for standalone debugging.",
+                "当前处于键盘手动模式：SSVEP控制已停用；如需独立调试SSVEP可运行 02_SSVEP。",
             )
         else:
             self._set_label_text(self.ssvep_profile_hint_label, str(ssvep.status_hint))
@@ -936,7 +1511,7 @@ class MainWindow(QMainWindow):
             selected_path=ssvep.profile_path,
             auto_selected=ssvep.profile_source in {"latest", "fallback", "default", "current", "uninitialized"},
         )
-        self._set_button_text(self.ssvep_connect_button, "重新连接设备" if ssvep.connected else "连接设备")
+        self._set_button_text(self.ssvep_connect_button, "重新连接SSVEP" if ssvep.connected else "连接SSVEP")
         ssvep_runtime_idle = not (
             ssvep.busy
             or ssvep.running
@@ -970,10 +1545,10 @@ class MainWindow(QMainWindow):
         self._set_button_enabled(self.ssvep_open_profile_dir_button, not keyboard_mode)
         self._set_button_text(
             self.robot_start_button,
-            "启动中..." if robot.start_active else ("重启机械臂" if robot.connected else "启动机械臂"),
+            "启动中..." if robot.start_active else ("待命中" if robot.connected else "启动机器人"),
         )
         self._set_button_enabled(self.robot_start_button, not robot.start_active)
-        self._set_button_text(self.robot_connect_button, "重连机器人" if robot.connected else "连接机器人")
+        self._set_button_text(self.robot_connect_button, "断开连接" if robot.connected else "连接机器人")
         self._set_button_enabled(self.robot_connect_button, not robot.start_active)
         manual_enabled = bool(robot.connected)
         self._set_button_enabled(self.sucker_off_button, manual_enabled)
@@ -1015,6 +1590,119 @@ class MainWindow(QMainWindow):
         self._set_button_enabled(self.pick_tune_save_button, True)
 
         self.scene_widget.update_scene(robot.scene_snapshot)
+
+    def _update_workflow_panel(
+        self,
+        *,
+        state: str,
+        robot_connected: bool,
+        keyboard_mode: bool,
+        frozen_targets_count: int,
+        carrying: bool,
+    ) -> None:
+        if not robot_connected:
+            stage = 0
+            next_hint = "请先连接机械臂，再开启流程。"
+            command_hint = "按键策略已就绪：W/A/S/D 或方向键移动，1-4 选择。"
+        elif state == "idle":
+            stage = 0
+            next_hint = "机械臂已连接，等待你的下一步。"
+            command_hint = "待机中：R 复位，N 进入选位，Esc/X 取消。"
+        elif state == "s1_mi_move":
+            stage = 1
+            next_hint = "请移动到可见目标区域。"
+            command_hint = "W/S/A/D 或方向键：前后左右微调；继续对准可抓取区域。"
+        elif state == "s1_decision":
+            stage = 2
+            next_hint = "准备进入选择，等待确认。"
+            command_hint = "按 N 或 Enter 进入目标选择模式。"
+        elif state == "s2_target_select":
+            stage = 3
+            if frozen_targets_count <= 0:
+                next_hint = "等待检测到候选槽位后继续。"
+                command_hint = "先移动到目标区边界，目标出现后按 1~4 选定目标。"
+            else:
+                next_hint = "直接使用数字键选定目标槽位。"
+                command_hint = "1 / 2 / 3 / 4 直接选定不同槽位。"
+        elif state == "s2_grab_confirm":
+            stage = 4
+            next_hint = "确认目标后执行抓取。"
+            command_hint = "Enter 或 C 开始抓取；Esc/X 取消当前选中。"
+        elif state == "s2_picking":
+            stage = 4
+            next_hint = "抓取中，保持静止等待动作结束。"
+            command_hint = "请勿重复下发指令，等待执行结果。"
+        elif state == "s3_mi_carry":
+            stage = 5
+            next_hint = "抓取成功，移动到放置目标点。"
+            command_hint = "继续用 W/S/A/D 或方向键平移到目标槽位上方。"
+        elif state == "s3_decision":
+            stage = 6
+            next_hint = "确认放置位置。"
+            command_hint = "Enter/C 对齐后确认放置；Esc/X 取消流程。"
+        elif state == "s3_placing":
+            stage = 6
+            next_hint = "放置中，完成后回到待机。"
+            command_hint = "等待放置动作执行完成后再进行下一轮。"
+        elif state == "finished":
+            stage = self._workflow_steps_total
+            next_hint = "本轮流程完成，等待下一次操作。"
+            command_hint = "按 N 进入下一次选择，或 R 重置到初始位。"
+        elif state == "error":
+            stage = -1
+            next_hint = "检测到异常，请查看日志与状态。"
+            command_hint = "必要时按 Esc/X 停止动作后重置。"
+        else:
+            stage = 0
+            next_hint = f"未知状态: {state}"
+            command_hint = "保持键盘控制：W/A/S/D or方向键移动，1~4选择。"
+
+        if stage <= 0:
+            self.workflow_progress.setValue(0)
+        else:
+            self.workflow_progress.setValue(min(self._workflow_steps_total, stage))
+        self._set_label_text(self.workflow_progress_label, f"进度 {min(stage, self._workflow_steps_total)}/{self._workflow_steps_total}")
+
+        mode_text = "Keyboard" if keyboard_mode else "Hybrid"
+        carrying_text = "抓取中" if carrying else "空载"
+        self._set_label_text(
+            self.workflow_status_label,
+            f"模式={mode_text} | 持载={carrying_text} | 下一步建议：{next_hint}"
+        )
+        self._set_style_property(self.workflow_status_label, "statusTone", "error" if state == "error" else "active" if stage > 0 else "idle")
+        for index, (row_widget, detail_label, state_label, title_label) in enumerate(self._workflow_step_rows, start=1):
+            if stage == -1:
+                row_label_state = "error"
+                state_text = "异常"
+            elif stage == 0:
+                row_label_state = "pending"
+                state_text = "待开始"
+            elif index < stage:
+                row_label_state = "done"
+                state_text = "已完成"
+            elif index == stage:
+                row_label_state = "active"
+                state_text = "进行中"
+            else:
+                row_label_state = "pending"
+                state_text = "待开始"
+
+            self._set_style_property(row_widget, "stepState", row_label_state)
+            row_widget.setVisible(True)
+            title_text = self._workflow_steps[index - 1][0] if index - 1 < len(self._workflow_steps) else ""
+            self._set_label_text(title_label, title_text)
+            self._set_style_property(title_label, "stepState", row_label_state)
+            self._set_label_text(detail_label, f"{self._workflow_steps[index - 1][1]} | {self._workflow_steps[index - 1][2]}")
+            self._set_style_property(detail_label, "stepState", row_label_state)
+            self._set_label_text(state_label, state_text)
+            self._set_style_property(state_label, "stepState", row_label_state)
+
+        if stage == self._workflow_steps_total and not keyboard_mode:
+            self.flow_subtitle_label.setText("本轮完成，可直接开始下一轮。")
+        else:
+            self.flow_subtitle_label.setText("按阶段跟随流程推进，当前状态与步骤会联动。")
+
+        self._set_label_text(self.quick_guide_label, command_hint)
 
     def update_vision_payload(
         self,
@@ -1066,18 +1754,49 @@ class MainWindow(QMainWindow):
     def append_log(self, message: str) -> None:
         self.log_view.append(message)
 
+    def update_vision_servo_debug(self, payload: dict[str, object] | None = None) -> None:
+        data = payload or {}
+        self._set_label_text(
+            self.vision_servo_status_label,
+            "连续对中状态: action={action} context={context} slot={slot_id} source={source} status={status} decision={decision_status}".format(
+                action=data.get("action", "--"),
+                context=data.get("context", "--"),
+                slot_id=data.get("slot_id", "--"),
+                source=data.get("source", "--"),
+                status=data.get("status", "--"),
+                decision_status=data.get("decision_status", "--"),
+            )
+        )
+        self._set_label_text(
+            self.vision_servo_command_label,
+            "连续对中命令: {command} | rate={rates} | center={center_distance}px | z={current_z}/{confirm_z}".format(
+                command=data.get("command", "--"),
+                rates=data.get("rates", "--"),
+                center_distance=data.get("center_distance_px", "--"),
+                current_z=data.get("current_z_mm", "--"),
+                confirm_z=data.get("confirm_z_mm", "--"),
+            )
+        )
+        self._set_label_text(
+            self.vision_servo_debug_label,
+            "连续对中Trace: center_px={center_px} | {trace}".format(
+                center_px=data.get("center_px", "--"),
+                trace=data.get("trace", "--"),
+            )
+        )
+
     def update_pick_bias_display(
         self,
         radius_bias_mm: float,
         theta_bias_deg: float,
         tangent_bias_mm: float = 0.0,
     ) -> None:
-        self._set_label_text(self.pick_r_bias_label, "Pick r bias: {0:+.1f} mm".format(float(radius_bias_mm)))
+        self._set_label_text(self.pick_r_bias_label, "半径偏差: {0:+.1f} mm".format(float(radius_bias_mm)))
         self._set_label_text(
             self.pick_tangent_bias_label,
-            "Pick tangent bias: {0:+.1f} mm".format(float(tangent_bias_mm)),
+            "切向偏差: {0:+.1f} mm".format(float(tangent_bias_mm)),
         )
-        self._set_label_text(self.pick_theta_bias_label, "Pick theta bias: {0:+.1f} deg".format(float(theta_bias_deg)))
+        self._set_label_text(self.pick_theta_bias_label, "角度偏差: {0:+.1f} deg".format(float(theta_bias_deg)))
 
     def set_ssvep_runtime_config(self, *, serial_port: str, board_id: int) -> None:
         self.ssvep_serial_edit.setText(str(serial_port or "auto"))
@@ -1154,7 +1873,7 @@ class MainWindow(QMainWindow):
                 floor,
             ),
         )
-        self._set_button_text(self.pick_tune_mode_button, f"mode: {release_mode}")
+        self._set_button_text(self.pick_tune_mode_button, f"模式: {release_mode}")
 
     def selected_ssvep_profile_path(self) -> str | None:
         selected = self.ssvep_profile_combo.currentData()
@@ -1181,7 +1900,7 @@ class MainWindow(QMainWindow):
     ) -> None:
         previous_path = self.selected_ssvep_profile_path() or ""
         target_path = selected_path or previous_path
-        items = [("自动（最新训练）", AUTO_PROFILE_VALUE)]
+        items = [("自动（推荐）", AUTO_PROFILE_VALUE)]
         items.extend(list(profiles))
         if not profiles:
             items.append(("暂无 Profile", ""))
@@ -1190,12 +1909,25 @@ class MainWindow(QMainWindow):
         selected_index = 0
         for index, (label, path) in enumerate(items):
             self.ssvep_profile_combo.addItem(label, path)
-            if auto_selected and str(path) == AUTO_PROFILE_VALUE:
-                selected_index = index
-            elif path and path == target_path:
-                selected_index = index
+        if auto_selected and str(path) == AUTO_PROFILE_VALUE:
+            selected_index = index
+        elif path and path == target_path:
+            selected_index = index
         self.ssvep_profile_combo.setCurrentIndex(selected_index)
         self.ssvep_profile_combo.blockSignals(False)
+
+    @staticmethod
+    def _set_style_property(widget: QWidget, prop: str, value: object | None) -> None:
+        current = widget.property(prop)
+        next_value = None if value is None else value
+        if current == next_value:
+            return
+        widget.setProperty(prop, next_value)
+        style = widget.style()
+        if style is not None:
+            style.unpolish(widget)
+            style.polish(widget)
+        widget.update()
 
     @staticmethod
     def _compact_text(value: object, *, max_len: int = 96) -> str:
@@ -1203,7 +1935,7 @@ class MainWindow(QMainWindow):
         limit = max(8, int(max_len))
         if len(text) <= limit:
             return text
-        return text[: limit - 1] + "…"
+        return text[: limit - 3] + "..."
 
     @staticmethod
     def _compact_path(value: object, *, max_len: int = 80) -> str:
@@ -1330,3 +2062,4 @@ class MainWindow(QMainWindow):
             Qt.Key_4: "4",
         }
         return key_map.get(key)
+

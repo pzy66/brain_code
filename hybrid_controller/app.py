@@ -84,29 +84,31 @@ class HybridControllerApplication:
         if grasp_profile_result.ready:
             config = apply_vision_grasp_profile(config, grasp_profile_result)
         config = config.resolved()
-        self.config = config
+        self.config = self._apply_keyboard_operator_profile_overrides(config)
+        self._keyboard_operator_profile = str(self.config.input_profile).strip().lower() == "operator_keyboard"
+        config = self.config
         self._vision_grasp_profile_result = grasp_profile_result
-        self.controller = TaskController(config)
-        self.logger = EventLogger(config.event_log_path)
+        self.controller = TaskController(self.config)
+        self.logger = EventLogger(self.config.event_log_path)
         self.sim_input = SimInputAdapter(
-            move_source=config.move_source,
-            decision_source=config.decision_source,
-            ssvep_keyboard_debug_enabled=config.ssvep_keyboard_debug_enabled,
+            move_source=self.config.move_source,
+            decision_source=self.config.decision_source,
+            ssvep_keyboard_debug_enabled=self.config.ssvep_keyboard_debug_enabled,
         )
         self.ssvep_adapter = SSVEPAdapter(config.ssvep_freqs)
         self.mi_provider: InputProvider | None = self._build_mi_provider_if_enabled()
         self.input_orchestrator = InputOrchestrator(
             sim_input=self.sim_input,
             ssvep_adapter=self.ssvep_adapter,
-            move_source=str(config.move_source),
-            decision_source=str(config.decision_source),
-            ssvep_keyboard_debug_enabled=bool(config.ssvep_keyboard_debug_enabled),
+            move_source=str(self.config.move_source),
+            decision_source=str(self.config.decision_source),
+            ssvep_keyboard_debug_enabled=bool(self.config.ssvep_keyboard_debug_enabled),
             mi_provider=self.mi_provider,
-            mi_enabled=bool(config.mi_enabled),
-            mi_command_cooldown_ms=int(config.mi_command_cooldown_ms),
+            mi_enabled=bool(self.config.mi_enabled),
+            mi_command_cooldown_ms=int(self.config.mi_command_cooldown_ms),
         )
         self.main_window = MainWindow()
-        self.slot_catalog = ControlSimSlotCatalog(config) if config.control_sim_enabled else None
+        self.slot_catalog = ControlSimSlotCatalog(self.config) if self.config.control_sim_enabled else None
         self.vision_runtime: VisionRuntime | None = None
         self.ssvep_runtime = None
         self.timers: dict[str, QTimer] = {}
@@ -140,8 +142,8 @@ class HybridControllerApplication:
         self._pick_tuning_local_dirty = False
         self._active_pick_trace: dict[str, object] | None = None
         self._vision_servo_pick: dict[str, object] | None = None
-        self._vision_servo_controller = VisionServoController(config)
-        self._continuous_vision_servo_controller = ContinuousVisionServoController(config)
+        self._vision_servo_controller = VisionServoController(self.config)
+        self._continuous_vision_servo_controller = ContinuousVisionServoController(self.config)
         self._continuous_vision_servo_pick: dict[str, object] | None = None
         self._report_vision_grasp_profile_status()
         self._last_vision_debug_bundle_error_ts = 0.0
@@ -223,6 +225,18 @@ class HybridControllerApplication:
             "vision_grasp_profile_id": self._vision_grasp_profile_result.profile_id or "--",
             "vision_grasp_profile_ready": bool(self._vision_grasp_profile_result.ready),
             "vision_servo_status": "idle",
+            "vision_servo_last_action": "--",
+            "vision_servo_last_context": "--",
+            "vision_servo_last_decision_status": "--",
+            "vision_servo_last_command": "--",
+            "vision_servo_last_slot_id": "--",
+            "vision_servo_last_source": "--",
+            "vision_servo_last_trace": "--",
+            "vision_servo_last_rates": "--",
+            "vision_servo_last_center_distance_px": "--",
+            "vision_servo_last_current_z_mm": "--",
+            "vision_servo_last_confirm_z_mm": "--",
+            "vision_servo_last_center_px": "--",
             "last_robot_ack": "--",
             "last_robot_error": "--",
             "last_ssvep_raw": "--",
@@ -347,6 +361,30 @@ class HybridControllerApplication:
 
     def _ssvep_runtime_enabled(self) -> bool:
         return bool(self.config.ssvep_runtime_enabled) or str(self.config.decision_source).strip().lower() == "ssvep"
+
+    @staticmethod
+    def _is_operator_keyboard_profile(profile: str) -> bool:
+        return str(profile or "").strip().lower() == "operator_keyboard"
+
+    def _apply_keyboard_operator_profile_overrides(self, config: AppConfig) -> AppConfig:
+        if not self._is_operator_keyboard_profile(config.input_profile):
+            return config
+        normalized = str(config.move_source).strip().lower() or "sim"
+        normalized_decision = str(config.decision_source).strip().lower() or "sim"
+        if (
+            normalized != "sim"
+            or normalized_decision != "sim"
+            or bool(config.mi_enabled)
+            or bool(config.ssvep_runtime_enabled)
+        ):
+            return replace(
+                config,
+                move_source="sim",
+                decision_source="sim",
+                mi_enabled=False,
+                ssvep_runtime_enabled=False,
+            )
+        return config
 
     def _build_mi_provider_if_enabled(self) -> InputProvider | None:
         move_source = str(self.config.move_source or "sim").strip().lower()
@@ -2291,6 +2329,23 @@ class HybridControllerApplication:
             ssvep_coordinator=self.ssvep_coordinator,
         )
         self.main_window.update_panels(snapshot)
+        self.main_window.update_vision_servo_debug(
+            {
+                "status": self._rt_get("vision_servo_status", "idle"),
+                "action": self._rt_get("vision_servo_last_action", "--"),
+                "context": self._rt_get("vision_servo_last_context", "--"),
+                "slot_id": self._rt_get("vision_servo_last_slot_id", "--"),
+                "source": self._rt_get("vision_servo_last_source", "--"),
+                "command": self._rt_get("vision_servo_last_command", "--"),
+                "rates": self._rt_get("vision_servo_last_rates", "--"),
+                "center_distance_px": self._rt_get("vision_servo_last_center_distance_px", "--"),
+                "current_z_mm": self._rt_get("vision_servo_last_current_z_mm", "--"),
+                "confirm_z_mm": self._rt_get("vision_servo_last_confirm_z_mm", "--"),
+                "center_px": self._rt_get("vision_servo_last_center_px", "--"),
+                "trace": self._rt_get("vision_servo_last_trace", "--"),
+                "decision_status": self._rt_get("vision_servo_last_decision_status", "--"),
+            }
+        )
         self.main_window.update_pick_tuning_display(self._pick_tuning_state)
         elapsed_ms = (time.perf_counter() - refresh_start) * 1000.0
         previous_ema = float(self._rt_get("ui_refresh_ms_ema", 0.0))
@@ -2314,6 +2369,14 @@ class HybridControllerApplication:
 
     def _on_key_pressed(self, token: str) -> None:
         self.logger.log_raw_input("sim_key", token)
+        if self._keyboard_operator_profile and str(token).strip() in {"1", "2", "3", "4"}:
+            try:
+                target_index = int(str(token).strip()) - 1
+            except ValueError:
+                return
+            if target_index >= 0:
+                self.dispatch_event(Event(source="sim", type="target_selected", value=target_index))
+                return
         if self._is_move_token(token):
             self._handle_move_key_pressed(token)
             return
@@ -2513,11 +2576,91 @@ class HybridControllerApplication:
             "min_frame_id": 0,
         }
 
+    @staticmethod
+    def _vision_point_pair(value: object) -> tuple[float, float] | None:
+        if not isinstance(value, (tuple, list)) or len(value) < 2:
+            return None
+        try:
+            x_value = float(value[0])
+            y_value = float(value[1])
+        except (TypeError, ValueError):
+            return None
+        if not (math.isfinite(x_value) and math.isfinite(y_value)):
+            return None
+        return (x_value, y_value)
+
+    def _vision_slot_measurement_point(self, slot: dict[str, object]) -> tuple[float, float] | None:
+        point_keys_by_mode = {
+            "color_block_subpixel": ("color_block_center_f", "color_block_center"),
+            "color_block": ("color_block_center", "color_block_center_f"),
+            "top_face_subpixel": ("top_face_center_f", "top_face_center"),
+            "top_face": ("top_face_center", "top_face_center_f"),
+            "grasp_subpixel": ("grasp_pixel_f", "grasp_pixel"),
+            "grasp": ("grasp_pixel", "grasp_pixel_f"),
+            "geometry_subpixel": ("geometry_center_f", "geometry_center"),
+            "geometry": ("geometry_center", "geometry_center_f"),
+            "center_subpixel": ("pixel_center_f", "pixel_center"),
+            "center": ("pixel_center", "pixel_center_f"),
+        }
+        mode = str(slot.get("measurement_point", "") or "").strip().lower()
+        for key in point_keys_by_mode.get(mode, ()):
+            point = self._vision_point_pair(slot.get(key))
+            if point is not None:
+                return point
+        for key in (
+            "geometry_center_f",
+            "color_block_center_f",
+            "top_face_center_f",
+            "grasp_pixel_f",
+            "pixel_center_f",
+            "geometry_center",
+            "color_block_center",
+            "top_face_center",
+            "grasp_pixel",
+            "pixel_center",
+        ):
+            point = self._vision_point_pair(slot.get(key))
+            if point is not None:
+                return point
+        return None
+
+    def _vision_slot_payload_near_previous_center(
+        self,
+        previous_center_px: object,
+        *,
+        packet: dict[str, object],
+        max_distance_px: float = 95.0,
+    ) -> tuple[dict[str, object] | None, float | None]:
+        previous = self._vision_point_pair(previous_center_px)
+        slots = packet.get("slots")
+        if previous is None or not isinstance(slots, list):
+            return None, None
+        best_slot: dict[str, object] | None = None
+        best_distance = float("inf")
+        for slot_raw in slots:
+            if not isinstance(slot_raw, dict):
+                continue
+            if not bool(slot_raw.get("valid", False)) and str(slot_raw.get("invalid_reason", "")) != "vision_servo_required":
+                continue
+            point = self._vision_slot_measurement_point(slot_raw)
+            if point is None:
+                continue
+            distance = math.hypot(point[0] - previous[0], point[1] - previous[1])
+            if distance < best_distance:
+                best_slot = slot_raw
+                best_distance = distance
+        if best_slot is None or best_distance > float(max_distance_px):
+            return None, None
+        return best_slot, float(best_distance)
+
     def _start_continuous_vision_servo_pick(self, slot_id: int, *, source: str) -> bool:
         if not bool(getattr(self.config, "vision_continuous_servo_enabled", False)):
             return False
         if not self._vision_eye_in_hand_pick_flow_enabled():
             return False
+        if self.config.robot_mode == "real" and not self._uses_ros_transport():
+            self._block_continuous_servo_start("ros_transport_required", dispatch_error=True)
+            return True
         if self._uses_ros_transport():
             state_age_ms = self._current_state_age_ms()
             stale_threshold_ms = float(getattr(self.config, "robot_state_stale_threshold_ms", 700.0))
@@ -2547,6 +2690,12 @@ class HybridControllerApplication:
             current_cyl_pose=self._current_robot_cyl_pose(),
             frame_pose_age_ms=self._packet_frame_pose_age_ms(packet),
         )
+        self._record_continuous_servo_debug(
+            decision,
+            context="start",
+            slot_id=int(slot_id),
+            source=source,
+        )
         if self._apply_continuous_vision_servo_decision(decision):
             return True
         if self._continuous_vision_servo_pick is not None:
@@ -2558,6 +2707,23 @@ class HybridControllerApplication:
         message = f"continuous_start_blocked:{str(reason)}"
         self._continuous_vision_servo_pick = None
         self._rt_set("vision_servo_status", message)
+        self._record_continuous_servo_debug(
+            type(
+                "Decision",
+                (),
+                {
+                    "action": "BLOCK",
+                    "status": message,
+                    "command": "",
+                    "pending": None,
+                    "theta_rate_deg_s": 0.0,
+                    "radius_rate_mm_s": 0.0,
+                    "z_rate_mm_s": 0.0,
+                    "trace": {"reason": str(reason)},
+                },
+            )(),
+            context="start_block",
+        )
         self._handle_runtime_status("vision", message)
         if dispatch_error:
             self.dispatch_event(Event(source="robot", type="robot_error", value=message))
@@ -2578,9 +2744,13 @@ class HybridControllerApplication:
         return None
 
     def _vision_eye_in_hand_pick_flow_enabled(self) -> bool:
-        return bool(getattr(self.config, "vision_eye_in_hand_pick_flow_enabled", False)) and str(
-            getattr(self.config, "vision_mapping_mode", "")
-        ).strip().lower() == "delta_servo"
+        return (
+            bool(getattr(self.config, "vision_eye_in_hand_pick_flow_enabled", False))
+            and str(getattr(self.config, "vision_mapping_mode", ""))
+            .strip()
+            .lower()
+            in {"delta_servo", "absolute_base"}
+        )
 
     def _vision_servo_controller_instance(self) -> VisionServoController:
         controller = getattr(self, "_vision_servo_controller", None)
@@ -2596,9 +2766,121 @@ class HybridControllerApplication:
             self._continuous_vision_servo_controller = controller
         return controller
 
+    @staticmethod
+    def _pretty_float(value: object, *, fmt: str = ".2f", fallback: str = "--") -> str:
+        try:
+            value_f = float(value)
+        except (TypeError, ValueError):
+            return fallback
+        if not math.isfinite(value_f):
+            return fallback
+        try:
+            return f"{value_f:{fmt}}"
+        except Exception:
+            try:
+                return f"{value_f:{fmt}}"
+            except Exception:
+                return fallback
+
+    def _format_continuous_servo_trace(self, trace: object) -> str:
+        if not isinstance(trace, dict):
+            return "--"
+        ordered_items: list[str] = []
+        for key in (
+            "horizontal_mode",
+            "reason",
+            "low_height_guard_reason",
+            "current_z_mm",
+            "confirm_z_mm",
+            "descent_anchor_z_mm",
+            "center_distance_px",
+            "center_distance_px_trend",
+            "low_height_guard_distance_mm",
+            "pick_ready_frames",
+            "stable_frames",
+            "lost_frames",
+            "stale_frames",
+            "target_relock_distance_px",
+            "pick_ready_px",
+            "hold_reasons",
+        ):
+            raw = trace.get(key)
+            if raw is None or raw == "":
+                continue
+            if isinstance(raw, (int, float)):
+                text = self._pretty_float(raw, fmt=".2f")
+                ordered_items.append(f"{key}={text}")
+                continue
+            ordered_items.append(f"{key}={raw}")
+        if not ordered_items:
+            return "--"
+        text = " | ".join(ordered_items)
+        return text if len(text) <= 280 else f"{text[:277]}..."
+
+    def _record_continuous_servo_debug(
+        self,
+        decision: object,
+        *,
+        context: str,
+        slot_id: int | None = None,
+        source: str | None = None,
+    ) -> None:
+        trace = getattr(decision, "trace", None)
+        if not isinstance(trace, dict):
+            trace = {}
+        action = str(getattr(decision, "action", "") or "").upper() or "--"
+        status = str(getattr(decision, "status", "") or "").strip() or "--"
+        command = str(getattr(decision, "command", "") or "").strip() or "--"
+        pending = getattr(decision, "pending", None)
+        resolved_slot_id: object = slot_id if slot_id is not None else self._rt_get("vision_servo_last_slot_id", "--")
+        center_px_text = str(self._rt_get("vision_servo_last_center_px", "--"))
+        if isinstance(pending, dict):
+            resolved_slot_id = pending.get("slot_id", resolved_slot_id)
+            if source is None:
+                source = str(pending.get("source", "").strip() or source or "")
+            raw_last_center_px = pending.get("last_center_px")
+            if raw_last_center_px is not None and isinstance(raw_last_center_px, (tuple, list)) and len(raw_last_center_px) >= 2:
+                try:
+                    center_px_text = "({:.1f},{:.1f})".format(float(raw_last_center_px[0]), float(raw_last_center_px[1]))
+                except (TypeError, ValueError):
+                    center_px_text = str(raw_last_center_px)
+            elif raw_last_center_px is not None:
+                center_px_text = str(raw_last_center_px)
+        self._rt_set("vision_servo_last_action", action)
+        self._rt_set("vision_servo_last_context", str(context))
+        self._rt_set("vision_servo_last_decision_status", status)
+        self._rt_set("vision_servo_last_command", command)
+        self._rt_set("vision_servo_last_slot_id", str(resolved_slot_id))
+        self._rt_set("vision_servo_last_source", "--" if source is None else str(source))
+        self._rt_set(
+            "vision_servo_last_rates",
+            "theta={:.3f}deg/s radius={:.3f}mm/s z={:.3f}mm/s".format(
+                float(getattr(decision, "theta_rate_deg_s", 0.0)),
+                float(getattr(decision, "radius_rate_mm_s", 0.0)),
+                float(getattr(decision, "z_rate_mm_s", 0.0)),
+            ),
+        )
+        self._rt_set("vision_servo_last_center_px", center_px_text)
+        self._rt_set("vision_servo_last_center_distance_px", self._pretty_float(trace.get("center_distance_px")))
+        self._rt_set("vision_servo_last_current_z_mm", self._pretty_float(trace.get("current_z_mm")))
+        self._rt_set("vision_servo_last_confirm_z_mm", self._pretty_float(trace.get("confirm_z_mm")))
+        self._rt_set("vision_servo_last_trace", self._format_continuous_servo_trace(trace))
+
     def _current_robot_cyl_pose(self) -> tuple[float, float, float] | None:
         snapshot = self._fetch_remote_robot_snapshot()
+        if not isinstance(snapshot, dict) and isinstance(self._latest_world_snapshot, dict):
+            snapshot = self._latest_world_snapshot
         if not isinstance(snapshot, dict):
+            robot_cyl = getattr(self.controller.context, "robot_cyl", None)
+            if isinstance(robot_cyl, (tuple, list)) and len(robot_cyl) >= 3:
+                try:
+                    return (
+                        float(robot_cyl[0]),
+                        float(robot_cyl[1]),
+                        float(robot_cyl[2]),
+                    )
+                except (TypeError, ValueError):
+                    pass
             return None
         cyl = snapshot.get("robot_cyl")
         if isinstance(cyl, dict):
@@ -2619,6 +2901,63 @@ class HybridControllerApplication:
         except (TypeError, ValueError):
             return None
         return None
+
+    def _set_robot_cyl_pose(self, theta_deg: float, radius_mm: float, z_mm: float) -> None:
+        try:
+            theta_deg_f = float(theta_deg)
+            radius_mm_f = float(radius_mm)
+            z_mm_f = float(z_mm)
+        except (TypeError, ValueError):
+            return
+        self.controller.context.robot_cyl = (theta_deg_f, radius_mm_f, z_mm_f)
+        try:
+            robot_xy = cylindrical_to_cartesian(theta_deg_f, radius_mm_f, z_mm_f)
+            self.controller.context.robot_xy = (float(robot_xy[0]), float(robot_xy[1]))
+        except (TypeError, ValueError):
+            return
+        self._rt_set("robot_cyl", {"theta_deg": theta_deg_f, "radius_mm": radius_mm_f, "z_mm": z_mm_f})
+        self._rt_set("robot_xy", list(self.controller.context.robot_xy))
+        snapshot = self._latest_world_snapshot
+        if isinstance(snapshot, dict):
+            snapshot["robot_cyl"] = {"theta_deg": theta_deg_f, "radius_mm": radius_mm_f, "z_mm": z_mm_f}
+            snapshot["robot_xy"] = [float(self.controller.context.robot_xy[0]), float(self.controller.context.robot_xy[1])]
+            snapshot["robot_z"] = z_mm_f
+
+    def _step_continuous_sim_servo_pose(
+        self,
+        *,
+        theta_rate_deg_s: float,
+        radius_rate_mm_s: float,
+        z_rate_mm_s: float,
+    ) -> bool:
+        if self.config.robot_mode == "real":
+            return False
+        current_pose = self._current_robot_cyl_pose()
+        if current_pose is None:
+            return False
+        now_ts = float(time.monotonic())
+        last_ts = getattr(self, "_continuous_servo_sim_last_step_ts", None)
+        self._continuous_servo_sim_last_step_ts = now_ts
+        if not isinstance(last_ts, (int, float)) or not math.isfinite(last_ts):
+            return True
+        dt_s = now_ts - float(last_ts)
+        if dt_s <= 0.0:
+            return True
+        dt_s = max(0.0, min(0.25, dt_s))
+        try:
+            theta_deg = float(current_pose[0]) + float(theta_rate_deg_s) * dt_s
+            radius_mm = float(current_pose[1]) + float(radius_rate_mm_s) * dt_s
+            z_mm = float(current_pose[2]) + float(z_rate_mm_s) * dt_s
+            theta_limits = getattr(self.config, "robot_theta_limits_deg", (-120.0, 120.0))
+            radius_limits = getattr(self.config, "robot_radius_limits_mm", (50.0, 280.0))
+            z_limits = getattr(self.config, "robot_height_limits_mm", (80.0, 212.8))
+            theta_deg = max(float(theta_limits[0]), min(float(theta_limits[1]), theta_deg))
+            radius_mm = max(float(radius_limits[0]), min(float(radius_limits[1]), radius_mm))
+            z_mm = max(float(z_limits[0]), min(float(z_limits[1]), z_mm))
+        except (TypeError, ValueError, IndexError):
+            return False
+        self._set_robot_cyl_pose(theta_deg=theta_deg, radius_mm=radius_mm, z_mm=z_mm)
+        return True
 
     @staticmethod
     def _packet_frame_pose_age_ms(packet: dict[str, object]) -> float | None:
@@ -2641,6 +2980,19 @@ class HybridControllerApplication:
         pending = getattr(self, "_continuous_vision_servo_pick", None)
         if not isinstance(pending, dict):
             return None
+        selected, relock_distance_px = self._vision_slot_payload_near_previous_center(
+            pending.get("last_center_px"),
+            packet=packet,
+        )
+        if selected is not None:
+            try:
+                pending["slot_id"] = int(selected.get("slot_id", selected.get("slot", pending.get("slot_id"))))
+            except (TypeError, ValueError):
+                pass
+            if relock_distance_px is not None:
+                pending["target_relock_distance_px"] = float(relock_distance_px)
+            self._continuous_vision_servo_pick = pending
+            return selected
         try:
             locked_slot_id = int(pending.get("slot_id"))
         except (TypeError, ValueError):
@@ -2933,6 +3285,7 @@ class HybridControllerApplication:
         self._apply_vision_servo_decision(decision)
 
     def _apply_continuous_vision_servo_decision(self, decision) -> bool:
+        self._record_continuous_servo_debug(decision, context="apply")
         action = str(getattr(decision, "action", "")).upper()
         raw_pending_dict = getattr(decision, "pending_dict", None)
         pending_dict = self._merge_continuous_pick_pending(raw_pending_dict)
@@ -2944,6 +3297,20 @@ class HybridControllerApplication:
                 pending_dict=pending_dict,
             ):
                 return True
+            if self.config.robot_mode == "real":
+                if self.ros_client is None or not self.ros_client.is_connected():
+                    self._rt_set("vision_servo_status", "continuous_stop reason=ros_unavailable")
+                    return False
+            elif self._step_continuous_sim_servo_pose(
+                theta_rate_deg_s=float(getattr(decision, "theta_rate_deg_s", 0.0)),
+                radius_rate_mm_s=float(getattr(decision, "radius_rate_mm_s", 0.0)),
+                z_rate_mm_s=float(getattr(decision, "z_rate_mm_s", 0.0)),
+            ):
+                self._rt_set("vision_servo_status", str(decision.status))
+                return True
+            else:
+                self._rt_set("vision_servo_status", "continuous_stop reason=robot_pose_unavailable")
+                return False
             if self.ros_client is None or not self.ros_client.is_connected():
                 self._rt_set("vision_servo_status", "continuous_stop reason=ros_unavailable")
                 return False
@@ -3049,25 +3416,26 @@ class HybridControllerApplication:
         if min_frame_id > 0 and frame_id < min_frame_id:
             self._rt_set("vision_servo_status", f"continuous_wait_fresh_frame slot={pending.get('slot_id')}")
             return
-        if not self._uses_ros_transport():
+        if self.config.robot_mode == "real" and not self._uses_ros_transport():
             self._rt_set("vision_servo_status", "continuous_stop reason=ros_transport_required")
             return
-        state_age_ms = self._current_state_age_ms()
-        stale_threshold_ms = float(getattr(self.config, "robot_state_stale_threshold_ms", 700.0))
-        if (
-            self.ros_client is None
-            or not self.ros_client.is_connected()
-            or not math.isfinite(state_age_ms)
-            or state_age_ms > stale_threshold_ms
-        ):
-            self._continuous_vision_servo_pick = None
-            if self.ros_client is not None:
-                try:
-                    self.ros_client.stop_teleop(use_auto_z=False)
-                except Exception:
-                    pass
-            self._rt_set("vision_servo_status", "continuous_stop reason=control_unavailable")
-            return
+        if self._uses_ros_transport():
+            state_age_ms = self._current_state_age_ms()
+            stale_threshold_ms = float(getattr(self.config, "robot_state_stale_threshold_ms", 700.0))
+            if (
+                self.ros_client is None
+                or not self.ros_client.is_connected()
+                or not math.isfinite(state_age_ms)
+                or state_age_ms > stale_threshold_ms
+            ):
+                self._continuous_vision_servo_pick = None
+                if self.ros_client is not None:
+                    try:
+                        self.ros_client.stop_teleop(use_auto_z=False)
+                    except Exception:
+                        pass
+                self._rt_set("vision_servo_status", "continuous_stop reason=control_unavailable")
+                return
         if self.controller.state in {TaskState.S3_PLACING, TaskState.ERROR}:
             return
         selected_slot = self._select_continuous_vision_servo_slot(packet)
@@ -3421,7 +3789,7 @@ class HybridControllerApplication:
         return str(token).strip().lower() in {"a", "d", "w", "s", "left", "right", "up", "down"}
 
     def _is_teleop_enabled(self) -> bool:
-        return self.config.move_source == "sim"
+        return self._keyboard_operator_profile or self.config.move_source == "sim"
 
     def _teleop_state_allows_motion(self) -> bool:
         if self._uses_ros_transport():

@@ -134,7 +134,7 @@ def test_jetmax_camera_repair_defaults_keep_official_sender_settings() -> None:
     assert args.camera_quality == 80
     assert args.repair_camera_driver is False
     assert args.remove_camera_driver_override is False
-    assert args.camera_driver_quirks == 128
+    assert args.camera_driver_quirks == 0
     assert args.camera_driver_nodrop == 0
     assert args.camera_driver_timeout == 5000
     assert args.camera_driver_conf_path == "/etc/modprobe.d/hiwonder-uvcvideo.conf"
@@ -199,7 +199,10 @@ def test_jetmax_camera_repair_script_clears_stale_rosparams_without_default_driv
     assert "remove_uvcvideo_override_file" in source
     assert "pkill -f web_video_server" not in source
     assert "uvcvideo {' '.join(shlex.quote(option) for option in driver_options)}" in source
-    assert "Conservative recovery state: keep nodrop=0 so incomplete UVC frames are not fed upward." in source
+    assert "disable_camera_usb_autosuspend" not in source
+    assert "Factory restore removes this file. Keep nodrop=0 here so incomplete UVC frames are not published." in source
+    assert "quirks=128,nodrop=1" not in source
+    assert "Verified stable state for 32e6:9005" not in source
     assert "timeout 6 rostopic hz /usb_cam/image_raw" not in source
 
 

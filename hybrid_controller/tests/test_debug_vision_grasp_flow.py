@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sys
 
 import numpy as np
@@ -12,6 +13,7 @@ from hybrid_controller.tools.calibrate_low_height_alignment import _state_is_saf
 from hybrid_controller.tools.calibrate_low_height_alignment import main as low_height_alignment_main
 from hybrid_controller.tools.debug_vision_grasp_flow import (
     _capture_frames_from_candidates,
+    _camera_transport_has_motion_artifacts,
     _clamp_refine_target,
     _continuous_decision_for_packet,
     _continuous_confirm_recheck,
@@ -22,12 +24,16 @@ from hybrid_controller.tools.debug_vision_grasp_flow import (
     _continuous_snapshot_blocks_teleop,
     _current_calibration_stage,
     _current_cyl_pose,
+    _motion_response_guard_update,
     _decision_for_packet,
     main,
     _override_profile_center_tolerance,
     _packet_frame_pose_age_ms,
     _PersistentCaptureReader,
+    _patch_low_height_local_center,
     _pose_from_confirm_recheck,
+    _low_height_local_synthetic_slot,
+    _remap_pending_slot,
     _ibvs_jacobian_from_stage_profile,
     _resolve_alignment_target_pixel,
     _resolve_packet,
@@ -37,9 +43,12 @@ from hybrid_controller.tools.debug_vision_grasp_flow import (
     _state_message_to_snapshot,
     _select_latest_frames,
     _select_slot,
+    _select_slot_by_previous_center,
     _servo_command_point_from_slot,
     _snapshot_local_age_ms,
+    _upsert_packet_slot,
     _wait_for_idle,
+    _ibvs_jacobian_from_profile_for_snapshot,
 )
 from hybrid_controller.tools.diagnose_vision_centers import diagnose_center_sequence
 from hybrid_controller.vision.calibration_profile import VisionCalibrationProfile
@@ -191,6 +200,36 @@ def test_persistent_capture_reader_exposes_transport_stats() -> None:
     assert stats_after_read["reader"] == "_ReadableCapture"
 
 
+def test_camera_transport_motion_artifact_detection() -> None:
+    assert _camera_transport_has_motion_artifacts(
+        {
+            "last_reject_reason": "horizontal_tearing:content_length",
+            "frames_rejected": 3,
+            "consecutive_rejected_frames": 1,
+        }
+    )
+    assert _camera_transport_has_motion_artifacts(
+        {
+            "last_reject_reason": "temporal_splice:content_length",
+            "frames_rejected": 1,
+        }
+    )
+    assert _camera_transport_has_motion_artifacts(
+        {
+            "last_reject_reason": "",
+            "last_read_error": "timeout",
+            "frames_rejected": 2,
+        }
+    )
+    assert not _camera_transport_has_motion_artifacts(
+        {
+            "last_reject_reason": "",
+            "last_read_error": "timeout",
+            "frames_rejected": 0,
+        }
+    )
+
+
 def test_persistent_capture_reader_reopen_resets_consumer_only() -> None:
     _FakeCv2.seen_sources = []
     reader = _PersistentCaptureReader(
@@ -210,6 +249,56 @@ def test_persistent_capture_reader_reopen_resets_consumer_only() -> None:
     assert selected2 == "http://camera/working"
     assert len(frames2) == 1
     assert _FakeCv2.seen_sources == ["http://camera/working", "http://camera/working"]
+
+
+def test_persistent_capture_reader_latest_window_keeps_newest_frame() -> None:
+    class CountingCapture:
+        def __init__(self) -> None:
+            self.read_count = 0
+
+        def isOpened(self) -> bool:
+            return True
+
+        def set(self, *_args, **_kwargs) -> bool:
+            return True
+
+        def read(self):
+            self.read_count += 1
+            if self.read_count > 5:
+                return False, None
+            return True, np.full((4, 4, 3), self.read_count, dtype=np.uint8)
+
+        def release(self) -> None:
+            return None
+
+    class FakeCv2Latest(_FakeCv2):
+        capture = CountingCapture()
+        seen_sources: list[str] = []
+
+        @classmethod
+        def VideoCapture(cls, source, *_args):
+            cls.seen_sources.append(str(source))
+            return cls.capture
+
+    reader = _PersistentCaptureReader(
+        cv2_module=FakeCv2Latest,
+        stream_urls=("http://camera/working",),
+        config=AppConfig().resolved(),
+        capture_backend="auto",
+    )
+    try:
+        _selected, frames = reader.read(
+            frame_count=1,
+            drain_frames=0,
+            timeout_sec=0.5,
+            latest_window_sec=0.05,
+        )
+    finally:
+        reader.close()
+
+    assert len(frames) == 1
+    assert int(frames[0][0][0, 0, 0]) == 5
+    assert FakeCv2Latest.seen_sources == ["http://camera/working"]
 
 
 def test_debug_center_tolerance_override_updates_stage_profiles() -> None:
@@ -628,6 +717,24 @@ def test_debug_profile_stage_jacobian_converts_xy_response_to_cylindrical() -> N
     assert dv_dr == pytest.approx(1.0)
 
 
+def test_debug_global_profile_jacobian_is_not_used_without_profile_z() -> None:
+    profile = VisionCalibrationProfile.from_dict(
+        {
+            "profile_id": "global-profile",
+            "image_size": [640, 480],
+            "pixel_to_delta": {"model": "affine", "matrix": [[-0.1, 0.0, 0.0], [0.0, -0.2, 0.0]]},
+        }
+    )
+
+    result = _ibvs_jacobian_from_profile_for_snapshot(
+        config=AppConfig(vision_pick_search_z_mm=190.0),
+        calibration_profile=profile,
+        snapshot={"robot_cyl": {"theta_deg": 0.0, "radius_mm": 180.0, "z_mm": 205.0}},
+    )
+
+    assert result is None
+
+
 def test_debug_command_bias_pick_command_has_single_final_radius_offset() -> None:
     config = AppConfig(
         pick_tool_offset_source="command_bias",
@@ -831,7 +938,8 @@ def test_debug_low_height_centering_check_shortcut_sets_safe_continuous_defaults
     assert args.allow_real_pick is False
     assert args.continuous_stop_at_confirm is True
     assert args.process_latest_frames == 1
-    assert args.continuous_drain_frames_each_loop == 2
+    assert args.continuous_drain_frames_each_loop == 0
+    assert args.continuous_latest_window_ms == pytest.approx(250.0)
     assert args.timeout_sec == pytest.approx(5.0)
     assert args.capture_backend == "http"
     assert config.vision_pick_confirm_z_mm == pytest.approx(120.0)
@@ -951,6 +1059,7 @@ def test_debug_confirm_recheck_reports_actual_low_height_measurement_point(monke
             "command_timeout_sec": 1.0,
             "ros_timeout_sec": 1.0,
             "process_latest_frames": 1,
+            "continuous_latest_window_ms": 250.0,
         },
     )()
     config = AppConfig(
@@ -967,8 +1076,8 @@ def test_debug_confirm_recheck_reports_actual_low_height_measurement_point(monke
         def reopen(self) -> None:
             self.reopen_count += 1
 
-        def read(self, *, frame_count, drain_frames, timeout_sec):
-            del frame_count, drain_frames, timeout_sec
+        def read(self, *, frame_count, drain_frames, timeout_sec, latest_window_sec=0.0):
+            del frame_count, drain_frames, timeout_sec, latest_window_sec
             return "http://camera", [(np.zeros((16, 16, 3), dtype=np.uint8), 10.0)]
 
         def transport_stats(self) -> dict[str, object]:
@@ -1086,6 +1195,216 @@ def test_center_sequence_diagnostics_ranks_stable_low_height_point(tmp_path) -> 
     assert report["point_summary"]["top_face_center_f"]["repeat_spread_px"] <= 1.0
     assert report["point_summary"]["geometry_center_f"]["jump_count"] >= 1
     assert report["camera_transport_summary"]["content_length_frames_last"] == pytest.approx(3.0)
+
+
+def test_debug_continuous_relocks_target_by_previous_center_when_slot_ids_reorder() -> None:
+    packet = {
+        "slots": [
+            {
+                "slot_id": 1,
+                "valid": True,
+                "invalid_reason": "vision_servo_required",
+                "measurement_point": "geometry_subpixel",
+                "geometry_center_f": [455.0, 335.0],
+                "center_distance_px": 165.0,
+            },
+            {
+                "slot_id": 2,
+                "valid": True,
+                "invalid_reason": "vision_servo_required",
+                "measurement_point": "geometry_subpixel",
+                "geometry_center_f": [428.0, 292.0],
+                "center_distance_px": 118.0,
+            },
+        ]
+    }
+
+    selected, distance = _select_slot_by_previous_center(packet, [427.5, 292.5])
+
+    assert selected is not None
+    assert selected["slot_id"] == 2
+    assert distance == pytest.approx(math.sqrt(0.5))
+    pending = _remap_pending_slot({"slot_id": 1, "last_center_px": [427.5, 292.5]}, 2, relock_distance_px=distance)
+    assert pending is not None
+    assert pending["slot_id"] == 2
+    assert pending["target_relock_distance_px"] == pytest.approx(math.sqrt(0.5))
+
+
+def test_debug_low_height_synthetic_slot_from_local_center_when_yolo_missing() -> None:
+    frame = np.full((480, 640, 3), 220, dtype=np.uint8)
+    frame[210:272, 286:354] = np.array([30, 45, 210], dtype=np.uint8)
+    packet: dict[str, object] = {
+        "alignment_target_pixel": [320.0, 240.0],
+        "slots": [],
+    }
+
+    slot = _low_height_local_synthetic_slot(
+        packet=packet,
+        frame_bgr=frame,
+        pending={"slot_id": 3, "last_center_px": [320.0, 240.0]},
+        current_z_mm=125.0,
+        confirm_z_mm=120.0,
+        measurement_point="grasp_subpixel",
+    )
+
+    assert slot is not None
+    assert slot["slot_id"] == 3
+    assert slot["valid"] is True
+    assert slot["actionable"] is False
+    assert slot["invalid_reason"] == "vision_servo_required"
+    assert slot["measurement_point"] == "grasp_subpixel"
+    assert slot["low_height_local_synthetic_slot"] is True
+    assert float(slot["center_distance_px"]) <= 2.0
+    _upsert_packet_slot(packet, slot)
+    assert len(packet["slots"]) == 1
+
+
+def test_debug_low_height_synthetic_slot_keeps_geometry_separate_from_color_centroid() -> None:
+    frame = np.full((480, 640, 3), 220, dtype=np.uint8)
+    yy, xx = np.indices((480, 640))
+    # Trapezoid-like red patch: the visible color centroid is pulled left by the
+    # wider lower area, while the local geometry box center stays near the
+    # physical patch extent center.
+    mask = (
+        (yy >= 190)
+        & (yy <= 292)
+        & (xx >= (300 - (yy - 190) // 3))
+        & (xx <= 390)
+    )
+    frame[mask] = np.array([30, 45, 210], dtype=np.uint8)
+
+    slot = _low_height_local_synthetic_slot(
+        packet={"alignment_target_pixel": [320.0, 240.0], "slots": []},
+        frame_bgr=frame,
+        pending=None,
+        current_z_mm=121.0,
+        confirm_z_mm=120.0,
+        measurement_point="geometry_subpixel",
+    )
+
+    assert slot is not None
+    assert slot["measurement_point"] == "geometry_subpixel"
+    geometry = slot["geometry_center_f"]
+    color = slot["color_block_center_f"]
+    assert geometry != color
+    assert slot["low_height_local_geometry_center_px"] == geometry
+    assert slot["low_height_local_color_center_px"] == color
+    assert slot["center_distance_px"] == pytest.approx(math.hypot(geometry[0] - 320.0, geometry[1] - 240.0))
+
+
+def test_debug_low_height_synthetic_slot_disabled_above_guard_band() -> None:
+    frame = np.full((480, 640, 3), 220, dtype=np.uint8)
+    frame[210:272, 286:354] = np.array([30, 45, 210], dtype=np.uint8)
+
+    slot = _low_height_local_synthetic_slot(
+        packet={"alignment_target_pixel": [320.0, 240.0], "slots": []},
+        frame_bgr=frame,
+        pending=None,
+        current_z_mm=151.0,
+        confirm_z_mm=120.0,
+        measurement_point="grasp_subpixel",
+    )
+
+    assert slot is None
+
+
+def test_debug_low_height_synthetic_slot_uses_target_neighbor_seeds() -> None:
+    frame = np.full((480, 640, 3), 220, dtype=np.uint8)
+    frame[190:292, 325:395] = np.array([30, 45, 210], dtype=np.uint8)
+    frame[232:248, 312:328] = np.array([220, 220, 220], dtype=np.uint8)
+
+    slot = _low_height_local_synthetic_slot(
+        packet={"alignment_target_pixel": [320.0, 240.0], "slots": []},
+        frame_bgr=frame,
+        pending=None,
+        current_z_mm=120.9,
+        confirm_z_mm=120.0,
+        measurement_point="grasp_subpixel",
+    )
+
+    assert slot is not None
+    assert slot["valid"] is True
+    assert slot["actionable"] is False
+    assert float(slot["center_distance_px"]) < 45.0
+    assert slot["low_height_local_synthetic_slot"] is True
+
+
+def test_debug_low_height_patch_promotes_invalid_slot_to_servo_only() -> None:
+    frame = np.full((480, 640, 3), 220, dtype=np.uint8)
+    frame[210:272, 286:354] = np.array([30, 45, 210], dtype=np.uint8)
+    packet: dict[str, object] = {"alignment_target_pixel": [320.0, 240.0], "slots": []}
+    selected_slot = {
+        "slot_id": 1,
+        "valid": False,
+        "invalid_reason": "grasp_quality_low",
+        "bbox": [0.0, 120.0, 620.0, 380.0],
+        "center_distance_px": 108.0,
+        "alignment_target_pixel": [320.0, 240.0],
+    }
+
+    patched = _patch_low_height_local_center(
+        packet=packet,
+        frame_bgr=frame,
+        selected_slot=selected_slot,
+        pending=None,
+        current_z_mm=125.0,
+        confirm_z_mm=120.0,
+        measurement_point="grasp_subpixel",
+    )
+
+    assert patched is not None
+    assert patched["valid"] is True
+    assert patched["actionable"] is False
+    assert patched["invalid_reason"] == "vision_servo_required"
+    assert patched["measurement_point"] == "grasp_subpixel"
+    assert float(patched["center_distance_px"]) <= 2.0
+
+
+def test_debug_low_height_patch_rejects_large_jump_from_pending_center() -> None:
+    frame = np.full((480, 640, 3), 220, dtype=np.uint8)
+    frame[210:272, 286:354] = np.array([30, 45, 210], dtype=np.uint8)
+    selected_slot = {
+        "slot_id": 1,
+        "valid": True,
+        "invalid_reason": "vision_servo_required",
+        "grasp_pixel_f": [320.0, 240.0],
+        "center_distance_px": 0.0,
+        "alignment_target_pixel": [320.0, 240.0],
+    }
+
+    patched = _patch_low_height_local_center(
+        packet={"alignment_target_pixel": [320.0, 240.0], "slots": []},
+        frame_bgr=frame,
+        selected_slot=selected_slot,
+        pending={"slot_id": 1, "last_center_px": [150.0, 150.0]},
+        current_z_mm=125.0,
+        confirm_z_mm=120.0,
+        measurement_point="grasp_subpixel",
+    )
+
+    assert patched is selected_slot
+
+
+def test_debug_low_height_patch_returns_none_for_invalid_slot_when_local_center_missing() -> None:
+    frame = np.full((480, 640, 3), 220, dtype=np.uint8)
+    selected_slot = {
+        "slot_id": 2,
+        "valid": False,
+        "invalid_reason": "",
+        "alignment_target_pixel": [320.0, 240.0],
+    }
+
+    patched = _patch_low_height_local_center(
+        packet={"alignment_target_pixel": [320.0, 240.0], "slots": []},
+        frame_bgr=frame,
+        selected_slot=selected_slot,
+        pending={"slot_id": 2, "last_center_px": [315.0, 237.0]},
+        current_z_mm=121.0,
+        confirm_z_mm=120.0,
+        measurement_point="color_block_subpixel",
+    )
+
+    assert patched is None
 
 
 def test_debug_continuous_confirm_stop_keeps_servoing_until_pick_ready_center() -> None:
@@ -1220,7 +1539,8 @@ def test_debug_continuous_parser_defaults_low_refine_radius_step_to_live_probe_s
     assert args.continuous_low_height_refine_gain == pytest.approx(0.45)
     assert args.continuous_low_height_discrete_refine is False
     assert args.process_latest_frames == 1
-    assert args.continuous_drain_frames_each_loop == 2
+    assert args.continuous_drain_frames_each_loop == 0
+    assert args.continuous_latest_window_ms == pytest.approx(250.0)
 
 
 def test_debug_continuous_parser_accepts_per_loop_frame_drain() -> None:
@@ -1240,6 +1560,25 @@ def test_debug_continuous_parser_accepts_per_loop_frame_drain() -> None:
     )
 
     assert args.continuous_drain_frames_each_loop == 4
+
+
+def test_debug_continuous_parser_accepts_latest_window_override() -> None:
+    parser = main.__globals__["build_parser"]()
+
+    args = parser.parse_args(
+        [
+            "--servo-mode",
+            "continuous",
+            "--persistent-camera",
+            "--execute",
+            "--detector",
+            "fallback",
+            "--continuous-latest-window-ms",
+            "180",
+        ]
+    )
+
+    assert args.continuous_latest_window_ms == pytest.approx(180.0)
 
 
 def test_debug_continuous_parser_exposes_low_height_rate_scale_overrides() -> None:
@@ -1262,6 +1601,48 @@ def test_debug_continuous_parser_exposes_low_height_rate_scale_overrides() -> No
 
     assert args.continuous_low_height_coarse_rate_scale == pytest.approx(0.55)
     assert args.continuous_low_height_fine_rate_scale == pytest.approx(0.25)
+
+
+def test_debug_motion_response_guard_stops_static_camera_after_robot_motion() -> None:
+    config = AppConfig(
+        vision_continuous_servo_camera_motion_guard_min_robot_mm=8.0,
+        vision_continuous_servo_camera_motion_guard_max_pixel_px=2.5,
+        vision_continuous_servo_camera_motion_guard_static_frames=2,
+    ).resolved()
+
+    anchor_pose, anchor_px, static_frames, trace = _motion_response_guard_update(
+        config=config,
+        anchor_pose=None,
+        anchor_px=None,
+        static_frames=0,
+        current_pose=(0.0, 170.0, 205.0),
+        current_px=(303.5, 240.5),
+    )
+    assert trace is None
+
+    anchor_pose, anchor_px, static_frames, trace = _motion_response_guard_update(
+        config=config,
+        anchor_pose=anchor_pose,
+        anchor_px=anchor_px,
+        static_frames=static_frames,
+        current_pose=(3.0, 170.0, 205.0),
+        current_px=(304.0, 240.5),
+    )
+    assert trace is None
+    assert static_frames == 1
+
+    _anchor_pose, _anchor_px, static_frames, trace = _motion_response_guard_update(
+        config=config,
+        anchor_pose=anchor_pose,
+        anchor_px=anchor_px,
+        static_frames=static_frames,
+        current_pose=(3.2, 170.0, 205.0),
+        current_px=(304.1, 240.4),
+    )
+
+    assert static_frames == 2
+    assert trace is not None
+    assert trace["reason"] == "camera_motion_response_missing"
 
 
 def test_debug_low_height_refine_move_resets_pending_anchor_contract() -> None:

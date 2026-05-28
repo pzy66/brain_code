@@ -23,6 +23,11 @@ HIWONDER_CAMERA_WIDTH = 640
 HIWONDER_CAMERA_HEIGHT = 480
 HIWONDER_CAMERA_QUALITY = 80
 HIWONDER_CAMERA_STREAM_TYPE = "mjpeg"
+JETMAX_SSH_PORT = 22
+JETMAX_WEB_VIDEO_PORT = 8080
+JETMAX_ROSBRIDGE_PORT = 9091
+JETMAX_ROS_MASTER_PORT = 11311
+JETMAX_LEGACY_TCP_RUNTIME_PORT = 8888
 SERVO_MEASUREMENT_POINTS = frozenset(
     {
         "center",
@@ -43,7 +48,7 @@ def build_hiwonder_camera_stream_url(host: str) -> str:
     """Return the only default PC-side camera URL for the JetMax official MJPEG stream."""
     normalized_host = str(host).strip()
     return (
-        f"http://{normalized_host}:8080/stream?"
+        f"http://{normalized_host}:{JETMAX_WEB_VIDEO_PORT}/stream?"
         f"topic={HIWONDER_CAMERA_TOPIC}"
         f"&type={HIWONDER_CAMERA_STREAM_TYPE}"
         f"&width={HIWONDER_CAMERA_WIDTH}"
@@ -137,10 +142,10 @@ class AppConfig:
     vision_max_targets: int = 4
     sim_move_step_mm: float = 6.0
     robot_host: str = "192.168.149.1"
-    robot_port: int = 8888
+    robot_port: int = JETMAX_LEGACY_TCP_RUNTIME_PORT
     robot_transport: str = "tcp"
     robot_connect_on_start: bool = False
-    rosbridge_port: int = 9091
+    rosbridge_port: int = JETMAX_ROSBRIDGE_PORT
     rosbridge_timeout_sec: float = 3.0
     ros_reconnect_base_delay_sec: float = 3.0
     ros_reconnect_max_delay_sec: float = 30.0
@@ -243,6 +248,8 @@ class AppConfig:
     vision_probe_reads: int = 3
     vision_probe_sleep_ms: int = 60
     vision_endpoint_probe_timeout_ms: int = 250
+    vision_frame_top_mask_rows: int = 28
+    vision_frame_bottom_mask_rows: int = 32
     vision_world_scale_xy: float = 1.0
     vision_world_offset_xy_mm: tuple[float, float] = (0.0, -120.0)
     vision_mapping_mode: str = "delta_servo"
@@ -305,13 +312,13 @@ class AppConfig:
     vision_continuous_servo_center_stop_descent_px: float = 48.0
     vision_continuous_servo_descent_high_error_px: float = 80.0
     vision_continuous_servo_descent_high_error_z_above_confirm_mm: float = 70.0
-    vision_continuous_servo_descent_low_error_z_above_confirm_mm: float = 12.0
+    vision_continuous_servo_descent_low_error_z_above_confirm_mm: float = 4.0
     vision_continuous_servo_soft_descent_enabled: bool = True
     vision_continuous_servo_soft_descent_rate_scale: float = 0.35
     vision_continuous_servo_soft_descent_min_z_above_confirm_mm: float = 18.0
     # Allow slow descent through small residual image error. Final confirm/pick
     # still uses vision_continuous_servo_pick_ready_center_px.
-    vision_continuous_servo_low_height_descent_allow_px: float = 12.0
+    vision_continuous_servo_low_height_descent_allow_px: float = 18.0
     vision_continuous_servo_pick_ready_center_px: float = 2.0
     vision_continuous_servo_fine_pulse_center_px: float = 0.0
     vision_continuous_servo_settle_stop_band_px: float = 8.0
@@ -319,13 +326,17 @@ class AppConfig:
     # turn the last few pixels into radius-direction overshoot.
     vision_continuous_servo_low_height_fine_band_px: float = 3.0
     vision_continuous_servo_low_height_fine_rate_scale: float = 0.35
-    vision_continuous_servo_low_height_coarse_rate_scale: float = 0.35
+    vision_continuous_servo_low_height_coarse_rate_scale: float = 0.55
+    vision_continuous_servo_low_height_min_theta_rate_deg_s: float = 0.02
+    vision_continuous_servo_low_height_min_radius_rate_mm_s: float = 0.04
     vision_continuous_servo_low_height_z_rate_scale: float = 0.35
     vision_continuous_servo_low_height_error_growth_stop_px: float = 1000000.0
     vision_continuous_servo_low_height_guard_band_mm: float = 30.0
     vision_continuous_servo_low_height_pause_descent_band_mm: float = 4.0
     vision_continuous_servo_low_height_unstable_servo_px: float = 60.0
-    vision_continuous_servo_low_height_descent_rebound_pause_px: float = 10.0
+    vision_continuous_servo_low_height_descent_rebound_pause_px: float = 4.0
+    vision_continuous_servo_low_height_best_error_descent_pause_px: float = 4.0
+    vision_continuous_servo_low_height_best_confirm_descent_allow_px: float = 40.0
     vision_continuous_servo_low_height_max_theta_drift_deg: float = 8.0
     vision_continuous_servo_low_height_max_radius_drift_mm: float = 8.0
     vision_continuous_servo_low_height_best_error_rebound_px: float = 8.0
@@ -335,7 +346,11 @@ class AppConfig:
     vision_continuous_servo_low_height_static_frames: int = 12
     vision_continuous_servo_low_height_static_improvement_px: float = 1.0
     vision_continuous_servo_low_height_static_band_mm: float = 6.0
-    vision_continuous_servo_low_height_static_pose_band_mm: float = 1.5
+    vision_continuous_servo_low_height_static_pose_band_mm: float = 4.0
+    vision_continuous_servo_camera_motion_guard_enabled: bool = True
+    vision_continuous_servo_camera_motion_guard_min_robot_mm: float = 8.0
+    vision_continuous_servo_camera_motion_guard_max_pixel_px: float = 2.5
+    vision_continuous_servo_camera_motion_guard_static_frames: int = 5
     vision_continuous_servo_low_height_rebound_recover_band_mm: float = 10.0
     vision_continuous_servo_low_height_rebound_recover_attempts: int = 3
     vision_continuous_servo_low_height_discrete_refine_enabled: bool = False
@@ -356,7 +371,7 @@ class AppConfig:
     vision_continuous_servo_horizontal_mode: str = "ibvs_dls"
     vision_continuous_servo_ibvs_gain: float = 0.45
     vision_continuous_servo_ibvs_damping_px_per_unit: float = 2.0
-    vision_continuous_servo_ibvs_du_dtheta_px_per_deg: float = 14.0
+    vision_continuous_servo_ibvs_du_dtheta_px_per_deg: float = -14.0
     vision_continuous_servo_ibvs_du_dradius_px_per_mm: float = 0.0
     vision_continuous_servo_ibvs_dv_dtheta_px_per_deg: float = 0.0
     vision_continuous_servo_ibvs_dv_dradius_px_per_mm: float = 3.5
@@ -466,6 +481,8 @@ class AppConfig:
             vision_continuous_servo_horizontal_mode=continuous_horizontal_mode,
             vision_calibration_grid_size=max(2, int(config.vision_calibration_grid_size)),
             vision_frame_pose_max_age_ms=max(1.0, float(config.vision_frame_pose_max_age_ms)),
+            vision_frame_top_mask_rows=max(0, min(120, int(config.vision_frame_top_mask_rows))),
+            vision_frame_bottom_mask_rows=max(0, min(120, int(config.vision_frame_bottom_mask_rows))),
             vision_frame_min_brightness_mean=max(0.0, float(config.vision_frame_min_brightness_mean)),
             vision_frame_min_brightness_p95=max(0.0, float(config.vision_frame_min_brightness_p95)),
             vision_pick_descent_step_mm=max(0.1, float(config.vision_pick_descent_step_mm)),
@@ -506,6 +523,10 @@ class AppConfig:
             vision_continuous_servo_low_height_descent_allow_px=max(
                 max(0.1, float(config.vision_continuous_servo_center_allow_descent_px)),
                 float(config.vision_continuous_servo_low_height_descent_allow_px),
+            ),
+            vision_continuous_servo_low_height_best_confirm_descent_allow_px=max(
+                max(0.1, float(config.vision_continuous_servo_low_height_descent_allow_px)),
+                float(config.vision_continuous_servo_low_height_best_confirm_descent_allow_px),
             ),
             vision_continuous_servo_pick_ready_center_px=max(
                 0.1, float(config.vision_continuous_servo_pick_ready_center_px)
@@ -571,6 +592,15 @@ class AppConfig:
             ),
             vision_continuous_servo_low_height_static_pose_band_mm=max(
                 0.0, float(config.vision_continuous_servo_low_height_static_pose_band_mm)
+            ),
+            vision_continuous_servo_camera_motion_guard_min_robot_mm=max(
+                0.1, float(config.vision_continuous_servo_camera_motion_guard_min_robot_mm)
+            ),
+            vision_continuous_servo_camera_motion_guard_max_pixel_px=max(
+                0.1, float(config.vision_continuous_servo_camera_motion_guard_max_pixel_px)
+            ),
+            vision_continuous_servo_camera_motion_guard_static_frames=max(
+                1, int(config.vision_continuous_servo_camera_motion_guard_static_frames)
             ),
             vision_continuous_servo_low_height_rebound_recover_band_mm=max(
                 0.0, float(config.vision_continuous_servo_low_height_rebound_recover_band_mm)

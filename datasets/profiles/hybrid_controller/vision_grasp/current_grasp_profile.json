@@ -12,6 +12,7 @@
     "Tracked profile for real JetMax wood-block visual grasping.",
     "Final radius extension is applied once inside the vision servo command_bias path.",
     "Low-height visual confirmation must stay strict at 2 px; do not widen this without a new live safety validation.",
+    "Low-height camera centering uses geometry_subpixel because color centroids can be biased by partial occlusion, shadows, and adjacent blocks.",
     "Keep app-layer pick_cyl_radius_bias_mm at 0.0 unless running manual non-servo diagnostics."
   ]
 }

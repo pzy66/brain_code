@@ -6,7 +6,7 @@
 
 - `jetmax_start_ros_runtime.py`
   - 通过 SSH 一键启动 JetMax ROS runtime
-  - 会清理残留进程并停用系统自启旧 rosbridge
+  - 默认保留已有 `rosbridge.service`，只清理残留 hybrid runtime 进程
   - 默认不重写、不重启 JetMax 官方 `usb_cam.service`
   - 默认不订阅 `/usb_cam/image_rect_color`，不请求 `8080` MJPEG/H264 视频流
   - 只有显式传 `--check-camera-stream` 时才做相机读取验证
@@ -85,7 +85,7 @@ http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&widt
 - `--skip-camera-check`：兼容参数；默认已经跳过相机检查
 - `--repair-camera-sender`：显式改写/重启官方 `usb_cam.service` 相机发送配置
 - `--skip-camera-repair`：兼容旧参数；默认已经不修复摄像头发送
-- `--repair-camera-driver`：显式写入/重载 `uvcvideo` 兼容参数，仅用于诊断；必须同时带 `--allow-camera-sender-mutation`。默认不强制 `quirks`，并保持 `nodrop=0`，让驱动丢弃不完整帧，避免条带/拼接坏帧进入视觉识别。
+- `--repair-camera-driver`：显式写入/重载 `uvcvideo` 诊断参数，仅用于定位驱动/USB 层问题；必须同时带 `--allow-camera-sender-mutation`。默认诊断值为 `quirks=0 nodrop=0 timeout=5000`，让驱动丢弃不完整帧；工厂恢复路径会移除该覆盖文件。
 - `--allow-camera-sender-mutation`：允许本工具改动相机发送链路；修复类参数必须同时带这个开关
 - `--remove-camera-driver-override`：显式移除本工具写过的 `uvcvideo` 覆盖文件；默认不碰
 - `--keep-camera-driver-override`：兼容旧参数；默认已经保留已有覆盖文件
@@ -107,7 +107,15 @@ http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&widt
 .\.venv\Scripts\python.exe .\hybrid_controller\robot\tools\jetmax_start_ros_runtime.py --camera-only --allow-camera-sender-mutation --host 192.168.149.1 --user hiwonder --password $env:JETMAX_PASSWORD
 ```
 
-当前已验证的机械臂端摄像头参数：
+如果 SSH 端口打开但没有协议响应，先确认 Windows 真实连接到 `HW-2DC157A4`，且到 `192.168.149.1` 的路由走 `WLAN` 而不是 Meta/VPN。远程 shell 确实不可用时，在 JetMax 本机终端运行：
+
+```bash
+cd /home/hiwonder/brain_code/hybrid_controller/robot/tools
+bash reset_jetmax_camera_factory_local.sh
+sudo reboot
+```
+
+官方/工厂链路应保持的机械臂端摄像头参数：
 
 ```text
 /home/hiwonder/ros/autostart/usb_cam.launch:
@@ -122,7 +130,7 @@ http://192.168.149.1:8080/stream?topic=/usb_cam/image_rect_color&type=mjpeg&widt
 
 uvcvideo:
   不保留 hybrid 工具写入的 /etc/modprobe.d/hiwonder-uvcvideo.conf
-  当前修复目标是默认不强制 quirks，nodrop=0，让驱动丢弃不完整帧
+  默认不强制 quirks，nodrop=0，让驱动丢弃不完整帧，避免灰绿/条带残帧进入视觉识别
 ```
 
 ## ROS 服务探针

@@ -261,6 +261,15 @@ def test_horizontal_tearing_detector_rejects_multi_band_low_height_frame() -> No
     assert vision_runtime._frame_has_horizontal_tearing(torn) is True  # pylint: disable=protected-access
 
 
+def test_horizontal_tearing_detector_allows_guide_border_edges() -> None:
+    frame = np.full((480, 640, 3), 150, dtype=np.uint8)
+    frame[:4, :] = 110
+    cv2.rectangle(frame, (120, 80), (600, 380), (10, 10, 10), 3)
+    cv2.rectangle(frame, (260, 230), (380, 350), (0, 145, 40), -1)
+
+    assert vision_runtime._frame_has_horizontal_tearing(frame) is False  # pylint: disable=protected-access
+
+
 def test_temporal_splice_detector_rejects_partial_frame_jump() -> None:
     previous = cv2.imread(
         str(Path("hybrid_controller/logs/vision_debug/vision_grasp_20260511_183500/continuous_096/raw.jpg"))

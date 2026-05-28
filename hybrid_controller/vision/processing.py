@@ -70,6 +70,70 @@ def frame_brightness_quality(
     }
 
 
+def _mask_row_count(value: int | float) -> int:
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _median_edge_fill(sample: np.ndarray, dtype: np.dtype) -> np.ndarray:
+    if sample.ndim == 2:
+        fill = np.median(sample)
+    else:
+        fill = np.median(sample.reshape(-1, *sample.shape[2:]), axis=0)
+    return np.asarray(fill, dtype=dtype)
+
+
+def sanitize_frame_edge_bands(
+    frame_bgr: object,
+    *,
+    top_rows: int | float = 0,
+    bottom_rows: int | float = 0,
+) -> tuple[object, int, int]:
+    """Mask unstable JetMax stream rows without shifting image geometry."""
+    top_requested = _mask_row_count(top_rows)
+    bottom_requested = _mask_row_count(bottom_rows)
+    if (top_requested <= 0 and bottom_requested <= 0) or frame_bgr is None:
+        return frame_bgr, 0, 0
+    try:
+        arr = np.asarray(frame_bgr)
+    except Exception:
+        return frame_bgr, 0, 0
+    if arr.ndim < 2 or arr.shape[0] < 2:
+        return frame_bgr, 0, 0
+    height = int(arr.shape[0])
+    top = min(top_requested, height - 1)
+    bottom = min(bottom_requested, height - top - 1)
+    if top <= 0 and bottom <= 0:
+        return frame_bgr, 0, 0
+    clean = np.array(arr, copy=True)
+    source = arr
+    valid_end = height - bottom
+    if top > 0:
+        sample_end = min(valid_end, top + max(8, top))
+        sample = source[top:sample_end, ...]
+        if sample.size:
+            clean[:top, ...] = _median_edge_fill(sample, clean.dtype)
+        else:
+            clean[:top, ...] = source[top : top + 1, ...]
+    if bottom > 0:
+        sample_end = height - bottom
+        sample_start = max(top, sample_end - max(8, bottom))
+        sample = source[sample_start:sample_end, ...]
+        if sample.size:
+            clean[height - bottom :, ...] = _median_edge_fill(sample, clean.dtype)
+        else:
+            clean[height - bottom :, ...] = source[height - bottom - 1 : height - bottom, ...]
+    return clean, int(top), int(bottom)
+
+
+def sanitize_frame_top_band(frame_bgr: object, *, top_rows: int | float = 0) -> tuple[object, int]:
+    """Backward-compatible wrapper for callers that only mask the top edge."""
+    clean, top, _bottom = sanitize_frame_edge_bands(frame_bgr, top_rows=top_rows, bottom_rows=0)
+    return clean, top
+
+
 def is_low_height_measurement_zone(
     *,
     calibration_stage: str | None,
@@ -1316,6 +1380,7 @@ def annotate_slots_with_cylindrical(
     mapping_mode_text = str(mapping_mode or "absolute_base").strip().lower()
     if mapping_mode_text not in {"absolute_base", "delta_servo"}:
         mapping_mode_text = "delta_servo"
+    servo_mode_enabled = mapping_mode_text in {"absolute_base", "delta_servo"}
     measurement_point = normalize_servo_measurement_point(servo_measurement_point, default="geometry_subpixel")
     low_height_measurement_point = ""
     if low_height_servo_measurement_point:
@@ -1358,9 +1423,9 @@ def annotate_slots_with_cylindrical(
             continue
         if slot.grasp_pixel is None:
             slot.grasp_pixel = slot.pixel_center
-        if slot.grasp_quality < float(grasp_quality_threshold):
+        low_grasp_quality = slot.grasp_quality < float(grasp_quality_threshold)
+        if low_grasp_quality:
             slot.invalid_reason = "grasp_quality_low"
-            continue
         if slot.area_stability_ratio is not None and float(slot.area_stability_ratio) > 0.40:
             slot.invalid_reason = "grasp_unstable"
             continue
@@ -1486,7 +1551,7 @@ def annotate_slots_with_cylindrical(
                 else configured_tolerance
             )
             is_low_confirm_stage = str(calibration_stage or "").strip().lower() in {"confirm", "pick"}
-            if mapping_mode_text == "delta_servo" and is_low_confirm_stage:
+            if servo_mode_enabled and is_low_confirm_stage:
                 action_tolerance = min(float(profile_tolerance), float(action_center_tolerance_px))
             else:
                 action_tolerance = max(float(profile_tolerance), float(action_center_tolerance_px))
@@ -1511,13 +1576,20 @@ def annotate_slots_with_cylindrical(
                     )
                 )
             )
-            if mapping_mode_text == "delta_servo" and low_confirm_area_unstable:
+            if servo_mode_enabled and low_confirm_area_unstable:
                 slot.invalid_reason = "grasp_unstable"
                 continue
-            if mapping_mode_text == "delta_servo" and distance_to_center > action_tolerance:
+            if servo_mode_enabled and distance_to_center > action_tolerance:
                 slot.servo_required = True
+                if low_grasp_quality:
+                    slot.invalid_reason = "vision_servo_required"
             elif (
-                mapping_mode_text == "delta_servo"
+                low_grasp_quality
+            ):
+                slot.invalid_reason = "grasp_quality_low"
+                continue
+            elif (
+                servo_mode_enabled
                 and int(required_stable_frames) > 1
                 and int(slot.center_stable_frames) < int(required_stable_frames)
                 and not is_low_confirm_stage
@@ -1525,7 +1597,7 @@ def annotate_slots_with_cylindrical(
                 slot.invalid_reason = "grasp_unstable"
                 continue
             elif (
-                mapping_mode_text == "delta_servo"
+                servo_mode_enabled
                 and int(required_stable_frames) > 1
                 and int(slot.grasp_stable_frames) < int(required_stable_frames)
                 and not is_low_confirm_stage
@@ -1533,7 +1605,7 @@ def annotate_slots_with_cylindrical(
                 slot.invalid_reason = "grasp_unstable"
                 continue
             elif (
-                mapping_mode_text == "delta_servo"
+                servo_mode_enabled
                 and slot.grasp_angle_stability_deg is not None
                 and float(slot.grasp_angle_stability_deg) > float(grasp_angle_stability_tolerance_deg)
             ):

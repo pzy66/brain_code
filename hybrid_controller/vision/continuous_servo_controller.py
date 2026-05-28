@@ -29,6 +29,9 @@ class ContinuousServoPending:
     best_center_distance_px: float | None = None
     low_height_static_frames: int = 0
     low_height_static_reference_px: float | None = None
+    motion_guard_anchor_pose: tuple[float, float, float] | None = None
+    motion_guard_anchor_px: tuple[float, float] | None = None
+    motion_guard_static_frames: int = 0
 
     @classmethod
     def from_mapping(
@@ -51,6 +54,8 @@ class ContinuousServoPending:
         low_height_anchor_pose = _safe_triplet(payload.get("low_height_anchor_pose"))
         best_center_distance = _safe_float(payload.get("best_center_distance_px"), float("nan"))
         low_height_static_reference = _safe_float(payload.get("low_height_static_reference_px"), float("nan"))
+        motion_guard_anchor_pose = _safe_triplet(payload.get("motion_guard_anchor_pose"))
+        motion_guard_anchor_px = _safe_pair(payload.get("motion_guard_anchor_px"))
         return cls(
             slot_id=int(slot_id),
             stable_frames=_safe_int(payload.get("stable_frames"), 0),
@@ -68,6 +73,9 @@ class ContinuousServoPending:
             low_height_static_reference_px=(
                 low_height_static_reference if math.isfinite(low_height_static_reference) else None
             ),
+            motion_guard_anchor_pose=motion_guard_anchor_pose,
+            motion_guard_anchor_px=motion_guard_anchor_px,
+            motion_guard_static_frames=_safe_int(payload.get("motion_guard_static_frames"), 0),
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -102,6 +110,21 @@ class ContinuousServoPending:
             "low_height_static_reference_px": (
                 None if self.low_height_static_reference_px is None else float(self.low_height_static_reference_px)
             ),
+            "motion_guard_anchor_pose": (
+                None
+                if self.motion_guard_anchor_pose is None
+                else [
+                    float(self.motion_guard_anchor_pose[0]),
+                    float(self.motion_guard_anchor_pose[1]),
+                    float(self.motion_guard_anchor_pose[2]),
+                ]
+            ),
+            "motion_guard_anchor_px": (
+                None
+                if self.motion_guard_anchor_px is None
+                else [float(self.motion_guard_anchor_px[0]), float(self.motion_guard_anchor_px[1])]
+            ),
+            "motion_guard_static_frames": int(self.motion_guard_static_frames),
         }
 
 
@@ -368,6 +391,9 @@ class ContinuousVisionServoController:
             best_center_distance_px=current.best_center_distance_px,
             low_height_static_frames=current.low_height_static_frames,
             low_height_static_reference_px=current.low_height_static_reference_px,
+            motion_guard_anchor_pose=current.motion_guard_anchor_pose,
+            motion_guard_anchor_px=current.motion_guard_anchor_px,
+            motion_guard_static_frames=current.motion_guard_static_frames,
         )
         if center_distance_px > max(
             0.1,
@@ -380,11 +406,23 @@ class ContinuousVisionServoController:
             confirm_z=confirm_z,
             center_distance_px=center_distance_px,
         )
+        in_low_height_guard_zone = self._is_low_height_guard_zone(current_z=current_z, confirm_z=confirm_z)
+        in_low_height_pause_zone = self._is_low_height_pause_descent_zone(current_z=current_z, confirm_z=confirm_z)
+        descent_allow_px = self._descent_error_allow_px(current_z=current_z, confirm_z=confirm_z)
+        low_height_best_confirm_descent_allowed = self._low_height_best_confirm_descent_allowed(
+            current_z=current_z,
+            confirm_z=confirm_z,
+            center_distance_px=center_distance_px,
+            best_center_distance_px=next_pending.best_center_distance_px,
+            descent_allow_px=descent_allow_px,
+            in_low_height_pause_zone=in_low_height_pause_zone,
+        )
         low_height_guard_reason = self._low_height_guard_stop_reason(
             pending=next_pending,
             current_cyl_pose=(theta_deg, radius_mm, current_z),
             confirm_z=confirm_z,
             center_distance_px=center_distance_px,
+            allow_confirm_descent=low_height_best_confirm_descent_allowed,
         )
         if low_height_guard_reason:
             stopped_pending = self._replace_pending(next_pending, stable_frames=0, pick_ready_frames=0)
@@ -416,6 +454,9 @@ class ContinuousVisionServoController:
                 best_center_distance_px=next_pending.best_center_distance_px,
                 low_height_static_frames=next_pending.low_height_static_frames,
                 low_height_static_reference_px=next_pending.low_height_static_reference_px,
+                motion_guard_anchor_pose=next_pending.motion_guard_anchor_pose,
+                motion_guard_anchor_px=next_pending.motion_guard_anchor_px,
+                motion_guard_static_frames=next_pending.motion_guard_static_frames,
             )
             return ContinuousServoDecision(
                 action="STOP",
@@ -626,6 +667,9 @@ class ContinuousVisionServoController:
                 best_center_distance_px=next_pending.best_center_distance_px,
                 low_height_static_frames=next_pending.low_height_static_frames,
                 low_height_static_reference_px=next_pending.low_height_static_reference_px,
+                motion_guard_anchor_pose=next_pending.motion_guard_anchor_pose,
+                motion_guard_anchor_px=next_pending.motion_guard_anchor_px,
+                motion_guard_static_frames=next_pending.motion_guard_static_frames,
             )
             if pick_ready_stable_frames >= required_stable:
                 command = self._pick_command(slot_payload=slot_payload, current_cyl_pose=(theta_deg, radius_mm, current_z))
@@ -723,13 +767,17 @@ class ContinuousVisionServoController:
                     **horizontal_trace,
                 },
             )
-        in_low_height_guard_zone = self._is_low_height_guard_zone(current_z=current_z, confirm_z=confirm_z)
-        in_low_height_pause_zone = self._is_low_height_pause_descent_zone(current_z=current_z, confirm_z=confirm_z)
         low_height_descent_rebound = self._low_height_descent_rebound(
             current_z=current_z,
             confirm_z=confirm_z,
             center_distance_px=center_distance_px,
             previous_center_distance_px=current.last_center_distance_px,
+        )
+        low_height_best_descent_pause = self._low_height_best_descent_pause(
+            current_z=current_z,
+            confirm_z=confirm_z,
+            center_distance_px=center_distance_px,
+            best_center_distance_px=next_pending.best_center_distance_px,
         )
         z_rate_scale_reason = self._z_rate_scale_reason(
             current_z=current_z,
@@ -738,7 +786,6 @@ class ContinuousVisionServoController:
         )
         z_rate = 0.0
         soft_descent = False
-        descent_allow_px = self._descent_error_allow_px(current_z=current_z, confirm_z=confirm_z)
         if stable_frames >= required_stable and descent_cooldown_frames <= 0 and current_z > confirm_z + z_tolerance:
             if descent_anchor_z is None:
                 descent_anchor_z = float(current_z)
@@ -757,21 +804,30 @@ class ContinuousVisionServoController:
                     best_center_distance_px=next_pending.best_center_distance_px,
                     low_height_static_frames=next_pending.low_height_static_frames,
                     low_height_static_reference_px=next_pending.low_height_static_reference_px,
+                    motion_guard_anchor_pose=next_pending.motion_guard_anchor_pose,
+                    motion_guard_anchor_px=next_pending.motion_guard_anchor_px,
+                    motion_guard_static_frames=next_pending.motion_guard_static_frames,
                 )
             if (not pulse_mode_enabled) or current_z > float(descent_anchor_z) - z_pulse_mm:
                 z_rate = -self._z_rate(current_z=current_z, confirm_z=confirm_z)
                 if z_rate_scale_reason:
                     z_rate *= self._low_height_z_rate_scale()
-            if low_height_descent_rebound:
+            if low_height_descent_rebound and not low_height_best_confirm_descent_allowed:
                 z_rate = 0.0
-            if in_low_height_pause_zone and center_distance_px > center_allow_px:
+            if low_height_best_descent_pause and not low_height_best_confirm_descent_allowed:
+                z_rate = 0.0
+            if (
+                in_low_height_pause_zone
+                and center_distance_px > center_allow_px
+                and not low_height_best_confirm_descent_allowed
+            ):
                 z_rate = 0.0
         elif (
             bool(getattr(self.config, "vision_continuous_servo_soft_descent_enabled", True))
             and (
                 (
                     direct_pixel_horizontal
-                    and center_distance_px <= descent_allow_px
+                    and (center_distance_px <= descent_allow_px or low_height_best_confirm_descent_allowed)
                 )
                 or (
                     not direct_pixel_horizontal
@@ -783,7 +839,7 @@ class ContinuousVisionServoController:
                 original_invalid_reason in {"", "vision_servo_required"}
                 or (direct_pixel_horizontal and original_invalid_reason == "grasp_unstable")
             )
-            and not in_low_height_pause_zone
+            and (not in_low_height_pause_zone or low_height_best_confirm_descent_allowed)
             and current_z
             > confirm_z
             + (
@@ -803,11 +859,32 @@ class ContinuousVisionServoController:
                 z_rate = -self._z_rate(current_z=current_z, confirm_z=confirm_z) * soft_scale
                 if z_rate_scale_reason:
                     z_rate *= self._low_height_z_rate_scale()
-                if low_height_descent_rebound:
+                if low_height_descent_rebound and not low_height_best_confirm_descent_allowed:
+                    z_rate = 0.0
+                if low_height_best_descent_pause and not low_height_best_confirm_descent_allowed:
                     z_rate = 0.0
                 soft_descent = True
         elif center_distance_px > center_stop_px:
             z_rate = 0.0
+
+        next_pending, motion_guard_trace = self._motion_response_guard_update(
+            next_pending,
+            current_cyl_pose=(theta_deg, radius_mm, current_z),
+            current_px=tracking_px,
+        )
+        if motion_guard_trace is not None:
+            return ContinuousServoDecision(
+                action="STOP",
+                status="stopping because camera image did not respond to robot motion",
+                reason="camera_motion_response_missing",
+                pending=self._replace_pending(next_pending, stable_frames=0, pick_ready_frames=0),
+                trace={
+                    "center_distance_px": float(center_distance_px),
+                    "current_z_mm": float(current_z),
+                    "confirm_z_mm": float(confirm_z),
+                    **motion_guard_trace,
+                },
+            )
 
         if abs(theta_rate) < 1e-6 and abs(radius_rate) < 1e-6 and abs(z_rate) < 1e-6:
             if (
@@ -873,6 +950,20 @@ class ContinuousVisionServoController:
                 "low_height_guard_active": bool(in_low_height_guard_zone),
                 "low_height_pause_descent_active": bool(in_low_height_pause_zone),
                 "low_height_descent_rebound": bool(low_height_descent_rebound),
+                "low_height_best_descent_pause": bool(low_height_best_descent_pause),
+                "low_height_best_confirm_descent_allowed": bool(low_height_best_confirm_descent_allowed),
+                "low_height_best_confirm_descent_allow_px": float(
+                    max(
+                        descent_allow_px,
+                        float(
+                            getattr(
+                                self.config,
+                                "vision_continuous_servo_low_height_best_confirm_descent_allow_px",
+                                descent_allow_px,
+                            )
+                        ),
+                    )
+                ),
                 "z_rate_scale_reason": z_rate_scale_reason,
                 "low_height_z_rate_scale": self._low_height_z_rate_scale(),
                 "low_height_anchor_pose": (
@@ -899,6 +990,95 @@ class ContinuousVisionServoController:
                 **horizontal_trace,
             },
         )
+
+    def _motion_response_guard_update(
+        self,
+        pending: ContinuousServoPending,
+        *,
+        current_cyl_pose: tuple[float, float, float],
+        current_px: tuple[float, float] | None,
+    ) -> tuple[ContinuousServoPending, dict[str, object] | None]:
+        if not bool(getattr(self.config, "vision_continuous_servo_camera_motion_guard_enabled", False)):
+            return pending, None
+        if current_px is None:
+            return self._with_motion_guard(pending, anchor_pose=None, anchor_px=None, static_frames=0), None
+        current_point = (float(current_px[0]), float(current_px[1]))
+        anchor_pose = pending.motion_guard_anchor_pose
+        anchor_px = pending.motion_guard_anchor_px
+        if anchor_pose is None or anchor_px is None:
+            return (
+                self._with_motion_guard(
+                    pending,
+                    anchor_pose=current_cyl_pose,
+                    anchor_px=current_point,
+                    static_frames=0,
+                ),
+                None,
+            )
+
+        robot_delta = self._cyl_horizontal_delta_mm(anchor_pose, current_cyl_pose)
+        min_robot = max(
+            0.1,
+            float(getattr(self.config, "vision_continuous_servo_camera_motion_guard_min_robot_mm", 8.0)),
+        )
+        if robot_delta < min_robot:
+            return self._with_motion_guard(pending, anchor_pose=anchor_pose, anchor_px=anchor_px, static_frames=0), None
+
+        pixel_delta = math.hypot(float(current_point[0]) - float(anchor_px[0]), float(current_point[1]) - float(anchor_px[1]))
+        max_pixel = max(
+            0.1,
+            float(getattr(self.config, "vision_continuous_servo_camera_motion_guard_max_pixel_px", 2.5)),
+        )
+        if pixel_delta > max_pixel:
+            return (
+                self._with_motion_guard(
+                    pending,
+                    anchor_pose=current_cyl_pose,
+                    anchor_px=current_point,
+                    static_frames=0,
+                ),
+                None,
+            )
+
+        static_frames = int(pending.motion_guard_static_frames) + 1
+        guarded = self._with_motion_guard(
+            pending,
+            anchor_pose=anchor_pose,
+            anchor_px=anchor_px,
+            static_frames=static_frames,
+        )
+        required = max(
+            1,
+            int(getattr(self.config, "vision_continuous_servo_camera_motion_guard_static_frames", 5)),
+        )
+        if static_frames < required:
+            return guarded, None
+        return guarded, {
+            "reason": "camera_motion_response_missing",
+            "robot_horizontal_delta_mm": float(robot_delta),
+            "pixel_delta_px": float(pixel_delta),
+            "motion_guard_static_frames": int(static_frames),
+            "motion_guard_required_static_frames": int(required),
+            "motion_guard_min_robot_mm": float(min_robot),
+            "motion_guard_max_pixel_px": float(max_pixel),
+            "motion_guard_anchor_pose": [float(anchor_pose[0]), float(anchor_pose[1]), float(anchor_pose[2])],
+            "motion_guard_current_pose": [
+                float(current_cyl_pose[0]),
+                float(current_cyl_pose[1]),
+                float(current_cyl_pose[2]),
+            ],
+            "motion_guard_anchor_px": [float(anchor_px[0]), float(anchor_px[1])],
+            "motion_guard_current_px": [float(current_point[0]), float(current_point[1])],
+        }
+
+    @staticmethod
+    def _cyl_horizontal_delta_mm(
+        first: tuple[float, float, float],
+        second: tuple[float, float, float],
+    ) -> float:
+        first_xy = cylindrical_to_cartesian(float(first[0]), float(first[1]), float(first[2]))
+        second_xy = cylindrical_to_cartesian(float(second[0]), float(second[1]), float(second[2]))
+        return float(math.hypot(float(second_xy[0]) - float(first_xy[0]), float(second_xy[1]) - float(first_xy[1])))
 
     def _horizontal_rates(
         self,
@@ -1205,9 +1385,26 @@ class ContinuousVisionServoController:
             center_distance_px=center_distance_px,
         )
         if low_height_scale_reason:
-            scale = self._low_height_horizontal_scale(center_distance_px=center_distance_px)
-            theta_rate *= scale
-            radius_rate *= scale
+            apply_low_height_fine_scale = True
+            if low_height_scale_reason == "low_height_pause":
+                try:
+                    center_distance = float(center_distance_px)
+                except (TypeError, ValueError):
+                    center_distance = float("inf")
+                fine_band = max(
+                    0.1,
+                    float(getattr(self.config, "vision_continuous_servo_low_height_fine_band_px", 3.0)),
+                )
+                apply_low_height_fine_scale = math.isfinite(center_distance) and center_distance <= fine_band
+            if apply_low_height_fine_scale:
+                scale = self._low_height_horizontal_scale(center_distance_px=center_distance_px)
+                theta_rate *= scale
+                radius_rate *= scale
+                theta_rate, radius_rate = self._apply_low_height_min_horizontal_rate(
+                    theta_rate,
+                    radius_rate,
+                    center_distance_px=center_distance_px,
+                )
         return (theta_rate, radius_rate)
 
     def _height_horizontal_rate_scale(
@@ -1256,6 +1453,43 @@ class ContinuousVisionServoController:
             float(getattr(self.config, "vision_continuous_servo_low_height_fine_band_px", 3.0)),
         )
         return fine_scale if center_distance <= fine_band else coarse_scale
+
+    def _apply_low_height_min_horizontal_rate(
+        self,
+        theta_rate: float,
+        radius_rate: float,
+        *,
+        center_distance_px: float | None,
+    ) -> tuple[float, float]:
+        try:
+            center_distance = float(center_distance_px)
+        except (TypeError, ValueError):
+            return (theta_rate, radius_rate)
+        if not math.isfinite(center_distance):
+            return (theta_rate, radius_rate)
+        pick_ready_center = max(
+            0.1,
+            float(getattr(self.config, "vision_continuous_servo_pick_ready_center_px", 2.0)),
+        )
+        fine_band = max(
+            pick_ready_center,
+            float(getattr(self.config, "vision_continuous_servo_low_height_fine_band_px", 3.0)),
+        )
+        if center_distance <= pick_ready_center or center_distance > fine_band:
+            return (theta_rate, radius_rate)
+        theta_min = max(
+            0.0,
+            float(getattr(self.config, "vision_continuous_servo_low_height_min_theta_rate_deg_s", 0.0)),
+        )
+        radius_min = max(
+            0.0,
+            float(getattr(self.config, "vision_continuous_servo_low_height_min_radius_rate_mm_s", 0.0)),
+        )
+        if theta_min > 0.0 and 1e-6 < abs(theta_rate) < theta_min:
+            theta_rate = math.copysign(theta_min, theta_rate)
+        if radius_min > 0.0 and 1e-6 < abs(radius_rate) < radius_min:
+            radius_rate = math.copysign(radius_min, radius_rate)
+        return (theta_rate, radius_rate)
 
     def _low_height_fine_scale_reason(
         self,
@@ -1381,6 +1615,67 @@ class ContinuousVisionServoController:
         )
         return growth >= rebound_pause
 
+    def _low_height_best_descent_pause(
+        self,
+        *,
+        current_z: float,
+        confirm_z: float,
+        center_distance_px: float,
+        best_center_distance_px: float | None,
+    ) -> bool:
+        if not self._is_low_height_guard_zone(current_z=float(current_z), confirm_z=float(confirm_z)):
+            return False
+        best = _safe_float(best_center_distance_px, float("nan")) if best_center_distance_px is not None else float("nan")
+        current = _safe_float(center_distance_px, float("nan"))
+        if not (math.isfinite(best) and math.isfinite(current)):
+            return False
+        pick_ready_center = max(
+            0.1,
+            float(getattr(self.config, "vision_continuous_servo_pick_ready_center_px", 2.0)),
+        )
+        fine_band = max(
+            pick_ready_center,
+            float(getattr(self.config, "vision_continuous_servo_low_height_fine_band_px", 3.0)),
+        )
+        if best > fine_band:
+            return False
+        rebound_limit = max(
+            0.1,
+            float(getattr(self.config, "vision_continuous_servo_low_height_best_error_descent_pause_px", 4.0)),
+        )
+        return current > best + rebound_limit
+
+    def _low_height_best_confirm_descent_allowed(
+        self,
+        *,
+        current_z: float,
+        confirm_z: float,
+        center_distance_px: float,
+        best_center_distance_px: float | None,
+        descent_allow_px: float,
+        in_low_height_pause_zone: bool,
+    ) -> bool:
+        if not bool(in_low_height_pause_zone):
+            return False
+        z_tolerance = max(0.0, float(getattr(self.config, "vision_pick_z_tolerance_mm", 4.0)))
+        if float(current_z) <= float(confirm_z) + z_tolerance:
+            return False
+        best = _safe_float(best_center_distance_px, float("nan")) if best_center_distance_px is not None else float("nan")
+        current = _safe_float(center_distance_px, float("nan"))
+        allow = _safe_float(descent_allow_px, float("nan"))
+        if not (math.isfinite(best) and math.isfinite(current) and math.isfinite(allow)):
+            return False
+        pick_ready_center = max(
+            0.1,
+            float(getattr(self.config, "vision_continuous_servo_pick_ready_center_px", 2.0)),
+        )
+        best_confirm_allow = max(
+            pick_ready_center,
+            allow,
+            float(getattr(self.config, "vision_continuous_servo_low_height_best_confirm_descent_allow_px", allow)),
+        )
+        return best <= pick_ready_center and current <= best_confirm_allow
+
     def _is_low_height_guard_zone(self, *, current_z: float, confirm_z: float) -> bool:
         guard_band = max(
             0.0,
@@ -1419,6 +1714,9 @@ class ContinuousVisionServoController:
                 best_center_distance_px=None,
                 low_height_static_frames=0,
                 low_height_static_reference_px=None,
+                motion_guard_anchor_pose=pending.motion_guard_anchor_pose,
+                motion_guard_anchor_px=pending.motion_guard_anchor_px,
+                motion_guard_static_frames=pending.motion_guard_static_frames,
             )
         static_band = max(
             0.0,
@@ -1470,6 +1768,9 @@ class ContinuousVisionServoController:
             best_center_distance_px=float(best),
             low_height_static_frames=int(static_frames),
             low_height_static_reference_px=None if static_reference is None else float(static_reference),
+            motion_guard_anchor_pose=pending.motion_guard_anchor_pose,
+            motion_guard_anchor_px=pending.motion_guard_anchor_px,
+            motion_guard_static_frames=pending.motion_guard_static_frames,
         )
 
     def _low_height_guard_stop_reason(
@@ -1479,6 +1780,7 @@ class ContinuousVisionServoController:
         current_cyl_pose: tuple[float, float, float],
         confirm_z: float,
         center_distance_px: float,
+        allow_confirm_descent: bool = False,
     ) -> str:
         if not self._is_low_height_guard_zone(current_z=float(current_cyl_pose[2]), confirm_z=confirm_z):
             return ""
@@ -1530,7 +1832,7 @@ class ContinuousVisionServoController:
             confirm_z=float(confirm_z),
             center_distance_px=float(center_distance_px),
         )
-        if static_reason:
+        if static_reason and not bool(allow_confirm_descent):
             return static_reason
         fine_band = max(
             pick_ready_center,
@@ -1699,6 +2001,12 @@ class ContinuousVisionServoController:
         return [float(target_theta), float(target_radius)]
 
     def _slot_quality_reject_reason(self, slot_payload: Mapping[str, object]) -> str:
+        if (
+            bool(slot_payload.get("low_height_local_center_override", False))
+            and str(slot_payload.get("invalid_reason", "") or "").strip() == "vision_servo_required"
+            and not bool(slot_payload.get("actionable", False))
+        ):
+            return ""
         min_confidence = max(
             0.0,
             min(1.0, float(getattr(self.config, "vision_continuous_servo_min_confidence", 0.55))),
@@ -2023,6 +2331,37 @@ class ContinuousVisionServoController:
             best_center_distance_px=pending.best_center_distance_px,
             low_height_static_frames=int(pending.low_height_static_frames),
             low_height_static_reference_px=pending.low_height_static_reference_px,
+            motion_guard_anchor_pose=pending.motion_guard_anchor_pose,
+            motion_guard_anchor_px=pending.motion_guard_anchor_px,
+            motion_guard_static_frames=pending.motion_guard_static_frames,
+        )
+
+    @staticmethod
+    def _with_motion_guard(
+        pending: ContinuousServoPending,
+        *,
+        anchor_pose: tuple[float, float, float] | None,
+        anchor_px: tuple[float, float] | None,
+        static_frames: int,
+    ) -> ContinuousServoPending:
+        return ContinuousServoPending(
+            slot_id=int(pending.slot_id),
+            stable_frames=int(pending.stable_frames),
+            pick_ready_frames=int(pending.pick_ready_frames),
+            lost_frames=int(pending.lost_frames),
+            stale_frames=int(pending.stale_frames),
+            source=str(pending.source),
+            last_center_px=pending.last_center_px,
+            last_center_distance_px=pending.last_center_distance_px,
+            descent_anchor_z_mm=pending.descent_anchor_z_mm,
+            descent_cooldown_frames=int(pending.descent_cooldown_frames),
+            low_height_anchor_pose=pending.low_height_anchor_pose,
+            best_center_distance_px=pending.best_center_distance_px,
+            low_height_static_frames=int(pending.low_height_static_frames),
+            low_height_static_reference_px=pending.low_height_static_reference_px,
+            motion_guard_anchor_pose=anchor_pose,
+            motion_guard_anchor_px=anchor_px,
+            motion_guard_static_frames=max(0, int(static_frames)),
         )
 
 

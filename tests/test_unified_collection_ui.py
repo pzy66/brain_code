@@ -119,8 +119,30 @@ def test_protocol_worker_does_not_write_active_marker_without_ack(tmp_path) -> N
 def test_unified_window_instantiates() -> None:
     _app = QApplication.instance() or QApplication([])
     window = UnifiedCollectionWindow()
-    assert window.mode_tabs.count() == 2
+    assert window.mode_tabs.count() == 3
+    assert window.mode_tabs.tabBar().isHidden()
     assert window.btn_start_ssvep.isEnabled()
+    assert not window.btn_start_pretrain.isEnabled()
+    window.close()
+
+
+def test_pretrain_ui_flow_can_advance_and_reset() -> None:
+    _app = QApplication.instance() or QApplication([])
+    window = UnifiedCollectionWindow()
+    window.device_info = {"sampling_rate": 250.0, "channel_names": ["C3", "Cz", "C4"]}
+    window.capture_worker = object()  # type: ignore[assignment]
+    window._refresh_pretrain_device_status()
+
+    window.start_pretrain_flow()
+    assert window.pretrain_timer.isActive()
+    window._advance_pretrain_flow()
+    assert window.pretrain_overall_progress.value() > 0
+    assert window.btn_pause_pretrain.isEnabled()
+
+    window.reset_pretrain_flow()
+    assert not window.pretrain_timer.isActive()
+    assert window.pretrain_overall_progress.value() == 0
+    assert window.btn_start_pretrain.isEnabled()
     window.close()
 
 

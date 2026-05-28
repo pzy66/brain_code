@@ -6,6 +6,11 @@
 .ruff_cache/
 .vscode/
 .codex-presentations/
+.codex-test-venv/
+brain_code_workspace.egg-info/
+codex_git_objects/
+codex_upload.index
+outputs/
 汇报/
 **/.idea/
 **/.venv/
@@ -18,6 +23,7 @@
 pytest-cache-files-*/
 pytest_tmp/
 .pytest_tmp/
+**/pytest_cache_codex_run/
 **/.pytest_tmp*/
 **/.tmp*/
 **/.tmp_test_artifacts/

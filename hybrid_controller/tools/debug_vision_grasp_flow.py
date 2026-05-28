@@ -11,6 +11,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
 
+import numpy as np
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -32,6 +34,7 @@ from hybrid_controller.vision.processing import (
     build_vision_packet,
     extract_candidates,
     frame_brightness_quality,
+    sanitize_frame_edge_bands,
     update_slots,
 )
 from hybrid_controller.vision.runtime import (
@@ -401,11 +404,17 @@ def _read_frames_from_capture(
     frame_count: int,
     drain_frames: int,
     timeout_sec: float,
+    latest_window_sec: float = 0.0,
 ) -> list[tuple[object, float]]:
     frames: list[tuple[object, float]] = []
     deadline = time.perf_counter() + max(0.5, float(timeout_sec))
     drain_remaining = max(0, int(drain_frames))
-    while time.perf_counter() <= deadline and len(frames) < max(1, int(frame_count)):
+    target_count = max(1, int(frame_count))
+    latest_until: float | None = None
+    latest_window = max(0.0, float(latest_window_sec))
+    while time.perf_counter() <= deadline:
+        if latest_until is not None and time.perf_counter() >= latest_until:
+            break
         try:
             ok, frame = capture.read()  # type: ignore[attr-defined]
         except Exception:
@@ -420,7 +429,35 @@ def _read_frames_from_capture(
             drain_remaining -= 1
             continue
         frames.append((frame, now))
+        if len(frames) > target_count:
+            del frames[:-target_count]
+        if latest_window > 0.0 and latest_until is None:
+            latest_until = min(deadline, now + latest_window)
+        if latest_window <= 0.0 and len(frames) >= target_count:
+            break
     if not frames:
+        stats_func = getattr(capture, "stats", None)
+        if callable(stats_func):
+            try:
+                stats = stats_func()
+            except Exception:
+                stats = None
+            if isinstance(stats, Mapping):
+                reason = str(stats.get("last_reject_reason", "")).strip()
+                read_error = str(stats.get("last_read_error", "")).strip()
+                rejected = stats.get("frames_rejected")
+                accepted = stats.get("frames_accepted")
+                details = []
+                if reason:
+                    details.append(f"last_reject={reason}")
+                if read_error:
+                    details.append(f"last_read_error={read_error}")
+                if rejected is not None:
+                    details.append(f"frames_rejected={rejected}")
+                if accepted is not None:
+                    details.append(f"frames_accepted={accepted}")
+                if details:
+                    raise RuntimeError("Timed out waiting for camera frames (" + ", ".join(details) + ").")
         raise RuntimeError("Timed out waiting for camera frames.")
     return frames
 
@@ -442,6 +479,7 @@ def _capture_frames(
             frame_count=frame_count,
             drain_frames=drain_frames,
             timeout_sec=timeout_sec,
+            latest_window_sec=0.0,
         )
     finally:
         try:
@@ -536,6 +574,7 @@ class _PersistentCaptureReader:
         frame_count: int,
         drain_frames: int,
         timeout_sec: float,
+        latest_window_sec: float = 0.0,
     ) -> tuple[str, list[tuple[object, float]]]:
         self._ensure_open()
         if self._capture is None or self._stream_url is None:
@@ -546,6 +585,7 @@ class _PersistentCaptureReader:
                 frame_count=frame_count,
                 drain_frames=drain_frames,
                 timeout_sec=timeout_sec,
+                latest_window_sec=latest_window_sec,
             )
         except Exception:
             self.close()
@@ -698,6 +738,44 @@ def _ibvs_jacobian_from_stage_profile(
     )
 
 
+def _ibvs_jacobian_from_profile_for_snapshot(
+    *,
+    config: AppConfig,
+    calibration_profile: VisionCalibrationProfile | None,
+    snapshot: Mapping[str, object] | None,
+) -> tuple[tuple[float, float, float, float], str] | None:
+    pose = _current_cyl_pose(snapshot)
+    if pose is None or calibration_profile is None:
+        return None
+    stage_name, stage_z = _current_calibration_stage(config, snapshot)
+    try:
+        active_stage_profile = calibration_profile.model_for_stage(
+            stage_name,
+            z_mm=stage_z,
+            allow_fallback=True,
+        )
+    except Exception:
+        active_stage_profile = calibration_profile
+    stage_profile_z = active_stage_profile.z_mm
+    if stage_profile_z is None:
+        return None
+    stage_band_mm = max(
+        0.0,
+        float(getattr(config, "vision_continuous_servo_ibvs_profile_stage_band_mm", 15.0)),
+    )
+    if stage_profile_z is not None and abs(float(pose[2]) - float(stage_profile_z)) > stage_band_mm:
+        return None
+    profile_jacobian = _ibvs_jacobian_from_stage_profile(
+        active_stage_profile,
+        theta_deg=float(pose[0]),
+        radius_mm=float(pose[1]),
+    )
+    if profile_jacobian is None:
+        return None
+    source = f"profile_{stage_name}" if stage_profile_z is not None else "profile_global"
+    return (profile_jacobian, source)
+
+
 def _stage_profile_pixel_to_xy_jacobian(profile: VisionCalibrationProfile) -> tuple[float, float, float, float] | None:
     summary = profile.samples_summary if isinstance(profile.samples_summary, Mapping) else {}
     raw = summary.get("pixel_to_robot_jacobian") if isinstance(summary, Mapping) else None
@@ -836,6 +914,79 @@ def _current_cyl_pose(snapshot: Mapping[str, object] | None) -> tuple[float, flo
     return pose
 
 
+def _cyl_horizontal_delta_mm(
+    first_pose: tuple[float, float, float] | None,
+    second_pose: tuple[float, float, float] | None,
+) -> float | None:
+    if first_pose is None or second_pose is None:
+        return None
+    try:
+        first_theta, first_radius = float(first_pose[0]), float(first_pose[1])
+        second_theta, second_radius = float(second_pose[0]), float(second_pose[1])
+    except (TypeError, ValueError):
+        return None
+    if not all(math.isfinite(value) for value in (first_theta, first_radius, second_theta, second_radius)):
+        return None
+    mean_radius = max(0.0, (first_radius + second_radius) * 0.5)
+    arc_mm = math.radians(second_theta - first_theta) * mean_radius
+    radial_mm = second_radius - first_radius
+    return math.hypot(arc_mm, radial_mm)
+
+
+def _motion_response_guard_update(
+    *,
+    config: AppConfig,
+    anchor_pose: tuple[float, float, float] | None,
+    anchor_px: tuple[float, float] | None,
+    static_frames: int,
+    current_pose: tuple[float, float, float] | None,
+    current_px: tuple[float, float] | None,
+) -> tuple[tuple[float, float, float] | None, tuple[float, float] | None, int, dict[str, object] | None]:
+    if not bool(getattr(config, "vision_continuous_servo_camera_motion_guard_enabled", True)):
+        return (current_pose, current_px, 0, None)
+    if current_pose is None or current_px is None:
+        return (None, None, 0, None)
+    if anchor_pose is None or anchor_px is None:
+        return (current_pose, current_px, 0, None)
+    robot_delta = _cyl_horizontal_delta_mm(anchor_pose, current_pose)
+    if robot_delta is None:
+        return (current_pose, current_px, 0, None)
+    pixel_delta = math.hypot(float(current_px[0]) - float(anchor_px[0]), float(current_px[1]) - float(anchor_px[1]))
+    min_robot_mm = max(
+        0.1,
+        float(getattr(config, "vision_continuous_servo_camera_motion_guard_min_robot_mm", 8.0)),
+    )
+    max_pixel_px = max(
+        0.1,
+        float(getattr(config, "vision_continuous_servo_camera_motion_guard_max_pixel_px", 2.5)),
+    )
+    required_frames = max(
+        1,
+        int(getattr(config, "vision_continuous_servo_camera_motion_guard_static_frames", 5)),
+    )
+    if pixel_delta > max_pixel_px:
+        return (current_pose, current_px, 0, None)
+    if robot_delta < min_robot_mm:
+        return (anchor_pose, anchor_px, 0, None)
+    next_static_frames = max(0, int(static_frames)) + 1
+    trace = {
+        "reason": "camera_motion_response_missing",
+        "robot_horizontal_delta_mm": float(robot_delta),
+        "pixel_delta_px": float(pixel_delta),
+        "anchor_pose_cyl": [float(anchor_pose[0]), float(anchor_pose[1]), float(anchor_pose[2])],
+        "current_pose_cyl": [float(current_pose[0]), float(current_pose[1]), float(current_pose[2])],
+        "anchor_px": [float(anchor_px[0]), float(anchor_px[1])],
+        "current_px": [float(current_px[0]), float(current_px[1])],
+        "static_frames": int(next_static_frames),
+        "required_static_frames": int(required_frames),
+        "min_robot_horizontal_delta_mm": float(min_robot_mm),
+        "max_pixel_delta_px": float(max_pixel_px),
+    }
+    if next_static_frames >= required_frames:
+        return (anchor_pose, anchor_px, next_static_frames, trace)
+    return (anchor_pose, anchor_px, next_static_frames, None)
+
+
 def _snapshot_local_age_ms(snapshot: Mapping[str, object] | None, *, now: float | None = None) -> float:
     if not isinstance(snapshot, Mapping):
         return float("inf")
@@ -894,6 +1045,21 @@ def _process_frame_batch(
 ) -> tuple[dict[str, object], object, int, list[SlotState]]:
     if slots is None:
         slots = [SlotState(slot=index + 1, freq_hz=config.ssvep_freqs[index]) for index in range(config.vision_max_targets)]
+    top_mask_rows = int(getattr(config, "vision_frame_top_mask_rows", 0) or 0)
+    bottom_mask_rows = int(getattr(config, "vision_frame_bottom_mask_rows", 0) or 0)
+    prepared_frames: list[tuple[object, float]] = []
+    effective_top_mask_rows = 0
+    effective_bottom_mask_rows = 0
+    for frame, capture_ts in frames:
+        prepared_frame, masked_top_rows, masked_bottom_rows = sanitize_frame_edge_bands(
+            frame,
+            top_rows=top_mask_rows,
+            bottom_rows=bottom_mask_rows,
+        )
+        effective_top_mask_rows = max(effective_top_mask_rows, int(masked_top_rows))
+        effective_bottom_mask_rows = max(effective_bottom_mask_rows, int(masked_bottom_rows))
+        prepared_frames.append((prepared_frame, capture_ts))
+    frames = prepared_frames
     packet: dict[str, object] | None = None
     last_frame = frames[-1][0]
     frame_id = int(frame_id_start)
@@ -911,6 +1077,8 @@ def _process_frame_batch(
             min_mean=float(getattr(config, "vision_frame_min_brightness_mean", 30.0)),
             min_p95=float(getattr(config, "vision_frame_min_brightness_p95", 45.0)),
         )
+        frame_quality["top_mask_rows"] = int(effective_top_mask_rows)
+        frame_quality["bottom_mask_rows"] = int(effective_bottom_mask_rows)
         roi_center = _resolve_roi_center(config, frame_w, frame_h)
         roi_radius = _resolve_roi_radius(config, frame_w, frame_h)
         calibration_stage, calibration_z_mm = _current_calibration_stage(config, snapshot_for_stage)
@@ -1149,6 +1317,513 @@ def _select_slot(packet: Mapping[str, object], slot_id: int | None) -> dict[str,
     if not valid_slots or not bool(valid_slots[0].get("valid", False)):
         return None
     return valid_slots[0]
+
+
+def _point_pair(value: object) -> tuple[float, float] | None:
+    if not isinstance(value, (tuple, list)) or len(value) < 2:
+        return None
+    try:
+        x_value = float(value[0])
+        y_value = float(value[1])
+    except (TypeError, ValueError):
+        return None
+    if not (math.isfinite(x_value) and math.isfinite(y_value)):
+        return None
+    return (x_value, y_value)
+
+
+def _slot_tracking_point(slot: Mapping[str, object]) -> tuple[float, float] | None:
+    measurement_point = str(slot.get("measurement_point", "") or "")
+    point = _point_pair(_point_for_measurement(slot, measurement_point))
+    if point is not None:
+        return point
+    for key in (
+        "geometry_center_f",
+        "color_block_center_f",
+        "top_face_center_f",
+        "grasp_pixel_f",
+        "pixel_center_f",
+        "geometry_center",
+        "color_block_center",
+        "top_face_center",
+        "grasp_pixel",
+        "pixel_center",
+    ):
+        point = _point_pair(slot.get(key))
+        if point is not None:
+            return point
+    return None
+
+
+def _select_slot_by_previous_center(
+    packet: Mapping[str, object],
+    previous_center_px: object,
+    *,
+    max_distance_px: float = 95.0,
+) -> tuple[dict[str, object] | None, float | None]:
+    slots = packet.get("slots")
+    previous = _point_pair(previous_center_px)
+    if previous is None or not isinstance(slots, list):
+        return None, None
+    best_slot: dict[str, object] | None = None
+    best_distance = float("inf")
+    for slot_raw in slots:
+        if not isinstance(slot_raw, Mapping):
+            continue
+        slot = dict(slot_raw)
+        if not bool(slot.get("valid", False)) and str(slot.get("invalid_reason", "")) != "vision_servo_required":
+            continue
+        point = _slot_tracking_point(slot)
+        if point is None:
+            continue
+        distance = math.hypot(point[0] - previous[0], point[1] - previous[1])
+        if distance < best_distance:
+            best_slot = slot
+            best_distance = distance
+    if best_slot is None or best_distance > float(max_distance_px):
+        return None, None
+    return best_slot, float(best_distance)
+
+
+def _remap_pending_slot(
+    pending: Mapping[str, object] | None,
+    slot_id: int | None,
+    *,
+    relock_distance_px: float | None = None,
+) -> dict[str, object] | None:
+    if not isinstance(pending, Mapping):
+        return None
+    result = dict(pending)
+    if slot_id is not None:
+        result["slot_id"] = int(slot_id)
+    if relock_distance_px is not None:
+        result["target_relock_distance_px"] = float(relock_distance_px)
+    return result
+
+
+def _adaptive_local_block_center(
+    frame_bgr: object,
+    *,
+    seed_px: tuple[float, float],
+    crop_radius_px: int = 105,
+    crop_center_px: tuple[float, float] | None = None,
+) -> tuple[float, float] | None:
+    candidate = _adaptive_local_block_candidate(
+        frame_bgr,
+        seed_px=seed_px,
+        crop_radius_px=crop_radius_px,
+        crop_center_px=crop_center_px,
+    )
+    center = None if candidate is None else _point_pair(candidate.get("center_px"))
+    return None if center is None else center
+
+
+def _candidate_point_for_measurement(
+    candidate: Mapping[str, object],
+    measurement_point: object,
+) -> tuple[float, float] | None:
+    mode = str(measurement_point or "").strip().lower()
+    if mode in {"color_block", "color_block_subpixel"}:
+        return _point_pair(candidate.get("color_center_px") or candidate.get("center_px"))
+    if mode in {"top_face", "top_face_subpixel", "grasp", "grasp_subpixel"}:
+        return _point_pair(
+            candidate.get("top_face_center_px")
+            or candidate.get("geometry_center_px")
+            or candidate.get("bbox_center_px")
+            or candidate.get("center_px")
+        )
+    return _point_pair(candidate.get("geometry_center_px") or candidate.get("bbox_center_px") or candidate.get("center_px"))
+
+
+def _set_slot_point(
+    slot: dict[str, object],
+    float_key: str,
+    int_key: str,
+    point: tuple[float, float] | None,
+) -> None:
+    if point is None:
+        return
+    slot[float_key] = [float(point[0]), float(point[1])]
+    slot[int_key] = [int(round(float(point[0]))), int(round(float(point[1])))]
+
+
+def _adaptive_local_block_candidate(
+    frame_bgr: object,
+    *,
+    seed_px: tuple[float, float],
+    crop_radius_px: int = 105,
+    crop_center_px: tuple[float, float] | None = None,
+) -> dict[str, object] | None:
+    import cv2
+
+    if frame_bgr is None or not hasattr(frame_bgr, "shape"):
+        return None
+    frame_h, frame_w = frame_bgr.shape[:2]
+    sx = max(0, min(frame_w - 1, int(round(float(seed_px[0])))))
+    sy = max(0, min(frame_h - 1, int(round(float(seed_px[1])))))
+    crop_center = _point_pair(crop_center_px) or (float(sx), float(sy))
+    cx_crop = max(0, min(frame_w - 1, int(round(float(crop_center[0])))))
+    cy_crop = max(0, min(frame_h - 1, int(round(float(crop_center[1])))))
+    radius = max(32, int(crop_radius_px))
+    x1 = max(0, cx_crop - radius)
+    x2 = min(frame_w, cx_crop + radius + 1)
+    y1 = max(0, cy_crop - radius)
+    y2 = min(frame_h, cy_crop + radius + 1)
+    if x2 - x1 < 16 or y2 - y1 < 16:
+        return None
+    if sx < x1 or sx >= x2 or sy < y1 or sy >= y2:
+        return None
+    roi = frame_bgr[y1:y2, x1:x2]
+    seed = roi[sy - y1, sx - x1].astype(np.float32)
+    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    sat = hsv[:, :, 1]
+    value = hsv[:, :, 2]
+    diff = np.linalg.norm(roi.astype(np.float32) - seed.reshape(1, 1, 3), axis=2)
+    seed_mask = np.where(diff <= 48.0, 255, 0).astype(np.uint8)
+    seed_mask = np.where(sat >= 35, seed_mask, 0).astype(np.uint8)
+    color_mask = np.where((sat >= 55) & (value >= 35), 255, 0).astype(np.uint8)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    seed_mask = cv2.morphologyEx(seed_mask, cv2.MORPH_OPEN, kernel, iterations=1)
+    seed_mask = cv2.morphologyEx(seed_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+    color_mask = cv2.morphologyEx(color_mask, cv2.MORPH_OPEN, kernel, iterations=1)
+    color_mask = cv2.morphologyEx(color_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+
+    def _best_component(mask: object, *, prefer_seed_label: bool) -> tuple[float, int, object, object, object] | None:
+        count, labels, stats, centroids = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        if count <= 1:
+            return None
+        seed_label = int(labels[sy - y1, sx - x1])
+        candidates: list[tuple[float, int]] = []
+        roi_area = float((x2 - x1) * (y2 - y1))
+        for label in range(1, count):
+            area = float(stats[label, cv2.CC_STAT_AREA])
+            if area < 350.0:
+                continue
+            left = float(stats[label, cv2.CC_STAT_LEFT])
+            top = float(stats[label, cv2.CC_STAT_TOP])
+            width = float(stats[label, cv2.CC_STAT_WIDTH])
+            height = float(stats[label, cv2.CC_STAT_HEIGHT])
+            if width <= 3.0 or height <= 3.0:
+                continue
+            area_ratio = area / max(1.0, roi_area)
+            if area_ratio > 0.70:
+                continue
+            fill_ratio = area / max(1.0, width * height)
+            cx, cy = float(centroids[label][0]), float(centroids[label][1])
+            dist = math.hypot(cx - (sx - x1), cy - (sy - y1))
+            score = dist - min(area, 20000.0) / 20000.0 * 8.0
+            if fill_ratio < 0.30:
+                score += 15.0
+            if prefer_seed_label and label == seed_label:
+                score -= 20.0
+            candidates.append((score, label))
+        if not candidates:
+            return None
+        best_score, best_label = min(candidates, key=lambda item: item[0])
+        return (float(best_score), int(best_label), labels, stats, centroids)
+
+    component = _best_component(seed_mask, prefer_seed_label=True)
+    if component is None:
+        component = _best_component(color_mask, prefer_seed_label=False)
+    if component is None:
+        return None
+    _, best_label, _labels, stats, centroids = component
+    cx, cy = centroids[best_label]
+    left = float(stats[best_label, cv2.CC_STAT_LEFT])
+    top = float(stats[best_label, cv2.CC_STAT_TOP])
+    width = float(stats[best_label, cv2.CC_STAT_WIDTH])
+    height = float(stats[best_label, cv2.CC_STAT_HEIGHT])
+    area = float(stats[best_label, cv2.CC_STAT_AREA])
+    color_center = (float(cx) + float(x1), float(cy) + float(y1))
+    bbox_center = (
+        float(x1) + left + width / 2.0,
+        float(y1) + top + height / 2.0,
+    )
+    component_mask = np.where(_labels == best_label, 255, 0).astype(np.uint8)
+    contours, _ = cv2.findContours(component_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    min_rect_center: tuple[float, float] | None = None
+    min_rect_size: list[float] | None = None
+    min_rect_angle: float | None = None
+    if contours:
+        contour = max(contours, key=cv2.contourArea)
+        rect = cv2.minAreaRect(contour)
+        min_rect_center = (float(rect[0][0]) + float(x1), float(rect[0][1]) + float(y1))
+        min_rect_size = [float(rect[1][0]), float(rect[1][1])]
+        min_rect_angle = float(rect[2])
+    geometry_center = bbox_center
+    return {
+        "center_px": [float(color_center[0]), float(color_center[1])],
+        "color_center_px": [float(color_center[0]), float(color_center[1])],
+        "geometry_center_px": [float(geometry_center[0]), float(geometry_center[1])],
+        "bbox_center_px": [float(bbox_center[0]), float(bbox_center[1])],
+        "min_area_rect_center_px": (
+            None if min_rect_center is None else [float(min_rect_center[0]), float(min_rect_center[1])]
+        ),
+        "top_face_center_px": [float(geometry_center[0]), float(geometry_center[1])],
+        "grasp_center_px": [float(geometry_center[0]), float(geometry_center[1])],
+        "area_px": float(area),
+        "bbox": [
+            float(x1) + left,
+            float(y1) + top,
+            float(x1) + left + width,
+            float(y1) + top + height,
+        ],
+        "min_area_rect_size": min_rect_size,
+        "min_area_rect_angle_deg": min_rect_angle,
+        "seed_px": [float(sx), float(sy)],
+        "crop_bbox": [int(x1), int(y1), int(x2), int(y2)],
+    }
+
+
+def _low_height_local_synthetic_slot(
+    *,
+    packet: dict[str, object],
+    frame_bgr: object,
+    pending: Mapping[str, object] | None,
+    current_z_mm: float | None,
+    confirm_z_mm: float,
+    measurement_point: str,
+    slot_id: int | None = None,
+) -> dict[str, object] | None:
+    if current_z_mm is None:
+        return None
+    try:
+        if float(current_z_mm) > float(confirm_z_mm) + 30.0:
+            return None
+    except (TypeError, ValueError):
+        return None
+    target = _point_pair(packet.get("alignment_target_pixel")) or (320.0, 240.0)
+    pending_center = _point_pair(pending.get("last_center_px")) if isinstance(pending, Mapping) else None
+    def _neighbor_seeds(center: tuple[float, float]) -> list[tuple[float, float]]:
+        offsets = (
+            (0.0, 0.0),
+            (24.0, 0.0),
+            (-24.0, 0.0),
+            (0.0, 24.0),
+            (0.0, -24.0),
+            (34.0, 0.0),
+            (-34.0, 0.0),
+            (24.0, 18.0),
+            (24.0, -18.0),
+            (-24.0, 18.0),
+            (-24.0, -18.0),
+        )
+        return [(float(center[0]) + dx, float(center[1]) + dy) for dx, dy in offsets]
+
+    seeds = _neighbor_seeds(pending_center) if pending_center is not None else []
+    seeds.extend(_neighbor_seeds(target))
+    deduped_seeds: list[tuple[float, float]] = []
+    seen: set[tuple[int, int]] = set()
+    for seed in seeds:
+        key = (int(round(seed[0])), int(round(seed[1])))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped_seeds.append(seed)
+    seeds = deduped_seeds
+    candidate: dict[str, object] | None = None
+    best_score = float("inf")
+    for seed in seeds:
+        current = _adaptive_local_block_candidate(
+            frame_bgr,
+            seed_px=seed,
+            crop_center_px=target,
+            crop_radius_px=135,
+        )
+        if current is None:
+            continue
+        center = _point_pair(current.get("center_px"))
+        if center is None:
+            continue
+        if pending_center is not None and math.hypot(center[0] - pending_center[0], center[1] - pending_center[1]) > 28.0:
+            continue
+        try:
+            area = float(current.get("area_px"))
+        except (TypeError, ValueError):
+            area = 0.0
+        distance = math.hypot(center[0] - target[0], center[1] - target[1])
+        score = distance - min(max(area, 0.0), 30_000.0) / 30_000.0 * 1.5
+        if score < best_score:
+            best_score = float(score)
+            candidate = current
+    if candidate is None:
+        return None
+    center = _candidate_point_for_measurement(candidate, measurement_point)
+    if center is None:
+        return None
+    if pending_center is not None and math.hypot(center[0] - pending_center[0], center[1] - pending_center[1]) > 28.0:
+        return None
+    effective_slot_id = slot_id
+    if effective_slot_id is None and isinstance(pending, Mapping):
+        try:
+            effective_slot_id = int(pending.get("slot_id"))
+        except (TypeError, ValueError):
+            effective_slot_id = None
+    if effective_slot_id is None:
+        effective_slot_id = 1
+    distance = float(math.hypot(center[0] - target[0], center[1] - target[1]))
+    geometry_center = _point_pair(candidate.get("geometry_center_px")) or center
+    color_center = _point_pair(candidate.get("color_center_px") or candidate.get("center_px")) or center
+    top_face_center = _point_pair(candidate.get("top_face_center_px")) or geometry_center
+    grasp_center = _point_pair(candidate.get("grasp_center_px")) or top_face_center
+    pixel_center = geometry_center
+    slot = {
+        "slot_id": int(effective_slot_id),
+        "slot": int(effective_slot_id),
+        "valid": True,
+        "observed": True,
+        "actionable": False,
+        "invalid_reason": "vision_servo_required",
+        "servo_required": True,
+        "measurement_point": str(measurement_point or "grasp_subpixel"),
+        "alignment_target_pixel": [float(target[0]), float(target[1])],
+        "center_distance_px": distance,
+        "confidence": 0.35,
+        "area_px": candidate.get("area_px"),
+        "bbox": candidate.get("bbox"),
+        "low_height_local_center_override": True,
+        "low_height_local_synthetic_slot": True,
+        "low_height_local_center_seed_px": candidate.get("seed_px"),
+        "low_height_local_center_px": [float(center[0]), float(center[1])],
+        "low_height_local_color_center_px": candidate.get("color_center_px") or candidate.get("center_px"),
+        "low_height_local_geometry_center_px": candidate.get("geometry_center_px"),
+        "low_height_local_bbox_center_px": candidate.get("bbox_center_px"),
+        "low_height_local_min_area_rect_center_px": candidate.get("min_area_rect_center_px"),
+        "low_height_local_crop_bbox": candidate.get("crop_bbox"),
+        "low_height_local_min_area_rect_size": candidate.get("min_area_rect_size"),
+        "low_height_local_min_area_rect_angle_deg": candidate.get("min_area_rect_angle_deg"),
+    }
+    _set_slot_point(slot, "pixel_center_f", "pixel_center", pixel_center)
+    _set_slot_point(slot, "geometry_center_f", "geometry_center", geometry_center)
+    _set_slot_point(slot, "grasp_pixel_f", "grasp_pixel", grasp_center)
+    _set_slot_point(slot, "color_block_center_f", "color_block_center", color_center)
+    _set_slot_point(slot, "top_face_center_f", "top_face_center", top_face_center)
+    return slot
+
+
+def _upsert_packet_slot(packet: dict[str, object], slot: Mapping[str, object] | None) -> None:
+    if not isinstance(slot, Mapping):
+        return
+    slots = packet.get("slots")
+    if not isinstance(slots, list):
+        slots = []
+        packet["slots"] = slots
+    try:
+        slot_id = int(slot.get("slot_id", slot.get("slot", 0)) or 0)
+    except (TypeError, ValueError):
+        slot_id = 0
+    replacement = dict(slot)
+    for index, existing in enumerate(slots):
+        if not isinstance(existing, Mapping):
+            continue
+        try:
+            existing_id = int(existing.get("slot_id", existing.get("slot", 0)) or 0)
+        except (TypeError, ValueError):
+            existing_id = -1
+        if existing_id == slot_id:
+            slots[index] = replacement
+            return
+    slots.append(replacement)
+
+
+def _patch_low_height_local_center(
+    *,
+    packet: dict[str, object],
+    frame_bgr: object,
+    selected_slot: dict[str, object] | None,
+    pending: Mapping[str, object] | None,
+    current_z_mm: float | None,
+    confirm_z_mm: float,
+    measurement_point: str,
+) -> dict[str, object] | None:
+    if selected_slot is None or current_z_mm is None:
+        return selected_slot
+    try:
+        if float(current_z_mm) > float(confirm_z_mm) + 30.0:
+            return selected_slot
+    except (TypeError, ValueError):
+        return selected_slot
+    target = _point_pair(selected_slot.get("alignment_target_pixel") or packet.get("alignment_target_pixel"))
+    if target is None:
+        target = (320.0, 240.0)
+    seed = _point_pair(selected_slot.get("grasp_pixel_f") or selected_slot.get("geometry_center_f"))
+    pending_center = None
+    if isinstance(pending, Mapping):
+        pending_center = _point_pair(pending.get("last_center_px"))
+        seed = pending_center or seed
+    frame_h, frame_w = frame_bgr.shape[:2] if hasattr(frame_bgr, "shape") else (480, 640)
+    bbox = selected_slot.get("bbox")
+    bbox_touches_edge = False
+    bbox_area_ratio = 0.0
+    if isinstance(bbox, (tuple, list)) and len(bbox) >= 4:
+        try:
+            x1, y1, x2, y2 = [float(value) for value in bbox[:4]]
+            bbox_touches_edge = x1 <= 2.0 or y1 <= 2.0 or x2 >= float(frame_w) - 2.0 or y2 >= float(frame_h) - 2.0
+            bbox_area_ratio = max(0.0, (x2 - x1) * (y2 - y1)) / max(1.0, float(frame_w * frame_h))
+        except (TypeError, ValueError):
+            bbox_touches_edge = False
+            bbox_area_ratio = 0.0
+    try:
+        selected_error = float(selected_slot.get("center_distance_px"))
+    except (TypeError, ValueError):
+        selected_error = float("inf")
+    if pending_center is None and (bbox_touches_edge or bbox_area_ratio >= 0.28 or selected_error >= 45.0):
+        seed = target
+    if seed is None:
+        seed = target
+    local_candidate = _adaptive_local_block_candidate(
+        frame_bgr,
+        seed_px=seed,
+        crop_center_px=target,
+        crop_radius_px=135,
+    )
+    if local_candidate is None:
+        return None if not bool(selected_slot.get("valid", False)) else selected_slot
+    local_center = _candidate_point_for_measurement(local_candidate, measurement_point)
+    if local_center is None:
+        return None if not bool(selected_slot.get("valid", False)) else selected_slot
+    if pending_center is not None and math.hypot(local_center[0] - pending_center[0], local_center[1] - pending_center[1]) > 28.0:
+        return None if not bool(selected_slot.get("valid", False)) else selected_slot
+    patched = dict(selected_slot)
+    point_keys = {
+        "grasp_subpixel": ("grasp_pixel_f", "grasp_pixel"),
+        "grasp": ("grasp_pixel_f", "grasp_pixel"),
+        "geometry_subpixel": ("geometry_center_f", "geometry_center"),
+        "geometry": ("geometry_center_f", "geometry_center"),
+        "color_block_subpixel": ("color_block_center_f", "color_block_center"),
+        "color_block": ("color_block_center_f", "color_block_center"),
+        "top_face_subpixel": ("top_face_center_f", "top_face_center"),
+        "top_face": ("top_face_center_f", "top_face_center"),
+    }
+    float_key, int_key = point_keys.get(str(measurement_point), ("geometry_center_f", "geometry_center"))
+    _set_slot_point(patched, "geometry_center_f", "geometry_center", _point_pair(local_candidate.get("geometry_center_px")))
+    _set_slot_point(
+        patched,
+        "color_block_center_f",
+        "color_block_center",
+        _point_pair(local_candidate.get("color_center_px") or local_candidate.get("center_px")),
+    )
+    _set_slot_point(patched, "top_face_center_f", "top_face_center", _point_pair(local_candidate.get("top_face_center_px")))
+    _set_slot_point(patched, "grasp_pixel_f", "grasp_pixel", _point_pair(local_candidate.get("grasp_center_px")))
+    _set_slot_point(patched, float_key, int_key, local_center)
+    patched["measurement_point"] = str(measurement_point)
+    patched["center_distance_px"] = float(math.hypot(local_center[0] - target[0], local_center[1] - target[1]))
+    patched["valid"] = True
+    patched["observed"] = True
+    patched["servo_required"] = True
+    patched["actionable"] = False
+    patched["invalid_reason"] = "vision_servo_required"
+    patched["low_height_local_center_override"] = True
+    patched["low_height_local_center_seed_px"] = [float(seed[0]), float(seed[1])]
+    patched["low_height_local_center_px"] = [float(local_center[0]), float(local_center[1])]
+    patched["low_height_local_color_center_px"] = local_candidate.get("color_center_px") or local_candidate.get("center_px")
+    patched["low_height_local_geometry_center_px"] = local_candidate.get("geometry_center_px")
+    patched["low_height_local_bbox_center_px"] = local_candidate.get("bbox_center_px")
+    patched["low_height_local_min_area_rect_center_px"] = local_candidate.get("min_area_rect_center_px")
+    patched["low_height_local_crop_bbox"] = local_candidate.get("crop_bbox")
+    patched["low_height_local_min_area_rect_size"] = local_candidate.get("min_area_rect_size")
+    patched["low_height_local_min_area_rect_angle_deg"] = local_candidate.get("min_area_rect_angle_deg")
+    return patched
 
 
 def _pixel_distance_to_target(point: object, target: object) -> float | None:
@@ -1779,6 +2454,7 @@ def _continuous_confirm_recheck(
             frame_count=frames,
             drain_frames=drain_frames,
             timeout_sec=float(args.timeout_sec),
+            latest_window_sec=max(0.0, float(getattr(args, "continuous_latest_window_ms", 0.0))) / 1000.0,
         )
         process_frames = _select_latest_frames(captured, int(args.process_latest_frames))
         packet, last_frame, next_frame_id, next_debug_slots = _process_frame_batch(
@@ -1804,6 +2480,27 @@ def _continuous_confirm_recheck(
         resolved_packet["camera_frames_captured"] = int(len(captured))
         resolved_packet["camera_frames_processed"] = int(len(process_frames))
         selected_slot = _select_slot(resolved_packet, slot_id)
+        pose_for_patch = _current_cyl_pose(snapshot_for_stage)
+        selected_slot = _patch_low_height_local_center(
+            packet=resolved_packet,
+            frame_bgr=last_frame,
+            selected_slot=selected_slot,
+            pending=None,
+            current_z_mm=None if pose_for_patch is None else float(pose_for_patch[2]),
+            confirm_z_mm=float(config.vision_pick_confirm_z_mm),
+            measurement_point=str(config.vision_servo_low_height_measurement_point or config.vision_servo_measurement_point),
+        )
+        if selected_slot is None:
+            selected_slot = _low_height_local_synthetic_slot(
+                packet=resolved_packet,
+                frame_bgr=last_frame,
+                pending=None,
+                current_z_mm=None if pose_for_patch is None else float(pose_for_patch[2]),
+                confirm_z_mm=float(config.vision_pick_confirm_z_mm),
+                measurement_point=str(config.vision_servo_low_height_measurement_point or config.vision_servo_measurement_point),
+                slot_id=slot_id,
+            )
+        _upsert_packet_slot(resolved_packet, selected_slot)
         alignment_provenance = _slot_alignment_provenance(selected_slot, resolved_packet)
         sample: dict[str, object] = {
             "repeat_index": int(repeat_index),
@@ -1951,6 +2648,24 @@ def _finite_float(value: object) -> float | None:
     return result if math.isfinite(result) else None
 
 
+def _camera_transport_has_motion_artifacts(stats: Mapping[str, object] | None) -> bool:
+    if not isinstance(stats, Mapping):
+        return False
+    reason = str(stats.get("last_reject_reason", "")).strip().lower()
+    if any(token in reason for token in ("horizontal_tearing", "temporal_splice", "invalid_jpeg", "decode_failed")):
+        return True
+    try:
+        consecutive = int(stats.get("consecutive_rejected_frames", 0) or 0)
+        rejected = int(stats.get("frames_rejected", 0) or 0)
+    except (TypeError, ValueError):
+        consecutive = 0
+        rejected = 0
+    if consecutive <= 0 and rejected <= 0:
+        return False
+    read_error = str(stats.get("last_read_error", "")).strip().lower()
+    return read_error in {"timeout", "timed out"} or "timeout" in read_error
+
+
 def _continuous_low_height_refine_gate(
     recheck: Mapping[str, object],
     *,
@@ -2045,8 +2760,11 @@ def _run_continuous_servo_flow(
         "max_duration_sec": max(0.1, float(args.continuous_max_duration_sec)),
         "z_disabled": bool(args.continuous_disable_z),
         "stopped_step_mode": bool(args.continuous_stopped_step_mode),
+        "auto_stopped_on_camera_artifacts": bool(args.continuous_auto_stopped_on_camera_artifacts),
+        "motion_safe_stopped_step_mode": False,
         "drain_frames_first_loop": max(0, int(args.drain_frames)),
         "drain_frames_each_loop": max(0, int(args.continuous_drain_frames_each_loop)),
+        "latest_window_ms": max(0.0, float(args.continuous_latest_window_ms)),
         "commands_sent": 0,
         "stop_count": 0,
         "stopped_move_count": 0,
@@ -2056,6 +2774,7 @@ def _run_continuous_servo_flow(
         "mean_frame_age_ms": None,
         "frame_age_samples": 0,
         "camera_read_timeouts": 0,
+        "camera_artifact_recoveries": 0,
         "camera_transport": {},
         "low_height_rebound_recoveries": 0,
         "low_height_refine_gain": max(0.01, min(1.0, float(args.continuous_low_height_refine_gain))),
@@ -2107,6 +2826,10 @@ def _run_continuous_servo_flow(
     low_height_rebound_recoveries = 0
     low_refine_best_median_distance: float | None = None
     low_refine_best_pose: tuple[float, float, float] | None = None
+    motion_response_anchor_pose: tuple[float, float, float] | None = None
+    motion_response_anchor_px: tuple[float, float] | None = None
+    motion_response_static_frames = 0
+    motion_safe_stopped_step_mode = False
     exit_code = 0
     loop_index = 0
     started_at = time.perf_counter()
@@ -2177,11 +2900,20 @@ def _run_continuous_servo_flow(
                     frame_count=int(args.frames),
                     drain_frames=loop_drain_frames,
                     timeout_sec=float(args.timeout_sec),
+                    latest_window_sec=max(0.0, float(args.continuous_latest_window_ms)) / 1000.0,
                 )
                 camera_read_timeouts = 0
             except Exception as error:
                 camera_read_timeouts += 1
                 metrics["camera_read_timeouts"] = int(metrics["camera_read_timeouts"]) + 1
+                camera_transport = reader.transport_stats()
+                artifact_recovery = bool(args.continuous_auto_stopped_on_camera_artifacts) and _camera_transport_has_motion_artifacts(
+                    camera_transport
+                )
+                if artifact_recovery:
+                    metrics["camera_artifact_recoveries"] = int(metrics["camera_artifact_recoveries"]) + 1
+                    motion_safe_stopped_step_mode = True
+                    metrics["motion_safe_stopped_step_mode"] = True
                 cmd_seq = next_teleop_cmd_seq(cmd_seq)
                 client.stop_teleop(use_auto_z=False, cmd_seq=cmd_seq)
                 teleop_published = True
@@ -2198,11 +2930,12 @@ def _run_continuous_servo_flow(
                             "camera_read_timeouts": int(camera_read_timeouts),
                             "drain_frames": int(loop_drain_frames),
                             "error": str(error),
+                            "auto_stopped_step_mode_enabled": bool(artifact_recovery),
                         },
                     },
                     "snapshot": snapshot,
                     "pre_frame_snapshot": snapshot,
-                    "camera_transport": reader.transport_stats(),
+                    "camera_transport": camera_transport,
                 }
                 report["steps"].append(step_report)
                 if camera_read_timeouts < max(1, int(getattr(config, "vision_continuous_servo_stale_frames", 3))):
@@ -2212,7 +2945,11 @@ def _run_continuous_servo_flow(
                         step_report["camera_reopen_error"] = str(reopen_error)
                     print(
                         "[continuous {step}] camera read timeout; stopped teleop and reopened PC reader "
-                        "({count})".format(step=loop_index, count=camera_read_timeouts)
+                        "({count}){suffix}".format(
+                            step=loop_index,
+                            count=camera_read_timeouts,
+                            suffix="; motion-safe stopped-step mode enabled" if artifact_recovery else "",
+                        )
                     )
                     time.sleep(max(0.0, interval_sec - (time.perf_counter() - loop_started)))
                     continue
@@ -2296,43 +3033,75 @@ def _run_continuous_servo_flow(
                 resolved_packet["frame_pose_age_ms"] = float(frame_pose_age_ms)
             if image_age_ms is not None:
                 resolved_packet["image_age_ms"] = float(image_age_ms)
+            relock_distance_px: float | None = None
+            selected_slot = None
+            if isinstance(servo_pending, Mapping):
+                selected_slot, relock_distance_px = _select_slot_by_previous_center(
+                    resolved_packet,
+                    servo_pending.get("last_center_px"),
+                )
             selection_slot_id = _continuous_slot_id_for_selection(locked_slot_id, servo_pending)
-            selected_slot = _select_slot(resolved_packet, selection_slot_id)
+            if selected_slot is None:
+                selected_slot = _select_slot(resolved_packet, selection_slot_id)
             selected_slot_id = None if selected_slot is None else int(selected_slot.get("slot_id", selected_slot.get("slot", 0)))
             if locked_slot_id is None and selected_slot_id is not None:
                 locked_slot_id = int(selected_slot_id)
                 metrics["locked_slot_id"] = int(locked_slot_id)
+            if selected_slot_id is not None and isinstance(servo_pending, Mapping):
+                servo_pending = _remap_pending_slot(
+                    servo_pending,
+                    selected_slot_id,
+                    relock_distance_px=relock_distance_px,
+                )
+                locked_slot_id = int(selected_slot_id)
+                metrics["locked_slot_id"] = int(locked_slot_id)
+            current_pose_for_patch = _current_cyl_pose(decision_snapshot)
+            selected_slot = _patch_low_height_local_center(
+                packet=resolved_packet,
+                frame_bgr=last_frame,
+                selected_slot=selected_slot,
+                pending=servo_pending,
+                current_z_mm=None if current_pose_for_patch is None else float(current_pose_for_patch[2]),
+                confirm_z_mm=float(config.vision_pick_confirm_z_mm),
+                measurement_point=str(config.vision_servo_low_height_measurement_point or config.vision_servo_measurement_point),
+            )
+            if selected_slot is None:
+                selected_slot = _low_height_local_synthetic_slot(
+                    packet=resolved_packet,
+                    frame_bgr=last_frame,
+                    pending=servo_pending,
+                    current_z_mm=None if current_pose_for_patch is None else float(current_pose_for_patch[2]),
+                    confirm_z_mm=float(config.vision_pick_confirm_z_mm),
+                    measurement_point=str(config.vision_servo_low_height_measurement_point or config.vision_servo_measurement_point),
+                    slot_id=selection_slot_id,
+                )
+            _upsert_packet_slot(resolved_packet, selected_slot)
+            selected_slot_id = None if selected_slot is None else int(selected_slot.get("slot_id", selected_slot.get("slot", 0)))
+            if selected_slot_id is not None and locked_slot_id is None:
+                locked_slot_id = int(selected_slot_id)
+                metrics["locked_slot_id"] = int(locked_slot_id)
+            if selected_slot_id is not None and isinstance(servo_pending, Mapping):
+                servo_pending = _remap_pending_slot(
+                    servo_pending,
+                    selected_slot_id,
+                    relock_distance_px=relock_distance_px,
+                )
+                locked_slot_id = int(selected_slot_id)
+                metrics["locked_slot_id"] = int(locked_slot_id)
             decision_config = config
             if str(config.vision_continuous_servo_horizontal_mode).strip().lower() == "ibvs_dls":
-                pose_for_jacobian = _current_cyl_pose(decision_snapshot)
-                if pose_for_jacobian is not None and calibration_profile is not None:
-                    stage_name, stage_z = _current_calibration_stage(config, decision_snapshot)
-                    try:
-                        active_stage_profile = calibration_profile.model_for_stage(
-                            stage_name,
-                            z_mm=stage_z,
-                            allow_fallback=True,
-                        )
-                    except Exception:
-                        active_stage_profile = calibration_profile
-                    profile_jacobian = None
-                    stage_profile_z = active_stage_profile.z_mm
-                    stage_band_mm = max(
-                        0.0,
-                        float(getattr(config, "vision_continuous_servo_ibvs_profile_stage_band_mm", 15.0)),
-                    )
-                    if stage_profile_z is not None and abs(float(pose_for_jacobian[2]) - float(stage_profile_z)) <= stage_band_mm:
-                        profile_jacobian = _ibvs_jacobian_from_stage_profile(
-                            active_stage_profile,
-                            theta_deg=float(pose_for_jacobian[0]),
-                            radius_mm=float(pose_for_jacobian[1]),
-                        )
-                    if profile_jacobian is not None:
-                        decision_config = replace(
-                            config,
-                            vision_continuous_servo_ibvs_profile_jacobian=profile_jacobian,
-                            vision_continuous_servo_ibvs_jacobian_source=f"profile_{stage_name}",
-                        ).resolved()
+                profile_jacobian = _ibvs_jacobian_from_profile_for_snapshot(
+                    config=config,
+                    calibration_profile=calibration_profile,
+                    snapshot=decision_snapshot,
+                )
+                if profile_jacobian is not None:
+                    jacobian_values, jacobian_source = profile_jacobian
+                    decision_config = replace(
+                        config,
+                        vision_continuous_servo_ibvs_profile_jacobian=jacobian_values,
+                        vision_continuous_servo_ibvs_jacobian_source=jacobian_source,
+                    ).resolved()
             decision = _continuous_decision_for_packet(
                 packet=resolved_packet,
                 config=decision_config,
@@ -2350,6 +3119,42 @@ def _run_continuous_servo_flow(
                     trace["z_disabled_by_debug_flag"] = True
                     decision["trace"] = trace
                     decision["z_rate_mm_s"] = 0.0
+            if str(decision.get("action", "")) == "SERVO":
+                guard_px = _slot_tracking_point(selected_slot) if selected_slot is not None else None
+                guard_pose = _current_cyl_pose(decision_snapshot)
+                motion_response_anchor_pose, motion_response_anchor_px, motion_response_static_frames, guard_trace = (
+                    _motion_response_guard_update(
+                        config=config,
+                        anchor_pose=motion_response_anchor_pose,
+                        anchor_px=motion_response_anchor_px,
+                        static_frames=motion_response_static_frames,
+                        current_pose=guard_pose,
+                        current_px=guard_px,
+                    )
+                )
+                if guard_trace is not None:
+                    guarded_trace = dict(
+                        decision.get("trace", {}) if isinstance(decision.get("trace"), Mapping) else {}
+                    )
+                    guarded_trace.update(guard_trace)
+                    decision = dict(decision)
+                    decision.update(
+                        {
+                            "action": "STOP",
+                            "state": "STOP",
+                            "status": "stopping because camera image did not respond to robot motion",
+                            "reason": "camera_motion_response_missing",
+                            "theta_rate_deg_s": 0.0,
+                            "radius_rate_mm_s": 0.0,
+                            "z_rate_mm_s": 0.0,
+                            "trace": guarded_trace,
+                        }
+                    )
+                    metrics["camera_motion_guard"] = dict(guard_trace)
+            else:
+                motion_response_anchor_pose = None
+                motion_response_anchor_px = None
+                motion_response_static_frames = 0
             servo_pending = decision.get("pending") if isinstance(decision.get("pending"), dict) else None
             if selected_slot is not None and selected_slot.get("center_distance_px") is not None:
                 try:
@@ -2772,7 +3577,10 @@ def _run_continuous_servo_flow(
                             if sleep_sec > 0.0:
                                 time.sleep(sleep_sec)
                             continue
-                if bool(args.continuous_stopped_step_mode):
+                effective_stopped_step_mode = bool(args.continuous_stopped_step_mode) or bool(
+                    motion_safe_stopped_step_mode
+                )
+                if effective_stopped_step_mode:
                     pose = _current_cyl_pose(decision_snapshot)
                     stopped_target = _continuous_stopped_motion_target(
                         current_pose=pose,
@@ -2815,6 +3623,11 @@ def _run_continuous_servo_flow(
                         metrics["stopped_move_count"] = int(metrics["stopped_move_count"]) + 1
                         step_report["stopped_step_move"] = {
                             "reason": stopped_reason,
+                            "mode": (
+                                "auto_camera_artifact"
+                                if motion_safe_stopped_step_mode and not bool(args.continuous_stopped_step_mode)
+                                else "explicit"
+                            ),
                             "target_cyl": [
                                 float(stopped_pose[0]),
                                 float(stopped_pose[1]),
@@ -3091,11 +3904,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--continuous-drain-frames-each-loop",
         type=int,
-        default=2,
+        default=0,
         help=(
             "Continuous-mode PC-side MJPEG buffer drain after the first loop. This only consumes frames from the "
             "already-open reader before processing the newest frame; it does not restart, scan, or modify the robot "
             "camera sender."
+        ),
+    )
+    parser.add_argument(
+        "--continuous-latest-window-ms",
+        type=float,
+        default=250.0,
+        help=(
+            "Continuous-mode latest-frame window. After the first accepted frame in a control tick, keep reading the "
+            "already-open MJPEG stream for this many milliseconds and process only the newest accepted frame. "
+            "This is PC-side buffering only; it does not touch the robot camera sender."
         ),
     )
     parser.add_argument(
@@ -3358,6 +4181,15 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Fallback diagnostic mode: convert descent/refine servo decisions into stop-then-MOVE_CYL "
             "small steps. Leave off when evaluating smooth continuous descent."
+        ),
+    )
+    parser.add_argument(
+        "--continuous-auto-stopped-on-camera-artifacts",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "After motion-correlated MJPEG artifacts/timeouts, stop teleop, reopen only the PC reader, "
+            "and finish with stop-then-MOVE_CYL small steps. Does not change robot camera FPS or quality."
         ),
     )
     parser.add_argument("--continuous-stopped-z-step-mm", type=float, default=4.0)
@@ -3632,6 +4464,7 @@ def main(argv: list[str] | None = None) -> int:
         "frames_requested": int(args.frames),
         "drain_frames": int(args.drain_frames),
         "continuous_drain_frames_each_loop": int(args.continuous_drain_frames_each_loop),
+        "continuous_latest_window_ms": float(args.continuous_latest_window_ms),
         "process_latest_frames": int(args.process_latest_frames),
         "capture_backend": str(args.capture_backend),
         "persistent_camera": bool(args.persistent_camera),
@@ -3657,6 +4490,15 @@ def main(argv: list[str] | None = None) -> int:
         "ros": ros_status,
         "steps": [],
     }
+    initial_profile_jacobian = _ibvs_jacobian_from_profile_for_snapshot(
+        config=config,
+        calibration_profile=calibration_profile,
+        snapshot=initial_snapshot,
+    )
+    if initial_profile_jacobian is not None:
+        jacobian_values, jacobian_source = initial_profile_jacobian
+        report["continuous_ibvs_jacobian"]["active_profile_source"] = jacobian_source
+        report["continuous_ibvs_jacobian"]["active_profile_values"] = [float(value) for value in jacobian_values]
     if str(args.servo_mode) == "continuous":
         exit_code = _run_continuous_servo_flow(
             args=args,
@@ -3697,6 +4539,7 @@ def main(argv: list[str] | None = None) -> int:
                     frame_count=int(args.frames),
                     drain_frames=int(args.drain_frames),
                     timeout_sec=float(args.timeout_sec),
+                    latest_window_sec=max(0.0, float(args.continuous_latest_window_ms)) / 1000.0,
                 )
             else:
                 stream_url, frames = _capture_frames_from_candidates(
@@ -3750,6 +4593,29 @@ def main(argv: list[str] | None = None) -> int:
             )
             resolved_packet["camera_transport"] = dict(camera_transport)
             selected_slot = _select_slot(resolved_packet, locked_slot_id)
+            pose_for_patch = _current_cyl_pose(resolve_snapshot)
+            selected_slot = _patch_low_height_local_center(
+                packet=resolved_packet,
+                frame_bgr=last_frame,
+                selected_slot=selected_slot,
+                pending=servo_pending,
+                current_z_mm=None if pose_for_patch is None else float(pose_for_patch[2]),
+                confirm_z_mm=float(config.vision_pick_confirm_z_mm),
+                measurement_point=str(config.vision_servo_low_height_measurement_point or config.vision_servo_measurement_point),
+            )
+            if selected_slot is not None and not bool(selected_slot.get("valid", False)):
+                selected_slot = None
+            if selected_slot is None:
+                selected_slot = _low_height_local_synthetic_slot(
+                    packet=resolved_packet,
+                    frame_bgr=last_frame,
+                    pending=servo_pending,
+                    current_z_mm=None if pose_for_patch is None else float(pose_for_patch[2]),
+                    confirm_z_mm=float(config.vision_pick_confirm_z_mm),
+                    measurement_point=str(config.vision_servo_low_height_measurement_point or config.vision_servo_measurement_point),
+                    slot_id=locked_slot_id,
+                )
+            _upsert_packet_slot(resolved_packet, selected_slot)
             selected_slot_id = None if selected_slot is None else int(selected_slot.get("slot_id", selected_slot.get("slot", 0)))
             if locked_slot_id is None and selected_slot_id is not None:
                 locked_slot_id = int(selected_slot_id)
@@ -3761,6 +4627,23 @@ def main(argv: list[str] | None = None) -> int:
                 pending=servo_pending,
             )
             servo_pending = decision.get("pending") if isinstance(decision.get("pending"), dict) else None
+            if servo_pending is None and selected_slot is not None:
+                tracking_point = _slot_tracking_point(selected_slot)
+                try:
+                    selected_distance = float(selected_slot.get("center_distance_px"))
+                except (TypeError, ValueError):
+                    selected_distance = float("nan")
+                if tracking_point is not None:
+                    servo_pending = {
+                        "slot_id": int(selected_slot_id or selected_slot.get("slot_id", selected_slot.get("slot", 1)) or 1),
+                        "stable_frames": 0,
+                        "lost_frames": 0,
+                        "last_center_px": [float(tracking_point[0]), float(tracking_point[1])],
+                        "last_center_distance_px": (
+                            None if not math.isfinite(selected_distance) else float(selected_distance)
+                        ),
+                        "source": "monitor_tracking",
+                    }
 
             step_dir = output_dir / f"step_{step_index + 1:02d}"
             raw_path = step_dir / "raw.jpg"

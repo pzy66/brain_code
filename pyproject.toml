@@ -64,13 +64,14 @@ gpu = [
 
 [project.scripts]
 brain = "brain.cli:main"
+brain-pretrain-ui = "pretrain_ui.app:main"
 
 [tool.setuptools]
 include-package-data = false
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["brain*", "brain_workspace*", "unified_collection*", "hybrid_controller*"]
+include = ["brain*", "brain_workspace*", "unified_collection*", "hybrid_controller*", "pretrain_ui*"]
 
 [tool.pytest.ini_options]
 minversion = "7.0"

@@ -16,6 +16,8 @@ from hybrid_controller.vision.processing import (
     frame_to_block_candidates,
     mask_to_grasp_geometry,
     packet_to_targets,
+    sanitize_frame_edge_bands,
+    sanitize_frame_top_band,
     update_slots,
 )
 from hybrid_controller.vision.calibration_profile import VisionCalibrationProfile
@@ -57,6 +59,38 @@ def test_vision_calibration_identity_maps_pixel_to_world_plane():
     )
     world_xyz = calibration.camera_to_world(12.0, 34.0)
     assert world_xyz == (12.0, 34.0, 0.0)
+
+
+def test_sanitize_frame_top_band_replaces_corrupt_rows_without_shifting_geometry():
+    frame = np.zeros((6, 4, 3), dtype=np.uint8)
+    frame[:2, :, :] = 255
+    frame[2, :, :] = [10, 20, 30]
+    frame[3:, :, :] = [80, 90, 100]
+
+    sanitized, rows = sanitize_frame_top_band(frame, top_rows=2)
+
+    assert rows == 2
+    assert np.all(sanitized[:2, :, :] == [80, 90, 100])
+    assert np.all(sanitized[2, :, :] == [10, 20, 30])
+    assert np.all(sanitized[3:, :, :] == [80, 90, 100])
+    assert np.all(frame[:2, :, :] == 255)
+
+
+def test_sanitize_frame_edge_bands_replaces_top_and_bottom_without_shifting_geometry():
+    frame = np.zeros((8, 4, 3), dtype=np.uint8)
+    frame[:2, :, :] = 255
+    frame[2:6, :, :] = [80, 90, 100]
+    frame[6:, :, :] = 127
+
+    sanitized, top_rows, bottom_rows = sanitize_frame_edge_bands(frame, top_rows=2, bottom_rows=2)
+
+    assert top_rows == 2
+    assert bottom_rows == 2
+    assert np.all(sanitized[:2, :, :] == [80, 90, 100])
+    assert np.all(sanitized[2:6, :, :] == [80, 90, 100])
+    assert np.all(sanitized[6:, :, :] == [80, 90, 100])
+    assert np.all(frame[:2, :, :] == 255)
+    assert np.all(frame[6:, :, :] == 127)
 
 
 def test_frame_brightness_quality_flags_black_official_stream_frame() -> None:
@@ -1320,6 +1354,48 @@ def test_delta_servo_blocks_color_block_measurement_when_point_missing():
     assert slot.invalid_reason == "measurement_point_unavailable:color_block"
     assert slot.center_distance_px is None
     assert slot.servo_required is False
+
+
+def test_delta_servo_can_center_low_grasp_quality_candidate_before_pick_gate():
+    slots = [SlotState(slot=1, freq_hz=8.0)]
+    slot = slots[0]
+    slot.valid = True
+    slot.observed = True
+    slot.pixel_center = (360, 240)
+    slot.pixel_center_f = (360.0, 240.0)
+    slot.geometry_center = (360, 240)
+    slot.geometry_center_f = (360.0, 240.0)
+    slot.grasp_pixel = (360, 240)
+    slot.grasp_pixel_f = (360.0, 240.0)
+    slot.grasp_quality = 0.05
+    profile = VisionCalibrationProfile.from_dict(
+        {
+            "profile_id": "low-quality-centering-profile",
+            "image_size": [640, 480],
+            "pixel_to_delta": {"model": "affine", "matrix": [[1, 0, -320], [0, 1, -240]]},
+            "residual": {"p95_error_mm": 2.0},
+        }
+    )
+
+    annotate_slots_with_cylindrical(
+        slots,
+        calibration=None,
+        calibration_profile=profile,
+        frame_size=(640, 480),
+        roi_center=(320, 240),
+        alignment_target_pixel=(320.0, 240.0),
+        mapping_mode="delta_servo",
+        calibration_profile_required=True,
+        calibration_stage="confirm",
+        calibration_z_mm=120.0,
+        servo_measurement_point="geometry_subpixel",
+        grasp_quality_threshold=0.25,
+    )
+
+    assert slot.center_distance_px == pytest.approx(40.0)
+    assert slot.servo_required is True
+    assert slot.actionable is False
+    assert slot.invalid_reason != "grasp_quality_low"
 
 
 def test_low_height_seven_pixel_error_uses_normal_servo_gain():

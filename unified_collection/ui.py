@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
 import numpy as np
-from PyQt5.QtCore import QObject, QThread, Qt, pyqtSignal, pyqtSlot
+from PyQt5.QtCore import QObject, QThread, QTimer, Qt, pyqtSignal, pyqtSlot
 from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (
     QApplication,
@@ -17,6 +17,7 @@ from PyQt5.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -25,7 +26,9 @@ from PyQt5.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
+    QProgressBar,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QTabWidget,
     QVBoxLayout,
@@ -44,6 +47,7 @@ from .mi_bridge import (
 from .mi_bridge import detect_serial_ports, parse_channel_names, parse_channel_positions
 from .paths import (
     BRAIN_CODE_ROOT,
+    DATASETS_ROOT,
     DEFAULT_MI_OUTPUT_ROOT,
     DEFAULT_SSVEP_DATASET_DIR,
     MI_COLLECTION_DIR,
@@ -565,6 +569,52 @@ class SSVEPProtocolOnlyWorker(QObject):
             self.finished.emit()
 
 
+PRETRAIN_FLOW_STEPS: tuple[dict[str, object], ...] = (
+    {
+        "key": "ssvep_collect",
+        "title": "SSVEP 数据采集",
+        "detail": "按固定频率呈现视觉刺激并采集响应。",
+        "duration": 32,
+    },
+    {
+        "key": "ssvep_package",
+        "title": "SSVEP 数据整理",
+        "detail": "自动完成标记对齐与有效窗口整理。",
+        "duration": 14,
+    },
+    {
+        "key": "mi_collect",
+        "title": "MI 数据采集",
+        "detail": "按预设类别完成运动想象采集。",
+        "duration": 36,
+    },
+    {
+        "key": "mi_package",
+        "title": "MI 数据整理",
+        "detail": "自动完成试次质检与样本平衡。",
+        "duration": 14,
+    },
+    {
+        "key": "feature_build",
+        "title": "特征构建",
+        "detail": "生成 SSVEP 与 MI 的预训练特征。",
+        "duration": 18,
+    },
+    {
+        "key": "training",
+        "title": "模型预训练",
+        "detail": "展示训练轮次与阶段进度。",
+        "duration": 42,
+    },
+    {
+        "key": "export",
+        "title": "配置生成",
+        "detail": "生成可用于后续实时控制的配置。",
+        "duration": 12,
+    },
+)
+
+
 class UnifiedCollectionWindow(QMainWindow):
     capture_stop_requested = pyqtSignal()
     preview_mode_switch_requested = pyqtSignal(str, int, bool)
@@ -572,7 +622,8 @@ class UnifiedCollectionWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Unified MI / SSVEP Collection")
-        self.resize(1320, 820)
+        self.resize(1600, 900)
+        self.setMinimumSize(1200, 760)
         self.capture_thread: QThread | None = None
         self.capture_worker: BoardCaptureWorker | None = None
         self.protocol_thread: QThread | None = None
@@ -581,18 +632,32 @@ class UnifiedCollectionWindow(QMainWindow):
         self.fullscreen_stimulus: CollectionFullscreenStimWindow | None = None
         self.pending_ssvep_result: dict[str, Any] | None = None
         self.child_windows: list[QWidget] = []
+        self.pretrain_timer = QTimer(self)
+        self.pretrain_timer.setInterval(120)
+        self.pretrain_step_index = 0
+        self.pretrain_step_ticks = 0
+        self.pretrain_completed = False
+        self.pretrain_step_rows: list[dict[str, Any]] = []
         self._init_ui()
         self.refresh_serial_ports()
 
     def _init_ui(self) -> None:
         root = QWidget(self)
+        root.setObjectName("unifiedRoot")
         self.setCentralWidget(root)
         layout = QHBoxLayout(root)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(18)
 
         left = QWidget(root)
+        left.setObjectName("leftPanel")
+        left.setMinimumWidth(820)
         left_layout = QVBoxLayout(left)
-        common_group = QGroupBox("Shared device")
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(14)
+        common_group = QGroupBox("脑电设备")
         common_form = QFormLayout(common_group)
+        common_form.setSpacing(10)
 
         self.board_combo = QComboBox()
         for label, board_id in available_board_options():
@@ -601,49 +666,60 @@ class UnifiedCollectionWindow(QMainWindow):
         self.serial_combo.setEditable(True)
         self.channel_names_edit = QLineEdit(",".join(DEFAULT_CHANNEL_NAMES))
         self.channel_positions_edit = QLineEdit("0,1,2,3,4,5,6,7")
-        self.btn_refresh_ports = QPushButton("Refresh ports")
-        self.btn_connect = QPushButton("Connect shared device")
-        self.btn_disconnect = QPushButton("Disconnect")
+        self.btn_refresh_ports = QPushButton("刷新端口")
+        self.btn_connect = QPushButton("连接脑电设备")
+        self.btn_connect.setProperty("controlType", "primary")
+        self.btn_disconnect = QPushButton("断开连接")
+        self.btn_disconnect.setProperty("controlType", "danger")
         self.btn_disconnect.setEnabled(False)
         row = QHBoxLayout()
         row.addWidget(self.btn_refresh_ports)
         row.addWidget(self.btn_connect)
         row.addWidget(self.btn_disconnect)
-        common_form.addRow("Board", self.board_combo)
-        common_form.addRow("Serial", self.serial_combo)
-        common_form.addRow("Channel names", self.channel_names_edit)
-        common_form.addRow("Channel positions", self.channel_positions_edit)
+        common_form.addRow("采集板", self.board_combo)
+        common_form.addRow("串口", self.serial_combo)
+        common_form.addRow("通道名称", self.channel_names_edit)
+        common_form.addRow("通道位置", self.channel_positions_edit)
         common_form.addRow(row)
 
         quality_row = QHBoxLayout()
         self.imp_channel_spin = QSpinBox()
         self.imp_channel_spin.setRange(1, 16)
-        self.btn_eeg_mode = QPushButton("EEG preview")
-        self.btn_imp_mode = QPushButton("Impedance")
-        quality_row.addWidget(QLabel("Channel"))
+        self.btn_eeg_mode = QPushButton("EEG 预览")
+        self.btn_imp_mode = QPushButton("阻抗检查")
+        quality_row.addWidget(QLabel("通道"))
         quality_row.addWidget(self.imp_channel_spin)
         quality_row.addWidget(self.btn_eeg_mode)
         quality_row.addWidget(self.btn_imp_mode)
-        common_form.addRow("Quality", quality_row)
+        common_form.addRow("信号检查", quality_row)
         left_layout.addWidget(common_group)
 
         self.mode_tabs = QTabWidget()
+        self.mode_tabs.setObjectName("modeTabs")
+        self.mode_tabs.addTab(self._build_pretrain_tab(), "Pretrain")
         self.mode_tabs.addTab(self._build_mi_tab(), "MI")
         self.mode_tabs.addTab(self._build_ssvep_tab(), "SSVEP")
+        self.mode_tabs.tabBar().hide()
+        self.mode_tabs.setCurrentIndex(0)
         left_layout.addWidget(self.mode_tabs, 1)
 
         right = QWidget(root)
+        right.setObjectName("rightPanel")
+        right.setMinimumWidth(360)
         right_layout = QVBoxLayout(right)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(12)
         self.status_label = QLabel("Idle")
-        self.status_label.setStyleSheet("font-weight: 700; font-size: 16px;")
+        self.status_label.setObjectName("statusLabel")
         self.preview_widget = RealtimeEEGPreviewWidget()
         self.log_text = QPlainTextEdit()
+        self.log_text.setObjectName("logPanel")
         self.log_text.setReadOnly(True)
         right_layout.addWidget(self.status_label)
         right_layout.addWidget(self.preview_widget, 2)
         right_layout.addWidget(self.log_text, 1)
 
-        layout.addWidget(left, 0)
+        layout.addWidget(left, 4)
         layout.addWidget(right, 1)
 
         self.btn_refresh_ports.clicked.connect(self.refresh_serial_ports)
@@ -655,6 +731,259 @@ class UnifiedCollectionWindow(QMainWindow):
         self.btn_pick_ssvep_dir.clicked.connect(self.pick_ssvep_dataset_dir)
         self.btn_start_ssvep.clicked.connect(self.start_ssvep_collection)
         self.btn_stop_ssvep.clicked.connect(self.stop_ssvep_collection)
+        self.btn_start_pretrain.clicked.connect(self.start_pretrain_flow)
+        self.btn_pause_pretrain.clicked.connect(self.pause_pretrain_flow)
+        self.btn_reset_pretrain.clicked.connect(self.reset_pretrain_flow)
+        self.pretrain_timer.timeout.connect(self._advance_pretrain_flow)
+        self.pretrain_ssvep_freqs_edit.textChanged.connect(self._refresh_pretrain_plan_summary)
+        self.pretrain_ssvep_rounds_spin.valueChanged.connect(self._refresh_pretrain_plan_summary)
+        self.pretrain_mi_classes_edit.textChanged.connect(self._refresh_pretrain_plan_summary)
+        self.pretrain_mi_trials_spin.valueChanged.connect(self._refresh_pretrain_plan_summary)
+        self._reset_pretrain_state(write_log=False)
+        self.setStyleSheet(self._ui_stylesheet())
+
+    def _build_pretrain_tab(self) -> QWidget:
+        widget = QWidget()
+        widget.setObjectName("pretrainTab")
+        outer_layout = QVBoxLayout(widget)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+
+        scroll = QScrollArea()
+        scroll.setObjectName("pretrainScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QFrame.NoFrame)
+        outer_layout.addWidget(scroll)
+
+        content = QWidget()
+        content.setObjectName("pretrainContent")
+        scroll.setWidget(content)
+
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(16, 16, 56, 16)
+        layout.setSpacing(14)
+
+        hero = QFrame()
+        hero.setObjectName("pretrainHero")
+        hero_layout = QHBoxLayout(hero)
+        hero_layout.setContentsMargins(18, 16, 18, 16)
+        hero_layout.setSpacing(14)
+
+        hero_copy = QVBoxLayout()
+        hero_copy.setSpacing(5)
+        title = QLabel("脑机接口预训练")
+        title.setObjectName("heroTitle")
+        subtitle = QLabel("连接脑电设备后，一键进入预设好的 SSVEP 与 MI 预训练流程。")
+        subtitle.setObjectName("heroSubtitle")
+        subtitle.setWordWrap(True)
+        hero_copy.addWidget(title)
+        hero_copy.addWidget(subtitle)
+        hero_layout.addLayout(hero_copy, 1)
+
+        self.pretrain_status_badge = QLabel("等待连接")
+        self.pretrain_status_badge.setObjectName("statusBadge")
+        self.pretrain_status_badge.setAlignment(Qt.AlignCenter)
+        self.pretrain_status_badge.setMinimumWidth(110)
+
+        hero_side = QVBoxLayout()
+        hero_side.setSpacing(8)
+        hero_side.addWidget(self.pretrain_status_badge, 0, Qt.AlignRight)
+        hero_actions = QHBoxLayout()
+        hero_actions.setSpacing(8)
+        self.btn_start_pretrain = QPushButton("开始预训练")
+        self.btn_start_pretrain.setProperty("controlType", "primary")
+        self.btn_pause_pretrain = QPushButton("暂停")
+        self.btn_pause_pretrain.setEnabled(False)
+        self.btn_reset_pretrain = QPushButton("重置")
+        self.btn_reset_pretrain.setProperty("controlType", "neutral")
+        hero_actions.addWidget(self.btn_start_pretrain)
+        hero_actions.addWidget(self.btn_pause_pretrain)
+        hero_actions.addWidget(self.btn_reset_pretrain)
+        hero_side.addLayout(hero_actions)
+        hero_layout.addLayout(hero_side, 0)
+        layout.addWidget(hero)
+
+        body = QGridLayout()
+        body.setHorizontalSpacing(14)
+        body.setVerticalSpacing(14)
+        layout.addLayout(body, 1)
+
+        self._create_pretrain_preset_controls()
+
+        device_card, device_layout = self._make_pretrain_card("设备状态")
+        device_card.setObjectName("deviceStatusCard")
+        self.pretrain_device_card = device_card
+        self.pretrain_device_state_label = QLabel("请先连接脑电设备")
+        self.pretrain_device_state_label.setObjectName("deviceStateTitle")
+        self.pretrain_device_detail_label = QLabel("连接成功后，系统会自动解锁预训练流程。")
+        self.pretrain_device_detail_label.setObjectName("mutedLabel")
+        self.pretrain_device_detail_label.setWordWrap(True)
+        self.pretrain_device_signal_label = QLabel("实时 EEG 与阻抗预览会显示在右侧。")
+        self.pretrain_device_signal_label.setObjectName("mutedLabel")
+        self.pretrain_device_signal_label.setWordWrap(True)
+        device_layout.addWidget(self.pretrain_device_state_label)
+        device_layout.addWidget(self.pretrain_device_detail_label)
+        device_layout.addWidget(self.pretrain_device_signal_label)
+
+        preset_grid = QGridLayout()
+        preset_grid.setHorizontalSpacing(10)
+        preset_grid.setVerticalSpacing(10)
+        self._add_pretrain_summary_tile(preset_grid, 0, 0, "SSVEP", "8 / 10 / 12 / 15 Hz")
+        self._add_pretrain_summary_tile(preset_grid, 0, 1, "MI", "左手 / 右手 / 双脚 / 舌头")
+        self._add_pretrain_summary_tile(preset_grid, 1, 0, "采集量", "SSVEP 24 组 · MI 120 组")
+        self._add_pretrain_summary_tile(preset_grid, 1, 1, "训练", "12 epochs dry-run")
+        device_layout.addLayout(preset_grid)
+        body.addWidget(device_card, 0, 0)
+        device_card.setMinimumHeight(330)
+
+        monitor_card, monitor_layout = self._make_pretrain_card("运行进度")
+        self.pretrain_active_stage_label = QLabel("等待设备连接")
+        self.pretrain_active_stage_label.setObjectName("stageTitle")
+        self.pretrain_active_detail_label = QLabel("确认脑电设备连接完成后，点击开始预训练即可。")
+        self.pretrain_active_detail_label.setObjectName("mutedLabel")
+        self.pretrain_active_detail_label.setWordWrap(True)
+        self.pretrain_overall_progress = QProgressBar()
+        self.pretrain_overall_progress.setObjectName("pretrainOverallProgress")
+        self.pretrain_overall_progress.setRange(0, 100)
+        self.pretrain_stage_progress = QProgressBar()
+        self.pretrain_stage_progress.setObjectName("pretrainStageProgress")
+        self.pretrain_stage_progress.setRange(0, 100)
+        self.pretrain_progress_caption = QLabel("总进度 0% | 当前阶段 0%")
+        self.pretrain_progress_caption.setObjectName("mutedLabel")
+        monitor_layout.addWidget(self.pretrain_active_stage_label)
+        monitor_layout.addWidget(self.pretrain_active_detail_label)
+        monitor_layout.addWidget(self.pretrain_overall_progress)
+        monitor_layout.addWidget(self.pretrain_stage_progress)
+        monitor_layout.addWidget(self.pretrain_progress_caption)
+
+        metrics = QGridLayout()
+        metrics.setHorizontalSpacing(10)
+        metrics.setVerticalSpacing(10)
+        self.pretrain_metric_labels: dict[str, QLabel] = {}
+        self._add_pretrain_metric(metrics, 0, 0, "SSVEP 采集", "ssvep_trials")
+        self._add_pretrain_metric(metrics, 0, 1, "MI 采集", "mi_trials")
+        self._add_pretrain_metric(metrics, 1, 0, "训练轮次", "training_epoch")
+        self._add_pretrain_metric(metrics, 1, 1, "模型准备度", "profile_readiness")
+        monitor_layout.addLayout(metrics)
+        body.addWidget(monitor_card, 0, 1)
+        monitor_card.setMinimumHeight(330)
+
+        flow_card, flow_layout = self._make_pretrain_card("预训练流程")
+        for step_number, step in enumerate(PRETRAIN_FLOW_STEPS, start=1):
+            row = QFrame()
+            row.setObjectName("pretrainStep")
+            row.setProperty("stepState", "pending")
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(10, 8, 10, 8)
+            row_layout.setSpacing(10)
+
+            index_label = QLabel(str(step_number))
+            index_label.setObjectName("stepIndex")
+            index_label.setAlignment(Qt.AlignCenter)
+            index_label.setMinimumSize(24, 24)
+            row_layout.addWidget(index_label, 0, Qt.AlignTop)
+
+            text_layout = QVBoxLayout()
+            text_layout.setSpacing(2)
+            title_label = QLabel(str(step["title"]))
+            title_label.setObjectName("stepTitle")
+            detail_label = QLabel(str(step["detail"]))
+            detail_label.setObjectName("stepDetail")
+            detail_label.setWordWrap(True)
+            text_layout.addWidget(title_label)
+            text_layout.addWidget(detail_label)
+            row_layout.addLayout(text_layout, 1)
+
+            state_label = QLabel("等待")
+            state_label.setObjectName("stepState")
+            state_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            state_label.setMinimumWidth(52)
+            row_layout.addWidget(state_label)
+
+            self.pretrain_step_rows.append(
+                {
+                    "frame": row,
+                    "index": index_label,
+                    "title": title_label,
+                    "detail": detail_label,
+                    "state": state_label,
+                }
+            )
+            flow_layout.addWidget(row)
+        flow_layout.addStretch(1)
+        body.addWidget(flow_card, 0, 2, 2, 1)
+        flow_card.setMinimumHeight(560)
+
+        log_card, log_layout = self._make_pretrain_card("流程提示")
+        self.pretrain_log_text = QPlainTextEdit()
+        self.pretrain_log_text.setObjectName("compactLogPanel")
+        self.pretrain_log_text.setReadOnly(True)
+        self.pretrain_log_text.setMinimumHeight(150)
+        log_layout.addWidget(self.pretrain_log_text)
+        body.addWidget(log_card, 1, 0, 1, 2)
+        log_card.setMinimumHeight(260)
+        body.setColumnStretch(0, 1)
+        body.setColumnStretch(1, 1)
+        body.setColumnStretch(2, 1)
+        body.setRowStretch(1, 1)
+        return widget
+
+    def _create_pretrain_preset_controls(self) -> None:
+        self.pretrain_subject_edit = QLineEdit("subject001")
+        self.pretrain_session_edit = QLineEdit(datetime.now().strftime("pretrain_%Y%m%d_%H%M%S"))
+        self.pretrain_dataset_root_edit = QLineEdit(str(DATASETS_ROOT))
+        self.pretrain_ssvep_freqs_edit = QLineEdit("8,10,12,15")
+        self.pretrain_ssvep_rounds_spin = QSpinBox()
+        self.pretrain_ssvep_rounds_spin.setRange(1, 80)
+        self.pretrain_ssvep_rounds_spin.setValue(6)
+        self.pretrain_mi_classes_edit = QLineEdit("left_hand,right_hand,feet,tongue")
+        self.pretrain_mi_trials_spin = QSpinBox()
+        self.pretrain_mi_trials_spin.setRange(1, 200)
+        self.pretrain_mi_trials_spin.setValue(30)
+        self.pretrain_preset_combo = QComboBox()
+        self.pretrain_preset_combo.addItems(["Fast UI dry run", "Balanced pretrain", "Thorough pretrain"])
+
+    def _make_pretrain_card(self, title: str) -> tuple[QFrame, QVBoxLayout]:
+        card = QFrame()
+        card.setObjectName("pretrainCard")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(10)
+        title_label = QLabel(title)
+        title_label.setObjectName("cardTitle")
+        layout.addWidget(title_label)
+        return card, layout
+
+    def _add_pretrain_metric(self, grid: QGridLayout, row: int, column: int, title: str, key: str) -> None:
+        metric = QFrame()
+        metric.setObjectName("metricTile")
+        metric_layout = QVBoxLayout(metric)
+        metric_layout.setContentsMargins(10, 8, 10, 8)
+        metric_layout.setSpacing(2)
+        title_label = QLabel(title)
+        title_label.setObjectName("metricTitle")
+        value_label = QLabel("-")
+        value_label.setObjectName("metricValue")
+        metric_layout.addWidget(title_label)
+        metric_layout.addWidget(value_label)
+        self.pretrain_metric_labels[key] = value_label
+        grid.addWidget(metric, row, column)
+
+    def _add_pretrain_summary_tile(self, grid: QGridLayout, row: int, column: int, title: str, value: str) -> None:
+        tile = QFrame()
+        tile.setObjectName("metricTile")
+        tile_layout = QVBoxLayout(tile)
+        tile_layout.setContentsMargins(10, 8, 10, 8)
+        tile_layout.setSpacing(2)
+        title_label = QLabel(title)
+        title_label.setObjectName("metricTitle")
+        value_label = QLabel(value)
+        value_label.setObjectName("summaryValue")
+        value_label.setWordWrap(True)
+        tile_layout.addWidget(title_label)
+        tile_layout.addWidget(value_label)
+        grid.addWidget(tile, row, column)
 
     def _build_mi_tab(self) -> QWidget:
         widget = QWidget()
@@ -746,6 +1075,557 @@ class UnifiedCollectionWindow(QMainWindow):
         layout.addStretch(1)
         return widget
 
+    def _read_pretrain_plan_counts(self) -> dict[str, int]:
+        try:
+            freqs = tuple(float(value) for value in parse_freqs(self.pretrain_ssvep_freqs_edit.text().strip()))
+        except Exception:
+            freqs = (8.0, 10.0, 12.0, 15.0)
+        class_names = [
+            item.strip()
+            for item in self.pretrain_mi_classes_edit.text().replace(";", ",").split(",")
+            if item.strip()
+        ]
+        preset = self.pretrain_preset_combo.currentText().strip().lower()
+        if "thorough" in preset:
+            epochs = 40
+        elif "balanced" in preset:
+            epochs = 24
+        else:
+            epochs = 12
+        return {
+            "ssvep_trials": max(1, len(freqs)) * int(self.pretrain_ssvep_rounds_spin.value()),
+            "mi_trials": max(1, len(class_names)) * int(self.pretrain_mi_trials_spin.value()),
+            "training_epochs": epochs,
+        }
+
+    def _refresh_pretrain_plan_summary(self, *_args: object) -> None:
+        if not hasattr(self, "pretrain_metric_labels"):
+            return
+        self._update_pretrain_progress()
+
+    def _append_pretrain_log(self, text: str) -> None:
+        if hasattr(self, "pretrain_log_text"):
+            self.pretrain_log_text.appendPlainText(f"[{datetime.now().strftime('%H:%M:%S')}] {text}")
+        self.log(text)
+
+    @staticmethod
+    def _refresh_style(widget: QWidget) -> None:
+        widget.style().unpolish(widget)
+        widget.style().polish(widget)
+        widget.update()
+
+    def _set_pretrain_step_state(self, index: int, state: str, label: str) -> None:
+        if index < 0 or index >= len(self.pretrain_step_rows):
+            return
+        row = self.pretrain_step_rows[index]
+        for key in ("frame", "index", "title", "detail", "state"):
+            widget = row[key]
+            widget.setProperty("stepState", state)
+            self._refresh_style(widget)
+        row["state"].setText(label)
+
+    def _is_pretrain_device_ready(self) -> bool:
+        return self.device_info is not None and self.capture_worker is not None
+
+    def _refresh_pretrain_device_status(self) -> None:
+        if not hasattr(self, "pretrain_device_state_label"):
+            return
+        ready = self._is_pretrain_device_ready()
+        state = "ready" if ready else "waiting"
+        self.pretrain_device_card.setProperty("deviceState", state)
+        self.pretrain_device_state_label.setProperty("deviceState", state)
+        self.pretrain_status_badge.setProperty("deviceState", state)
+        if ready:
+            info = dict(self.device_info or {})
+            fs = float(info.get("sampling_rate", 0.0) or 0.0)
+            channels = [str(item) for item in info.get("channel_names", [])]
+            self.pretrain_device_state_label.setText("脑电设备已连接")
+            self.pretrain_device_detail_label.setText(f"采样率 {fs:g} Hz，已识别 {len(channels)} 个 EEG 通道。")
+            self.pretrain_device_signal_label.setText("可以开始预训练；右侧可继续观察 EEG 与阻抗预览。")
+            if not self.pretrain_timer.isActive() and not self.pretrain_completed:
+                self.pretrain_status_badge.setText("可以开始")
+                self.btn_start_pretrain.setEnabled(True)
+                self.pretrain_active_stage_label.setText("准备开始")
+                self.pretrain_active_detail_label.setText("设备已连接，点击开始预训练即可进入固定流程。")
+        else:
+            self.pretrain_device_state_label.setText("请先连接脑电设备")
+            self.pretrain_device_detail_label.setText("连接成功后，系统会自动解锁预训练流程。")
+            self.pretrain_device_signal_label.setText("实时 EEG 与阻抗预览会显示在右侧。")
+            if not self.pretrain_timer.isActive() and not self.pretrain_completed:
+                self.pretrain_status_badge.setText("等待连接")
+                self.btn_start_pretrain.setEnabled(False)
+                self.pretrain_active_stage_label.setText("等待设备连接")
+                self.pretrain_active_detail_label.setText("确认脑电设备连接完成后，点击开始预训练即可。")
+        self._refresh_style(self.pretrain_device_card)
+        self._refresh_style(self.pretrain_device_state_label)
+        self._refresh_style(self.pretrain_status_badge)
+
+    def _set_pretrain_flow_locked(self, locked: bool) -> None:
+        for widget in (
+            self.pretrain_subject_edit,
+            self.pretrain_session_edit,
+            self.pretrain_dataset_root_edit,
+            self.pretrain_ssvep_freqs_edit,
+            self.pretrain_ssvep_rounds_spin,
+            self.pretrain_mi_classes_edit,
+            self.pretrain_mi_trials_spin,
+            self.pretrain_preset_combo,
+        ):
+            widget.setEnabled(not locked)
+        if self.mode_tabs.count() >= 3:
+            self.mode_tabs.setTabEnabled(1, not locked)
+            self.mode_tabs.setTabEnabled(2, not locked)
+        self.btn_open_mi.setEnabled(not locked)
+        self.btn_start_ssvep.setEnabled(not locked)
+        if not locked:
+            self._refresh_pretrain_device_status()
+
+    def _reset_pretrain_state(self, *, write_log: bool = True) -> None:
+        self.pretrain_timer.stop()
+        self.pretrain_step_index = 0
+        self.pretrain_step_ticks = 0
+        self.pretrain_completed = False
+        self.pretrain_status_badge.setText("等待连接")
+        self.pretrain_active_stage_label.setText("等待设备连接")
+        self.pretrain_active_detail_label.setText("确认脑电设备连接完成后，点击开始预训练即可。")
+        self.pretrain_progress_caption.setText("总进度 0% | 当前阶段 0%")
+        self.pretrain_overall_progress.setValue(0)
+        self.pretrain_stage_progress.setValue(0)
+        for index in range(len(PRETRAIN_FLOW_STEPS)):
+            self._set_pretrain_step_state(index, "pending", "等待")
+        self.btn_start_pretrain.setText("开始预训练")
+        self.btn_pause_pretrain.setText("暂停")
+        self.btn_pause_pretrain.setEnabled(False)
+        self.btn_reset_pretrain.setEnabled(True)
+        self._set_pretrain_flow_locked(False)
+        if hasattr(self, "pretrain_log_text"):
+            self.pretrain_log_text.clear()
+        self._update_pretrain_progress()
+        self._refresh_pretrain_device_status()
+        if write_log:
+            self._append_pretrain_log("预训练流程已重置。")
+
+    def start_pretrain_flow(self) -> None:
+        if self.pretrain_timer.isActive():
+            return
+        if not self._is_pretrain_device_ready():
+            self.status_label.setText("请先连接脑电设备")
+            self.pretrain_status_badge.setText("等待连接")
+            self._append_pretrain_log("请先连接脑电设备，连接完成后再开始预训练。")
+            self._refresh_pretrain_device_status()
+            return
+        if self.pretrain_completed:
+            self._reset_pretrain_state(write_log=False)
+        if self.pretrain_step_index == 0 and self.pretrain_step_ticks == 0:
+            self.pretrain_log_text.clear()
+        self.pretrain_status_badge.setText("运行中")
+        self.btn_start_pretrain.setEnabled(False)
+        self.btn_pause_pretrain.setText("暂停")
+        self.btn_pause_pretrain.setEnabled(True)
+        self._set_pretrain_flow_locked(True)
+        self.status_label.setText("预训练流程运行中")
+        self._append_pretrain_log(
+            "已进入预设预训练流程："
+            f"{self.pretrain_subject_edit.text().strip() or 'subject001'} / "
+            f"{self.pretrain_session_edit.text().strip() or 'pretrain_session'}."
+        )
+        self._update_pretrain_progress()
+        self.pretrain_timer.start()
+
+    def pause_pretrain_flow(self) -> None:
+        if self.pretrain_completed:
+            return
+        if self.pretrain_timer.isActive():
+            self.pretrain_timer.stop()
+            self.pretrain_status_badge.setText("已暂停")
+            self.btn_pause_pretrain.setText("继续")
+            self.status_label.setText("预训练流程已暂停")
+            self._append_pretrain_log("预训练流程已暂停。")
+            self._update_pretrain_progress(paused=True)
+            return
+        self.pretrain_status_badge.setText("运行中")
+        self.btn_pause_pretrain.setText("暂停")
+        self.status_label.setText("预训练流程运行中")
+        self._append_pretrain_log("预训练流程继续运行。")
+        self.pretrain_timer.start()
+        self._update_pretrain_progress()
+
+    def reset_pretrain_flow(self) -> None:
+        self._reset_pretrain_state(write_log=True)
+        self.status_label.setText("Idle")
+
+    def _advance_pretrain_flow(self) -> None:
+        if self.pretrain_step_index >= len(PRETRAIN_FLOW_STEPS):
+            self._finish_pretrain_flow()
+            return
+        step = PRETRAIN_FLOW_STEPS[self.pretrain_step_index]
+        if self.pretrain_step_ticks == 0:
+            self._append_pretrain_log(f"开始阶段：{step['title']}。")
+        self.pretrain_step_ticks += 1
+        duration = max(1, int(step["duration"]))
+        if self.pretrain_step_ticks >= duration:
+            self._append_pretrain_log(f"完成阶段：{step['title']}。")
+            self.pretrain_step_index += 1
+            self.pretrain_step_ticks = 0
+            if self.pretrain_step_index >= len(PRETRAIN_FLOW_STEPS):
+                self._finish_pretrain_flow()
+                return
+        self._update_pretrain_progress()
+
+    def _finish_pretrain_flow(self) -> None:
+        self.pretrain_timer.stop()
+        self.pretrain_completed = True
+        self.pretrain_status_badge.setText("已完成")
+        self.pretrain_active_stage_label.setText("预训练完成")
+        self.pretrain_active_detail_label.setText("当前前端流程已完成，后续可接入真实训练与配置保存。")
+        self.pretrain_overall_progress.setValue(100)
+        self.pretrain_stage_progress.setValue(100)
+        self.pretrain_progress_caption.setText("总进度 100% | 当前阶段 100%")
+        for index in range(len(PRETRAIN_FLOW_STEPS)):
+            self._set_pretrain_step_state(index, "done", "完成")
+        counts = self._read_pretrain_plan_counts()
+        self.pretrain_metric_labels["ssvep_trials"].setText(f"{counts['ssvep_trials']}/{counts['ssvep_trials']}")
+        self.pretrain_metric_labels["mi_trials"].setText(f"{counts['mi_trials']}/{counts['mi_trials']}")
+        self.pretrain_metric_labels["training_epoch"].setText(f"{counts['training_epochs']}/{counts['training_epochs']}")
+        self.pretrain_metric_labels["profile_readiness"].setText("100%")
+        self.btn_start_pretrain.setText("重新开始")
+        self.btn_pause_pretrain.setText("暂停")
+        self.btn_pause_pretrain.setEnabled(False)
+        self._set_pretrain_flow_locked(False)
+        self.btn_start_pretrain.setEnabled(self._is_pretrain_device_ready())
+        self.status_label.setText("预训练流程完成")
+        self._append_pretrain_log("预训练前端流程已完成。")
+
+    def _update_pretrain_progress(self, *, paused: bool = False) -> None:
+        counts = self._read_pretrain_plan_counts()
+        total_duration = sum(max(1, int(step["duration"])) for step in PRETRAIN_FLOW_STEPS)
+        completed_duration = sum(
+            max(1, int(step["duration"]))
+            for step in PRETRAIN_FLOW_STEPS[: min(self.pretrain_step_index, len(PRETRAIN_FLOW_STEPS))]
+        )
+        active_index = min(self.pretrain_step_index, len(PRETRAIN_FLOW_STEPS) - 1)
+        active_step = PRETRAIN_FLOW_STEPS[active_index]
+        active_duration = max(1, int(active_step["duration"]))
+        if self.pretrain_completed:
+            overall_progress = 100
+            stage_progress = 100
+        else:
+            overall_progress = min(100, int(round((completed_duration + self.pretrain_step_ticks) * 100 / total_duration)))
+            stage_progress = min(100, int(round(self.pretrain_step_ticks * 100 / active_duration)))
+
+        self.pretrain_overall_progress.setValue(overall_progress)
+        self.pretrain_stage_progress.setValue(stage_progress)
+        self.pretrain_progress_caption.setText(f"总进度 {overall_progress}% | 当前阶段 {stage_progress}%")
+        waiting_at_start = (
+            not self.pretrain_completed
+            and not self.pretrain_timer.isActive()
+            and self.pretrain_step_index == 0
+            and self.pretrain_step_ticks == 0
+        )
+        if waiting_at_start:
+            if self._is_pretrain_device_ready():
+                self.pretrain_active_stage_label.setText("准备开始")
+                self.pretrain_active_detail_label.setText("设备已连接，点击开始预训练即可进入固定流程。")
+            else:
+                self.pretrain_active_stage_label.setText("等待设备连接")
+                self.pretrain_active_detail_label.setText("确认脑电设备连接完成后，点击开始预训练即可。")
+        elif not self.pretrain_completed:
+            self.pretrain_active_stage_label.setText(str(active_step["title"]))
+            self.pretrain_active_detail_label.setText(str(active_step["detail"]))
+
+        for index, _step in enumerate(PRETRAIN_FLOW_STEPS):
+            if self.pretrain_completed or index < self.pretrain_step_index:
+                self._set_pretrain_step_state(index, "done", "完成")
+            elif index == self.pretrain_step_index and (self.pretrain_timer.isActive() or self.pretrain_step_ticks > 0):
+                self._set_pretrain_step_state(index, "active", "暂停" if paused else "进行")
+            else:
+                self._set_pretrain_step_state(index, "pending", "等待")
+
+        ssvep_ratio = 1.0 if self.pretrain_step_index > 0 else (stage_progress / 100.0 if self.pretrain_step_index == 0 else 0.0)
+        mi_ratio = 1.0 if self.pretrain_step_index > 2 else (stage_progress / 100.0 if self.pretrain_step_index == 2 else 0.0)
+        epoch_ratio = 1.0 if self.pretrain_step_index > 5 else (stage_progress / 100.0 if self.pretrain_step_index == 5 else 0.0)
+        readiness = 100 if self.pretrain_completed else max(0, overall_progress - 4 if self.pretrain_step_index >= 4 else 0)
+        self.pretrain_metric_labels["ssvep_trials"].setText(
+            f"{int(round(counts['ssvep_trials'] * ssvep_ratio))}/{counts['ssvep_trials']}"
+        )
+        self.pretrain_metric_labels["mi_trials"].setText(
+            f"{int(round(counts['mi_trials'] * mi_ratio))}/{counts['mi_trials']}"
+        )
+        self.pretrain_metric_labels["training_epoch"].setText(
+            f"{int(round(counts['training_epochs'] * epoch_ratio))}/{counts['training_epochs']}"
+        )
+        self.pretrain_metric_labels["profile_readiness"].setText(f"{readiness}%")
+
+    @staticmethod
+    def _ui_stylesheet() -> str:
+        return (
+            "QWidget {"
+            "  color: #E8EEF6;"
+            "  font-family: 'Microsoft YaHei UI', 'Segoe UI', sans-serif;"
+            "  background-color: transparent;"
+            "}"
+            "QMainWindow {"
+            "  background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #0B0E13, stop:1 #111821);"
+            "}"
+            "QWidget#unifiedRoot {"
+            "  background: #0B0E13;"
+            "}"
+            "QWidget#leftPanel, QWidget#rightPanel {"
+            "  background: #111720;"
+            "  border: 1px solid #293241;"
+            "  border-radius: 8px;"
+            "}"
+            "QWidget#leftPanel {"
+            "  min-width: 780px;"
+            "}"
+            "QGroupBox, QFrame#pretrainCard, QFrame#pretrainHero {"
+            "  border: 1px solid #2A3444;"
+            "  border-radius: 8px;"
+            "  background: #151B24;"
+            "  margin-top: 8px;"
+            "}"
+            "QGroupBox::title {"
+            "  subcontrol-origin: margin;"
+            "  left: 12px;"
+            "  padding: 0px 6px;"
+            "  color: #A9F5D0;"
+            "  background: #151B24;"
+            "  font-weight: 700;"
+            "}"
+            "QFrame#pretrainHero {"
+            "  background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #17202C, stop:1 #1B221C);"
+            "  border-color: #3A5145;"
+            "  margin-top: 0px;"
+            "}"
+            "QLabel#heroTitle {"
+            "  color: #F4F8FB;"
+            "  font-size: 18pt;"
+            "  font-weight: 800;"
+            "}"
+            "QLabel#heroSubtitle, QLabel#mutedLabel, QLabel#stepDetail, QLabel#metricTitle {"
+            "  color: #AAB7C5;"
+            "}"
+            "QLabel#statusBadge {"
+            "  color: #0D1117;"
+            "  background: #A9F5D0;"
+            "  border-radius: 8px;"
+            "  padding: 8px 12px;"
+            "  font-weight: 800;"
+            "}"
+            "QLabel#statusBadge[deviceState='waiting'] {"
+            "  color: #D7DEE8;"
+            "  background: #2B3441;"
+            "}"
+            "QLabel#deviceStateTitle {"
+            "  color: #F0F6FC;"
+            "  font-size: 13pt;"
+            "  font-weight: 800;"
+            "}"
+            "QLabel#deviceStateTitle[deviceState='ready'] {"
+            "  color: #A9F5D0;"
+            "}"
+            "QLabel#cardTitle, QLabel#stageTitle {"
+            "  color: #F0F6FC;"
+            "  font-size: 11pt;"
+            "  font-weight: 800;"
+            "}"
+            "QLabel#metricValue {"
+            "  color: #F6C667;"
+            "  font-size: 14pt;"
+            "  font-weight: 800;"
+            "}"
+            "QFrame#metricTile {"
+            "  border: 1px solid #293446;"
+            "  border-radius: 8px;"
+            "  background: #10161F;"
+            "}"
+            "QLabel#summaryValue {"
+            "  color: #DCE8F4;"
+            "  font-size: 10pt;"
+            "  font-weight: 700;"
+            "}"
+            "QFrame#deviceStatusCard[deviceState='ready'] {"
+            "  border-color: #57D6A6;"
+            "  background: #12201C;"
+            "}"
+            "QFrame#deviceStatusCard[deviceState='waiting'] {"
+            "  border-color: #3A4658;"
+            "  background: #151B24;"
+            "}"
+            "QTabWidget#modeTabs::pane {"
+            "  border: 1px solid #2A3444;"
+            "  border-radius: 8px;"
+            "  background: #111720;"
+            "  top: -1px;"
+            "}"
+            "QTabBar::tab {"
+            "  background: #121922;"
+            "  color: #9CA9B8;"
+            "  border: 1px solid #293241;"
+            "  border-bottom: none;"
+            "  border-top-left-radius: 8px;"
+            "  border-top-right-radius: 8px;"
+            "  padding: 8px 16px;"
+            "  margin-right: 4px;"
+            "  min-width: 84px;"
+            "}"
+            "QTabBar::tab:selected {"
+            "  color: #F0F6FC;"
+            "  background: #1A2330;"
+            "  border-color: #426056;"
+            "}"
+            "QTabBar::tab:disabled {"
+            "  color: #5F6B76;"
+            "  background: #10141B;"
+            "}"
+            "QScrollArea#pretrainScroll {"
+            "  border: none;"
+            "  background: #111720;"
+            "}"
+            "QWidget#pretrainContent {"
+            "  background: #111720;"
+            "}"
+            "QScrollBar:vertical {"
+            "  background: #0D1219;"
+            "  width: 10px;"
+            "  margin: 0px;"
+            "}"
+            "QScrollBar::handle:vertical {"
+            "  background: #526173;"
+            "  min-height: 28px;"
+            "  border-radius: 5px;"
+            "}"
+            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {"
+            "  height: 0px;"
+            "}"
+            "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {"
+            "  background: #0D1219;"
+            "}"
+            "QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QPlainTextEdit {"
+            "  background: #0E141C;"
+            "  border: 1px solid #2A3545;"
+            "  border-radius: 8px;"
+            "  color: #E8EEF6;"
+            "  padding: 6px 8px;"
+            "  selection-background-color: #4EC9A2;"
+            "  selection-color: #0B0E13;"
+            "}"
+            "QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus, QPlainTextEdit:focus {"
+            "  border: 1px solid #6BE7B3;"
+            "}"
+            "QPlainTextEdit#logPanel, QPlainTextEdit#compactLogPanel {"
+            "  background: #080C11;"
+            "  color: #C8D3E0;"
+            "  font-family: Consolas, 'Microsoft YaHei UI', monospace;"
+            "  font-size: 9pt;"
+            "}"
+            "QLabel#statusLabel {"
+            "  color: #F4F8FB;"
+            "  background: #151B24;"
+            "  border: 1px solid #2A3444;"
+            "  border-radius: 8px;"
+            "  padding: 9px 12px;"
+            "  font-weight: 800;"
+            "  font-size: 12pt;"
+            "}"
+            "QPushButton {"
+            "  background: #202A37;"
+            "  border: 1px solid #3A4658;"
+            "  border-radius: 8px;"
+            "  color: #EEF4FA;"
+            "  padding: 8px 12px;"
+            "  font-weight: 700;"
+            "}"
+            "QPushButton:hover {"
+            "  background: #263444;"
+            "  border-color: #6BE7B3;"
+            "}"
+            "QPushButton:pressed {"
+            "  background: #151D27;"
+            "}"
+            "QPushButton:disabled {"
+            "  background: #151A22;"
+            "  border-color: #242B35;"
+            "  color: #687482;"
+            "}"
+            "QPushButton[controlType='primary'] {"
+            "  background: #176B5A;"
+            "  border-color: #42C79D;"
+            "  color: #F2FFF9;"
+            "}"
+            "QPushButton[controlType='primary']:hover {"
+            "  background: #1F856F;"
+            "}"
+            "QPushButton[controlType='primary']:disabled {"
+            "  background: #16221F;"
+            "  border-color: #2A3A36;"
+            "  color: #667872;"
+            "}"
+            "QPushButton[controlType='danger'] {"
+            "  background: #6D2632;"
+            "  border-color: #B84A5B;"
+            "  color: #FFECEF;"
+            "}"
+            "QPushButton[controlType='neutral'] {"
+            "  background: #2B3441;"
+            "}"
+            "QProgressBar {"
+            "  border: 1px solid #2D394A;"
+            "  border-radius: 7px;"
+            "  background: #0C1118;"
+            "  color: #E8EEF6;"
+            "  text-align: center;"
+            "  min-height: 16px;"
+            "}"
+            "QProgressBar::chunk {"
+            "  border-radius: 6px;"
+            "  background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #48D6B0, stop:0.55 #9DE2C0, stop:1 #F6C667);"
+            "}"
+            "QFrame#pretrainStep {"
+            "  border: 1px solid #283343;"
+            "  border-radius: 8px;"
+            "  background: #10161F;"
+            "}"
+            "QFrame#pretrainStep[stepState='active'] {"
+            "  border-color: #67E8B9;"
+            "  background: #14251F;"
+            "}"
+            "QFrame#pretrainStep[stepState='done'] {"
+            "  border-color: #3F8F73;"
+            "  background: #12201C;"
+            "}"
+            "QLabel#stepIndex {"
+            "  color: #0B0E13;"
+            "  background: #7DEBC0;"
+            "  border-radius: 8px;"
+            "  font-weight: 800;"
+            "}"
+            "QLabel#stepIndex[stepState='pending'] {"
+            "  background: #445161;"
+            "  color: #D2DAE5;"
+            "}"
+            "QLabel#stepIndex[stepState='done'] {"
+            "  background: #F6C667;"
+            "}"
+            "QLabel#stepTitle {"
+            "  color: #E8EEF6;"
+            "  font-weight: 800;"
+            "}"
+            "QLabel#stepTitle[stepState='pending'] {"
+            "  color: #B6C1CE;"
+            "}"
+            "QLabel#stepState {"
+            "  color: #A9F5D0;"
+            "  font-weight: 800;"
+            "}"
+            "QLabel#stepState[stepState='pending'] {"
+            "  color: #7E8A99;"
+            "}"
+            "QLabel#stepState[stepState='done'] {"
+            "  color: #F6C667;"
+            "}"
+        )
+
     def log(self, text: str) -> None:
         self.log_text.appendPlainText(f"[{datetime.now().strftime('%H:%M:%S')}] {text}")
 
@@ -781,11 +1661,15 @@ class UnifiedCollectionWindow(QMainWindow):
             self.btn_disconnect,
             self.btn_start_ssvep,
             self.btn_open_mi,
+            self.btn_start_pretrain,
         ):
             widget.setEnabled(not busy)
         self.mode_tabs.setTabEnabled(0, not busy)
-        self.mode_tabs.setTabEnabled(1, True)
+        self.mode_tabs.setTabEnabled(1, not busy)
+        self.mode_tabs.setTabEnabled(2, True)
         self.btn_stop_ssvep.setEnabled(busy)
+        if busy:
+            self.btn_pause_pretrain.setEnabled(False)
 
     def connect_shared_device(self) -> None:
         if self.capture_thread is not None:
@@ -833,14 +1717,18 @@ class UnifiedCollectionWindow(QMainWindow):
         self.btn_connect.setEnabled(False)
         self.btn_disconnect.setEnabled(True)
         self.log(f"Shared device ready: {info}")
+        self._refresh_pretrain_device_status()
 
     def _on_capture_error(self, text: str) -> None:
         self.status_label.setText("Device error")
         self.log(str(text))
+        self.device_info = None
+        self._refresh_pretrain_device_status()
 
     def _on_capture_thread_finished(self) -> None:
         self.capture_worker = None
         self.capture_thread = None
+        self.device_info = None
         try:
             self.capture_stop_requested.disconnect()
         except Exception:
@@ -851,6 +1739,7 @@ class UnifiedCollectionWindow(QMainWindow):
             pass
         self.btn_connect.setEnabled(True)
         self.btn_disconnect.setEnabled(False)
+        self._refresh_pretrain_device_status()
         if self.pending_ssvep_result is None and self.status_label.text() not in {"SSVEP saved", "SSVEP save failed"}:
             self.status_label.setText("Shared device disconnected")
 

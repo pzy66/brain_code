@@ -234,7 +234,7 @@ def resolve_vision_packet(
         slot_resolved["resolved_base_xy"] = [float(base_x), float(base_y)]
         slot_resolved["resolved_cyl"] = [float(theta_deg), float(radius_mm), float(pick_z)]
         slot_resolved["command_mode"] = "world"
-        if bool(slot.get("servo_required", False)) and mapping_mode == "delta_servo":
+        if bool(slot.get("servo_required", False)) and mapping_mode in {"delta_servo", "absolute_base"}:
             gain = max(0.05, min(1.0, float(config.vision_servo_move_gain)))
             center_distance = slot.get("center_distance_px")
             try:
@@ -244,8 +244,12 @@ def resolve_vision_packet(
             fine_threshold_px = max(0.0, float(getattr(config, "vision_servo_fine_threshold_px", 0.0)))
             if math.isfinite(center_distance_px) and center_distance_px <= fine_threshold_px:
                 gain = min(gain, max(0.05, min(1.0, float(config.vision_servo_fine_move_gain))))
-            servo_x = float(robot_xy[0]) + float(delta_x) * gain if robot_xy is not None else float(base_x)
-            servo_y = float(robot_xy[1]) + float(delta_y) * gain if robot_xy is not None else float(base_y)
+            if mapping_mode == "delta_servo" and robot_xy is not None:
+                servo_x = float(robot_xy[0]) + float(delta_x) * gain
+                servo_y = float(robot_xy[1]) + float(delta_y) * gain
+            else:
+                servo_x = float(base_x)
+                servo_y = float(base_y)
             servo_theta_deg, servo_radius_mm, _ = cartesian_to_cylindrical(servo_x, servo_y, pick_z)
             if (
                 servo_theta_deg < theta_limits[0]

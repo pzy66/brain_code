@@ -123,6 +123,96 @@ def test_continuous_servo_ibvs_dls_reduces_predicted_image_error() -> None:
     assert decision.trace["ibvs_predicted_error_after_px"] < decision.trace["ibvs_predicted_error_before_px"]
 
 
+def test_continuous_servo_stops_when_camera_image_does_not_respond_to_motion() -> None:
+    config = AppConfig(
+        vision_continuous_servo_horizontal_mode="ibvs_dls",
+        vision_continuous_servo_ibvs_gain=0.5,
+        vision_continuous_servo_ibvs_damping_px_per_unit=2.0,
+        vision_continuous_servo_ibvs_du_dtheta_px_per_deg=-10.0,
+        vision_continuous_servo_ibvs_du_dradius_px_per_mm=1.5,
+        vision_continuous_servo_ibvs_dv_dtheta_px_per_deg=1.0,
+        vision_continuous_servo_ibvs_dv_dradius_px_per_mm=4.0,
+        vision_continuous_servo_camera_motion_guard_enabled=True,
+        vision_continuous_servo_camera_motion_guard_min_robot_mm=8.0,
+        vision_continuous_servo_camera_motion_guard_max_pixel_px=2.5,
+        vision_continuous_servo_camera_motion_guard_static_frames=2,
+    ).resolved()
+    controller = ContinuousVisionServoController(config)
+    slot = _slot(
+        center_distance_px=20.0,
+        geometry_center_f=[300.0, 240.0],
+        alignment_target_pixel=[320.0, 240.0],
+        servo_command_point=[0.0, 180.0],
+    )
+
+    first = controller.decide(
+        slot_id=1,
+        slot_payload=slot,
+        packet={"frame_id": 1, "queue_age_ms": 10.0, "alignment_target_pixel": [320.0, 240.0]},
+        current_cyl_pose=(0.0, 150.0, 190.0),
+    )
+    second = controller.decide(
+        slot_id=1,
+        slot_payload=slot,
+        packet={"frame_id": 2, "queue_age_ms": 10.0, "alignment_target_pixel": [320.0, 240.0]},
+        pending=first.pending_dict,
+        current_cyl_pose=(0.0, 159.0, 190.0),
+    )
+    third = controller.decide(
+        slot_id=1,
+        slot_payload=slot,
+        packet={"frame_id": 3, "queue_age_ms": 10.0, "alignment_target_pixel": [320.0, 240.0]},
+        pending=second.pending_dict,
+        current_cyl_pose=(0.0, 160.0, 190.0),
+    )
+
+    assert first.action == "SERVO"
+    assert second.action == "SERVO"
+    assert third.action == "STOP"
+    assert third.reason == "camera_motion_response_missing"
+    assert third.trace["robot_horizontal_delta_mm"] == pytest.approx(10.0)
+    assert third.trace["pixel_delta_px"] == pytest.approx(0.0)
+
+
+def test_continuous_servo_ibvs_low_height_uses_single_height_scale() -> None:
+    config = AppConfig(
+        vision_pick_confirm_z_mm=120.0,
+        vision_pick_z_tolerance_mm=1.0,
+        vision_continuous_servo_horizontal_mode="ibvs_dls",
+        vision_continuous_servo_ibvs_gain=0.45,
+        vision_continuous_servo_ibvs_damping_px_per_unit=2.0,
+        vision_continuous_servo_ibvs_du_dtheta_px_per_deg=-14.0,
+        vision_continuous_servo_ibvs_du_dradius_px_per_mm=0.0,
+        vision_continuous_servo_ibvs_dv_dtheta_px_per_deg=0.0,
+        vision_continuous_servo_ibvs_dv_dradius_px_per_mm=3.5,
+        vision_continuous_servo_descent_low_error_z_above_confirm_mm=4.0,
+        vision_continuous_servo_low_height_guard_band_mm=30.0,
+        vision_continuous_servo_low_height_pause_descent_band_mm=4.0,
+        vision_continuous_servo_low_height_fine_rate_scale=0.35,
+        vision_continuous_servo_low_height_coarse_rate_scale=0.35,
+    ).resolved()
+    controller = ContinuousVisionServoController(config)
+
+    decision = controller.decide(
+        slot_id=2,
+        slot_payload=_slot(
+            slot_id=2,
+            center_distance_px=17.507141400011598,
+            geometry_center_f=[302.5, 240.5],
+            alignment_target_pixel=[320.0, 240.0],
+        ),
+        packet={"frame_id": 105, "queue_age_ms": 10.0, "alignment_target_pixel": [320.0, 240.0]},
+        pending={"slot_id": 2, "stable_frames": 5},
+        current_cyl_pose=(0.529, 143.403, 123.84),
+    )
+
+    assert decision.action == "SERVO"
+    raw_theta = decision.trace["ibvs_raw_theta_rate_deg_s"]
+    raw_radius = decision.trace["ibvs_raw_radius_rate_mm_s"]
+    assert decision.theta_rate_deg_s == pytest.approx(raw_theta * 0.35)
+    assert decision.radius_rate_mm_s == pytest.approx(raw_radius * 0.35)
+
+
 def test_continuous_servo_ibvs_dls_prefers_profile_jacobian_metadata() -> None:
     config = AppConfig(
         vision_continuous_servo_horizontal_mode="ibvs_dls",
@@ -293,6 +383,8 @@ def test_continuous_servo_switches_measurement_point_in_low_height_guard() -> No
 def test_continuous_servo_pixel_axis_reverses_after_crossing_center() -> None:
     controller = ContinuousVisionServoController(
         AppConfig(
+            vision_pick_confirm_z_mm=120.0,
+            vision_pick_z_tolerance_mm=1.0,
             vision_continuous_servo_horizontal_mode="pixel_axis",
             vision_continuous_servo_theta_rate_limit_deg_s=8.0,
             vision_continuous_servo_radius_rate_limit_mm_s=8.0,
@@ -371,6 +463,8 @@ def test_continuous_servo_pixel_axis_slows_near_center() -> None:
 def test_continuous_servo_pixel_axis_continues_through_grasp_unstable() -> None:
     controller = ContinuousVisionServoController(
         AppConfig(
+            vision_pick_confirm_z_mm=120.0,
+            vision_pick_z_tolerance_mm=1.0,
             vision_continuous_servo_horizontal_mode="pixel_axis",
             vision_continuous_servo_descent_high_error_px=80.0,
             vision_continuous_servo_center_allow_descent_px=8.0,
@@ -403,10 +497,12 @@ def test_continuous_servo_pixel_axis_continues_through_grasp_unstable() -> None:
 def test_continuous_servo_dynamic_descent_gate_tightens_near_confirm() -> None:
     controller = ContinuousVisionServoController(
         AppConfig(
+            vision_pick_confirm_z_mm=120.0,
+            vision_pick_z_tolerance_mm=1.0,
             vision_continuous_servo_horizontal_mode="pixel_axis",
             vision_continuous_servo_descent_high_error_px=80.0,
             vision_continuous_servo_descent_high_error_z_above_confirm_mm=70.0,
-            vision_continuous_servo_descent_low_error_z_above_confirm_mm=12.0,
+            vision_continuous_servo_descent_low_error_z_above_confirm_mm=4.0,
             vision_continuous_servo_center_allow_descent_px=8.0,
             vision_continuous_servo_low_height_descent_allow_px=8.0,
         ).resolved()
@@ -430,13 +526,79 @@ def test_continuous_servo_dynamic_descent_gate_tightens_near_confirm() -> None:
             alignment_target_pixel=[320.0, 240.0],
         ),
         packet={"frame_id": 2, "queue_age_ms": 10.0, "alignment_target_pixel": [320.0, 240.0]},
-        current_cyl_pose=(20.0, 180.0, 135.0),
+        current_cyl_pose=(20.0, 180.0, 123.0),
     )
 
     assert high.action == "SERVO"
     assert high.z_rate_mm_s < 0.0
     assert low.action == "SERVO"
     assert low.z_rate_mm_s == 0.0
+
+
+def test_continuous_servo_dynamic_descent_gate_does_not_stop_too_early() -> None:
+    controller = ContinuousVisionServoController(
+        AppConfig(
+            vision_pick_confirm_z_mm=120.0,
+            vision_pick_z_tolerance_mm=1.0,
+            vision_continuous_servo_horizontal_mode="pixel_axis",
+            vision_continuous_servo_descent_high_error_px=80.0,
+            vision_continuous_servo_descent_high_error_z_above_confirm_mm=70.0,
+            vision_continuous_servo_descent_low_error_z_above_confirm_mm=4.0,
+            vision_continuous_servo_center_allow_descent_px=8.0,
+            vision_continuous_servo_low_height_descent_allow_px=12.0,
+            vision_continuous_servo_low_height_pause_descent_band_mm=4.0,
+            vision_continuous_servo_z_rate_limit_mm_s=12.0,
+        ).resolved()
+    )
+
+    decision = controller.decide(
+        slot_id=1,
+        slot_payload=_slot(
+            center_distance_px=16.0,
+            geometry_center_f=[316.0, 224.5],
+            alignment_target_pixel=[320.0, 240.0],
+        ),
+        packet={"frame_id": 1, "queue_age_ms": 10.0, "alignment_target_pixel": [320.0, 240.0]},
+        pending={"slot_id": 1, "stable_frames": 0},
+        current_cyl_pose=(20.0, 180.0, 133.7),
+    )
+
+    assert decision.action == "SERVO"
+    assert decision.z_rate_mm_s < 0.0
+
+
+def test_continuous_servo_default_low_height_descent_allows_observed_residual() -> None:
+    config = AppConfig(
+        vision_pick_confirm_z_mm=120.0,
+        vision_pick_z_tolerance_mm=1.0,
+        vision_continuous_servo_horizontal_mode="ibvs_dls",
+        vision_continuous_servo_descent_high_error_px=80.0,
+        vision_continuous_servo_descent_high_error_z_above_confirm_mm=70.0,
+        vision_continuous_servo_descent_low_error_z_above_confirm_mm=4.0,
+        vision_continuous_servo_low_height_pause_descent_band_mm=4.0,
+    ).resolved()
+    controller = ContinuousVisionServoController(config)
+
+    decision = controller.decide(
+        slot_id=1,
+        slot_payload=_slot(
+            center_distance_px=16.6,
+            geometry_center_f=[303.4, 240.5],
+            alignment_target_pixel=[320.0, 240.0],
+        ),
+        packet={"frame_id": 1, "queue_age_ms": 10.0, "alignment_target_pixel": [320.0, 240.0]},
+        pending={
+            "slot_id": 1,
+            "stable_frames": 0,
+            "low_height_anchor_pose": [-7.0, 169.0, 148.0],
+            "best_center_distance_px": 16.6,
+        },
+        current_cyl_pose=(-10.5, 168.8, 128.2),
+    )
+
+    assert decision.action == "SERVO"
+    assert decision.z_rate_mm_s < 0.0
+    assert decision.trace["descent_error_allow_px"] > 16.6
 
 
 def test_continuous_servo_low_height_descent_allow_is_separate_from_final_gate() -> None:
@@ -478,7 +640,7 @@ def test_continuous_servo_low_height_descent_allow_is_separate_from_final_gate()
 
     assert outer_guard.action == "SERVO"
     assert outer_guard.z_rate_mm_s < 0.0
-    assert outer_guard.trace["descent_error_allow_px"] == pytest.approx(12.0)
+    assert outer_guard.trace["descent_error_allow_px"] > 12.0
     assert outer_guard.trace["pick_ready_center_px"] == pytest.approx(2.0)
     assert inner_pause.action == "SERVO"
     assert inner_pause.z_rate_mm_s == 0.0
@@ -570,6 +732,44 @@ def test_continuous_servo_accepts_large_low_confidence_locked_target() -> None:
 
     assert decision.action == "SERVO"
     assert decision.reason == "continuous_servo"
+    assert decision.trace.get("quality_reason") is None
+
+
+def test_continuous_servo_accepts_low_height_local_center_for_servo_only() -> None:
+    config = AppConfig(
+        vision_pick_confirm_z_mm=120.0,
+        vision_servo_low_height_measurement_point="grasp_subpixel",
+        vision_continuous_servo_horizontal_mode="ibvs_dls",
+        vision_continuous_servo_ibvs_du_dtheta_px_per_deg=-14.0,
+        vision_continuous_servo_ibvs_du_dradius_px_per_mm=0.0,
+        vision_continuous_servo_ibvs_dv_dtheta_px_per_deg=0.0,
+        vision_continuous_servo_ibvs_dv_dradius_px_per_mm=3.5,
+    ).resolved()
+    controller = ContinuousVisionServoController(config)
+
+    decision = controller.decide(
+        slot_id=1,
+        slot_payload=_slot(
+            confidence=0.0,
+            area_px=0,
+            bbox=None,
+            actionable=False,
+            invalid_reason="vision_servo_required",
+            servo_command_point=None,
+            center_distance_px=10.0,
+            grasp_pixel_f=[310.0, 240.0],
+            alignment_target_pixel=[320.0, 240.0],
+            measurement_point="grasp_subpixel",
+            low_height_local_center_override=True,
+        ),
+        packet={"frame_id": 1, "queue_age_ms": 10.0, "alignment_target_pixel": [320.0, 240.0]},
+        pending={"slot_id": 1, "stable_frames": 1},
+        current_cyl_pose=(28.0, 127.0, 125.6),
+    )
+
+    assert decision.action == "SERVO"
+    assert decision.reason == "continuous_servo"
+    assert decision.command is None
     assert decision.trace.get("quality_reason") is None
 
 
@@ -1659,6 +1859,187 @@ def test_continuous_servo_pauses_descent_after_low_height_near_center_rebound() 
     assert decision.theta_rate_deg_s != 0.0 or decision.radius_rate_mm_s != 0.0
 
 
+def test_continuous_servo_pauses_descent_after_rebound_from_low_height_best_error() -> None:
+    config = AppConfig(
+        vision_pick_confirm_z_mm=120.0,
+        vision_continuous_servo_horizontal_mode="ibvs_dls",
+        vision_continuous_servo_ibvs_du_dtheta_px_per_deg=-14.0,
+        vision_continuous_servo_ibvs_du_dradius_px_per_mm=0.0,
+        vision_continuous_servo_ibvs_dv_dtheta_px_per_deg=0.0,
+        vision_continuous_servo_ibvs_dv_dradius_px_per_mm=3.5,
+        vision_continuous_servo_low_height_guard_band_mm=45.0,
+        vision_continuous_servo_low_height_fine_band_px=3.0,
+        vision_continuous_servo_low_height_best_error_descent_pause_px=4.0,
+        vision_continuous_servo_center_allow_descent_px=8.0,
+        vision_continuous_servo_soft_descent_enabled=True,
+    ).resolved()
+    controller = ContinuousVisionServoController(config)
+
+    decision = controller.decide(
+        slot_id=1,
+        slot_payload=_slot(
+            center_distance_px=10.0,
+            geometry_center_f=[318.0, 230.0],
+            alignment_target_pixel=[320.0, 240.0],
+        ),
+        packet={"frame_id": 24, "queue_age_ms": 10.0, "alignment_target_pixel": [320.0, 240.0]},
+        pending={
+            "slot_id": 1,
+            "stable_frames": 0,
+            "last_center_distance_px": 10.0,
+            "best_center_distance_px": 2.6,
+            "low_height_anchor_pose": [27.6, 126.0, 150.0],
+        },
+        current_cyl_pose=(27.6, 126.0, 146.0),
+    )
+
+    assert decision.action == "SERVO"
+    assert decision.z_rate_mm_s == 0.0
+    assert decision.theta_rate_deg_s != 0.0 or decision.radius_rate_mm_s != 0.0
+    assert decision.trace["low_height_best_descent_pause"] is True
+
+
+def test_continuous_servo_allows_final_descent_after_pick_ready_best_center() -> None:
+    config = AppConfig(
+        vision_pick_confirm_z_mm=120.0,
+        vision_pick_z_tolerance_mm=1.0,
+        vision_continuous_servo_horizontal_mode="ibvs_dls",
+        vision_continuous_servo_ibvs_du_dtheta_px_per_deg=-14.0,
+        vision_continuous_servo_ibvs_du_dradius_px_per_mm=0.0,
+        vision_continuous_servo_ibvs_dv_dtheta_px_per_deg=0.0,
+        vision_continuous_servo_ibvs_dv_dradius_px_per_mm=3.5,
+        vision_continuous_servo_low_height_guard_band_mm=30.0,
+        vision_continuous_servo_low_height_pause_descent_band_mm=4.0,
+        vision_continuous_servo_low_height_fine_band_px=3.0,
+        vision_continuous_servo_low_height_descent_allow_px=18.0,
+        vision_continuous_servo_low_height_descent_rebound_pause_px=4.0,
+        vision_continuous_servo_low_height_best_error_descent_pause_px=4.0,
+        vision_continuous_servo_center_allow_descent_px=8.0,
+        vision_continuous_servo_pick_ready_center_px=2.0,
+        vision_continuous_servo_soft_descent_enabled=True,
+    ).resolved()
+    controller = ContinuousVisionServoController(config)
+
+    decision = controller.decide(
+        slot_id=1,
+        slot_payload=_slot(
+            center_distance_px=10.0,
+            geometry_center_f=[310.0, 240.0],
+            alignment_target_pixel=[320.0, 240.0],
+        ),
+        packet={"frame_id": 65, "queue_age_ms": 10.0, "alignment_target_pixel": [320.0, 240.0]},
+        pending={
+            "slot_id": 1,
+            "stable_frames": 0,
+            "last_center_distance_px": 0.7,
+            "best_center_distance_px": 0.7,
+            "low_height_anchor_pose": [0.58, 143.21, 123.7],
+        },
+        current_cyl_pose=(0.58, 143.21, 123.4),
+    )
+
+    assert decision.action == "SERVO"
+    assert decision.z_rate_mm_s < 0.0
+    assert decision.trace["low_height_descent_rebound"] is True
+    assert decision.trace["low_height_best_descent_pause"] is True
+    assert decision.trace["low_height_best_confirm_descent_allowed"] is True
+    assert decision.trace["soft_descent"] is True
+
+
+def test_continuous_servo_allows_last_millimeters_despite_low_height_visual_drift() -> None:
+    config = AppConfig(
+        vision_pick_confirm_z_mm=120.0,
+        vision_pick_z_tolerance_mm=1.0,
+        vision_continuous_servo_horizontal_mode="ibvs_dls",
+        vision_continuous_servo_ibvs_du_dtheta_px_per_deg=-14.0,
+        vision_continuous_servo_ibvs_du_dradius_px_per_mm=0.0,
+        vision_continuous_servo_ibvs_dv_dtheta_px_per_deg=0.0,
+        vision_continuous_servo_ibvs_dv_dradius_px_per_mm=3.5,
+        vision_continuous_servo_low_height_guard_band_mm=30.0,
+        vision_continuous_servo_low_height_pause_descent_band_mm=4.0,
+        vision_continuous_servo_low_height_descent_allow_px=18.0,
+        vision_continuous_servo_low_height_best_confirm_descent_allow_px=40.0,
+        vision_continuous_servo_low_height_descent_rebound_pause_px=4.0,
+        vision_continuous_servo_low_height_best_error_descent_pause_px=4.0,
+        vision_continuous_servo_center_allow_descent_px=8.0,
+        vision_continuous_servo_pick_ready_center_px=2.0,
+        vision_continuous_servo_soft_descent_enabled=True,
+    ).resolved()
+    controller = ContinuousVisionServoController(config)
+
+    decision = controller.decide(
+        slot_id=1,
+        slot_payload=_slot(
+            center_distance_px=33.0,
+            geometry_center_f=[353.0, 240.0],
+            alignment_target_pixel=[320.0, 240.0],
+        ),
+        packet={"frame_id": 68, "queue_age_ms": 10.0, "alignment_target_pixel": [320.0, 240.0]},
+        pending={
+            "slot_id": 1,
+            "stable_frames": 0,
+            "last_center_distance_px": 18.5,
+            "best_center_distance_px": 1.1,
+            "low_height_anchor_pose": [4.2, 142.1, 123.7],
+        },
+        current_cyl_pose=(4.2, 142.1, 121.3),
+    )
+
+    assert decision.action == "SERVO"
+    assert decision.z_rate_mm_s < 0.0
+    assert decision.trace["low_height_best_descent_pause"] is True
+    assert decision.trace["low_height_best_confirm_descent_allowed"] is True
+    assert decision.trace["low_height_best_confirm_descent_allow_px"] == 40.0
+
+
+def test_continuous_servo_best_center_final_descent_bypasses_static_pause() -> None:
+    config = AppConfig(
+        vision_pick_confirm_z_mm=120.0,
+        vision_pick_z_tolerance_mm=1.0,
+        vision_continuous_servo_horizontal_mode="ibvs_dls",
+        vision_continuous_servo_ibvs_du_dtheta_px_per_deg=-14.0,
+        vision_continuous_servo_ibvs_du_dradius_px_per_mm=0.0,
+        vision_continuous_servo_ibvs_dv_dtheta_px_per_deg=0.0,
+        vision_continuous_servo_ibvs_dv_dradius_px_per_mm=3.5,
+        vision_continuous_servo_low_height_guard_band_mm=30.0,
+        vision_continuous_servo_low_height_pause_descent_band_mm=4.0,
+        vision_continuous_servo_low_height_static_frames=3,
+        vision_continuous_servo_low_height_static_error_min_px=8.0,
+        vision_continuous_servo_low_height_static_error_max_px=30.0,
+        vision_continuous_servo_low_height_static_band_mm=6.0,
+        vision_continuous_servo_low_height_static_pose_band_mm=4.0,
+        vision_continuous_servo_low_height_descent_allow_px=18.0,
+        vision_continuous_servo_center_allow_descent_px=8.0,
+        vision_continuous_servo_pick_ready_center_px=2.0,
+    ).resolved()
+    controller = ContinuousVisionServoController(config)
+
+    decision = controller.decide(
+        slot_id=1,
+        slot_payload=_slot(
+            center_distance_px=10.0,
+            geometry_center_f=[310.0, 240.0],
+            alignment_target_pixel=[320.0, 240.0],
+        ),
+        packet={"frame_id": 66, "queue_age_ms": 10.0, "alignment_target_pixel": [320.0, 240.0]},
+        pending={
+            "slot_id": 1,
+            "stable_frames": 0,
+            "last_center_distance_px": 0.7,
+            "best_center_distance_px": 0.7,
+            "low_height_anchor_pose": [0.58, 143.21, 123.7],
+            "low_height_static_frames": 2,
+            "low_height_static_reference_px": 0.7,
+        },
+        current_cyl_pose=(0.58, 143.21, 123.4),
+    )
+
+    assert decision.action == "SERVO"
+    assert decision.reason == "continuous_servo"
+    assert decision.z_rate_mm_s < 0.0
+    assert decision.trace["low_height_best_confirm_descent_allowed"] is True
+
+
 def test_continuous_servo_stops_on_low_height_error_rebound() -> None:
     config = AppConfig(
         vision_pick_confirm_z_mm=120.0,
@@ -1746,6 +2127,45 @@ def test_continuous_servo_low_height_static_residual_requires_local_model() -> N
     assert decision.reason == "low_height_local_model_required"
     assert decision.trace["low_height_static_frames"] == 3
     assert "search_low_height_center.py" in decision.trace["recommendation"]
+
+
+def test_continuous_servo_low_height_static_residual_triggers_in_pause_band() -> None:
+    config = AppConfig(
+        vision_pick_confirm_z_mm=120.0,
+        vision_pick_z_tolerance_mm=1.0,
+        vision_continuous_servo_horizontal_mode="ibvs_dls",
+        vision_continuous_servo_low_height_guard_band_mm=30.0,
+        vision_continuous_servo_low_height_static_frames=12,
+        vision_continuous_servo_low_height_static_error_min_px=8.0,
+        vision_continuous_servo_low_height_static_error_max_px=30.0,
+        vision_continuous_servo_low_height_static_improvement_px=1.0,
+        vision_continuous_servo_low_height_static_band_mm=6.0,
+        vision_continuous_servo_low_height_static_pose_band_mm=4.0,
+    ).resolved()
+    controller = ContinuousVisionServoController(config)
+
+    decision = controller.decide(
+        slot_id=1,
+        slot_payload=_slot(
+            center_distance_px=17.0,
+            geometry_center_f=[303.0, 240.5],
+            alignment_target_pixel=[320.0, 240.0],
+        ),
+        packet={"frame_id": 30, "queue_age_ms": 10.0, "alignment_target_pixel": [320.0, 240.0]},
+        pending={
+            "slot_id": 1,
+            "stable_frames": 0,
+            "low_height_anchor_pose": [-20.0, 173.0, 148.0],
+            "best_center_distance_px": 16.5,
+            "low_height_static_frames": 11,
+            "low_height_static_reference_px": 17.0,
+        },
+        current_cyl_pose=(-27.0, 173.5, 123.8),
+    )
+
+    assert decision.action == "STOP"
+    assert decision.reason == "low_height_local_model_required"
+    assert decision.trace["low_height_static_frames"] == 12
 
 
 def test_continuous_servo_low_height_static_residual_not_counted_while_descending() -> None:

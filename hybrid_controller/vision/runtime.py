@@ -22,6 +22,7 @@ from hybrid_controller.vision.processing import (
     extract_candidates,
     frame_brightness_quality,
     packet_to_targets,
+    sanitize_frame_edge_bands,
     update_slots,
 )
 
@@ -105,15 +106,21 @@ def _frame_has_horizontal_tearing(frame: object) -> bool:
         return False
     row_diffs = np.abs(np.diff(sample.astype(np.int16), axis=0))
     strong_clusters = 0
+    central_strong_clusters = 0
+    central_top = int(height * 0.25)
+    central_bottom = int(height * 0.75)
     for cluster in clusters:
         cluster_rows = [int(row) for row in cluster]
         cluster_score = 0.0
         for row_index in cluster_rows:
             per_column = np.mean(row_diffs[int(row_index)], axis=1)
             cluster_score = max(cluster_score, float(np.mean(per_column > 25.0)))
-        if cluster_score >= 0.18:
+        if cluster_score >= 0.22:
             strong_clusters += 1
-    if strong_clusters >= 2:
+            cluster_center = (cluster_rows[0] + cluster_rows[-1]) // 2
+            if central_top <= cluster_center <= central_bottom:
+                central_strong_clusters += 1
+    if strong_clusters >= 2 and central_strong_clusters >= 1:
         return True
     return False
 
@@ -740,6 +747,11 @@ class _VisionWorker(QObject):
                 with self._frame_lock:
                     self._capture_lost = True
                 return
+            frame, _top_mask_rows, _bottom_mask_rows = sanitize_frame_edge_bands(
+                frame,
+                top_rows=getattr(self.config, "vision_frame_top_mask_rows", 0),
+                bottom_rows=getattr(self.config, "vision_frame_bottom_mask_rows", 0),
+            )
             if _frame_has_horizontal_tearing(frame):
                 with self._frame_lock:
                     self._capture_rejected_frames += 1
@@ -913,6 +925,8 @@ class _VisionWorker(QObject):
                 min_mean=float(getattr(self.config, "vision_frame_min_brightness_mean", 30.0)),
                 min_p95=float(getattr(self.config, "vision_frame_min_brightness_p95", 45.0)),
             )
+            frame_quality["top_mask_rows"] = int(getattr(self.config, "vision_frame_top_mask_rows", 0) or 0)
+            frame_quality["bottom_mask_rows"] = int(getattr(self.config, "vision_frame_bottom_mask_rows", 0) or 0)
             self._reload_calibration_profile_if_needed()
             roi_center = self._resolve_roi_center(frame_w, frame_h)
             roi_radius = self._resolve_roi_radius(frame_w, frame_h)

@@ -114,21 +114,17 @@ and grasp-flow implementation in `hybrid_controller`.
   Debug reports record Content-Length payload counts, rejected-frame counts,
   buffer resets, reopen counts, and frame age so stream problems can be
   separated from motion-window sampling problems.
-- Linux UVC frame-dropping behavior: do not keep `uvcvideo nodrop=1` as a
-  default JetMax recovery setting. The project observed MJPEG payloads that
-  decoded successfully but contained corrupted horizontal slices; omitting a
-  forced `quirks` override and keeping `nodrop=0` lets the driver drop
-  incomplete frames before they reach ROS or `web_video_server`.
-- JetMax 32e6:9005 camera failure isolation: if `/usb_cam/image_rect_color`
-  publishes no messages with `nodrop=0`, but publishes green/top-strip frames
-  with `nodrop=1`, treat that as an incomplete UVC frame/device transport
-  failure, not a usable camera recovery. On this JetMax, direct `v4l2-ctl`
-  probes showed `Bytesused` values of only a few KB for `640x480 YUYV`, while a
-  complete frame should be `614400` bytes. The safe visual-control state is
-  therefore `nodrop=0`: fail closed with no frames instead of feeding corrupted
-  slices into centering or grasp logic. If service restart, UVC reload,
-  USBDEVFS reset, and USB unbind/bind do not restore complete frames, the next
-  recovery step is physical power-cycle/reseat of the camera/JetMax USB path.
+- JetMax camera failure isolation: keep the Hiwonder sender baseline as
+  `/home/hiwonder/ros/autostart/usb_cam.launch` at `640x480 yuyv 20 FPS` with
+  `io_method=mmap`, then publish `/usb_cam/image_rect_color` through
+  `web_video_server:8080` as MJPEG. Do not keep the hybrid-written
+  `/etc/modprobe.d/hiwonder-uvcvideo.conf` during factory restore; if driver
+  diagnosis is needed, use fail-closed `quirks=0 nodrop=0 timeout=5000` so
+  incomplete UVC frames are dropped instead of published as gray/green frames.
+  If a direct V4L2 YUYV read still returns far fewer than `640*480*2` bytes, the
+  fault is below ROS/web_video_server, so frame-rate/quality tuning or PC-side
+  masking is the wrong fix; reboot/power-cycle/re-seat the USB camera path
+  before continuing centering tests.
 - Time alignment for visual servo debugging: keep image processing latency
   (`image_age_ms`, derived from MJPEG capture/processing time) separate from
   robot pose/image synchronization (`frame_pose_age_ms`, derived from the
@@ -153,6 +149,7 @@ and grasp-flow implementation in `hybrid_controller`.
 - Ultralytics. "Model Prediction with Ultralytics YOLO." https://docs.ultralytics.com/modes/predict/
 - Hiwonder. "JetMax | AI Vision Robotic Arm Powered by Jetson Nano." https://www.hiwonder.com/products/jetmax
 - Hiwonder. "JetMax v1.0 documentation - AI Vision Games Lesson, Object Tracking." https://wiki.hiwonder.com/projects/JetMax/en/latest/docs/3_AI_Vision_Games_Lesson.html
+- Hiwonder. "JetMax v1.0 documentation - Deep Learning Lesson." https://wiki.hiwonder.com/projects/JetMax/en/latest/docs/8_Deep_Learning_Lesson.html
 - Hutchinson, S., Hager, G. D., and Corke, P. I. "A tutorial on visual servo control." IEEE Transactions on Robotics and Automation, 12(5), 651-670, 1996. https://doi.org/10.1109/70.538972
 - Chaumette, F., and Hutchinson, S. "Visual servo control. I. Basic approaches." IEEE Robotics and Automation Magazine, 13(4), 82-90, 2006. https://doi.org/10.1109/MRA.2006.250573
 - Chaumette, F., and Hutchinson, S. "Visual Servo Control, Part I: Basic Approaches." PDF mirror. https://web.mit.edu/amcp/OldFiles/drg/Chaumette_Part_I.pdf
@@ -166,6 +163,7 @@ and grasp-flow implementation in `hybrid_controller`.
 - Malis, E. "Improving vision-based control using efficient second-order minimization techniques." ICRA 2004. https://doi.org/10.1109/ROBOT.2004.1308092
 - ROS `web_video_server`. "multipart_stream.cpp source." https://docs.ros.org/en/kinetic/api/web_video_server/html/multipart__stream_8cpp_source.html
 - ROS `web_video_server`. "jpeg_streamers.cpp source." https://docs.ros.org/hydro/api/web_video_server/html/jpeg__streamers_8cpp_source.html
+- ROS `web_video_server`. "HTTP streaming README." https://docs.ros.org/en/ros2_packages/rolling/api/web_video_server/index.html
 - ROS `usb_cam`. "`usb_cam.cpp` source, select timeout path." https://docs.ros.org/jade/api/usb_cam/html/usb__cam_8cpp_source.html
 - Linux kernel documentation. "The Linux USB Video Class driver." https://docs.kernel.org/userspace-api/media/drivers/uvcvideo.html
 - Linux kernel media driver source. "uvcvideo driver module parameters." https://github.com/torvalds/linux/blob/master/drivers/media/usb/uvc/uvc_driver.c

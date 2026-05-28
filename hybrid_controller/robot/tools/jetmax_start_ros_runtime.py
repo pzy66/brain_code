@@ -25,7 +25,7 @@ DEFAULT_CAMERA_STREAM_TYPE = "mjpeg"
 DEFAULT_CAMERA_IO_METHOD = "mmap"
 DEFAULT_CAMERA_FRAMERATE = 20
 DEFAULT_UVCVIDEO_CONF_PATH = "/etc/modprobe.d/hiwonder-uvcvideo.conf"
-DEFAULT_UVCVIDEO_QUIRKS = 128
+DEFAULT_UVCVIDEO_QUIRKS = 0
 DEFAULT_UVCVIDEO_NODROP = 0
 DEFAULT_UVCVIDEO_TIMEOUT = 5000
 HIWONDER_CAMERA_TOPIC = "/usb_cam/image_rect_color"
@@ -125,8 +125,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--repair-camera-driver",
         action="store_true",
         help=(
-            "Persist/reload JetMax uvcvideo compatibility options. Off by default so the camera sender "
-            "matches the Hiwonder official usb_cam.service path."
+            "Persist/reload JetMax uvcvideo diagnostic options. Off by default; factory restore removes this "
+            "override so the camera sender stays on the Hiwonder official usb_cam.service path."
         ),
     )
     parser.add_argument(
@@ -142,7 +142,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--remove-camera-driver-override",
         action="store_true",
         dest="remove_camera_driver_override",
-        help="Explicitly remove this tool's uvcvideo override file during a camera repair.",
+        help="Explicitly remove this tool's uvcvideo override file to restore the factory-style driver path.",
     )
     parser.add_argument("--camera-width", type=int, default=DEFAULT_CAMERA_WIDTH)
     parser.add_argument("--camera-height", type=int, default=DEFAULT_CAMERA_HEIGHT)
@@ -160,8 +160,9 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=DEFAULT_UVCVIDEO_QUIRKS,
         help=(
-            "uvcvideo quirks for explicit camera-driver repair. The conservative JetMax recovery state keeps "
-            "nodrop=0 so incomplete UVC frames are dropped; normal runtime startup never applies this unless "
+            "uvcvideo quirks for explicit diagnostics only. The factory restore path removes this override; "
+            "diagnostic writes default to quirks=0,nodrop=0,timeout=5000 so incomplete UVC frames are dropped. "
+            "Normal runtime startup never applies this unless "
             "--repair-camera-driver and --allow-camera-sender-mutation are both passed."
         ),
     )
@@ -253,7 +254,10 @@ def main(argv: list[str] | None = None) -> int:
         elif bool(args.repair_camera_driver) and not bool(args.skip_camera_driver_repair):
             repair_uvcvideo_driver(ssh, args=args, sudo=sudo)
         elif bool(args.remove_camera_driver_override):
+            run_remote_command(ssh, f"{sudo} systemctl stop usb_cam.service >/dev/null 2>&1 || true", capture=True)
             remove_uvcvideo_override_file(ssh, args=args, sudo=sudo)
+            reload_uvcvideo_factory_driver(ssh, sudo=sudo)
+            run_remote_command(ssh, f"{sudo} systemctl start usb_cam.service", capture=True)
         run_remote_command(
             ssh,
             "source /opt/ros/melodic/setup.bash >/dev/null 2>&1; "
@@ -400,6 +404,7 @@ def repair_official_camera_sender(ssh: paramiko.SSHClient, *, args: argparse.Nam
         persist_and_reload_uvcvideo(ssh, args=args, sudo=sudo)
     elif bool(args.remove_camera_driver_override):
         remove_uvcvideo_override_file(ssh, args=args, sudo=sudo)
+        reload_uvcvideo_factory_driver(ssh, sudo=sudo)
     run_remote_command(ssh, f"{sudo} systemctl daemon-reload", capture=True)
     run_remote_command(ssh, f"{sudo} systemctl enable usb_cam.service >/dev/null", capture=True)
     run_remote_command(ssh, f"{sudo} systemctl start usb_cam.service", capture=True)
@@ -472,11 +477,10 @@ def persist_and_reload_uvcvideo(
     driver_options = [f"quirks={quirks}", f"nodrop={nodrop}", f"timeout={timeout}"]
     remote_tmp = "/tmp/hiwonder-uvcvideo.conf"
     content = (
-        "# Hiwonder JetMax USB camera stability for official usb_cam.service chain.\n"
-        "# Keep camera output on the official path:\n"
+        "# Hiwonder JetMax USB camera driver diagnostics only.\n"
+        "# Keep the official sender path unchanged:\n"
         "# /dev/usb_cam0 -> usb_cam_node -> /usb_cam/image_rect_color -> web_video_server:8080\n"
-        "# Conservative recovery state: keep nodrop=0 so incomplete UVC frames are not fed upward.\n"
-        "# Runtime startup must not write this file unless explicit camera-driver repair is requested.\n"
+        "# Factory restore removes this file. Keep nodrop=0 here so incomplete UVC frames are not published.\n"
         f"options uvcvideo {' '.join(driver_options)}\n"
     )
     upload_text(ssh, remote_tmp, content)
@@ -503,7 +507,6 @@ def persist_and_reload_uvcvideo(
     if params:
         print(params)
 
-
 def remove_uvcvideo_override_file(
     ssh: paramiko.SSHClient,
     *,
@@ -522,6 +525,24 @@ def remove_uvcvideo_override_file(
         "if [ -r \"$path\" ]; then printf '%s=' \"$name\"; cat \"$path\"; fi; "
         "done; "
         f"printf '\\n[removed override file]\\n'; test ! -e {shlex.quote(conf_path)} && echo {shlex.quote(conf_path)}",
+        capture=True,
+    )
+    if params:
+        print(params)
+
+
+def reload_uvcvideo_factory_driver(ssh: paramiko.SSHClient, *, sudo: str) -> None:
+    run_remote_command(ssh, f"{sudo} modprobe -r uvcvideo >/dev/null 2>&1 || true", capture=True)
+    time.sleep(2.0)
+    run_remote_command(ssh, f"{sudo} modprobe uvcvideo", capture=True)
+    time.sleep(2.0)
+    params = run_remote_command(
+        ssh,
+        "printf '[uvcvideo factory params]\\n'; "
+        "for name in quirks nodrop timeout; do "
+        "path=/sys/module/uvcvideo/parameters/$name; "
+        "if [ -r \"$path\" ]; then printf '%s=' \"$name\"; cat \"$path\"; fi; "
+        "done",
         capture=True,
     )
     if params:
