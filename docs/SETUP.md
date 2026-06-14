@@ -16,6 +16,18 @@ py -3.11 -m venv .venv
 $env:BRAIN_PYTHON_EXE = "C:\path\to\python.exe"
 ```
 
+## Paper Writing
+
+论文写作、统计分析、图表导出和文档转换依赖单独放在 `paper` 可选组里：
+
+```powershell
+$py = & .\tools\resolve_brain_python.cmd
+& $py -m pip install -e ".[paper]"
+& $py -m ipykernel install --user --name brain-paper --display-name "Python (brain-paper)"
+```
+
+该组覆盖 JupyterLab、pandas、seaborn、statsmodels、pingouin、Plotly/Kaleido、SciencePlots、Excel、Word、PDF、BibTeX、PyLaTeX 和 Pandoc Python 封装。
+
 ## Verify
 
 ```powershell
@@ -26,6 +38,29 @@ $py = & .\tools\resolve_brain_python.cmd
 ```
 
 `diagnose` 会列出 Python 版本、缺失依赖、本地数据根目录和可选模型位置。缺少硬件、摄像头、ROS 或 BrainFlow 板卡时，不应影响无硬件启动检查；默认视觉模型权重随仓库提供。
+
+## Integrated Workbench
+
+主入口现在是键盘版一体化机械臂控制工作台：
+
+```powershell
+$py = & .\tools\resolve_brain_python.cmd
+& $py -m brain
+```
+
+这一路径保留 MI/SSVEP 流程界面，但不启动实时脑电识别。键盘映射为：`W/A/S/D` 或方向键控制移动，`1-4` 选择目标槽位，`Enter/C` 确认，`Esc/X` 取消，`R` 复位。旧 MI/SSVEP 采集界面仍可用：
+
+```powershell
+& $py -m brain launch --target unified
+```
+
+打包成 Windows 软件：
+
+```powershell
+.\tools\build_integrated_workbench.ps1
+```
+
+输出在 `dist\BrainRobotWorkbench\BrainRobotWorkbench.exe`。默认软件 profile 不启动视觉识别，因此不需要 `ultralytics/torch`；机械臂 ROS 控制依赖 `roslibpy`。
 
 ## Local Assets
 

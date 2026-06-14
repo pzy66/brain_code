@@ -104,8 +104,20 @@ def _serial_port_sort_key(device: str) -> tuple[int, Any]:
     return (1, str(device).upper())
 
 
+def _serial_port_info_is_builtin_console(info: Any) -> bool:
+    device = str(getattr(info, "device", "") or "").strip().upper()
+    description = str(getattr(info, "description", "") or "").strip().lower()
+    hwid = str(getattr(info, "hwid", "") or "").strip().lower()
+    if device not in {"COM1", "COM2"}:
+        return False
+    if "pnp0501" in hwid:
+        return True
+    return ("communications port" in description or "通信端口" in description) and "usb" not in hwid
+
+
 def list_serial_port_candidates() -> list[str]:
     candidates: list[tuple[int, tuple[int, Any], str]] = []
+    enumerated_ports = False
     usb_keywords = (
         "usb",
         "serial",
@@ -122,8 +134,11 @@ def list_serial_port_candidates() -> list[str]:
     if serial_list_ports is not None:
         try:
             for info in serial_list_ports.comports():
+                enumerated_ports = True
                 device = str(getattr(info, "device", "")).strip()
                 if not device:
+                    continue
+                if _serial_port_info_is_builtin_console(info):
                     continue
                 description = str(getattr(info, "description", "")).lower()
                 hwid = str(getattr(info, "hwid", "")).lower()
@@ -139,8 +154,9 @@ def list_serial_port_candidates() -> list[str]:
                         score += 2
                 candidates.append((-score, _serial_port_sort_key(device), device))
         except Exception:
+            enumerated_ports = False
             candidates = []
-    if not candidates and sys.platform.startswith("win"):
+    if not candidates and not enumerated_ports and sys.platform.startswith("win"):
         return ["COM4", "COM3", "COM5", "COM6", "COM7", "COM8", "COM9", "COM10"]
     candidates.sort()
     ordered: list[str] = []

@@ -120,6 +120,7 @@ class HybridControllerApplication:
         self._scene_carrying_target_id: int | None = None
         self._scene_last_error: str | None = None
         self._pressed_move_tokens: set[str] = set()
+        self._teleop_timer_interval_ms: int | None = None
         self._remote_snapshot_lock = threading.Lock()
         self._remote_snapshot_cache: dict[str, object] | None = None
         self._remote_snapshot_envelope: RobotSnapshotEnvelope | None = None
@@ -185,6 +186,7 @@ class HybridControllerApplication:
         self._bridge.vision_packet_received.connect(self._on_vision_packet_received)
         self._bridge.vision_frame_received.connect(self._on_vision_frame_received)
         self._refresh_dirty = False
+        self._last_refresh_panels_ts = 0.0
         self._refresh_coalesce_timer = QTimer(self.main_window)
         self._refresh_coalesce_timer.setSingleShot(True)
         self._refresh_coalesce_timer.timeout.connect(self._refresh_panels)
@@ -2306,12 +2308,16 @@ class HybridControllerApplication:
     def _refresh_view(self) -> None:
         self._refresh_dirty = True
         if not self._refresh_coalesce_timer.isActive():
-            self._refresh_coalesce_timer.start(0)
+            min_interval_ms = max(1, int(getattr(self.config, "ui_refresh_interval_ms", 50)))
+            elapsed_ms = (time.monotonic() - float(self._last_refresh_panels_ts)) * 1000.0
+            delay_ms = 0 if elapsed_ms >= min_interval_ms else int(round(min_interval_ms - elapsed_ms))
+            self._refresh_coalesce_timer.start(max(0, delay_ms))
 
     def _refresh_panels(self) -> None:
         if not self._refresh_dirty:
             return
         self._refresh_dirty = False
+        self._last_refresh_panels_ts = time.monotonic()
         refresh_start = time.perf_counter()
         self._capture_world_snapshot(reason="refresh")
         remote_age_ms = self._compute_remote_snapshot_age_ms()
@@ -3744,17 +3750,51 @@ class HybridControllerApplication:
         timer = QTimer(self.main_window)
         timer.setTimerType(Qt.PreciseTimer)
         timer.timeout.connect(self._on_realtime_tick)
-        interval_ms = int(self.config.teleop_repeat_interval_ms)
-        if self.config.move_source == "mi":
-            interval_ms = max(10, int(self.config.mi_poll_interval_ms))
+        interval_ms = self._desired_realtime_tick_interval_ms()
+        self._teleop_timer_interval_ms = int(interval_ms)
         timer.start(interval_ms)
         self.timers["teleop-step"] = timer
 
+    def _active_realtime_tick_interval_ms(self) -> int:
+        if self.config.move_source == "mi":
+            return max(10, int(self.config.mi_poll_interval_ms))
+        return max(10, int(self.config.teleop_repeat_interval_ms))
+
+    def _idle_realtime_tick_interval_ms(self) -> int:
+        active_interval_ms = self._active_realtime_tick_interval_ms()
+        configured_idle_ms = int(getattr(self.config, "idle_runtime_tick_interval_ms", 250))
+        return max(active_interval_ms, configured_idle_ms)
+
+    def _requires_active_realtime_tick(self) -> bool:
+        if self._pressed_move_tokens:
+            return True
+        return self.config.move_source == "mi" and bool(self.config.mi_enabled)
+
+    def _desired_realtime_tick_interval_ms(self) -> int:
+        if self._requires_active_realtime_tick():
+            return self._active_realtime_tick_interval_ms()
+        return self._idle_realtime_tick_interval_ms()
+
+    def _sync_realtime_timer_interval(self) -> None:
+        timers = getattr(self, "timers", {})
+        timer = timers.get("teleop-step") if isinstance(timers, dict) else None
+        if timer is None:
+            return
+        desired_interval_ms = int(self._desired_realtime_tick_interval_ms())
+        if self._teleop_timer_interval_ms == desired_interval_ms and timer.interval() == desired_interval_ms:
+            return
+        self._teleop_timer_interval_ms = desired_interval_ms
+        timer.start(desired_interval_ms)
+
     def _on_realtime_tick(self) -> None:
+        self._sync_realtime_timer_interval()
         self._pump_robot_bootstrap()
         self._pump_ros_reconnect()
         self._pump_input_sources()
-        self._pump_teleop_command()
+        planner = getattr(self, "_teleop_ros_planner", None)
+        teleop_active = bool(getattr(planner, "active", False))
+        if self._requires_active_realtime_tick() or teleop_active:
+            self._pump_teleop_command()
         self._check_pending_command_timeout()
 
     def _handle_runtime_status(self, component: str, message: str) -> None:
@@ -3821,6 +3861,7 @@ class HybridControllerApplication:
             )
             return
         self._pressed_move_tokens.add(str(token).strip().lower())
+        self._sync_realtime_timer_interval()
         self._pump_teleop_command()
 
     def _handle_move_key_released(self, token: str) -> None:
@@ -3828,6 +3869,7 @@ class HybridControllerApplication:
         self._pressed_move_tokens.discard(normalized)
         if not self._pressed_move_tokens:
             self._stop_teleop_motion(send_command=False, reason="key_release")
+        self._sync_realtime_timer_interval()
 
     def _compute_teleop_delta(self) -> tuple[float, float]:
         dtheta = 0.0
@@ -4049,6 +4091,7 @@ class HybridControllerApplication:
                 self.ros_client.stop_teleop()
             except Exception as error:
                 self._handle_runtime_status("robot", f"ROS teleop stop failed: {error}")
+        self._sync_realtime_timer_interval()
 
     def _capture_world_snapshot(self, *, reason: str, force: bool = False) -> None:
         snapshot = None
@@ -4943,6 +4986,12 @@ def build_config_from_args(args: argparse.Namespace) -> AppConfig:
         mi_command_cooldown_ms=int(
             getattr(args, "mi_command_cooldown_ms", AppConfig.mi_command_cooldown_ms)
         ),
+        teleop_repeat_interval_ms=int(
+            getattr(args, "teleop_repeat_interval_ms", AppConfig.teleop_repeat_interval_ms)
+        ),
+        idle_runtime_tick_interval_ms=int(
+            getattr(args, "idle_runtime_tick_interval_ms", AppConfig.idle_runtime_tick_interval_ms)
+        ),
         robot_host=args.robot_host,
         robot_port=args.robot_port,
         robot_transport=getattr(args, "robot_transport", AppConfig.robot_transport),
@@ -5211,6 +5260,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--mi-disabled", action="store_false", dest="mi_enabled")
     parser.add_argument("--mi-poll-interval-ms", type=int, default=AppConfig.mi_poll_interval_ms)
     parser.add_argument("--mi-command-cooldown-ms", type=int, default=AppConfig.mi_command_cooldown_ms)
+    parser.add_argument("--teleop-repeat-interval-ms", type=int, default=AppConfig.teleop_repeat_interval_ms)
+    parser.add_argument("--idle-runtime-tick-interval-ms", type=int, default=AppConfig.idle_runtime_tick_interval_ms)
     parser.add_argument("--timing-profile", choices=("formal", "fast"), default="formal")
     parser.add_argument("--scenario-name", default="basic")
     parser.add_argument("--slot-profile", default="default")

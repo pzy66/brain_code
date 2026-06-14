@@ -1,0 +1,5581 @@
+from __future__ import annotations
+
+import argparse
+import importlib.util
+import json
+import math
+import os
+import random
+import socket
+import subprocess
+import sys
+import threading
+import time
+from dataclasses import replace
+from pathlib import Path
+from typing import Callable
+
+from hybrid_controller.adapters.control_sim_slots import ControlSimSlotCatalog
+from hybrid_controller.adapters.input_orchestrator import InputOrchestrator
+from hybrid_controller.adapters.input_provider import InputHealth, InputProvider
+from hybrid_controller.adapters.remote_snapshot_poller import RemoteSnapshotPoller
+from hybrid_controller.adapters.rosbridge_client import RosServiceResult, RosbridgeClient
+from hybrid_controller.adapters.robot_client import RobotClient, fetch_robot_status
+from hybrid_controller.adapters.sim_input import SimInputAdapter
+from hybrid_controller.adapters.ssvep_adapter import SSVEPAdapter
+from hybrid_controller.adapters.teleop_fallback import RosTeleopFallbackController
+from hybrid_controller.adapters.teleop_ros_channel import RosTeleopPublishPlanner
+from hybrid_controller.adapters.teleop_ros_channel import new_teleop_cmd_seq_base
+from hybrid_controller.adapters.teleop_ros_channel import next_teleop_cmd_seq
+from hybrid_controller.app_projection import build_ui_snapshot, sync_coordinator_states_from_runtime_info
+from hybrid_controller.app_robot_commands import (
+    build_catalog_pick_command,
+    build_pick_command_from_mode_and_point,
+    build_pick_command_from_slot_payload,
+    build_pick_command_from_target,
+    extract_command_opcode,
+    rewrite_pick_command_with_bias,
+    ros_command_requires_ros_route,
+)
+from hybrid_controller.cylindrical import cartesian_to_cylindrical, cylindrical_to_cartesian
+from hybrid_controller.coordinators import RobotCoordinator, SSVEPCoordinator, UiCoordinator, VisionCoordinator
+from hybrid_controller.config import AppConfig
+from hybrid_controller.controller.events import Effect, Event
+from hybrid_controller.controller.state_machine import TaskState
+from hybrid_controller.controller.task_controller import TaskController
+from hybrid_controller.observability.event_logger import EventLogger
+from hybrid_controller.runtime_state import (
+    RobotSnapshotEnvelope,
+    RuntimeAction,
+    RuntimeInfoCompat,
+    RuntimeStore,
+)
+from hybrid_controller.vision.pose_buffer import RobotPoseBuffer
+from hybrid_controller.vision.continuous_servo_controller import ContinuousVisionServoController
+from hybrid_controller.vision.grasp_profile import VisionGraspProfileLoadResult
+from hybrid_controller.vision.grasp_profile import apply_vision_grasp_profile
+from hybrid_controller.vision.grasp_profile import load_vision_grasp_profile
+from hybrid_controller.vision.servo_controller import VisionServoController
+
+try:
+    from PyQt5.QtCore import QObject, Qt, QTimer, pyqtSignal
+    from PyQt5.QtWidgets import QApplication, QFileDialog
+except ImportError as error:  # pragma: no cover - UI import guard
+    raise RuntimeError("PyQt5 is required to run hybrid_controller.app") from error
+
+from hybrid_controller.ui.main_window import MainWindow
+
+_UNSET = object()
+
+
+class _RuntimeSignalBridge(QObject):
+    event_received = pyqtSignal(object)
+    runtime_status_received = pyqtSignal(str, str)
+    robot_start_finished = pyqtSignal(bool, str)
+    ssvep_state_received = pyqtSignal(object)
+    remote_snapshot_received = pyqtSignal(object)
+    vision_packet_received = pyqtSignal(object)
+    vision_frame_received = pyqtSignal(object)
+
+
+class HybridControllerApplication:
+    def __init__(self, config: AppConfig) -> None:
+        grasp_profile_result = load_vision_grasp_profile(config)
+        if grasp_profile_result.ready:
+            config = apply_vision_grasp_profile(config, grasp_profile_result)
+        config = config.resolved()
+        self.config = self._apply_keyboard_operator_profile_overrides(config)
+        self._keyboard_operator_profile = str(self.config.input_profile).strip().lower() == "operator_keyboard"
+        config = self.config
+        self._vision_grasp_profile_result = grasp_profile_result
+        self.controller = TaskController(self.config)
+        self.logger = EventLogger(self.config.event_log_path)
+        self.sim_input = SimInputAdapter(
+            move_source=self.config.move_source,
+            decision_source=self.config.decision_source,
+            ssvep_keyboard_debug_enabled=self.config.ssvep_keyboard_debug_enabled,
+        )
+        self.ssvep_adapter = SSVEPAdapter(config.ssvep_freqs)
+        self.mi_provider: InputProvider | None = self._build_mi_provider_if_enabled()
+        self.input_orchestrator = InputOrchestrator(
+            sim_input=self.sim_input,
+            ssvep_adapter=self.ssvep_adapter,
+            move_source=str(self.config.move_source),
+            decision_source=str(self.config.decision_source),
+            ssvep_keyboard_debug_enabled=bool(self.config.ssvep_keyboard_debug_enabled),
+            mi_provider=self.mi_provider,
+            mi_enabled=bool(self.config.mi_enabled),
+            mi_command_cooldown_ms=int(self.config.mi_command_cooldown_ms),
+        )
+        self.main_window = MainWindow()
+        self.slot_catalog = ControlSimSlotCatalog(self.config) if self.config.control_sim_enabled else None
+        self.vision_runtime: VisionRuntime | None = None
+        self.ssvep_runtime = None
+        self.timers: dict[str, QTimer] = {}
+        self._last_logged_world_revision: int | None = None
+        self._latest_world_snapshot: dict[str, object] | None = None
+        self._scene_revision = 0
+        self._scene_pick_slots: dict[int, dict[str, object]] = {}
+        self._scene_place_slots: dict[int, dict[str, object]] = {}
+        self._scene_carrying_target_id: int | None = None
+        self._scene_last_error: str | None = None
+        self._pressed_move_tokens: set[str] = set()
+        self._remote_snapshot_lock = threading.Lock()
+        self._remote_snapshot_cache: dict[str, object] | None = None
+        self._remote_snapshot_envelope: RobotSnapshotEnvelope | None = None
+        self._remote_snapshot_poller: RemoteSnapshotPoller | None = None
+        self._robot_pose_buffer = RobotPoseBuffer()
+        self._latest_vision_packet: dict[str, object] | None = None
+        self._latest_vision_frame = None
+        self._vision_frame_lock = threading.Lock()
+        self._vision_frame_staging = None
+        self._vision_frame_signal_pending = False
+        self._last_teleop_warn_ts = 0.0
+        self._last_ros_reconnect_log_ts = 0.0
+        self._last_mi_health_signature: tuple[object, ...] | None = None
+        self._last_mi_status_emit_ts = 0.0
+        self._pick_cyl_radius_bias_mm = float(self.config.pick_cyl_radius_bias_mm)
+        self._pick_cyl_tangent_bias_mm = float(self.config.pick_cyl_tangent_bias_mm)
+        self._pick_cyl_theta_bias_deg = float(self.config.pick_cyl_theta_bias_deg)
+        self._pick_tuning_defaults = self._build_pick_tuning_defaults()
+        self._pick_tuning_state = self._load_pick_tuning_profile()
+        self._pick_tuning_local_dirty = False
+        self._active_pick_trace: dict[str, object] | None = None
+        self._vision_servo_pick: dict[str, object] | None = None
+        self._vision_servo_controller = VisionServoController(self.config)
+        self._continuous_vision_servo_controller = ContinuousVisionServoController(self.config)
+        self._continuous_vision_servo_pick: dict[str, object] | None = None
+        self._report_vision_grasp_profile_status()
+        self._last_vision_debug_bundle_error_ts = 0.0
+        self._teleop_ros_planner = RosTeleopPublishPlanner(
+            keepalive_interval_sec=max(float(self.config.teleop_ros_keepalive_interval_ms) / 1000.0, 0.02)
+        )
+        self._teleop_fallback = RosTeleopFallbackController(
+            stall_sec=0.45,
+            step_sec=0.35,
+            interval_sec=0.35,
+        )
+        self._teleop_cmd_seq = new_teleop_cmd_seq_base()
+        self._ros_last_connected = False
+        self._ros_reconnect_attempt = 0
+        self._ros_reconnect_next_ts = 0.0
+        self._ros_connected_since_ts = 0.0
+        self._next_robot_bootstrap_probe_ts = 0.0
+        self._last_auto_robot_start_ts = 0.0
+        self._auto_robot_start_attempts = 0
+        self._last_ros_runtime_unavailable_log_ts = 0.0
+        self._ros_stale_detection_count = 0
+        self._last_ros_disconnect_ts = 0.0
+        self._auto_start_blocked = False
+        self._auto_start_block_reason = ""
+        self._vision_auto_start_deferred_reason = ""
+        self._last_vision_auto_start_deferred_log_ts = 0.0
+        self._robot_connection_requested = bool(getattr(config, "robot_connect_on_start", False))
+        self._next_pending_command_seq = 1
+        self._pending_command: dict[str, object] | None = None
+        self.ros_client: RosbridgeClient | None = None
+        self._shutdown_started = False
+        self._reset_control_scene_state()
+        self._bridge = _RuntimeSignalBridge()
+        self._bridge.event_received.connect(self.dispatch_event)
+        self._bridge.runtime_status_received.connect(self._handle_runtime_status)
+        self._bridge.robot_start_finished.connect(self._on_robot_start_finished)
+        self._bridge.ssvep_state_received.connect(self._on_ssvep_state_received)
+        self._bridge.remote_snapshot_received.connect(self._on_remote_snapshot_received)
+        self._bridge.vision_packet_received.connect(self._on_vision_packet_received)
+        self._bridge.vision_frame_received.connect(self._on_vision_frame_received)
+        self._refresh_dirty = False
+        self._refresh_coalesce_timer = QTimer(self.main_window)
+        self._refresh_coalesce_timer.setSingleShot(True)
+        self._refresh_coalesce_timer.timeout.connect(self._refresh_panels)
+        self.robot_coordinator = RobotCoordinator(config)
+        self.vision_coordinator = VisionCoordinator(config)
+        self.ssvep_coordinator = SSVEPCoordinator(config)
+        self.ui_coordinator = UiCoordinator()
+        self.robot_coordinator.configure_sender(self._send_robot_text_command)
+
+        runtime_seed: dict[str, object] = {
+            "simulation_enabled": config.simulation_enabled,
+            "timing_profile": config.timing_profile,
+            "scenario_name": config.scenario_name,
+            "input_profile": config.input_profile,
+            "move_source": config.move_source,
+            "decision_source": config.decision_source,
+            "mi_backend": config.mi_backend,
+            "mi_enabled": bool(config.mi_enabled),
+            "mi_status": "inactive",
+            "mi_connected": False,
+            "mi_running": False,
+            "mi_last_error": "--",
+            "robot_mode": config.robot_mode,
+            "robot_transport": config.robot_transport,
+            "vision_mode": config.vision_mode,
+            "robot_connected": False,
+            "robot_start_active": False,
+            "robot_health": "unknown",
+            "vision_health": "unknown",
+            "vision_mapping_mode": config.vision_mapping_mode,
+            "vision_invalid_reason": "--",
+            "vision_snapshot_age_ms": float("inf"),
+            "vision_frame_pose_age_ms": float("inf"),
+            "state_age_ms": float("inf"),
+            "vision_last_resolved_base_xy": None,
+            "vision_last_resolved_cyl": None,
+            "vision_calibration_profile_id": "--",
+            "vision_grasp_profile_id": self._vision_grasp_profile_result.profile_id or "--",
+            "vision_grasp_profile_ready": bool(self._vision_grasp_profile_result.ready),
+            "vision_servo_status": "idle",
+            "vision_servo_last_action": "--",
+            "vision_servo_last_context": "--",
+            "vision_servo_last_decision_status": "--",
+            "vision_servo_last_command": "--",
+            "vision_servo_last_slot_id": "--",
+            "vision_servo_last_source": "--",
+            "vision_servo_last_trace": "--",
+            "vision_servo_last_rates": "--",
+            "vision_servo_last_center_distance_px": "--",
+            "vision_servo_last_current_z_mm": "--",
+            "vision_servo_last_confirm_z_mm": "--",
+            "vision_servo_last_center_px": "--",
+            "last_robot_ack": "--",
+            "last_robot_error": "--",
+            "last_ssvep_raw": "--",
+            "target_frequency_map": [],
+            "preflight_ok": True,
+            "preflight_message": "not_required",
+            "calibration_ready": None,
+            "robot_cyl": None,
+            "limits_cyl": None,
+            "auto_z_current": None,
+            "control_kernel": "cylindrical_kernel",
+            "ssvep_runtime_enabled": self._ssvep_runtime_enabled(),
+            "ssvep_runtime_status": (
+                "idle (click Connect Device)"
+                if self._ssvep_runtime_enabled()
+                else "disabled: keyboard operator mode"
+            ),
+            "ssvep_running": False,
+            "ssvep_stim_enabled": False,
+            "ssvep_busy": False,
+            "ssvep_connected": False,
+            "ssvep_connect_active": False,
+            "ssvep_pretrain_active": False,
+            "ssvep_online_active": False,
+            "ssvep_profile_path": str(config.ssvep_current_profile_path),
+            "ssvep_profile_source": "uninitialized" if not self._ssvep_runtime_enabled() else "fallback",
+            "ssvep_last_pretrain_time": "--",
+            "ssvep_latest_profile_path": "--",
+            "ssvep_profile_count": 0,
+            "ssvep_available_profiles": (),
+            "ssvep_allow_fallback_profile": config.ssvep_allow_fallback_profile,
+            "ssvep_status_hint": (
+                "Keyboard operator mode is active. SSVEP is disabled in the main program; use 02_SSVEP for standalone debugging."
+                if not self._ssvep_runtime_enabled()
+                else "当前没有已训练 Profile，可先预训练，或直接用默认 fallback 启动。"
+            ),
+            "ssvep_mode": "idle",
+            "ssvep_last_state": "--",
+            "ssvep_last_selected_freq": "--",
+            "ssvep_last_margin": "--",
+            "ssvep_last_ratio": "--",
+            "ssvep_last_stable_windows": "--",
+            "ssvep_last_error": "--",
+            "ssvep_model_name": config.ssvep_model_name,
+            "ssvep_debug_keyboard": config.ssvep_keyboard_debug_enabled,
+            "pick_tuning": dict(self._pick_tuning_state),
+            "post_pick_settle_z": self._pick_tuning_state.get("z_carry_floor_mm"),
+            "pending_command": "--",
+            "pending_command_seq": 0,
+            "pending_command_deadline_ts": 0.0,
+            "release_mode_effective": "--",
+        }
+        self.runtime_store = RuntimeStore.from_config(config)
+        self.runtime_store.dispatch(RuntimeAction.update(runtime_seed))
+        self.runtime_info: RuntimeInfoCompat = RuntimeInfoCompat(self.runtime_store)
+
+        self.robot_client = RobotClient(
+            config.robot_host,
+            config.robot_port,
+            event_callback=self._queue_event,
+            timeout_sec=config.robot_timeout_sec,
+            reconnect_delay_sec=config.robot_reconnect_delay_sec,
+        )
+
+        self.main_window.key_pressed.connect(self._on_key_pressed)
+        self.main_window.key_released.connect(self._on_key_released)
+        self.main_window.robot_start_requested.connect(self._on_robot_start_requested)
+        self.main_window.robot_connect_requested.connect(self._on_robot_connect_requested)
+        self.main_window.abort_requested.connect(self._on_abort_requested)
+        self.main_window.reset_requested.connect(self._on_reset_requested)
+        self.main_window.sucker_off_requested.connect(self._on_sucker_off_requested)
+        self.main_window.ssvep_connect_requested.connect(self._on_ssvep_connect_requested)
+        self.main_window.ssvep_config_apply_requested.connect(self._on_ssvep_config_apply_requested)
+        self.main_window.ssvep_pretrain_requested.connect(self._on_ssvep_pretrain_requested)
+        self.main_window.ssvep_load_profile_requested.connect(self._on_ssvep_load_profile_requested)
+        self.main_window.ssvep_open_profile_dir_requested.connect(self._on_ssvep_open_profile_dir_requested)
+        self.main_window.ssvep_stim_toggled.connect(self._on_ssvep_stim_toggled)
+        self.main_window.ssvep_start_requested.connect(self._on_ssvep_start_requested)
+        self.main_window.ssvep_stop_requested.connect(self._on_ssvep_stop_requested)
+        self.main_window.manual_pick_slot_requested.connect(self._on_manual_pick_slot_requested)
+        self.main_window.manual_place_requested.connect(self._on_manual_place_requested)
+        self.main_window.pick_radius_bias_delta_requested.connect(self._on_pick_radius_bias_delta_requested)
+        self.main_window.pick_bias_reset_requested.connect(self._on_pick_bias_reset_requested)
+        self.main_window.pick_tangent_bias_delta_requested.connect(self._on_pick_tangent_bias_delta_requested)
+        self.main_window.pick_tangent_bias_reset_requested.connect(self._on_pick_tangent_bias_reset_requested)
+        self.main_window.pick_theta_bias_delta_requested.connect(self._on_pick_theta_bias_delta_requested)
+        self.main_window.pick_theta_bias_reset_requested.connect(self._on_pick_theta_bias_reset_requested)
+        self.main_window.pick_tuning_delta_requested.connect(self._on_pick_tuning_delta_requested)
+        self.main_window.pick_release_mode_toggle_requested.connect(self._on_pick_release_mode_toggle_requested)
+        self.main_window.pick_tuning_apply_requested.connect(self._on_pick_tuning_apply_requested)
+        self.main_window.pick_tuning_reset_requested.connect(self._on_pick_tuning_reset_requested)
+        self.main_window.pick_tuning_save_requested.connect(self._on_pick_tuning_save_requested)
+        self.main_window.update_pick_bias_display(
+            self._pick_cyl_radius_bias_mm,
+            self._pick_cyl_theta_bias_deg,
+            self._pick_cyl_tangent_bias_mm,
+        )
+        self.main_window.update_pick_tuning_display(self._pick_tuning_state)
+        self._report_runtime_environment()
+        self._start_ui_refresh_timer()
+        self._start_teleop_timer()
+        if bool(getattr(self.config, "robot_connect_on_start", False)):
+            self._setup_robot_mode()
+        else:
+            self._rt_update(
+                {
+                    "robot_health": "idle:not_connected",
+                    "preflight_ok": False,
+                    "preflight_message": "robot_connect_required",
+                }
+            )
+            self._log_runtime(
+                "robot",
+                "Robot connection idle; startup does not probe Wi-Fi/ROS. Click Connect Robot when ready.",
+            )
+        self._start_remote_snapshot_poller()
+        self._setup_vision_mode()
+        self._setup_brain_sources()
+        self._update_ssvep_mode()
+        self._capture_world_snapshot(reason="startup", force=True)
+        self._refresh_view()
+
+    def _ssvep_runtime_enabled(self) -> bool:
+        return bool(self.config.ssvep_runtime_enabled) or str(self.config.decision_source).strip().lower() == "ssvep"
+
+    @staticmethod
+    def _is_operator_keyboard_profile(profile: str) -> bool:
+        return str(profile or "").strip().lower() == "operator_keyboard"
+
+    def _apply_keyboard_operator_profile_overrides(self, config: AppConfig) -> AppConfig:
+        if not self._is_operator_keyboard_profile(config.input_profile):
+            return config
+        normalized = str(config.move_source).strip().lower() or "sim"
+        normalized_decision = str(config.decision_source).strip().lower() or "sim"
+        if (
+            normalized != "sim"
+            or normalized_decision != "sim"
+            or bool(config.mi_enabled)
+            or bool(config.ssvep_runtime_enabled)
+        ):
+            return replace(
+                config,
+                move_source="sim",
+                decision_source="sim",
+                mi_enabled=False,
+                ssvep_runtime_enabled=False,
+            )
+        return config
+
+    def _build_mi_provider_if_enabled(self) -> InputProvider | None:
+        move_source = str(self.config.move_source or "sim").strip().lower()
+        if move_source != "mi" or not bool(self.config.mi_enabled):
+            return None
+        from hybrid_controller.adapters.mi_input import MiInputProvider
+
+        return MiInputProvider(
+            backend=str(self.config.mi_backend),
+            poll_interval_ms=int(self.config.mi_poll_interval_ms),
+        )
+
+    def shutdown(self) -> None:
+        if self._shutdown_started:
+            return
+        self._shutdown_started = True
+
+        try:
+            self.main_window.shutdown()
+            self.main_window.close()
+            QApplication.processEvents()
+        except Exception:
+            pass
+
+        for timer in list(self.timers.values()):
+            timer.stop()
+            timer.deleteLater()
+        self.timers.clear()
+
+        try:
+            self.input_orchestrator.shutdown()
+        except Exception:
+            pass
+
+        if self.vision_runtime is not None:
+            self.vision_runtime.stop()
+            self.vision_runtime = None
+        if self.ssvep_runtime is not None:
+            self.ssvep_runtime.stop()
+            self.ssvep_runtime = None
+
+        if self._remote_snapshot_poller is not None:
+            self._remote_snapshot_poller.stop()
+            self._remote_snapshot_poller = None
+
+        if self.ros_client is not None:
+            self.ros_client.close()
+            self.ros_client = None
+        self.robot_client.close()
+        self.logger.shutdown()
+
+    def dispatch_event(self, event: Event) -> None:
+        if event.type == "start_task" and not self._can_start_task():
+            self.logger.log_event(event, self.controller.state.value)
+            self.main_window.append_log(
+                f"Task start blocked by preflight: {self._rt_get('preflight_message', 'unknown')}"
+            )
+            self._update_runtime_health()
+            self._refresh_view()
+            return
+        selected_before = self.controller.context.selected_target_id
+        self.logger.log_event(event, self.controller.state.value)
+        controller_event = event
+        self._resolve_pending_command_from_event(event)
+        if event.source == "robot" and event.type == "robot_ack":
+            self._rt_set("last_robot_ack", str(event.value))
+            ack = str(event.value or "").strip().upper()
+            if ack == "PICK_DONE":
+                self._finish_pick_trace(response=f"ACK {ack}")
+                self._vision_servo_pick = None
+                self._continuous_vision_servo_pick = None
+                self._rt_set("vision_servo_status", "idle")
+                if self._set_ssvep_stim_enabled(False, refresh=False):
+                    self._log_runtime("ssvep", "Stimulus auto-disabled after PICK_DONE.")
+            if ack == "MOVE":
+                self._mark_vision_servo_move_acknowledged()
+                self._mark_continuous_refine_move_acknowledged()
+            if ack == "ABORT":
+                self._stop_teleop_motion(send_command=False, reason="robot_abort_ack")
+                self._vision_servo_pick = None
+                self._continuous_vision_servo_pick = None
+                self._rt_set("vision_servo_status", "idle")
+                controller_event = None
+                effects = self._force_controller_error("Abort requested by operator.")
+                self._update_control_scene_from_event(
+                    Event(source="robot", type="robot_error", value="Abort requested by operator."),
+                    selected_before=selected_before,
+                )
+                for effect in effects:
+                    self.logger.log_effect(effect, self.controller.state.value)
+                    self._apply_effect(effect)
+                self._update_runtime_health()
+                self._update_ssvep_mode()
+                self._refresh_view()
+                return
+            if ack == "RESET":
+                self._stop_teleop_motion(send_command=False, reason="robot_reset_ack")
+                self._vision_servo_pick = None
+                self._continuous_vision_servo_pick = None
+                self._rt_set("vision_servo_status", "idle")
+                controller_event = Event(source="system", type="reset_task", timestamp=event.timestamp)
+        if event.source == "robot" and event.type == "robot_error":
+            self._stop_teleop_motion(send_command=False, reason="robot_error")
+            self._vision_servo_pick = None
+            self._continuous_vision_servo_pick = None
+            self._rt_set("vision_servo_status", "idle")
+            self._rt_set("last_robot_error", str(event.value))
+            self._finish_pick_trace(response=f"ERR {event.value}")
+        if event.source == "robot" and event.type == "robot_disconnected":
+            self._last_ros_disconnect_ts = time.monotonic()
+            self._stop_teleop_motion(send_command=False, reason="robot_disconnected")
+            self._continuous_vision_servo_pick = None
+            self._vision_servo_pick = None
+            self._rt_set("vision_servo_status", "continuous_stop reason=control_unavailable")
+            self._rt_update(
+                {
+                    "robot_connected": False,
+                    "robot_health": "reconnecting",
+                }
+            )
+            controller_event = None
+        if event.source == "robot" and event.type == "robot_busy":
+            self._continuous_vision_servo_pick = None
+            self._finish_pick_trace(response="BUSY")
+        effects = [] if controller_event is None else self.controller.handle_event(controller_event)
+        self._update_control_scene_from_event(event, selected_before=selected_before)
+        for effect in effects:
+            self.logger.log_effect(effect, self.controller.state.value)
+            self._apply_effect(effect)
+        if self.config.control_sim_enabled and controller_event is not None and controller_event.type == "reset_task":
+            self._reset_control_scene_state()
+            self._publish_control_sim_targets()
+        self._update_runtime_health()
+        self._update_ssvep_mode()
+        self._refresh_view()
+
+    def dispatch_ssvep_command(self, command: object) -> None:
+        self._rt_set("last_ssvep_raw", str(command))
+        self.logger.log_raw_input("ssvep", command)
+        events = self.input_orchestrator.handle_ssvep_command(command)
+        if not events:
+            self.main_window.append_log(f"SSVEP ignored: {command}")
+            return
+        for event in events:
+            self.dispatch_event(event)
+
+    def _can_start_task(self) -> bool:
+        if not self._requires_preflight():
+            return True
+        return bool(self._rt_get("preflight_ok", False))
+
+    def _force_controller_error(self, message: str) -> list[Effect]:
+        effects: list[Effect] = []
+        self.controller.context.pending_robot_xy = None
+        self.controller.context.last_error = str(message)
+        self.controller.context.robot_busy = True
+        self.controller._cancel_active_timer(effects)
+        self.controller._set_state(TaskState.ERROR, effects)
+        return effects
+
+    def _requires_preflight(self) -> bool:
+        return self.config.robot_mode == "real"
+
+    def _rt_get(self, key: str, default: object = None) -> object:
+        store = getattr(self, "runtime_store", None)
+        if isinstance(store, RuntimeStore):
+            return store.get_value(str(key), default)
+        runtime_info = getattr(self, "runtime_info", None)
+        if isinstance(runtime_info, dict):
+            return runtime_info.get(str(key), default)
+        getter = getattr(runtime_info, "get", None)
+        if callable(getter):
+            try:
+                return getter(str(key), default)
+            except Exception:
+                return default
+        return default
+
+    def _rt_set(self, key: str, value: object) -> None:
+        store = getattr(self, "runtime_store", None)
+        if isinstance(store, RuntimeStore):
+            store.dispatch(RuntimeAction.set(str(key), value))
+            return
+        runtime_info = getattr(self, "runtime_info", None)
+        if runtime_info is None:
+            return
+        try:
+            runtime_info[str(key)] = value  # type: ignore[index]
+        except Exception:
+            return
+
+    def _rt_update(self, payload: dict[str, object]) -> None:
+        if not payload:
+            return
+        store = getattr(self, "runtime_store", None)
+        if isinstance(store, RuntimeStore):
+            store.dispatch(RuntimeAction.update(payload))
+            return
+        runtime_info = getattr(self, "runtime_info", None)
+        if runtime_info is None:
+            return
+        for key, value in payload.items():
+            try:
+                runtime_info[str(key)] = value  # type: ignore[index]
+            except Exception:
+                continue
+
+    def _set_preflight(self, *, ok: bool, message: str, calibration_ready: object = _UNSET) -> None:
+        payload: dict[str, object] = {
+            "preflight_ok": bool(ok),
+            "preflight_message": str(message),
+        }
+        if calibration_ready is not _UNSET:
+            payload["calibration_ready"] = calibration_ready
+        self._rt_update(payload)
+
+    def _uses_ros_transport(self) -> bool:
+        return self.config.robot_mode == "real" and self.config.robot_transport == "ros"
+
+    def _vision_stream_start_allowed(self) -> tuple[bool, str]:
+        """Gate PC-side MJPEG consumption until the control path is stable.
+
+        The JetMax camera sender is owned by the robot's default startup chain.
+        The desktop must not start, repair, or restart camera services; it only
+        opens the official 8080 MJPEG stream after control bringup is no longer
+        active and a fresh robot state is available.
+        """
+
+        if not self._uses_ros_transport():
+            return True, "ready"
+        if bool(self._rt_get("robot_start_active", False)):
+            return False, "robot_runtime_start_active"
+        if str(self._rt_get("robot_health", "")).strip() == "starting_remote_runtime":
+            return False, "robot_runtime_starting"
+        if self.ros_client is None or not self.ros_client.is_connected():
+            return False, "rosbridge_not_connected"
+        state_age_ms = self._current_state_age_ms()
+        stale_threshold_ms = float(getattr(self.config, "robot_state_stale_threshold_ms", 700.0))
+        if not math.isfinite(state_age_ms) or state_age_ms > stale_threshold_ms:
+            return False, "robot_state_not_fresh"
+        return True, "ready"
+
+    def _current_state_age_ms(self) -> float:
+        value = self._rt_get("state_age_ms", None)
+        if value is not None:
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return float("inf")
+        if getattr(self.config, "robot_mode", "") == "real" and not hasattr(self, "_remote_snapshot_lock"):
+            return 0.0
+        return float(self._compute_remote_snapshot_age_ms())
+
+    def _defer_vision_auto_start(self, reason: str) -> None:
+        reason_text = str(reason or "robot_state_not_ready")
+        self._vision_auto_start_deferred_reason = reason_text
+        self._rt_set("vision_health", f"waiting_control:{reason_text}")
+        now = time.monotonic()
+        if (now - float(getattr(self, "_last_vision_auto_start_deferred_log_ts", 0.0))) >= 3.0:
+            self._last_vision_auto_start_deferred_log_ts = float(now)
+            self._log_runtime(
+                "vision",
+                "Vision auto-start deferred while robot runtime startup is active ({0}). "
+                "JetMax camera stays on the official boot-time sender; the PC only reads the official 8080 stream.".format(
+                    reason_text
+                ),
+            )
+
+    def _maybe_start_deferred_vision(self, *, source: str) -> None:
+        if self.vision_runtime is not None:
+            return
+        if not bool(getattr(self.config, "vision_auto_start", False)):
+            return
+        if self.config.vision_mode not in {"real", "robot_camera_detection"}:
+            return
+        reason = str(getattr(self, "_vision_auto_start_deferred_reason", "") or "")
+        health = str(self._rt_get("vision_health", ""))
+        if not reason and not (
+            health.startswith("waiting_control:") or health.startswith("waiting_for_robot_runtime")
+        ):
+            return
+        ready, ready_reason = self._vision_stream_start_allowed()
+        if not ready:
+            self._defer_vision_auto_start(ready_reason)
+            return
+        self._vision_auto_start_deferred_reason = ""
+        self._log_runtime("vision", f"Deferred vision auto-start resumed after stable robot state ({source}).")
+        self._setup_vision_mode()
+
+    def _create_rosbridge_client(self) -> RosbridgeClient:
+        return RosbridgeClient(
+            self.config.robot_host,
+            self.config.rosbridge_port,
+            state_callback=self._queue_remote_snapshot,
+            event_callback=self._queue_event,
+            status_callback=lambda message: self._queue_runtime_status("robot", message),
+        )
+
+    def _wait_for_ros_state_snapshot(self, *, timeout_sec: float) -> dict[str, object] | None:
+        client = self.ros_client
+        if client is None or not client.is_connected():
+            return None
+        deadline = time.time() + max(0.0, float(timeout_sec))
+        while True:
+            if not client.is_connected():
+                return None
+            try:
+                snapshot = client.latest_state_snapshot()
+            except Exception:
+                snapshot = None
+            if isinstance(snapshot, dict):
+                envelope = RobotSnapshotEnvelope(
+                    payload=dict(snapshot),
+                    ts=time.time(),
+                    transport="ros_initial",
+                    ok=True,
+                    error="",
+                )
+                self._on_remote_snapshot_received(envelope)
+                return dict(snapshot)
+            if time.time() >= deadline:
+                return None
+            time.sleep(0.05)
+
+    def _queue_remote_snapshot(self, snapshot: dict[str, object]) -> None:
+        if self._shutdown_started:
+            return
+        envelope = RobotSnapshotEnvelope(
+            payload=dict(snapshot),
+            ts=time.time(),
+            transport="ros_push",
+            ok=True,
+            error="",
+        )
+        try:
+            self._bridge.remote_snapshot_received.emit(envelope)
+        except RuntimeError:
+            return
+
+    def _preflight_ignores_calibration(self) -> bool:
+        return self.config.vision_mode in {"fixed_world_slots", "fixed_cyl_slots"}
+
+    def _evaluate_preflight_from_snapshot(self, snapshot: dict[str, object] | None) -> None:
+        if not self._requires_preflight():
+            self._set_preflight(ok=True, message="not_required")
+            return
+        if snapshot is None:
+            self._set_preflight(ok=False, message="status_unavailable")
+            return
+        state = str(snapshot.get("state") or "")
+        busy = bool(snapshot.get("busy"))
+        carrying = bool(snapshot.get("carrying", snapshot.get("carrying_target_id") is not None))
+        calibration_ready = snapshot.get("calibration_ready")
+        self._rt_set("calibration_ready", calibration_ready)
+        if state not in {"IDLE", "CARRY_READY"}:
+            self._set_preflight(ok=False, message=f"state={state}")
+            return
+        if busy:
+            self._set_preflight(ok=False, message="robot_busy")
+            return
+        if carrying:
+            self._set_preflight(ok=False, message="robot_carrying_target")
+            return
+        if not self._preflight_ignores_calibration() and calibration_ready is False:
+            self._set_preflight(ok=False, message="calibration_not_ready")
+            return
+        self._set_preflight(ok=True, message="ready")
+
+    def _setup_robot_mode(self) -> None:
+        if self._uses_ros_transport():
+            if bool(getattr(self.config, "ros_probe_before_connect", False)):
+                if not self._probe_tcp_port(
+                    host=self.config.robot_host,
+                    port=int(self.config.rosbridge_port),
+                    timeout_sec=float(self.config.ros_runtime_probe_timeout_sec),
+                ):
+                    self._ros_last_connected = False
+                    self._ros_connected_since_ts = 0.0
+                    self._ros_stale_detection_count = 0
+                    self._rt_update(
+                        {
+                            "robot_connected": False,
+                            "robot_health": "rosbridge_port_closed",
+                            "preflight_ok": False,
+                            "preflight_message": "rosbridge_port_closed",
+                        }
+                    )
+                    self._log_runtime(
+                        "robot",
+                        "ROS bridge port is unreachable: ws://{0}:{1}. Please ensure robot runtime is running.".format(
+                            str(self.config.robot_host),
+                            int(self.config.rosbridge_port),
+                        ),
+                    )
+                    self._maybe_auto_start_robot_runtime("rosbridge_port_closed")
+                    return
+            else:
+                self._log_runtime(
+                    "robot",
+                    "Connecting ROS bridge directly; pre-connect TCP probe is disabled to minimize Wi-Fi churn.",
+                )
+            try:
+                self.ros_client = self._create_rosbridge_client()
+                self.ros_client.connect()
+                deadline = time.time() + max(self.config.rosbridge_timeout_sec, 0.5)
+                while time.time() < deadline:
+                    if self.ros_client.is_connected():
+                        break
+                    time.sleep(0.05)
+                self._rt_update(
+                    {
+                        "robot_connected": self.ros_client.is_connected(),
+                        "robot_health": "ok" if self.ros_client.is_connected() else "rosbridge_connecting",
+                        "preflight_ok": False if not self.ros_client.is_connected() else self._rt_get("preflight_ok", False),
+                        "preflight_message": (
+                            self._rt_get("preflight_message", "unknown")
+                            if self.ros_client.is_connected()
+                            else "rosbridge_connecting"
+                        ),
+                    }
+                )
+                if self.ros_client.is_connected():
+                    state_snapshot = self._wait_for_ros_state_snapshot(
+                        timeout_sec=float(getattr(self.config, "ros_runtime_state_grace_sec", 3.0))
+                    )
+                    if state_snapshot is None:
+                        self._ros_last_connected = False
+                        self._ros_connected_since_ts = 0.0
+                        self._ros_stale_detection_count = 0
+                        self._rt_update(
+                            {
+                                "robot_connected": False,
+                                "robot_health": "state_unavailable",
+                                "preflight_ok": False,
+                                "preflight_message": "state_unavailable",
+                            }
+                        )
+                        self._log_runtime(
+                            "robot",
+                            "ROS bridge connected but /hybrid_controller/state did not arrive; "
+                            "treating the robot runtime as unavailable.",
+                        )
+                        self._maybe_auto_start_robot_runtime("ros_state_unavailable")
+                        self._capture_world_snapshot(reason="connect", force=True)
+                        self._evaluate_preflight_from_snapshot(None)
+                        return
+                    self._ros_last_connected = True
+                    self._ros_reconnect_attempt = 0
+                    self._ros_reconnect_next_ts = 0.0
+                    self._ros_connected_since_ts = time.monotonic()
+                    self._ros_stale_detection_count = 0
+                    self._log_runtime(
+                        "robot",
+                        f"ROS bridge connected on ws://{self.config.robot_host}:{self.config.rosbridge_port}",
+                    )
+                    self._sync_pick_tuning_from_robot()
+                    self._maybe_start_deferred_vision(source="initial_ros_state")
+                else:
+                    self._ros_last_connected = False
+                    self._ros_connected_since_ts = 0.0
+                    self._maybe_auto_start_robot_runtime("rosbridge_connect_timeout")
+                    self._log_runtime(
+                        "robot",
+                        f"ROS bridge connecting on ws://{self.config.robot_host}:{self.config.rosbridge_port}",
+                    )
+                self._capture_world_snapshot(reason="connect", force=True)
+                self._evaluate_preflight_from_snapshot(self._latest_world_snapshot)
+                return
+            except Exception as error:
+                self._ros_last_connected = False
+                self._ros_connected_since_ts = 0.0
+                self._ros_stale_detection_count = 0
+                message = str(error)
+                if "timeout" in message.lower():
+                    health = "rosbridge_connect_timeout"
+                    preflight_message = "rosbridge_connect_timeout"
+                else:
+                    health = "connect_failed"
+                    preflight_message = "connect_failed"
+                self._rt_update(
+                    {
+                        "robot_connected": False,
+                        "robot_health": health,
+                        "last_robot_error": str(error),
+                        "preflight_ok": False,
+                        "preflight_message": preflight_message,
+                    }
+                )
+                self._log_runtime("robot", f"ROS bridge connect failed: {error}")
+                self._maybe_auto_start_robot_runtime("rosbridge_connect_failed")
+                return
+
+        self._ros_last_connected = False
+        self._ros_reconnect_attempt = 0
+        self._ros_reconnect_next_ts = 0.0
+        self._ros_connected_since_ts = 0.0
+        try:
+            self.robot_client.connect()
+            ok = self.robot_client.healthcheck(timeout_sec=self.config.robot_ping_timeout_sec)
+            self._rt_update(
+                {
+                    "robot_connected": self.robot_client.is_connected(),
+                    "robot_health": "ok" if ok else "ping_failed",
+                }
+            )
+            if ok:
+                self._log_runtime("robot", "Robot healthcheck passed.")
+            else:
+                self._log_runtime("robot", "Robot healthcheck failed.")
+            initial_snapshot = self._fetch_remote_robot_snapshot_direct()
+            if initial_snapshot is not None:
+                with self._remote_snapshot_lock:
+                    self._remote_snapshot_cache = dict(initial_snapshot)
+            self._capture_world_snapshot(reason="connect", force=True)
+            self._evaluate_preflight_from_snapshot(self._latest_world_snapshot)
+        except Exception as error:
+            self._rt_update(
+                {
+                    "robot_connected": False,
+                    "robot_health": "connect_failed",
+                    "last_robot_error": str(error),
+                    "preflight_ok": False,
+                    "preflight_message": "connect_failed",
+                }
+            )
+            self._log_runtime("robot", f"Robot connect failed: {error}")
+
+    @staticmethod
+    def _probe_tcp_port(*, host: str, port: int, timeout_sec: float) -> bool:
+        try:
+            with socket.create_connection((str(host), int(port)), timeout=max(0.1, float(timeout_sec))):
+                return True
+        except Exception:
+            return False
+
+    def _maybe_auto_start_robot_runtime(self, reason: str) -> bool:
+        if not self._uses_ros_transport():
+            return False
+        if bool(self._auto_start_blocked):
+            now = time.monotonic()
+            if (now - float(self._last_ros_runtime_unavailable_log_ts)) >= 5.0:
+                self._last_ros_runtime_unavailable_log_ts = float(now)
+                self._queue_runtime_status(
+                    "robot",
+                    "Auto-start is temporarily blocked: {0}".format(
+                        str(self._auto_start_block_reason or "manual intervention required")
+                    ),
+                )
+            return False
+        if not bool(getattr(self.config, "robot_auto_start_on_ros_unavailable", False)):
+            return False
+        if bool(self._rt_get("robot_start_active", False)):
+            return False
+        now = time.monotonic()
+        max_attempts = max(0, int(getattr(self.config, "robot_auto_start_max_attempts", 1)))
+        if max_attempts <= 0 or int(self._auto_robot_start_attempts) >= max_attempts:
+            if (now - float(self._last_ros_runtime_unavailable_log_ts)) >= 5.0:
+                self._last_ros_runtime_unavailable_log_ts = float(now)
+                self._queue_runtime_status(
+                    "robot",
+                    "Auto-start robot runtime skipped: attempt limit reached. Use the Start Robot button manually.",
+                )
+            return False
+        cooldown_sec = max(1.0, float(getattr(self.config, "robot_auto_start_cooldown_sec", 20.0)))
+        if (now - float(self._last_auto_robot_start_ts)) < cooldown_sec:
+            return False
+        self._last_auto_robot_start_ts = float(now)
+        self._auto_robot_start_attempts += 1
+        self._queue_runtime_status("robot", f"Auto-start robot runtime due to: {str(reason)}")
+        self._on_robot_start_requested()
+        return True
+
+    def _pump_robot_bootstrap(self) -> None:
+        if not self._uses_ros_transport():
+            self._next_robot_bootstrap_probe_ts = 0.0
+            return
+        if not bool(getattr(self.config, "robot_bootstrap_retry_enabled", True)):
+            return
+        if bool(getattr(self, "_shutdown_started", False)):
+            return
+        if bool(self._rt_get("robot_start_active", False)):
+            return
+        ros_client = self.ros_client
+        if ros_client is not None and ros_client.is_connected():
+            self._next_robot_bootstrap_probe_ts = 0.0
+            return
+
+        now = time.monotonic()
+        if now < float(self._next_robot_bootstrap_probe_ts):
+            return
+        interval_sec = max(1.0, float(getattr(self.config, "robot_bootstrap_probe_interval_sec", 3.0)))
+        self._next_robot_bootstrap_probe_ts = now + interval_sec
+        probe_timeout = max(0.05, float(getattr(self.config, "robot_bootstrap_probe_timeout_sec", 0.35)))
+        port_open = self._probe_tcp_port(
+            host=self.config.robot_host,
+            port=int(self.config.rosbridge_port),
+            timeout_sec=probe_timeout,
+        )
+        if port_open:
+            if ros_client is None:
+                self._queue_runtime_status(
+                    "robot",
+                    "ROS bridge port is reachable again; reconnecting robot client.",
+                )
+                self._on_robot_connect_requested()
+            return
+
+        current_health = str(self._rt_get("robot_health", "unknown"))
+        if current_health not in {"starting_remote_runtime", "start_failed"}:
+            self._rt_update(
+                {
+                    "robot_connected": False,
+                    "robot_health": "waiting_for_robot_runtime",
+                    "preflight_ok": False,
+                    "preflight_message": "waiting_for_robot_runtime",
+                }
+            )
+        self._maybe_auto_start_robot_runtime("bootstrap_retry_rosbridge_port_closed")
+
+    def _maybe_recover_ros_runtime_from_stale_state(self, *, state_age_ms: float) -> None:
+        if not self._uses_ros_transport():
+            self._ros_stale_detection_count = 0
+            return
+        if not bool(getattr(self.config, "robot_auto_restart_on_state_stale", False)):
+            self._ros_stale_detection_count = 0
+            return
+        now = time.monotonic()
+        disconnect_cooldown_sec = 25.0
+        if (now - float(self._last_ros_disconnect_ts)) < disconnect_cooldown_sec:
+            self._ros_stale_detection_count = 0
+            return
+        if self.ros_client is None or not self.ros_client.is_connected():
+            self._ros_stale_detection_count = 0
+            return
+        grace_sec = max(1.0, float(getattr(self.config, "ros_runtime_state_grace_sec", 3.0)))
+        connected_since = float(self._ros_connected_since_ts)
+        if connected_since <= 0.0:
+            self._ros_connected_since_ts = time.monotonic()
+            self._ros_stale_detection_count = 0
+            return
+        if (time.monotonic() - connected_since) < grace_sec:
+            self._ros_stale_detection_count = 0
+            return
+        stale_threshold_ms = float(getattr(self.config, "robot_state_stale_threshold_ms", 700.0))
+        no_fresh_state = (not math.isfinite(float(state_age_ms))) or float(state_age_ms) > stale_threshold_ms
+        if not no_fresh_state:
+            self._ros_stale_detection_count = 0
+            return
+        self._ros_stale_detection_count += 1
+        required_stale_ms = max(stale_threshold_ms * 6.0, 6000.0)
+        if float(state_age_ms) < required_stale_ms:
+            return
+        if int(self._ros_stale_detection_count) < 6:
+            return
+        if (now - float(self._last_ros_runtime_unavailable_log_ts)) >= 3.0:
+            self._last_ros_runtime_unavailable_log_ts = float(now)
+            self._queue_runtime_status(
+                "robot",
+                "ROS state stream unavailable for {0:.0f} ms. Checking robot runtime...".format(float(state_age_ms)),
+            )
+        self._ros_stale_detection_count = 0
+        self._maybe_auto_start_robot_runtime("ros_state_stream_stale")
+
+    @staticmethod
+    def _module_available(module_name: str) -> bool:
+        return importlib.util.find_spec(module_name) is not None
+
+    @staticmethod
+    def _expected_brain_code_python() -> Path | None:
+        override = os.environ.get("BRAIN_PYTHON_EXE", "").strip()
+        if override:
+            path = Path(override).expanduser()
+            return path if path.exists() else None
+        if os.name == "nt":
+            python_name = "python.exe"
+            venv_dir = "Scripts"
+        else:
+            python_name = "python"
+            venv_dir = "bin"
+        home = Path.home()
+        candidates = (
+            Path(__file__).resolve().parents[1] / ".venv" / venv_dir / python_name,
+            home / "miniconda3" / "envs" / "brain_code" / venv_dir / python_name,
+            home / "miniconda3" / "envs" / "brain-vision" / venv_dir / python_name,
+            home / "anaconda3" / "envs" / "brain_code" / venv_dir / python_name,
+            home / "anaconda3" / "envs" / "brain-vision" / venv_dir / python_name,
+            home / "mambaforge" / "envs" / "brain_code" / venv_dir / python_name,
+            home / "mambaforge" / "envs" / "brain-vision" / venv_dir / python_name,
+        )
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+        return None
+
+    def _build_pick_tuning_defaults(self) -> dict[str, object]:
+        return {
+            "pick_approach_z_mm": float(self.config.robot_approach_z),
+            "pick_descend_z_mm": float(self.config.robot_pick_z),
+            "pick_pre_suction_sec": 0.25,
+            "pick_bottom_hold_sec": 0.15,
+            "pick_lift_sec": 0.8,
+            "place_descend_z_mm": float(self.config.robot_pick_z),
+            "place_release_mode": "release",
+            "place_release_sec": 0.25,
+            "place_post_release_hold_sec": 0.10,
+            "z_carry_floor_mm": float(self.config.robot_carry_z),
+        }
+
+    def _sanitize_pick_tuning(self, payload: dict[str, object] | None) -> dict[str, object]:
+        data = dict(self._pick_tuning_defaults)
+        if isinstance(payload, dict):
+            data.update(payload)
+        z_min = float(self.config.robot_height_limits_mm[0])
+        z_max = float(self.config.robot_height_limits_mm[1])
+
+        def _to_float(name: str, lower: float, upper: float) -> float:
+            raw = data.get(name, self._pick_tuning_defaults[name])
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                value = float(self._pick_tuning_defaults[name])
+            return max(float(lower), min(float(upper), value))
+
+        def _to_sec(name: str) -> float:
+            return _to_float(name, 0.0, 3.0)
+
+        release_mode = str(data.get("place_release_mode", "release") or "release").strip().lower()
+        if release_mode not in {"release", "off"}:
+            release_mode = "release"
+
+        return {
+            "pick_approach_z_mm": _to_float("pick_approach_z_mm", z_min, z_max),
+            "pick_descend_z_mm": _to_float("pick_descend_z_mm", z_min, z_max),
+            "pick_pre_suction_sec": _to_sec("pick_pre_suction_sec"),
+            "pick_bottom_hold_sec": _to_sec("pick_bottom_hold_sec"),
+            "pick_lift_sec": _to_sec("pick_lift_sec"),
+            "place_descend_z_mm": _to_float("place_descend_z_mm", z_min, z_max),
+            "place_release_mode": release_mode,
+            "place_release_sec": _to_sec("place_release_sec"),
+            "place_post_release_hold_sec": _to_sec("place_post_release_hold_sec"),
+            "z_carry_floor_mm": _to_float("z_carry_floor_mm", z_min, z_max),
+        }
+
+    def _load_pick_tuning_profile(self) -> dict[str, object]:
+        path = Path(self.config.pick_tuning_profile_path)
+        if not path.exists():
+            return dict(self._pick_tuning_defaults)
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as error:
+            self._log_runtime("robot", f"Pick tuning profile load failed: {error}")
+            return dict(self._pick_tuning_defaults)
+        return self._sanitize_pick_tuning(payload if isinstance(payload, dict) else None)
+
+    def _report_vision_grasp_profile_status(self) -> None:
+        result = getattr(self, "_vision_grasp_profile_result", None)
+        if isinstance(result, VisionGraspProfileLoadResult) and result.ready and result.profile is not None:
+            self._log_runtime(
+                "vision",
+                "Vision grasp profile loaded: {0} confirm_z={1:.1f} radius_bias={2:.1f}".format(
+                    result.profile.profile_id,
+                    float(result.profile.vision_pick_confirm_z_mm),
+                    float(result.profile.vision_eye_in_hand_pick_radius_bias_mm),
+                ),
+            )
+        elif isinstance(result, VisionGraspProfileLoadResult) and bool(
+            getattr(self.config, "vision_grasp_profile_required", True)
+        ):
+            self._log_runtime("vision", f"Vision grasp profile unavailable: {result.error}")
+
+    def _vision_grasp_profile_allows_real_pick(self) -> bool:
+        if not bool(getattr(self.config, "vision_grasp_profile_required", True)):
+            return True
+        result = getattr(self, "_vision_grasp_profile_result", None)
+        if not isinstance(result, VisionGraspProfileLoadResult) or not result.ready:
+            return not bool(getattr(self.config, "vision_grasp_profile_real_pick_required", True))
+        profile = result.profile
+        return bool(profile is not None and profile.real_pick_enabled)
+
+    def _reject_pick_without_grasp_profile(self, command: str) -> bool:
+        if self._vision_grasp_profile_allows_real_pick():
+            return False
+        result = getattr(self, "_vision_grasp_profile_result", None)
+        reason = "vision_grasp_profile_unavailable"
+        if isinstance(result, VisionGraspProfileLoadResult) and result.error:
+            reason = result.error
+        message = f"Vision grasp profile blocks PICK: {reason} command={command}"
+        self._handle_runtime_status("vision", message)
+        self.dispatch_event(Event(source="robot", type="robot_error", value=message))
+        self._finish_pick_trace(response=f"ERR {message}")
+        return True
+
+    def _reject_unsafe_pick_command(self, command: str) -> bool:
+        opcode = self._extract_command_opcode(command)
+        if opcode not in {"PICK", "PICK_WORLD", "PICK_CYL"}:
+            return False
+        if self._uses_ros_transport():
+            state_age_ms = self._current_state_age_ms()
+            stale_threshold_ms = float(getattr(self.config, "robot_state_stale_threshold_ms", 700.0))
+            if (
+                self.ros_client is None
+                or not self.ros_client.is_connected()
+                or not math.isfinite(state_age_ms)
+                or state_age_ms > stale_threshold_ms
+            ):
+                return self._reject_pick_command(command, "control_state_not_fresh")
+        snapshot = self._fetch_remote_robot_snapshot() if getattr(self.config, "robot_mode", "") == "real" else None
+        if isinstance(snapshot, dict):
+            if bool(snapshot.get("busy", False)):
+                return self._reject_pick_command(command, "robot_busy")
+        if opcode == "PICK_CYL":
+            parts = str(command or "").strip().split()
+            if len(parts) >= 3:
+                try:
+                    radius_mm = float(parts[2])
+                except (TypeError, ValueError):
+                    return self._reject_pick_command(command, "pick_radius_invalid")
+                limits = getattr(self.config, "robot_auto_radius_limits_mm", self.config.robot_radius_limits_mm)
+                if radius_mm < float(limits[0]) or radius_mm > float(limits[1]):
+                    return self._reject_pick_command(command, "pick_radius_out_of_limits")
+        return False
+
+    def _reject_pick_command(self, command: str, reason: str) -> bool:
+        release_mode = str(self._rt_get("release_mode_effective", "") or "")
+        message = f"Vision grasp safety blocks PICK: {reason} command={command} release_mode={release_mode or '--'}"
+        self._handle_runtime_status("vision", message)
+        self.dispatch_event(Event(source="robot", type="robot_error", value=message))
+        self._finish_pick_trace(response=f"ERR {message}")
+        return True
+
+    def _save_pick_tuning_profile(self) -> Path:
+        path = Path(self.config.pick_tuning_profile_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(self._pick_tuning_state, ensure_ascii=False, indent=2), encoding="utf-8")
+        return path
+
+    def _sync_pick_tuning_from_robot(self) -> None:
+        if not self._uses_ros_transport() or self.ros_client is None:
+            return
+        if not self.ros_client.is_connected():
+            return
+
+        def callback(result: RosServiceResult) -> None:
+            if not result.ok:
+                message = str(result.message or "")
+                if "does not exist" in message.lower():
+                    self._queue_runtime_status("robot", "Pick tuning service unavailable on robot runtime (optional).")
+                else:
+                    self._queue_runtime_status("robot", f"Pick tuning sync failed: {message}")
+                return
+            if bool(self._pick_tuning_local_dirty):
+                return
+            raw = dict(result.raw or {})
+            tuning = {
+                "pick_approach_z_mm": raw.get("pick_approach_z_mm", self._pick_tuning_state.get("pick_approach_z_mm")),
+                "pick_descend_z_mm": raw.get("pick_descend_z_mm", self._pick_tuning_state.get("pick_descend_z_mm")),
+                "pick_pre_suction_sec": raw.get("pick_pre_suction_sec", self._pick_tuning_state.get("pick_pre_suction_sec")),
+                "pick_bottom_hold_sec": raw.get("pick_bottom_hold_sec", self._pick_tuning_state.get("pick_bottom_hold_sec")),
+                "pick_lift_sec": raw.get("pick_lift_sec", self._pick_tuning_state.get("pick_lift_sec")),
+                "place_descend_z_mm": raw.get("place_descend_z_mm", self._pick_tuning_state.get("place_descend_z_mm")),
+                "place_release_mode": raw.get("place_release_mode", self._pick_tuning_state.get("place_release_mode")),
+                "place_release_sec": raw.get("place_release_sec", self._pick_tuning_state.get("place_release_sec")),
+                "place_post_release_hold_sec": raw.get(
+                    "place_post_release_hold_sec", self._pick_tuning_state.get("place_post_release_hold_sec")
+                ),
+                "z_carry_floor_mm": raw.get("z_carry_floor_mm", self._pick_tuning_state.get("z_carry_floor_mm")),
+            }
+            self._pick_tuning_state = self._sanitize_pick_tuning(tuning)
+            self._rt_set("pick_tuning", dict(self._pick_tuning_state))
+            self.main_window.update_pick_tuning_display(self._pick_tuning_state)
+
+        try:
+            self.ros_client.get_pick_tuning(callback=callback)
+        except Exception as error:
+            message = str(error)
+            if "does not exist" in message.lower():
+                self._handle_runtime_status("robot", "Pick tuning service unavailable on robot runtime (optional).")
+            else:
+                self._handle_runtime_status("robot", f"Pick tuning sync failed: {message}")
+
+    def _report_runtime_environment(self) -> None:
+        current_python = Path(sys.executable).resolve()
+        self._log_runtime("system", f"Desktop interpreter: {current_python}")
+        missing_modules: list[str] = []
+        if self._uses_ros_transport() and not self._module_available("roslibpy"):
+            missing_modules.append("roslibpy")
+        if self.config.robot_mode == "real" and not self._module_available("paramiko"):
+            missing_modules.append("paramiko")
+        if self.config.vision_mode in {"real", "robot_camera_detection"}:
+            if not self._module_available("cv2"):
+                missing_modules.append("cv2")
+            if not self._module_available("torch"):
+                missing_modules.append("torch")
+        if not missing_modules:
+            return
+
+        expected_python = self._expected_brain_code_python()
+        if expected_python is None:
+            expected_hint = (
+                "Expected interpreter: repo-local .venv or a Conda env named brain_code/brain-vision. "
+                "Set BRAIN_PYTHON_EXE to an absolute python.exe path if needed."
+            )
+        else:
+            expected_hint = f"Expected interpreter: {expected_python}"
+        missing_text = ", ".join(sorted(set(missing_modules)))
+        message = (
+            f"Environment check failed in current interpreter ({current_python}). "
+            f"Missing modules: {missing_text}. {expected_hint}"
+        )
+        self._log_runtime("system", message)
+        if "roslibpy" in missing_modules:
+            self._rt_update(
+                {
+                    "robot_health": "env_missing_deps",
+                    "preflight_ok": False,
+                    "preflight_message": "missing_roslibpy",
+                    "last_robot_error": "missing_roslibpy_in_current_interpreter",
+                }
+            )
+        if "cv2" in missing_modules or "torch" in missing_modules:
+            self._rt_set("vision_health", "env_missing_deps")
+
+    def _setup_vision_mode(self) -> None:
+        if self.config.control_sim_enabled and self.config.vision_mode in {"slots", "fixed_world_slots", "fixed_cyl_slots"}:
+            self._publish_control_sim_targets()
+            self._rt_set("vision_health", f"{self.config.vision_mode}:{self.config.slot_profile}")
+            return
+        if self.config.vision_mode not in {"real", "robot_camera_detection"}:
+            self._rt_set("vision_health", f"disabled:{self.config.vision_mode}")
+            return
+        if not bool(getattr(self.config, "vision_auto_start", False)):
+            # Locked camera contract: application startup does not pull the JetMax
+            # MJPEG stream. The user starts vision explicitly after Wi-Fi/control
+            # links are stable, and the robot keeps owning usb_cam.service.
+            self._rt_set("vision_health", "idle:not_started")
+            self._handle_runtime_status(
+                "vision",
+                "Vision runtime idle; startup does not pull the JetMax camera stream. Start vision explicitly when needed.",
+            )
+            return
+        ready, reason = self._vision_stream_start_allowed()
+        if not ready:
+            self._defer_vision_auto_start(reason)
+            return
+
+        try:
+            from hybrid_controller.vision.runtime import VisionRuntime
+        except Exception as error:
+            self._handle_runtime_status("vision", f"Vision runtime unavailable: {error}")
+            self._rt_set("vision_health", "env_missing_deps")
+            return
+
+        self._vision_auto_start_deferred_reason = ""
+        calibration_params = self._fetch_vision_calibration_params()
+        self._rt_set("vision_health", f"starting_8080:{self.config.resolve_vision_stream_url()}")
+        self.vision_runtime = VisionRuntime(
+            self.config,
+            calibration_params=calibration_params,
+            targets_callback=lambda targets: None,
+            packet_callback=self._queue_vision_packet,
+            frame_callback=self._queue_vision_frame,
+            status_callback=lambda message: self._queue_runtime_status("vision", message),
+        )
+        self._log_runtime(
+            "vision",
+            "Vision world mapping: mode={0}, scale_xy={1:.3f}, offset_xy=({2:.1f},{3:.1f}) mm".format(
+                str(self.config.vision_mapping_mode),
+                float(self.config.vision_world_scale_xy),
+                float(self.config.vision_world_offset_xy_mm[0]),
+                float(self.config.vision_world_offset_xy_mm[1]),
+            ),
+        )
+        self.vision_runtime.start()
+        if calibration_params is None:
+            self._rt_set("vision_health", "starting_8080_without_calibration")
+        else:
+            self._rt_set("vision_health", "starting_8080")
+
+    def _setup_brain_sources(self) -> None:
+        self.input_orchestrator.set_sources(
+            move_source=str(self.config.move_source),
+            decision_source=str(self.config.decision_source),
+            ssvep_keyboard_debug_enabled=bool(self.config.ssvep_keyboard_debug_enabled),
+            mi_enabled=bool(self.config.mi_enabled),
+        )
+        if not self._ssvep_runtime_enabled():
+            self.ssvep_runtime = None
+            self.ssvep_coordinator.bind_runtime(None)
+            self._rt_update(
+                {
+                    "ssvep_runtime_enabled": False,
+                    "ssvep_running": False,
+                    "ssvep_stim_enabled": False,
+                    "ssvep_busy": False,
+                    "ssvep_connected": False,
+                    "ssvep_connect_active": False,
+                    "ssvep_pretrain_active": False,
+                    "ssvep_online_active": False,
+                    "ssvep_profile_source": "uninitialized",
+                    "ssvep_runtime_status": "disabled: keyboard operator mode",
+                    "ssvep_status_hint": (
+                        "Keyboard operator mode is active. SSVEP is disabled in the main program; "
+                        "use 02_SSVEP for standalone debugging."
+                    ),
+                    "last_ssvep_raw": "--",
+                    "target_frequency_map": [],
+                }
+            )
+            initial_mi_health = self.input_orchestrator.initialize()
+            self._update_mi_runtime_state(initial_mi_health, emit_runtime_status=True)
+            return
+
+        from hybrid_controller.ssvep.runtime import SSVEPRuntime
+
+        self.ssvep_runtime = SSVEPRuntime(
+            self.config,
+            command_callback=self.dispatch_ssvep_command,
+            status_callback=lambda message: self._queue_runtime_status("ssvep", message),
+            state_callback=self._queue_ssvep_state,
+        )
+        self.main_window.set_ssvep_runtime_config(
+            serial_port=str(self.config.ssvep_serial_port),
+            board_id=int(self.config.ssvep_board_id),
+        )
+        self.ssvep_coordinator.bind_runtime(self.ssvep_runtime)
+        self._rt_update(
+            {
+                "ssvep_profile_path": str(self.ssvep_runtime.current_profile_path or self.config.ssvep_current_profile_path),
+                "ssvep_profile_source": self.ssvep_runtime.current_profile_source,
+                "ssvep_last_pretrain_time": self.ssvep_runtime.last_pretrain_time or "--",
+            }
+        )
+        initial_profiles = self.ssvep_runtime.list_profiles(limit=self.config.ssvep_recent_profile_limit)
+        latest_profile = self.ssvep_runtime.latest_profile()
+        self._rt_update(
+            {
+                "ssvep_available_profiles": tuple((profile.display_name, str(profile.path)) for profile in initial_profiles),
+                "ssvep_profile_count": len(initial_profiles),
+                "ssvep_latest_profile_path": str(latest_profile.path) if latest_profile is not None else "--",
+                "ssvep_status_hint": self.ssvep_runtime.status_hint(initial_profiles),
+                "ssvep_runtime_enabled": True,
+                "ssvep_runtime_status": "idle (click Connect Device)",
+            }
+        )
+        initial_mi_health = self.input_orchestrator.initialize()
+        self._update_mi_runtime_state(initial_mi_health, emit_runtime_status=True)
+
+    def _update_mi_runtime_state(self, health: InputHealth | None, *, emit_runtime_status: bool) -> None:
+        if self.config.move_source != "mi":
+            self._rt_update(
+                {
+                    "mi_status": "inactive",
+                    "mi_connected": False,
+                    "mi_running": False,
+                    "mi_last_error": "--",
+                }
+            )
+            return
+        if health is None:
+            self._rt_update(
+                {
+                    "mi_status": "unavailable",
+                    "mi_connected": False,
+                    "mi_running": False,
+                    "mi_last_error": "unavailable",
+                }
+            )
+            return
+
+        self._rt_update(
+            {
+                "mi_status": str(health.status),
+                "mi_connected": bool(health.connected),
+                "mi_running": bool(health.running),
+                "mi_last_error": str(health.last_error),
+            }
+        )
+        if not emit_runtime_status:
+            return
+        signature = (
+            health.status,
+            bool(health.connected),
+            bool(health.running),
+            bool(health.ready),
+            str(health.last_error),
+        )
+        if signature == self._last_mi_health_signature:
+            return
+        self._last_mi_health_signature = signature
+        self._queue_runtime_status(
+            "mi",
+            "MI source status={0} connected={1} running={2} ready={3} error={4}".format(
+                health.status,
+                bool(health.connected),
+                bool(health.running),
+                bool(health.ready),
+                str(health.last_error),
+            ),
+        )
+
+    def _should_emit_mi_status(self) -> bool:
+        now = time.monotonic()
+        if (now - float(self._last_mi_status_emit_ts)) < 1.0:
+            return False
+        self._last_mi_status_emit_ts = now
+        return True
+
+    def _apply_effect(self, effect: Effect) -> None:
+        handlers: dict[str, Callable[[Effect], None]] = {
+            "start_timer": self._start_timer,
+            "cancel_timer": self._cancel_timer,
+            "robot_command": self._send_robot_command,
+            "state_changed": self._handle_state_changed,
+            "log": self._handle_log_effect,
+        }
+        handler = handlers.get(effect.type)
+        if handler is not None:
+            handler(effect)
+
+    def _start_timer(self, effect: Effect) -> None:
+        timer_id = effect.payload["timer_id"]
+        duration_ms = int(round(float(effect.payload["duration_sec"]) * 1000.0))
+        self._cancel_timer(Effect("cancel_timer", {"timer_id": timer_id}))
+        timer = QTimer(self.main_window)
+        timer.setSingleShot(True)
+        timer.timeout.connect(
+            lambda tid=timer_id: self.dispatch_event(Event(source="system", type="timer_expired", value=tid))
+        )
+        timer.start(duration_ms)
+        self.timers[timer_id] = timer
+
+    def _cancel_timer(self, effect: Effect) -> None:
+        timer_id = effect.payload["timer_id"]
+        timer = self.timers.pop(timer_id, None)
+        if timer is not None:
+            timer.stop()
+            timer.deleteLater()
+
+    def _send_robot_command(self, effect: Effect) -> None:
+        command = str(effect.payload["command"])
+        if self._maybe_start_continuous_servo_from_task_pick(command):
+            return
+        self._send_robot_text_command(command)
+
+    def _send_robot_text_command(self, command: str, *, apply_pick_command_bias: bool = True) -> None:
+        original_command = str(command)
+        outgoing_command = (
+            self._rewrite_outgoing_robot_command(original_command)
+            if bool(apply_pick_command_bias)
+            else original_command
+        )
+        opcode = self._extract_command_opcode(outgoing_command)
+        if opcode in {"PICK", "PICK_WORLD", "PICK_CYL"}:
+            self._begin_pick_trace(command=outgoing_command, original_command=original_command)
+            if self._reject_pick_without_grasp_profile(outgoing_command):
+                return
+            if self._reject_unsafe_pick_command(outgoing_command):
+                return
+        elif opcode in {"MOVE_CYL", "MOVE_CYL_AUTO"} and isinstance(getattr(self, "_vision_servo_pick", None), dict):
+            self._write_vision_debug_bundle(
+                event="vision_servo_move",
+                command=outgoing_command,
+                original_command=original_command,
+                trace={"vision_servo_pick": dict(getattr(self, "_vision_servo_pick", {}))},
+            )
+        if self._uses_ros_transport():
+            if self._send_robot_command_via_ros(outgoing_command):
+                self.main_window.append_log(f"Robot <= {outgoing_command}")
+                return
+            if self._ros_command_requires_ros_route(opcode):
+                self._reject_ros_command(outgoing_command, reason=f"ROS transport does not support command '{opcode}'.")
+                return
+        try:
+            self.robot_client.send_command(outgoing_command)
+            self.main_window.append_log(f"Robot <= {outgoing_command}")
+        except Exception as error:
+            self._handle_runtime_status("robot", f"Robot send failed: {error}")
+            self.dispatch_event(Event(source="robot", type="robot_error", value=f"Robot send failed: {error}"))
+            if opcode in {"PICK", "PICK_WORLD", "PICK_CYL"}:
+                self._finish_pick_trace(response=f"ERR Robot send failed: {error}")
+
+    def _maybe_start_continuous_servo_from_task_pick(self, command: str) -> bool:
+        if not bool(getattr(self.config, "vision_continuous_servo_enabled", False)):
+            return False
+        if not self._vision_eye_in_hand_pick_flow_enabled():
+            return False
+        opcode = self._extract_command_opcode(command)
+        if opcode not in {"PICK_WORLD", "PICK_CYL"}:
+            return False
+        slot_id = self.controller.context.selected_target_id
+        if slot_id is None:
+            self._block_continuous_servo_start("selected_slot_unavailable")
+            return True
+        self._start_continuous_vision_servo_pick(int(slot_id), source="task_confirm")
+        return True
+
+    @staticmethod
+    def _extract_command_opcode(command: str) -> str:
+        return extract_command_opcode(command)
+
+    @staticmethod
+    def _ros_command_requires_ros_route(opcode: str) -> bool:
+        return ros_command_requires_ros_route(opcode)
+
+    def _reject_ros_command(self, command: str, *, reason: str) -> None:
+        message = f"ROS transport command rejected: {reason} command={command}"
+        self._handle_runtime_status("robot", message)
+        self.dispatch_event(Event(source="robot", type="robot_error", value=message))
+        opcode = self._extract_command_opcode(command)
+        if opcode in {"PICK", "PICK_WORLD", "PICK_CYL"}:
+            self._finish_pick_trace(response=f"ERR {message}")
+
+    def _begin_pick_trace(self, *, command: str, original_command: str | None = None) -> None:
+        snapshot = self._fetch_remote_robot_snapshot()
+        selected_slot = self._vision_slot_payload(self.controller.context.selected_target_id or -1)
+        resolved_base_xy = self._rt_get("vision_last_resolved_base_xy")
+        resolved_cyl = self._rt_get("vision_last_resolved_cyl")
+        original_text = str(command if original_command is None else original_command)
+        grasp_profile = getattr(self, "_vision_grasp_profile_result", None)
+        trace = {
+            "slot_id": self.controller.context.selected_target_id,
+            "mapping_mode": self._rt_get("vision_mapping_mode"),
+            "original_command": original_text,
+            "command": str(command),
+            "pick_bias_applied": original_text.strip() != str(command).strip(),
+            "pick_tool_offset_source": str(getattr(self.config, "pick_tool_offset_source", "target_pixel")),
+            "pick_cyl_radius_bias_mm": float(getattr(self, "_pick_cyl_radius_bias_mm", 0.0)),
+            "pick_cyl_tangent_bias_mm": float(getattr(self, "_pick_cyl_tangent_bias_mm", 0.0)),
+            "pick_cyl_theta_bias_deg": float(getattr(self, "_pick_cyl_theta_bias_deg", 0.0)),
+            "command_vs_resolved_delta_mm": self._command_vs_resolved_delta_mm(str(command), resolved_base_xy),
+            "resolved_base_xy": resolved_base_xy,
+            "resolved_cyl": resolved_cyl,
+            "pixel_center": None if selected_slot is None else selected_slot.get("pixel_center"),
+            "grasp_pixel": None if selected_slot is None else selected_slot.get("grasp_pixel"),
+            "grasp_angle_deg": None if selected_slot is None else selected_slot.get("grasp_angle_deg"),
+            "grasp_angle_quality": None if selected_slot is None else selected_slot.get("grasp_angle_quality"),
+            "camera_to_world_raw": None if selected_slot is None else selected_slot.get("camera_to_world_raw"),
+            "undistorted_pixel": None if selected_slot is None else selected_slot.get("undistorted_pixel"),
+            "estimated_xy_error_mm": None if selected_slot is None else selected_slot.get("estimated_xy_error_mm"),
+            "calibration_profile_id": None if selected_slot is None else selected_slot.get("calibration_profile_id"),
+            "vision_grasp_profile_id": grasp_profile.profile_id
+            if isinstance(grasp_profile, VisionGraspProfileLoadResult)
+            else "",
+            "vision_grasp_profile_ready": bool(
+                isinstance(grasp_profile, VisionGraspProfileLoadResult) and grasp_profile.ready
+            ),
+            "vision_pick_confirm_z_mm": float(getattr(self.config, "vision_pick_confirm_z_mm")),
+            "vision_eye_in_hand_pick_radius_bias_mm": float(
+                getattr(self.config, "vision_eye_in_hand_pick_radius_bias_mm")
+            ),
+            "grasp_quality": None if selected_slot is None else selected_slot.get("grasp_quality"),
+            "snapshot_age_ms": self._rt_get("vision_snapshot_age_ms"),
+            "robot_pose": None if not isinstance(snapshot, dict) else snapshot.get("robot_cyl") or snapshot.get("robot_xy"),
+            "robot_xy": None if not isinstance(snapshot, dict) else snapshot.get("robot_xy"),
+            "pick_tuning": dict(self._pick_tuning_state),
+            "post_pick_settle_z": self._rt_get("post_pick_settle_z"),
+            "release_mode_effective": self._rt_get("release_mode_effective"),
+            "transport": "ros" if self._uses_ros_transport() else "tcp",
+        }
+        bundle_dir = self._write_vision_debug_bundle(
+            event="pick_start",
+            command=str(command),
+            original_command=original_text,
+            trace=trace,
+        )
+        if bundle_dir is not None:
+            trace["vision_debug_bundle"] = bundle_dir
+        self._active_pick_trace = trace
+
+    @staticmethod
+    def _command_vs_resolved_delta_mm(command: str, resolved_base_xy: object) -> float | None:
+        parts = str(command or "").strip().split()
+        if len(parts) < 3 or str(parts[0]).upper() != "PICK_WORLD":
+            return None
+        if not isinstance(resolved_base_xy, (tuple, list)) or len(resolved_base_xy) < 2:
+            return None
+        try:
+            command_x = float(parts[1])
+            command_y = float(parts[2])
+            resolved_x = float(resolved_base_xy[0])
+            resolved_y = float(resolved_base_xy[1])
+        except (TypeError, ValueError):
+            return None
+        return float(math.hypot(command_x - resolved_x, command_y - resolved_y))
+
+    def _copy_latest_vision_frame(self) -> object | None:
+        lock = getattr(self, "_vision_frame_lock", None)
+        if lock is None:
+            frame = getattr(self, "_latest_vision_frame", None)
+        else:
+            with lock:
+                frame = getattr(self, "_latest_vision_frame", None)
+        if frame is None:
+            return None
+        copier = getattr(frame, "copy", None)
+        if callable(copier):
+            try:
+                return copier()
+            except Exception:
+                return frame
+        return frame
+
+    def _vision_debug_runtime_snapshot(self) -> dict[str, object]:
+        keys = (
+            "vision_health",
+            "vision_mapping_mode",
+            "vision_invalid_reason",
+            "vision_last_resolved_base_xy",
+            "vision_last_resolved_cyl",
+            "vision_snapshot_age_ms",
+            "vision_calibration_profile_id",
+            "vision_servo_status",
+            "remote_snapshot_age_ms",
+            "state_age_ms",
+            "robot_health",
+            "last_robot_ack",
+            "last_robot_error",
+        )
+        snapshot = {key: self._rt_get(key) for key in keys}
+        snapshot["pick_tool_offset_source"] = str(getattr(self.config, "pick_tool_offset_source", "target_pixel"))
+        snapshot["pick_cyl_radius_bias_mm"] = float(getattr(self, "_pick_cyl_radius_bias_mm", 0.0))
+        snapshot["pick_cyl_tangent_bias_mm"] = float(getattr(self, "_pick_cyl_tangent_bias_mm", 0.0))
+        snapshot["pick_cyl_theta_bias_deg"] = float(getattr(self, "_pick_cyl_theta_bias_deg", 0.0))
+        return snapshot
+
+    def _write_vision_debug_bundle(
+        self,
+        *,
+        event: str,
+        command: str | None = None,
+        original_command: str | None = None,
+        trace: dict[str, object] | None = None,
+    ) -> str | None:
+        if not bool(getattr(getattr(self, "config", None), "vision_debug_bundle_enabled", False)):
+            return None
+        packet = getattr(self, "_latest_vision_packet", None)
+        packet_payload = packet if isinstance(packet, dict) else None
+        frame = self._copy_latest_vision_frame()
+        if packet_payload is None and frame is None:
+            return None
+
+        safe_event = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in str(event or "vision"))[:40]
+        safe_event = safe_event or "vision"
+        try:
+            root = Path(getattr(self.config, "vision_debug_bundle_dir"))
+            now_wall = time.time()
+            stamp = time.strftime("%Y%m%d_%H%M%S", time.localtime(now_wall))
+            base_name = f"{stamp}_{int((now_wall % 1.0) * 1000):03d}_{safe_event}"
+            bundle_dir = root / base_name
+            for suffix in range(100):
+                candidate = bundle_dir if suffix == 0 else root / f"{base_name}_{suffix:02d}"
+                try:
+                    candidate.mkdir(parents=True, exist_ok=False)
+                    bundle_dir = candidate
+                    break
+                except FileExistsError:
+                    continue
+
+            files: dict[str, str] = {}
+            image_errors: list[str] = []
+            if frame is not None:
+                try:
+                    import cv2
+
+                    frame_path = bundle_dir / "frame.jpg"
+                    if cv2.imwrite(str(frame_path), frame):
+                        files["frame"] = str(frame_path)
+                    else:
+                        image_errors.append("cv2.imwrite(frame.jpg) returned False")
+                    overlay = self._build_vision_debug_overlay(frame, packet=packet_payload, trace=trace)
+                    if overlay is not None:
+                        overlay_path = bundle_dir / "overlay.jpg"
+                        if cv2.imwrite(str(overlay_path), overlay):
+                            files["overlay"] = str(overlay_path)
+                        else:
+                            image_errors.append("cv2.imwrite(overlay.jpg) returned False")
+                except Exception as error:
+                    image_errors.append(str(error))
+
+            debug_json_path = bundle_dir / "debug.json"
+            files["debug_json"] = str(debug_json_path)
+            payload = {
+                "event": str(event),
+                "created_ts": now_wall,
+                "original_command": original_command,
+                "command": command,
+                "trace": trace,
+                "runtime": self._vision_debug_runtime_snapshot(),
+                "packet": packet_payload,
+                "files": files,
+                "image_errors": image_errors,
+            }
+            debug_json_path.write_text(
+                json.dumps(payload, ensure_ascii=False, default=str, indent=2),
+                encoding="utf-8",
+            )
+            self.logger.write(
+                "vision_debug_bundle",
+                event=str(event),
+                command=command,
+                original_command=original_command,
+                path=str(bundle_dir),
+                files=files,
+                image_errors=image_errors,
+            )
+            append_log = getattr(getattr(self, "main_window", None), "append_log", None)
+            if callable(append_log):
+                append_log(f"[vision] Debug bundle saved: {bundle_dir}")
+            return str(bundle_dir)
+        except Exception as error:
+            now_mono = time.monotonic()
+            last_error_ts = float(getattr(self, "_last_vision_debug_bundle_error_ts", 0.0))
+            if now_mono - last_error_ts > 5.0:
+                self._last_vision_debug_bundle_error_ts = now_mono
+                try:
+                    self._handle_runtime_status("vision", f"Vision debug bundle write failed: {error}")
+                except Exception:
+                    pass
+            return None
+
+    def _build_vision_debug_overlay(
+        self,
+        frame: object,
+        *,
+        packet: dict[str, object] | None,
+        trace: dict[str, object] | None,
+    ) -> object | None:
+        try:
+            import cv2
+            import numpy as np
+        except Exception:
+            return None
+        if frame is None or not hasattr(frame, "shape"):
+            return None
+        try:
+            overlay = frame.copy()
+        except Exception:
+            return None
+        try:
+            if len(overlay.shape) == 2:
+                overlay = cv2.cvtColor(overlay, cv2.COLOR_GRAY2BGR)
+            elif len(overlay.shape) >= 3 and int(overlay.shape[2]) == 4:
+                overlay = cv2.cvtColor(overlay, cv2.COLOR_BGRA2BGR)
+        except Exception:
+            return None
+
+        trace_payload = trace if isinstance(trace, dict) else {}
+        selected_id = trace_payload.get("slot_id")
+        packet_payload = packet if isinstance(packet, dict) else {}
+        roi_center = self._coerce_debug_point(packet_payload.get("roi_center"))
+        if roi_center is None:
+            roi_center = self._coerce_debug_point(getattr(self.config, "roi_center", None))
+        if roi_center is not None:
+            cv2.drawMarker(overlay, roi_center, (0, 165, 255), cv2.MARKER_CROSS, 24, 2)
+            cv2.putText(overlay, "roi", (roi_center[0] + 8, roi_center[1] - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 1)
+        alignment_target = self._coerce_debug_point(packet_payload.get("alignment_target_pixel"))
+        if alignment_target is not None:
+            cv2.drawMarker(overlay, alignment_target, (255, 80, 220), cv2.MARKER_TILTED_CROSS, 28, 2)
+            cv2.circle(overlay, alignment_target, 9, (255, 80, 220), 2)
+            cv2.putText(
+                overlay,
+                "target",
+                (alignment_target[0] + 8, alignment_target[1] + 18),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (255, 80, 220),
+                1,
+            )
+
+        slots = packet_payload.get("slots", [])
+        if isinstance(slots, list):
+            for slot in slots:
+                if not isinstance(slot, dict):
+                    continue
+                slot_id = slot.get("slot_id", slot.get("slot", "?"))
+                selected = str(slot_id) == str(selected_id)
+                actionable = bool(slot.get("actionable", False))
+                color = (0, 220, 0) if actionable else (0, 0, 255)
+                thickness = 3 if selected else 1
+                bbox = self._coerce_debug_bbox(slot.get("bbox"))
+                if bbox is not None:
+                    cv2.rectangle(overlay, (bbox[0], bbox[1]), (bbox[2], bbox[3]), color, thickness)
+                polygon = self._coerce_debug_polygon(slot.get("polygon"))
+                if len(polygon) >= 3:
+                    cv2.polylines(overlay, [np.array(polygon, dtype=np.int32).reshape((-1, 1, 2))], True, color, thickness)
+                oriented = self._coerce_debug_polygon(slot.get("oriented_bbox"))
+                if len(oriented) >= 3:
+                    cv2.polylines(overlay, [np.array(oriented, dtype=np.int32).reshape((-1, 1, 2))], True, (0, 255, 255), 1)
+
+                pixel_center = self._coerce_debug_point(slot.get("pixel_center"))
+                grasp_pixel = self._coerce_debug_point(slot.get("grasp_pixel"))
+                undistorted_pixel = self._coerce_debug_point(slot.get("undistorted_pixel"))
+                if pixel_center is not None:
+                    cv2.circle(overlay, pixel_center, 5, (0, 0, 255), -1)
+                if grasp_pixel is not None:
+                    cv2.circle(overlay, grasp_pixel, 7, (0, 255, 255), 2)
+                if undistorted_pixel is not None:
+                    cv2.circle(overlay, undistorted_pixel, 5, (255, 80, 0), 2)
+                slot_target = self._coerce_debug_point(slot.get("alignment_target_pixel")) or alignment_target
+                if bool(slot.get("servo_required", False)) and slot_target is not None and grasp_pixel is not None:
+                    cv2.line(overlay, grasp_pixel, slot_target, (0, 165, 255), 2)
+
+                label_anchor = grasp_pixel or pixel_center
+                if label_anchor is None and bbox is not None:
+                    label_anchor = (bbox[0], bbox[1])
+                if label_anchor is not None:
+                    quality = slot.get("grasp_quality")
+                    error_mm = slot.get("estimated_xy_error_mm")
+                    state_text = "OK" if actionable else str(slot.get("invalid_reason") or "reject")
+                    label = f"slot {slot_id} {state_text}"
+                    if quality is not None:
+                        try:
+                            label += f" q={float(quality):.2f}"
+                        except (TypeError, ValueError):
+                            pass
+                    if error_mm is not None:
+                        try:
+                            label += f" err={float(error_mm):.1f}mm"
+                        except (TypeError, ValueError):
+                            pass
+                    angle_deg = slot.get("grasp_angle_deg")
+                    angle_quality = slot.get("grasp_angle_quality")
+                    if angle_deg is not None:
+                        try:
+                            label += f" a={float(angle_deg):.0f}"
+                            if angle_quality is not None:
+                                label += f"/{float(angle_quality):.2f}"
+                        except (TypeError, ValueError):
+                            pass
+                    cv2.putText(
+                        overlay,
+                        label[:96],
+                        (int(label_anchor[0]) + 8, max(18, int(label_anchor[1]) - 8)),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.48,
+                        color,
+                        1,
+                    )
+
+        header = str(trace_payload.get("command") or trace_payload.get("original_command") or "")
+        offset_source = trace_payload.get("pick_tool_offset_source")
+        if offset_source is not None:
+            header = f"{header} offset={offset_source}"
+        delta = trace_payload.get("command_vs_resolved_delta_mm")
+        if delta is not None:
+            try:
+                header = f"{header} delta={float(delta):.1f}mm"
+            except (TypeError, ValueError):
+                pass
+        if header:
+            cv2.putText(overlay, header[:120], (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.62, (255, 255, 255), 2)
+            cv2.putText(overlay, header[:120], (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.62, (0, 0, 0), 1)
+        return overlay
+
+    @staticmethod
+    def _coerce_debug_point(value: object) -> tuple[int, int] | None:
+        if not isinstance(value, (tuple, list)) or len(value) < 2:
+            return None
+        try:
+            return (int(round(float(value[0]))), int(round(float(value[1]))))
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _coerce_debug_bbox(value: object) -> tuple[int, int, int, int] | None:
+        if not isinstance(value, (tuple, list)) or len(value) < 4:
+            return None
+        try:
+            x1, y1, x2, y2 = [int(round(float(value[index]))) for index in range(4)]
+        except (TypeError, ValueError):
+            return None
+        return (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
+
+    @classmethod
+    def _coerce_debug_polygon(cls, value: object) -> list[tuple[int, int]]:
+        if not isinstance(value, list):
+            return []
+        points: list[tuple[int, int]] = []
+        for item in value:
+            point = cls._coerce_debug_point(item)
+            if point is not None:
+                points.append(point)
+        return points
+
+    def _finish_pick_trace(self, *, response: str) -> None:
+        trace = self._active_pick_trace
+        if not isinstance(trace, dict):
+            return
+        trace_payload = dict(trace)
+        trace_payload["response"] = str(response)
+        self.logger.write("pick_trace", **trace_payload)
+        self._active_pick_trace = None
+
+    @staticmethod
+    def _pending_expected_ack_for_opcode(opcode: str) -> str | None:
+        op = str(opcode or "").strip().upper()
+        if op in {"MOVE_CYL", "MOVE_CYL_AUTO"}:
+            return "MOVE"
+        if op in {"PICK_CYL", "PICK_WORLD"}:
+            return "PICK_DONE"
+        if op == "PLACE":
+            return "PLACE_DONE"
+        if op == "ABORT":
+            return "ABORT"
+        if op == "RESET":
+            return "RESET"
+        return None
+
+    @staticmethod
+    def _snapshot_int(snapshot: dict[str, object], key: str) -> int | None:
+        if key not in snapshot:
+            return None
+        value = snapshot.get(key)
+        if value is None or value == "":
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _latest_ack_baseline(self) -> dict[str, object]:
+        snapshot = self._fetch_remote_robot_snapshot()
+        if not isinstance(snapshot, dict):
+            return {}
+        baseline: dict[str, object] = {}
+        last_ack = str(snapshot.get("last_ack", "") or "").strip().upper()
+        if last_ack:
+            baseline["ack_baseline_last_ack"] = last_ack
+        for key in ("last_ack_seq", "state_seq", "revision"):
+            value = self._snapshot_int(snapshot, key)
+            if value is not None:
+                baseline[f"ack_baseline_{key}"] = int(value)
+        return baseline
+
+    def _register_pending_command(
+        self,
+        *,
+        opcode: str,
+        command: str,
+        ack_baseline: dict[str, object] | None = None,
+    ) -> None:
+        expected_ack = self._pending_expected_ack_for_opcode(opcode)
+        if expected_ack is None:
+            return
+        seq = int(self._next_pending_command_seq)
+        self._next_pending_command_seq = seq + 1
+        now = float(time.time())
+        timeout_sec = max(1.0, float(self.config.robot_command_timeout_sec))
+        self._pending_command = {
+            "seq": seq,
+            "opcode": str(opcode),
+            "command": str(command),
+            "expected_ack": str(expected_ack),
+            "sent_ts": now,
+            "deadline_ts": now + timeout_sec,
+        }
+        if isinstance(ack_baseline, dict):
+            self._pending_command.update(ack_baseline)
+        self._rt_update(
+            {
+                "pending_command": str(command),
+                "pending_command_seq": int(seq),
+                "pending_command_deadline_ts": float(now + timeout_sec),
+            }
+        )
+
+    def _clear_pending_command(self) -> None:
+        self._pending_command = None
+        self._rt_update(
+            {
+                "pending_command": "--",
+                "pending_command_seq": 0,
+                "pending_command_deadline_ts": 0.0,
+            }
+        )
+
+    def _resolve_pending_command_from_event(self, event: Event) -> None:
+        pending = self._pending_command
+        if not isinstance(pending, dict):
+            return
+        if event.source != "robot":
+            return
+        event_type = str(event.type or "")
+        if event_type in {"robot_error", "robot_busy", "robot_disconnected"}:
+            self._clear_pending_command()
+            return
+        if event_type != "robot_ack":
+            return
+        expected_ack = str(pending.get("expected_ack", "")).strip().upper()
+        current_ack = str(event.value or "").strip().upper()
+        if expected_ack and current_ack == expected_ack:
+            self._clear_pending_command()
+
+    def _state_ack_is_new_for_pending(self, pending: dict[str, object], snapshot: dict[str, object]) -> bool:
+        current_ack = str(snapshot.get("last_ack", "") or "").strip().upper()
+        baseline_ack = str(pending.get("ack_baseline_last_ack", "") or "").strip().upper()
+        current_ack_seq = self._snapshot_int(snapshot, "last_ack_seq")
+        baseline_ack_seq = self._snapshot_int(pending, "ack_baseline_last_ack_seq")
+        if current_ack_seq is not None and baseline_ack_seq is not None:
+            return current_ack_seq > baseline_ack_seq
+        current_state_seq = self._snapshot_int(snapshot, "state_seq")
+        baseline_state_seq = self._snapshot_int(pending, "ack_baseline_state_seq")
+        if current_state_seq is not None and baseline_state_seq is not None:
+            return current_state_seq > baseline_state_seq
+        current_revision = self._snapshot_int(snapshot, "revision")
+        baseline_revision = self._snapshot_int(pending, "ack_baseline_revision")
+        if current_revision is not None and baseline_revision is not None:
+            return current_revision > baseline_revision
+        if baseline_ack and current_ack == baseline_ack:
+            return False
+        return True
+
+    def _dispatch_robot_ack_from_state_if_pending(self, snapshot: dict[str, object]) -> None:
+        pending = self._pending_command
+        if not isinstance(pending, dict):
+            return
+        if bool(snapshot.get("busy", False)):
+            return
+        expected_ack = str(pending.get("expected_ack", "")).strip().upper()
+        current_ack = str(snapshot.get("last_ack", "") or "").strip().upper()
+        if not expected_ack or current_ack != expected_ack:
+            return
+        if not self._state_ack_is_new_for_pending(pending, snapshot):
+            return
+        self.dispatch_event(Event(source="robot", type="robot_ack", value=current_ack))
+
+    def _check_pending_command_timeout(self) -> None:
+        pending = self._pending_command
+        if not isinstance(pending, dict):
+            return
+        deadline_ts = float(pending.get("deadline_ts", 0.0) or 0.0)
+        if deadline_ts <= 0.0 or time.time() <= deadline_ts:
+            return
+        opcode = str(pending.get("opcode", "UNKNOWN"))
+        command = str(pending.get("command", ""))
+        self._handle_runtime_status(
+            "robot",
+            "Pending command timeout: opcode={0} command={1}".format(opcode, command),
+        )
+        timeout_message = "ERR command_timeout: opcode={0} command={1}".format(opcode, command)
+        self._queue_event(Event(source="robot", type="robot_error", value=timeout_message))
+        if opcode in {"PICK", "PICK_CYL", "PICK_WORLD"}:
+            self._finish_pick_trace(response=timeout_message)
+        self._clear_pending_command()
+
+    def _rewrite_outgoing_robot_command(self, command: str) -> str:
+        if str(getattr(self.config, "pick_tool_offset_source", "target_pixel")).strip().lower() != "command_bias":
+            return str(command or "")
+        return rewrite_pick_command_with_bias(
+            str(command or ""),
+            theta_bias_deg=float(self._pick_cyl_theta_bias_deg),
+            radius_bias_mm=float(self._pick_cyl_radius_bias_mm),
+            tangent_bias_mm=float(self._pick_cyl_tangent_bias_mm),
+            pick_z_mm=float(self.config.robot_pick_z),
+        )
+
+    def _send_robot_command_via_ros(self, command: str) -> bool:
+        if self.ros_client is None:
+            return False
+        parts = str(command).strip().split()
+        if not parts:
+            return False
+        op = parts[0].upper()
+        ack_baseline = self._latest_ack_baseline()
+
+        def callback(result: RosServiceResult, *, issued_command: str = command, opcode: str = op) -> None:
+            if result.ok:
+                self._register_pending_command(opcode=opcode, command=issued_command, ack_baseline=ack_baseline)
+                latest_snapshot = self._fetch_remote_robot_snapshot()
+                if isinstance(latest_snapshot, dict):
+                    self._dispatch_robot_ack_from_state_if_pending(latest_snapshot)
+                response_message = str(result.message or "").strip()
+                if response_message:
+                    self._queue_runtime_status("robot", "ROS accepted: {0} -> {1}".format(opcode, response_message))
+                return
+            message = str(result.message or issued_command)
+            if message.strip().upper() == "BUSY":
+                self._queue_event(Event(source="robot", type="robot_busy", value=issued_command))
+            else:
+                self._queue_event(Event(source="robot", type="robot_error", value=message))
+            if opcode in {"PICK", "PICK_CYL", "PICK_WORLD"}:
+                self._finish_pick_trace(response=message)
+
+        try:
+            if op == "MOVE_CYL" and len(parts) == 4:
+                self.ros_client.send_move_cyl(float(parts[1]), float(parts[2]), float(parts[3]), callback=callback)
+                return True
+            if op == "MOVE_CYL_AUTO" and len(parts) == 3:
+                self.ros_client.send_move_cyl_auto(float(parts[1]), float(parts[2]), callback=callback)
+                return True
+            if op == "PICK_WORLD" and len(parts) in {3, 4}:
+                angle = None if len(parts) < 4 else float(parts[3])
+                if angle is None:
+                    self.ros_client.send_pick_world(float(parts[1]), float(parts[2]), callback=callback)
+                else:
+                    self.ros_client.send_pick_world(
+                        float(parts[1]),
+                        float(parts[2]),
+                        sucker_rotation_deg=angle,
+                        callback=callback,
+                    )
+                return True
+            if op == "PICK_CYL" and len(parts) in {3, 4}:
+                angle = None if len(parts) < 4 else float(parts[3])
+                if angle is None:
+                    self.ros_client.send_pick_cyl(float(parts[1]), float(parts[2]), callback=callback)
+                else:
+                    self.ros_client.send_pick_cyl(
+                        float(parts[1]),
+                        float(parts[2]),
+                        sucker_rotation_deg=angle,
+                        callback=callback,
+                    )
+                return True
+            if op == "SET_SUCKER_ROTATION" and len(parts) in {2, 3}:
+                duration = None if len(parts) < 3 else float(parts[2])
+                self.ros_client.send_sucker_rotation(float(parts[1]), duration_sec=duration, callback=callback)
+                return True
+            if op == "PLACE":
+                self.ros_client.send_place(callback=callback)
+                return True
+            if op == "ABORT":
+                self.ros_client.send_abort(callback=callback)
+                return True
+            if op == "SUCKER_OFF":
+                self.ros_client.send_sucker_off(callback=callback)
+                return True
+            if op == "RESET":
+                self.ros_client.send_reset(callback=callback)
+                return True
+        except Exception as error:
+            self._queue_event(Event(source="robot", type="robot_error", value=f"ROS command failed: {error}"))
+            if op in {"PICK", "PICK_CYL", "PICK_WORLD"}:
+                self._finish_pick_trace(response=f"ERR ROS command failed: {error}")
+            return True
+        return False
+
+    def _handle_state_changed(self, effect: Effect) -> None:
+        self.main_window.append_log(f"State: {effect.payload['from']} -> {effect.payload['to']}")
+        old_state = str(effect.payload.get("from", ""))
+        new_state = str(effect.payload.get("to", ""))
+        if old_state in {TaskState.S1_MI_MOVE.value, TaskState.S3_MI_CARRY.value} and new_state not in {
+            TaskState.S1_MI_MOVE.value,
+            TaskState.S3_MI_CARRY.value,
+        }:
+            self._stop_teleop_motion(send_command=True, reason=f"leave_motion_state:{new_state}")
+        if self.config.control_sim_enabled and effect.payload.get("to") == TaskState.S2_TARGET_SELECT.value:
+            self._publish_control_sim_targets()
+
+    def _handle_log_effect(self, effect: Effect) -> None:
+        self.main_window.append_log(str(effect.payload.get("message", "")))
+
+    def _publish_control_sim_targets(self) -> None:
+        targets = self._current_control_selection_targets()
+        self.logger.log_vision_snapshot(targets, self.controller.state.value, scenario=self.config.scenario_name)
+        self.dispatch_event(Event(source="vision", type="vision_update", value=targets))
+
+    def _update_ssvep_mode(self) -> None:
+        if self.controller.state == TaskState.S2_TARGET_SELECT:
+            mode = "target_selection"
+        elif self.controller.state in {TaskState.S1_DECISION, TaskState.S2_GRAB_CONFIRM, TaskState.S3_DECISION}:
+            mode = "binary"
+        else:
+            mode = "idle"
+        self.ssvep_adapter.set_mode(mode)
+        if self.ssvep_runtime is not None:
+            self.ssvep_runtime.set_mode(mode)
+        self._rt_update(
+            {
+                "ssvep_mode": mode,
+                "target_frequency_map": self._build_target_frequency_map(mode),
+            }
+        )
+
+    def _build_target_frequency_map(self, mode: str) -> list[tuple[str, object]]:
+        if mode == "binary":
+            return [
+                (f"{self.config.ssvep_freqs[0]:g}Hz", "confirm"),
+                (f"{self.config.ssvep_freqs[3]:g}Hz", "cancel"),
+            ]
+        if mode == "target_selection":
+            mapping: list[tuple[str, object]] = []
+            for index, target in enumerate(self.controller.context.frozen_targets):
+                if index >= len(self.config.ssvep_freqs):
+                    break
+                mapping.append((f"{self.config.ssvep_freqs[index]:g}Hz", target.id))
+            return mapping
+        return []
+
+    def _update_runtime_health(self) -> None:
+        if self._uses_ros_transport():
+            rosbridge_connected = self.ros_client.is_connected() if self.ros_client is not None else False
+            state_age_ms = float(self._rt_get("state_age_ms", self._compute_remote_snapshot_age_ms()))
+            stale_threshold_ms = float(getattr(self.config, "robot_state_stale_threshold_ms", 700.0))
+            control_state_fresh = bool(rosbridge_connected and state_age_ms <= stale_threshold_ms)
+            self._rt_set("robot_connected", control_state_fresh)
+            sticky_errors = {"connect_failed", "send_failed", "start_failed"}
+            current_health = str(self._rt_get("robot_health", "unknown"))
+            if current_health not in sticky_errors:
+                if not rosbridge_connected:
+                    self._rt_set("robot_health", "disconnected")
+                    self._ros_connected_since_ts = 0.0
+                elif state_age_ms > stale_threshold_ms:
+                    self._rt_set("robot_health", "state_stale")
+                else:
+                    self._rt_set("robot_health", "ok")
+            self._maybe_recover_ros_runtime_from_stale_state(state_age_ms=state_age_ms)
+        else:
+            connected = self.robot_client.is_connected()
+            self._rt_set("robot_connected", connected)
+            if self._rt_get("robot_health") not in {"connect_failed", "send_failed"}:
+                self._rt_set("robot_health", "ok" if connected else "disconnected")
+        if self.vision_runtime is not None:
+            if self._rt_get("vision_health") in {None, "unknown"}:
+                self._rt_set("vision_health", "running")
+        elif self.config.control_sim_enabled and self.config.vision_mode in {"slots", "fixed_world_slots", "fixed_cyl_slots"}:
+            self._rt_set("vision_health", f"{self.config.vision_mode}:{self.config.slot_profile}")
+
+    def _refresh_view(self) -> None:
+        self._refresh_dirty = True
+        if not self._refresh_coalesce_timer.isActive():
+            self._refresh_coalesce_timer.start(0)
+
+    def _refresh_panels(self) -> None:
+        if not self._refresh_dirty:
+            return
+        self._refresh_dirty = False
+        refresh_start = time.perf_counter()
+        self._capture_world_snapshot(reason="refresh")
+        remote_age_ms = self._compute_remote_snapshot_age_ms()
+        self._rt_set("remote_snapshot_age_ms", remote_age_ms)
+        self._rt_set("state_age_ms", remote_age_ms)
+        self._update_runtime_health()
+        self._sync_coordinator_states_from_runtime_info()
+        snapshot = build_ui_snapshot(
+            ui_coordinator=self.ui_coordinator,
+            controller_snapshot=self.controller.snapshot(),
+            config=self.config,
+            runtime_info=self.runtime_info,
+            robot_coordinator=self.robot_coordinator,
+            vision_coordinator=self.vision_coordinator,
+            ssvep_coordinator=self.ssvep_coordinator,
+        )
+        self.main_window.update_panels(snapshot)
+        self.main_window.update_vision_servo_debug(
+            {
+                "status": self._rt_get("vision_servo_status", "idle"),
+                "action": self._rt_get("vision_servo_last_action", "--"),
+                "context": self._rt_get("vision_servo_last_context", "--"),
+                "slot_id": self._rt_get("vision_servo_last_slot_id", "--"),
+                "source": self._rt_get("vision_servo_last_source", "--"),
+                "command": self._rt_get("vision_servo_last_command", "--"),
+                "rates": self._rt_get("vision_servo_last_rates", "--"),
+                "center_distance_px": self._rt_get("vision_servo_last_center_distance_px", "--"),
+                "current_z_mm": self._rt_get("vision_servo_last_current_z_mm", "--"),
+                "confirm_z_mm": self._rt_get("vision_servo_last_confirm_z_mm", "--"),
+                "center_px": self._rt_get("vision_servo_last_center_px", "--"),
+                "trace": self._rt_get("vision_servo_last_trace", "--"),
+                "decision_status": self._rt_get("vision_servo_last_decision_status", "--"),
+            }
+        )
+        self.main_window.update_pick_tuning_display(self._pick_tuning_state)
+        elapsed_ms = (time.perf_counter() - refresh_start) * 1000.0
+        previous_ema = float(self._rt_get("ui_refresh_ms_ema", 0.0))
+        if previous_ema <= 0.0:
+            next_ema = float(elapsed_ms)
+        else:
+            next_ema = previous_ema * 0.85 + float(elapsed_ms) * 0.15
+        self._rt_set("ui_refresh_ms_ema", float(next_ema))
+
+    def _sync_coordinator_states_from_runtime_info(self) -> None:
+        sync_coordinator_states_from_runtime_info(
+            config=self.config,
+            runtime_info=self.runtime_info,
+            latest_world_snapshot=self._latest_world_snapshot,
+            latest_vision_packet=self._latest_vision_packet,
+            fetch_remote_snapshot=self._fetch_remote_robot_snapshot,
+            robot_coordinator=self.robot_coordinator,
+            vision_coordinator=self.vision_coordinator,
+            ssvep_coordinator=self.ssvep_coordinator,
+        )
+
+    def _on_key_pressed(self, token: str) -> None:
+        self.logger.log_raw_input("sim_key", token)
+        if self._keyboard_operator_profile and str(token).strip() in {"1", "2", "3", "4"}:
+            try:
+                target_index = int(str(token).strip()) - 1
+            except ValueError:
+                return
+            if target_index >= 0:
+                self.dispatch_event(Event(source="sim", type="target_selected", value=target_index))
+                return
+        if self._is_move_token(token):
+            self._handle_move_key_pressed(token)
+            return
+        for event in self.input_orchestrator.handle_key_token(token):
+            self.dispatch_event(event)
+
+    def _on_key_released(self, token: str) -> None:
+        self.logger.log_raw_input("sim_key_release", token)
+        if self._is_move_token(token):
+            self._handle_move_key_released(token)
+
+    def _on_robot_start_requested(self) -> None:
+        if bool(self._rt_get("robot_start_active", False)):
+            return
+        if self.config.robot_mode != "real":
+            self._handle_runtime_status("robot", "Robot start is only available in real mode.")
+            return
+        self._auto_start_blocked = False
+        self._auto_start_block_reason = ""
+        self._rt_update(
+            {
+                "robot_start_active": True,
+                "robot_health": "starting_remote_runtime",
+                "last_robot_error": "--",
+            }
+        )
+        self._handle_runtime_status("robot", f"Starting robot runtime on {self.config.robot_host} ...")
+        threading.Thread(target=self._start_robot_runtime_worker, name="robot-start-worker", daemon=True).start()
+
+    def _start_robot_runtime_worker(self) -> None:
+        script_path = Path(__file__).resolve().parent / "robot" / "tools" / "jetmax_start_ros_runtime.py"
+        if not script_path.exists():
+            self._bridge.robot_start_finished.emit(False, f"Start script not found: {script_path}")
+            return
+        self._bridge.runtime_status_received.emit("robot", f"Robot start interpreter: {sys.executable}")
+        command = [
+            sys.executable,
+            str(script_path),
+            "--host",
+            str(self.config.robot_host),
+            "--rosbridge-port",
+            str(int(self.config.rosbridge_port)),
+            "--skip-camera-check",
+            "--skip-tcp-check",
+        ]
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=300,
+                check=False,
+            )
+        except Exception as error:
+            message = f"Failed to run start script: {error}"
+            if isinstance(error, PermissionError) or "WinError 10013" in str(error):
+                message = (
+                    "Failed to run start script: Windows blocked the SSH socket (WinError 10013). "
+                    "Allow Python outbound connections or run as Administrator, then retry."
+                )
+            self._bridge.robot_start_finished.emit(False, message)
+            return
+
+        details = "\n".join(
+            part.strip()
+            for part in (result.stdout or "", result.stderr or "")
+            if str(part).strip()
+        )
+        if result.returncode == 0:
+            self._bridge.robot_start_finished.emit(True, details)
+            return
+        message = details or f"Start script exited with code {result.returncode}"
+        self._bridge.robot_start_finished.emit(False, message)
+
+    def _on_robot_start_finished(self, success: bool, details: str) -> None:
+        self._rt_set("robot_start_active", False)
+        lines = [line.strip() for line in str(details or "").splitlines() if line.strip()]
+        for line in lines[-12:]:
+            self.main_window.append_log(f"[robot-start] {line}")
+        if success:
+            self._auto_start_blocked = False
+            self._auto_start_block_reason = ""
+            self._rt_update(
+                {
+                    "robot_health": "runtime_started_remote",
+                    "last_robot_error": "--",
+                }
+            )
+            self._handle_runtime_status("robot", "Robot runtime started. Reconnecting...")
+            self._on_robot_connect_requested()
+            return
+        error_line = lines[-1] if lines else "unknown_error"
+        details_text = str(details or "")
+        if "WinError 10013" in details_text or "Windows blocked the SSH socket" in details_text:
+            self._auto_start_blocked = True
+            self._auto_start_block_reason = "Windows blocked SSH socket (WinError 10013)"
+        self._rt_update(
+            {
+                "robot_health": "start_failed",
+                "last_robot_error": error_line,
+            }
+        )
+        self._handle_runtime_status("robot", f"Robot start failed: {error_line}")
+        self._refresh_view()
+
+    def _on_robot_connect_requested(self) -> None:
+        self._robot_connection_requested = True
+        self._stop_teleop_motion(send_command=False, reason="robot_reconnect_button")
+        if self.ros_client is not None:
+            try:
+                self.ros_client.close()
+            except Exception:
+                pass
+            self.ros_client = None
+        try:
+            self.robot_client.close()
+        except Exception:
+            pass
+        self._rt_update(
+            {
+                "robot_connected": False,
+                "robot_health": "reconnecting",
+                "last_robot_error": "--",
+                "preflight_ok": False,
+                "preflight_message": "reconnecting",
+            }
+        )
+        self._ros_last_connected = False
+        self._ros_reconnect_attempt = 0
+        self._ros_reconnect_next_ts = 0.0
+        self._ros_connected_since_ts = 0.0
+        self._refresh_view()
+        self._setup_robot_mode()
+        self._start_remote_snapshot_poller()
+        self._request_remote_snapshot()
+        self._refresh_view()
+
+    def _on_abort_requested(self) -> None:
+        self._stop_teleop_motion(send_command=False, reason="abort_button")
+        self._send_robot_text_command("ABORT")
+
+    def _on_reset_requested(self) -> None:
+        self._stop_teleop_motion(send_command=False, reason="reset_button")
+        self._send_robot_text_command("RESET")
+
+    def _on_sucker_off_requested(self) -> None:
+        self._stop_teleop_motion(send_command=False, reason="sucker_off_button")
+        self._send_robot_text_command("SUCKER_OFF")
+
+    def _on_manual_pick_slot_requested(self, slot_id: int) -> None:
+        slot_payload = self._vision_slot_payload(int(slot_id))
+        if (
+            bool(getattr(self.config, "vision_continuous_servo_enabled", False))
+            and self._vision_eye_in_hand_pick_flow_enabled()
+        ):
+            if slot_payload is None:
+                packet = self._latest_vision_packet if isinstance(self._latest_vision_packet, dict) else {}
+                frame_block_reason = str(packet.get("frame_block_reason") or "").strip()
+                reason = frame_block_reason or f"slot_unavailable:{int(slot_id)}"
+                self._block_continuous_servo_start(reason, dispatch_error=False)
+                return
+            self._start_continuous_vision_servo_pick(int(slot_id), source="manual_pick")
+            return
+        command = self._build_manual_pick_command(int(slot_id))
+        if command is None:
+            if slot_payload is not None and self._send_vision_servo_pick_move(int(slot_id), slot_payload):
+                return
+            details = ""
+            packet = self._latest_vision_packet if isinstance(self._latest_vision_packet, dict) else None
+            if isinstance(packet, dict):
+                for slot in packet.get("slots", []):
+                    if not isinstance(slot, dict):
+                        continue
+                    if int(slot.get("slot_id", slot.get("slot", -1))) != int(slot_id):
+                        continue
+                    reason = str(slot.get("invalid_reason") or "").strip()
+                    if reason:
+                        details = f" reason={reason}"
+                    break
+            self._handle_runtime_status("robot", f"Manual pick slot {int(slot_id)} unavailable.{details}")
+            return
+        if self._maybe_send_low_confirm_before_pick(int(slot_id)):
+            return
+        self._vision_servo_pick = None
+        self._rt_set("vision_servo_status", "idle")
+        self._send_robot_text_command(command)
+
+    def _continuous_pick_pending(self, slot_id: int, *, source: str) -> dict[str, object]:
+        return {
+            "slot_id": int(slot_id),
+            "stable_frames": 0,
+            "pick_ready_frames": 0,
+            "lost_frames": 0,
+            "source": str(source),
+            "low_height_refine_attempts": 0,
+            "waiting_for_refine_ack": False,
+            "min_frame_id": 0,
+        }
+
+    @staticmethod
+    def _vision_point_pair(value: object) -> tuple[float, float] | None:
+        if not isinstance(value, (tuple, list)) or len(value) < 2:
+            return None
+        try:
+            x_value = float(value[0])
+            y_value = float(value[1])
+        except (TypeError, ValueError):
+            return None
+        if not (math.isfinite(x_value) and math.isfinite(y_value)):
+            return None
+        return (x_value, y_value)
+
+    def _vision_slot_measurement_point(self, slot: dict[str, object]) -> tuple[float, float] | None:
+        point_keys_by_mode = {
+            "color_block_subpixel": ("color_block_center_f", "color_block_center"),
+            "color_block": ("color_block_center", "color_block_center_f"),
+            "top_face_subpixel": ("top_face_center_f", "top_face_center"),
+            "top_face": ("top_face_center", "top_face_center_f"),
+            "grasp_subpixel": ("grasp_pixel_f", "grasp_pixel"),
+            "grasp": ("grasp_pixel", "grasp_pixel_f"),
+            "geometry_subpixel": ("geometry_center_f", "geometry_center"),
+            "geometry": ("geometry_center", "geometry_center_f"),
+            "center_subpixel": ("pixel_center_f", "pixel_center"),
+            "center": ("pixel_center", "pixel_center_f"),
+        }
+        mode = str(slot.get("measurement_point", "") or "").strip().lower()
+        for key in point_keys_by_mode.get(mode, ()):
+            point = self._vision_point_pair(slot.get(key))
+            if point is not None:
+                return point
+        for key in (
+            "geometry_center_f",
+            "color_block_center_f",
+            "top_face_center_f",
+            "grasp_pixel_f",
+            "pixel_center_f",
+            "geometry_center",
+            "color_block_center",
+            "top_face_center",
+            "grasp_pixel",
+            "pixel_center",
+        ):
+            point = self._vision_point_pair(slot.get(key))
+            if point is not None:
+                return point
+        return None
+
+    def _vision_slot_payload_near_previous_center(
+        self,
+        previous_center_px: object,
+        *,
+        packet: dict[str, object],
+        max_distance_px: float = 95.0,
+    ) -> tuple[dict[str, object] | None, float | None]:
+        previous = self._vision_point_pair(previous_center_px)
+        slots = packet.get("slots")
+        if previous is None or not isinstance(slots, list):
+            return None, None
+        best_slot: dict[str, object] | None = None
+        best_distance = float("inf")
+        for slot_raw in slots:
+            if not isinstance(slot_raw, dict):
+                continue
+            if not bool(slot_raw.get("valid", False)) and str(slot_raw.get("invalid_reason", "")) != "vision_servo_required":
+                continue
+            point = self._vision_slot_measurement_point(slot_raw)
+            if point is None:
+                continue
+            distance = math.hypot(point[0] - previous[0], point[1] - previous[1])
+            if distance < best_distance:
+                best_slot = slot_raw
+                best_distance = distance
+        if best_slot is None or best_distance > float(max_distance_px):
+            return None, None
+        return best_slot, float(best_distance)
+
+    def _start_continuous_vision_servo_pick(self, slot_id: int, *, source: str) -> bool:
+        if not bool(getattr(self.config, "vision_continuous_servo_enabled", False)):
+            return False
+        if not self._vision_eye_in_hand_pick_flow_enabled():
+            return False
+        if self.config.robot_mode == "real" and not self._uses_ros_transport():
+            self._block_continuous_servo_start("ros_transport_required", dispatch_error=True)
+            return True
+        if self._uses_ros_transport():
+            state_age_ms = self._current_state_age_ms()
+            stale_threshold_ms = float(getattr(self.config, "robot_state_stale_threshold_ms", 700.0))
+            dispatch_error = str(source) != "manual_pick"
+            if self.ros_client is None or not self.ros_client.is_connected():
+                self._block_continuous_servo_start("control_unavailable", dispatch_error=dispatch_error)
+                return True
+            if not math.isfinite(state_age_ms) or state_age_ms > stale_threshold_ms:
+                self._block_continuous_servo_start("robot_state_not_fresh", dispatch_error=dispatch_error)
+                return True
+        slot_payload = self._vision_slot_payload(int(slot_id))
+        if slot_payload is None:
+            packet = self._latest_vision_packet if isinstance(self._latest_vision_packet, dict) else {}
+            frame_block_reason = str(packet.get("frame_block_reason") or "").strip()
+            reason = frame_block_reason or f"slot_unavailable:{int(slot_id)}"
+            self._block_continuous_servo_start(reason, dispatch_error=str(source) != "manual_pick")
+            return True
+        self._vision_servo_pick = None
+        self._continuous_vision_servo_pick = self._continuous_pick_pending(int(slot_id), source=source)
+        self._rt_set("vision_servo_status", f"continuous_pending slot={int(slot_id)} source={source}")
+        packet = self._latest_vision_packet if isinstance(self._latest_vision_packet, dict) else {}
+        decision = self._continuous_vision_servo_controller_instance().decide(
+            slot_id=int(slot_id),
+            slot_payload=slot_payload,
+            packet=packet,
+            pending=self._continuous_vision_servo_pick,
+            current_cyl_pose=self._current_robot_cyl_pose(),
+            frame_pose_age_ms=self._packet_frame_pose_age_ms(packet),
+        )
+        self._record_continuous_servo_debug(
+            decision,
+            context="start",
+            slot_id=int(slot_id),
+            source=source,
+        )
+        if self._apply_continuous_vision_servo_decision(decision):
+            return True
+        if self._continuous_vision_servo_pick is not None:
+            return True
+        self._block_continuous_servo_start("decision_rejected")
+        return True
+
+    def _block_continuous_servo_start(self, reason: str, *, dispatch_error: bool = True) -> None:
+        message = f"continuous_start_blocked:{str(reason)}"
+        self._continuous_vision_servo_pick = None
+        self._rt_set("vision_servo_status", message)
+        self._record_continuous_servo_debug(
+            type(
+                "Decision",
+                (),
+                {
+                    "action": "BLOCK",
+                    "status": message,
+                    "command": "",
+                    "pending": None,
+                    "theta_rate_deg_s": 0.0,
+                    "radius_rate_mm_s": 0.0,
+                    "z_rate_mm_s": 0.0,
+                    "trace": {"reason": str(reason)},
+                },
+            )(),
+            context="start_block",
+        )
+        self._handle_runtime_status("vision", message)
+        if dispatch_error:
+            self.dispatch_event(Event(source="robot", type="robot_error", value=message))
+
+    def _vision_slot_payload(self, slot_id: int, packet: dict[str, object] | None = None) -> dict[str, object] | None:
+        source_packet = packet if isinstance(packet, dict) else self._latest_vision_packet
+        if not isinstance(source_packet, dict):
+            return None
+        for slot in source_packet.get("slots", []):
+            if not isinstance(slot, dict):
+                continue
+            try:
+                current_id = int(slot.get("slot_id", slot.get("slot", -1)))
+            except (TypeError, ValueError):
+                continue
+            if current_id == int(slot_id):
+                return slot
+        return None
+
+    def _vision_eye_in_hand_pick_flow_enabled(self) -> bool:
+        return (
+            bool(getattr(self.config, "vision_eye_in_hand_pick_flow_enabled", False))
+            and str(getattr(self.config, "vision_mapping_mode", ""))
+            .strip()
+            .lower()
+            in {"delta_servo", "absolute_base"}
+        )
+
+    def _vision_servo_controller_instance(self) -> VisionServoController:
+        controller = getattr(self, "_vision_servo_controller", None)
+        if not isinstance(controller, VisionServoController):
+            controller = VisionServoController(self.config)
+            self._vision_servo_controller = controller
+        return controller
+
+    def _continuous_vision_servo_controller_instance(self) -> ContinuousVisionServoController:
+        controller = getattr(self, "_continuous_vision_servo_controller", None)
+        if not isinstance(controller, ContinuousVisionServoController):
+            controller = ContinuousVisionServoController(self.config)
+            self._continuous_vision_servo_controller = controller
+        return controller
+
+    @staticmethod
+    def _pretty_float(value: object, *, fmt: str = ".2f", fallback: str = "--") -> str:
+        try:
+            value_f = float(value)
+        except (TypeError, ValueError):
+            return fallback
+        if not math.isfinite(value_f):
+            return fallback
+        try:
+            return f"{value_f:{fmt}}"
+        except Exception:
+            try:
+                return f"{value_f:{fmt}}"
+            except Exception:
+                return fallback
+
+    def _format_continuous_servo_trace(self, trace: object) -> str:
+        if not isinstance(trace, dict):
+            return "--"
+        ordered_items: list[str] = []
+        for key in (
+            "horizontal_mode",
+            "reason",
+            "low_height_guard_reason",
+            "current_z_mm",
+            "confirm_z_mm",
+            "descent_anchor_z_mm",
+            "center_distance_px",
+            "center_distance_px_trend",
+            "low_height_guard_distance_mm",
+            "pick_ready_frames",
+            "stable_frames",
+            "lost_frames",
+            "stale_frames",
+            "target_relock_distance_px",
+            "pick_ready_px",
+            "hold_reasons",
+        ):
+            raw = trace.get(key)
+            if raw is None or raw == "":
+                continue
+            if isinstance(raw, (int, float)):
+                text = self._pretty_float(raw, fmt=".2f")
+                ordered_items.append(f"{key}={text}")
+                continue
+            ordered_items.append(f"{key}={raw}")
+        if not ordered_items:
+            return "--"
+        text = " | ".join(ordered_items)
+        return text if len(text) <= 280 else f"{text[:277]}..."
+
+    def _record_continuous_servo_debug(
+        self,
+        decision: object,
+        *,
+        context: str,
+        slot_id: int | None = None,
+        source: str | None = None,
+    ) -> None:
+        trace = getattr(decision, "trace", None)
+        if not isinstance(trace, dict):
+            trace = {}
+        action = str(getattr(decision, "action", "") or "").upper() or "--"
+        status = str(getattr(decision, "status", "") or "").strip() or "--"
+        command = str(getattr(decision, "command", "") or "").strip() or "--"
+        pending = getattr(decision, "pending", None)
+        resolved_slot_id: object = slot_id if slot_id is not None else self._rt_get("vision_servo_last_slot_id", "--")
+        center_px_text = str(self._rt_get("vision_servo_last_center_px", "--"))
+        if isinstance(pending, dict):
+            resolved_slot_id = pending.get("slot_id", resolved_slot_id)
+            if source is None:
+                source = str(pending.get("source", "").strip() or source or "")
+            raw_last_center_px = pending.get("last_center_px")
+            if raw_last_center_px is not None and isinstance(raw_last_center_px, (tuple, list)) and len(raw_last_center_px) >= 2:
+                try:
+                    center_px_text = "({:.1f},{:.1f})".format(float(raw_last_center_px[0]), float(raw_last_center_px[1]))
+                except (TypeError, ValueError):
+                    center_px_text = str(raw_last_center_px)
+            elif raw_last_center_px is not None:
+                center_px_text = str(raw_last_center_px)
+        self._rt_set("vision_servo_last_action", action)
+        self._rt_set("vision_servo_last_context", str(context))
+        self._rt_set("vision_servo_last_decision_status", status)
+        self._rt_set("vision_servo_last_command", command)
+        self._rt_set("vision_servo_last_slot_id", str(resolved_slot_id))
+        self._rt_set("vision_servo_last_source", "--" if source is None else str(source))
+        self._rt_set(
+            "vision_servo_last_rates",
+            "theta={:.3f}deg/s radius={:.3f}mm/s z={:.3f}mm/s".format(
+                float(getattr(decision, "theta_rate_deg_s", 0.0)),
+                float(getattr(decision, "radius_rate_mm_s", 0.0)),
+                float(getattr(decision, "z_rate_mm_s", 0.0)),
+            ),
+        )
+        self._rt_set("vision_servo_last_center_px", center_px_text)
+        self._rt_set("vision_servo_last_center_distance_px", self._pretty_float(trace.get("center_distance_px")))
+        self._rt_set("vision_servo_last_current_z_mm", self._pretty_float(trace.get("current_z_mm")))
+        self._rt_set("vision_servo_last_confirm_z_mm", self._pretty_float(trace.get("confirm_z_mm")))
+        self._rt_set("vision_servo_last_trace", self._format_continuous_servo_trace(trace))
+
+    def _current_robot_cyl_pose(self) -> tuple[float, float, float] | None:
+        snapshot = self._fetch_remote_robot_snapshot()
+        if not isinstance(snapshot, dict) and isinstance(self._latest_world_snapshot, dict):
+            snapshot = self._latest_world_snapshot
+        if not isinstance(snapshot, dict):
+            robot_cyl = getattr(self.controller.context, "robot_cyl", None)
+            if isinstance(robot_cyl, (tuple, list)) and len(robot_cyl) >= 3:
+                try:
+                    return (
+                        float(robot_cyl[0]),
+                        float(robot_cyl[1]),
+                        float(robot_cyl[2]),
+                    )
+                except (TypeError, ValueError):
+                    pass
+            return None
+        cyl = snapshot.get("robot_cyl")
+        if isinstance(cyl, dict):
+            try:
+                return (
+                    float(cyl.get("theta_deg")),
+                    float(cyl.get("radius_mm")),
+                    float(cyl.get("z_mm", snapshot.get("robot_z", 0.0))),
+                )
+            except (TypeError, ValueError):
+                return None
+        robot_xy = snapshot.get("robot_xy")
+        try:
+            if isinstance(robot_xy, (tuple, list)) and len(robot_xy) >= 2:
+                z_mm = float(snapshot.get("robot_z", 0.0))
+                theta_deg, radius_mm, _ = cartesian_to_cylindrical(float(robot_xy[0]), float(robot_xy[1]), z_mm)
+                return (float(theta_deg), float(radius_mm), float(z_mm))
+        except (TypeError, ValueError):
+            return None
+        return None
+
+    def _set_robot_cyl_pose(self, theta_deg: float, radius_mm: float, z_mm: float) -> None:
+        try:
+            theta_deg_f = float(theta_deg)
+            radius_mm_f = float(radius_mm)
+            z_mm_f = float(z_mm)
+        except (TypeError, ValueError):
+            return
+        self.controller.context.robot_cyl = (theta_deg_f, radius_mm_f, z_mm_f)
+        try:
+            robot_xy = cylindrical_to_cartesian(theta_deg_f, radius_mm_f, z_mm_f)
+            self.controller.context.robot_xy = (float(robot_xy[0]), float(robot_xy[1]))
+        except (TypeError, ValueError):
+            return
+        self._rt_set("robot_cyl", {"theta_deg": theta_deg_f, "radius_mm": radius_mm_f, "z_mm": z_mm_f})
+        self._rt_set("robot_xy", list(self.controller.context.robot_xy))
+        snapshot = self._latest_world_snapshot
+        if isinstance(snapshot, dict):
+            snapshot["robot_cyl"] = {"theta_deg": theta_deg_f, "radius_mm": radius_mm_f, "z_mm": z_mm_f}
+            snapshot["robot_xy"] = [float(self.controller.context.robot_xy[0]), float(self.controller.context.robot_xy[1])]
+            snapshot["robot_z"] = z_mm_f
+
+    def _step_continuous_sim_servo_pose(
+        self,
+        *,
+        theta_rate_deg_s: float,
+        radius_rate_mm_s: float,
+        z_rate_mm_s: float,
+    ) -> bool:
+        if self.config.robot_mode == "real":
+            return False
+        current_pose = self._current_robot_cyl_pose()
+        if current_pose is None:
+            return False
+        now_ts = float(time.monotonic())
+        last_ts = getattr(self, "_continuous_servo_sim_last_step_ts", None)
+        self._continuous_servo_sim_last_step_ts = now_ts
+        if not isinstance(last_ts, (int, float)) or not math.isfinite(last_ts):
+            return True
+        dt_s = now_ts - float(last_ts)
+        if dt_s <= 0.0:
+            return True
+        dt_s = max(0.0, min(0.25, dt_s))
+        try:
+            theta_deg = float(current_pose[0]) + float(theta_rate_deg_s) * dt_s
+            radius_mm = float(current_pose[1]) + float(radius_rate_mm_s) * dt_s
+            z_mm = float(current_pose[2]) + float(z_rate_mm_s) * dt_s
+            theta_limits = getattr(self.config, "robot_theta_limits_deg", (-120.0, 120.0))
+            radius_limits = getattr(self.config, "robot_radius_limits_mm", (50.0, 280.0))
+            z_limits = getattr(self.config, "robot_height_limits_mm", (80.0, 212.8))
+            theta_deg = max(float(theta_limits[0]), min(float(theta_limits[1]), theta_deg))
+            radius_mm = max(float(radius_limits[0]), min(float(radius_limits[1]), radius_mm))
+            z_mm = max(float(z_limits[0]), min(float(z_limits[1]), z_mm))
+        except (TypeError, ValueError, IndexError):
+            return False
+        self._set_robot_cyl_pose(theta_deg=theta_deg, radius_mm=radius_mm, z_mm=z_mm)
+        return True
+
+    @staticmethod
+    def _packet_frame_pose_age_ms(packet: dict[str, object]) -> float | None:
+        ages: list[float] = []
+        for key in ("latest_frame_preprocess_age_ms", "stream_age_ms", "queue_age_ms"):
+            value = packet.get(key)
+            if value is None:
+                continue
+            try:
+                age_ms = float(value)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(age_ms):
+                ages.append(max(0.0, age_ms))
+        if not ages:
+            return None
+        return max(ages)
+
+    def _select_continuous_vision_servo_slot(self, packet: dict[str, object]) -> dict[str, object] | None:
+        pending = getattr(self, "_continuous_vision_servo_pick", None)
+        if not isinstance(pending, dict):
+            return None
+        selected, relock_distance_px = self._vision_slot_payload_near_previous_center(
+            pending.get("last_center_px"),
+            packet=packet,
+        )
+        if selected is not None:
+            try:
+                pending["slot_id"] = int(selected.get("slot_id", selected.get("slot", pending.get("slot_id"))))
+            except (TypeError, ValueError):
+                pass
+            if relock_distance_px is not None:
+                pending["target_relock_distance_px"] = float(relock_distance_px)
+            self._continuous_vision_servo_pick = pending
+            return selected
+        try:
+            locked_slot_id = int(pending.get("slot_id"))
+        except (TypeError, ValueError):
+            return None
+        return self._vision_slot_payload(locked_slot_id, packet=packet)
+
+    def _is_at_vision_pick_confirm_z(self) -> bool:
+        pose = self._current_robot_cyl_pose()
+        if pose is None:
+            return False
+        confirm_z = float(getattr(self.config, "vision_pick_confirm_z_mm", self.config.robot_approach_z))
+        tolerance = max(0.5, float(getattr(self.config, "vision_pick_z_tolerance_mm", 4.0)))
+        return abs(float(pose[2]) - confirm_z) <= tolerance
+
+    @staticmethod
+    def _slot_servo_command_point(slot: dict[str, object] | None) -> tuple[float, float] | None:
+        if not isinstance(slot, dict):
+            return None
+        point = slot.get("servo_command_point")
+        if not isinstance(point, (tuple, list)) or len(point) < 2:
+            return None
+        try:
+            theta = float(point[0])
+            radius = float(point[1])
+        except (TypeError, ValueError):
+            return None
+        if not (math.isfinite(theta) and math.isfinite(radius)):
+            return None
+        return (theta, radius)
+
+    def _clamp_low_height_refine_target(
+        self,
+        *,
+        current_pose: tuple[float, float, float],
+        target_theta: float,
+        target_radius: float,
+    ) -> tuple[float, float, float]:
+        theta_limit = abs(float(getattr(self.config, "vision_continuous_servo_low_height_refine_max_theta_step_deg", 0.25)))
+        radius_limit = abs(float(getattr(self.config, "vision_continuous_servo_low_height_refine_max_radius_step_mm", 1.5)))
+        theta_delta = max(-theta_limit, min(theta_limit, float(target_theta) - float(current_pose[0])))
+        radius_delta = max(-radius_limit, min(radius_limit, float(target_radius) - float(current_pose[1])))
+        return (
+            float(current_pose[0]) + float(theta_delta),
+            float(current_pose[1]) + float(radius_delta),
+            float(current_pose[2]),
+        )
+
+    def _maybe_send_low_height_discrete_refine(
+        self,
+        *,
+        decision,
+        pending_dict: dict[str, object] | None,
+    ) -> bool:
+        if not bool(getattr(self.config, "vision_continuous_servo_low_height_discrete_refine_enabled", True)):
+            return False
+        if pending_dict is None:
+            return False
+        trace = getattr(decision, "trace", {})
+        if not isinstance(trace, dict):
+            return False
+        try:
+            current_z = float(trace.get("current_z_mm"))
+            confirm_z = float(trace.get("confirm_z_mm"))
+            center_distance_px = float(trace.get("center_distance_px"))
+        except (TypeError, ValueError):
+            return False
+        z_tol = max(0.5, float(getattr(self.config, "vision_pick_z_tolerance_mm", 4.0)))
+        pick_ready_px = max(0.1, float(getattr(self.config, "vision_continuous_servo_pick_ready_center_px", 2.0)))
+        low_height_margin_mm = min(1.0, z_tol)
+        if (
+            abs(current_z - confirm_z) > z_tol
+            or current_z > confirm_z + low_height_margin_mm
+            or center_distance_px <= pick_ready_px
+        ):
+            return False
+        if not self._uses_ros_transport() or self.ros_client is None or not self.ros_client.is_connected():
+            return False
+        attempts = 0
+        try:
+            attempts = int(pending_dict.get("low_height_refine_attempts", 0) or 0)
+        except (TypeError, ValueError):
+            attempts = 0
+        max_attempts = max(1, int(getattr(self.config, "vision_continuous_servo_low_height_refine_attempts", 4)))
+        if attempts >= max_attempts:
+            if self.ros_client is not None:
+                try:
+                    self._teleop_cmd_seq = next_teleop_cmd_seq(self._teleop_cmd_seq)
+                    self.ros_client.stop_teleop(use_auto_z=False, cmd_seq=int(self._teleop_cmd_seq))
+                except Exception:
+                    pass
+            self._continuous_vision_servo_pick = None
+            self._rt_set("vision_servo_status", "continuous_stop reason=low_height_refine_attempt_limit")
+            return True
+        pending_slot_id = int(pending_dict.get("slot_id", 0) or 0)
+        slot = self._vision_slot_payload(pending_slot_id)
+        refine_point = self._slot_servo_command_point(slot)
+        current_pose = self._current_robot_cyl_pose()
+        if refine_point is None or current_pose is None:
+            if self.ros_client is not None:
+                try:
+                    self._teleop_cmd_seq = next_teleop_cmd_seq(self._teleop_cmd_seq)
+                    self.ros_client.stop_teleop(use_auto_z=False, cmd_seq=int(self._teleop_cmd_seq))
+                except Exception:
+                    pass
+            self._continuous_vision_servo_pick = None
+            self._rt_set("vision_servo_status", "continuous_stop reason=low_height_refine_unavailable")
+            return True
+        target = self._clamp_low_height_refine_target(
+            current_pose=current_pose,
+            target_theta=float(refine_point[0]),
+            target_radius=float(refine_point[1]),
+        )
+        pending_next = dict(pending_dict)
+        pending_next["low_height_refine_attempts"] = attempts + 1
+        pending_next["waiting_for_refine_ack"] = True
+        pending_next["min_frame_id"] = int(self._latest_vision_packet.get("frame_id", 0) if isinstance(self._latest_vision_packet, dict) else 0) + 1
+        self._continuous_vision_servo_pick = pending_next
+        if self.ros_client is not None:
+            try:
+                self._teleop_cmd_seq = next_teleop_cmd_seq(self._teleop_cmd_seq)
+                self.ros_client.stop_teleop(use_auto_z=False, cmd_seq=int(self._teleop_cmd_seq))
+            except Exception:
+                pass
+        self._send_robot_text_command(f"MOVE_CYL {target[0]:.2f} {target[1]:.2f} {target[2]:.2f}")
+        self._rt_set(
+            "vision_servo_status",
+            f"continuous_low_refine attempt={attempts + 1} center={center_distance_px:.1f}px",
+        )
+        return True
+
+    def _send_vision_low_confirm_move(self, slot_id: int, *, attempts: int = 0) -> bool:
+        slot_payload = self._vision_slot_payload(int(slot_id))
+        if slot_payload is None:
+            self._rt_set("vision_servo_status", f"cancelled slot={int(slot_id)} reason=slot_unavailable")
+            self._handle_runtime_status("vision", f"Vision pick low confirm cancelled: slot {int(slot_id)} unavailable.")
+            return False
+        self._vision_servo_pick = {
+            "slot_id": int(slot_id),
+            "attempts": int(max(0, attempts)),
+            "waiting_for_ack": False,
+            "min_frame_id": 0,
+            "stability_wait_frames": 0,
+            "stage": "low_confirm",
+        }
+        return self._send_vision_servo_pick_move(int(slot_id), slot_payload)
+
+    def _maybe_send_low_confirm_before_pick(self, slot_id: int, *, attempts: int = 0) -> bool:
+        if not self._vision_eye_in_hand_pick_flow_enabled():
+            return False
+        if self._is_at_vision_pick_confirm_z():
+            return False
+        return self._send_vision_low_confirm_move(int(slot_id), attempts=int(attempts))
+
+    def _apply_vision_servo_decision(self, decision) -> bool:
+        action = str(getattr(decision, "action", "")).upper()
+        pending_dict = getattr(decision, "pending_dict", None)
+        if action == "WAIT":
+            if pending_dict is not None:
+                self._vision_servo_pick = pending_dict
+            return True
+        if action == "WAIT_STABLE":
+            self._vision_servo_pick = pending_dict
+            self._rt_set("vision_servo_status", str(decision.status))
+            message = str(getattr(decision, "message", "") or "")
+            if message:
+                self._handle_runtime_status("vision", message)
+            return True
+        if action == "MOVE":
+            command = str(getattr(decision, "command", "") or "")
+            if not command:
+                return False
+            self._vision_servo_pick = pending_dict
+            self._rt_set("vision_servo_status", str(decision.status))
+            message = str(getattr(decision, "message", "") or "")
+            if message:
+                self._handle_runtime_status("vision", message)
+            self._send_robot_text_command(command)
+            return True
+        if action == "PICK":
+            command = str(getattr(decision, "command", "") or "")
+            if not command:
+                return False
+            self._vision_servo_pick = None
+            self._rt_set("vision_servo_status", str(decision.status))
+            message = str(getattr(decision, "message", "") or "")
+            if message:
+                self._handle_runtime_status("vision", message)
+            # VisionServoController has already produced the final pick command.
+            # In command_bias mode that command is current radius + the configured
+            # eye-in-hand forward offset, so do not run the legacy app-layer pick
+            # bias rewrite again.
+            self._send_robot_text_command(command, apply_pick_command_bias=False)
+            return True
+        if action == "CANCEL":
+            self._vision_servo_pick = None
+            self._rt_set("vision_servo_status", str(decision.status))
+            message = str(getattr(decision, "message", "") or "")
+            if message:
+                self._handle_runtime_status("vision", message)
+            return False
+        return False
+
+    def _mark_vision_servo_move_acknowledged(self) -> None:
+        pending = self._vision_servo_pick
+        if not isinstance(pending, dict):
+            return
+        if not bool(pending.get("waiting_for_ack", False)):
+            return
+        pending["waiting_for_ack"] = False
+        vision_runtime = getattr(self, "vision_runtime", None)
+        reset_tracking = getattr(vision_runtime, "reset_tracking", None)
+        if callable(reset_tracking):
+            reset_tracking()
+        packet = self._latest_vision_packet if isinstance(self._latest_vision_packet, dict) else {}
+        try:
+            current_frame_id = int(packet.get("frame_id", 0))
+        except (TypeError, ValueError):
+            current_frame_id = 0
+        acknowledged = self._vision_servo_controller_instance().acknowledge_move(
+            pending,
+            current_frame_id=current_frame_id,
+        )
+        if acknowledged is None:
+            pending["waiting_for_ack"] = False
+            pending["min_frame_id"] = current_frame_id + 1
+            acknowledged = pending
+        self._vision_servo_pick = acknowledged
+        self._rt_set("vision_servo_status", f"waiting_fresh_frame slot={pending.get('slot_id')}")
+
+    def _mark_continuous_refine_move_acknowledged(self) -> None:
+        pending = getattr(self, "_continuous_vision_servo_pick", None)
+        if not isinstance(pending, dict):
+            return
+        if not bool(pending.get("waiting_for_refine_ack", False)):
+            return
+        pending = dict(pending)
+        pending["waiting_for_refine_ack"] = False
+        packet = self._latest_vision_packet if isinstance(self._latest_vision_packet, dict) else {}
+        try:
+            pending["min_frame_id"] = int(packet.get("frame_id", 0) or 0) + 1
+        except (TypeError, ValueError):
+            pending["min_frame_id"] = 1
+        self._continuous_vision_servo_pick = pending
+        self._rt_set("vision_servo_status", f"continuous_wait_fresh_frame slot={pending.get('slot_id')}")
+
+    def _merge_continuous_pick_pending(self, pending_dict: dict[str, object] | None) -> dict[str, object] | None:
+        if not isinstance(pending_dict, dict):
+            return pending_dict
+        merged = dict(pending_dict)
+        current = getattr(self, "_continuous_vision_servo_pick", None)
+        if not isinstance(current, dict):
+            return merged
+        try:
+            current_slot_id = int(current.get("slot_id"))
+            next_slot_id = int(merged.get("slot_id"))
+        except (TypeError, ValueError):
+            return merged
+        if current_slot_id != next_slot_id:
+            return merged
+        for key, default in (
+            ("low_height_refine_attempts", 0),
+            ("waiting_for_refine_ack", False),
+            ("min_frame_id", 0),
+        ):
+            merged[key] = current.get(key, default)
+        return merged
+
+    def _pump_pending_vision_servo_pick(self, packet: dict[str, object]) -> None:
+        pending = self._vision_servo_pick
+        if not isinstance(pending, dict) or bool(pending.get("waiting_for_ack", False)):
+            return
+        try:
+            frame_id = int(packet.get("frame_id", 0))
+            min_frame_id = int(pending.get("min_frame_id", 0))
+            slot_id = int(pending.get("slot_id"))
+        except (TypeError, ValueError):
+            return
+        if frame_id < min_frame_id:
+            return
+        slot = self._vision_slot_payload(slot_id, packet=packet)
+        decision = self._vision_servo_controller_instance().decide(
+            slot_id=slot_id,
+            slot_payload=slot,
+            packet=packet,
+            pending=pending,
+            current_cyl_pose=self._current_robot_cyl_pose(),
+            at_confirm_z=self._is_at_vision_pick_confirm_z(),
+            eye_in_hand_enabled=self._vision_eye_in_hand_pick_flow_enabled(),
+        )
+        self._apply_vision_servo_decision(decision)
+
+    def _apply_continuous_vision_servo_decision(self, decision) -> bool:
+        self._record_continuous_servo_debug(decision, context="apply")
+        action = str(getattr(decision, "action", "")).upper()
+        raw_pending_dict = getattr(decision, "pending_dict", None)
+        pending_dict = self._merge_continuous_pick_pending(raw_pending_dict)
+        if action == "SERVO":
+            if pending_dict is not None:
+                self._continuous_vision_servo_pick = pending_dict
+            if isinstance(pending_dict, dict) and self._maybe_send_low_height_discrete_refine(
+                decision=decision,
+                pending_dict=pending_dict,
+            ):
+                return True
+            if self.config.robot_mode == "real":
+                if self.ros_client is None or not self.ros_client.is_connected():
+                    self._rt_set("vision_servo_status", "continuous_stop reason=ros_unavailable")
+                    return False
+            elif self._step_continuous_sim_servo_pose(
+                theta_rate_deg_s=float(getattr(decision, "theta_rate_deg_s", 0.0)),
+                radius_rate_mm_s=float(getattr(decision, "radius_rate_mm_s", 0.0)),
+                z_rate_mm_s=float(getattr(decision, "z_rate_mm_s", 0.0)),
+            ):
+                self._rt_set("vision_servo_status", str(decision.status))
+                return True
+            else:
+                self._rt_set("vision_servo_status", "continuous_stop reason=robot_pose_unavailable")
+                return False
+            if self.ros_client is None or not self.ros_client.is_connected():
+                self._rt_set("vision_servo_status", "continuous_stop reason=ros_unavailable")
+                return False
+            self._teleop_cmd_seq = next_teleop_cmd_seq(self._teleop_cmd_seq)
+            try:
+                self.ros_client.publish_teleop(
+                    theta_rate_deg_s=float(getattr(decision, "theta_rate_deg_s", 0.0)),
+                    radius_rate_mm_s=float(getattr(decision, "radius_rate_mm_s", 0.0)),
+                    z_rate_mm_s=float(getattr(decision, "z_rate_mm_s", 0.0)),
+                    use_auto_z=False,
+                    enabled=True,
+                    cmd_seq=int(self._teleop_cmd_seq),
+                    client_ts=float(time.time()),
+                )
+            except Exception as error:
+                self._rt_set("vision_servo_status", f"continuous_stop reason=publish_failed:{error}")
+                return False
+            self._rt_set("vision_servo_status", str(decision.status))
+            return True
+        if action == "PICK_READY":
+            if self.ros_client is not None:
+                try:
+                    self._teleop_cmd_seq = next_teleop_cmd_seq(self._teleop_cmd_seq)
+                    self.ros_client.stop_teleop(use_auto_z=False, cmd_seq=int(self._teleop_cmd_seq))
+                except Exception:
+                    pass
+            command = str(getattr(decision, "command", "") or "")
+            if not command:
+                return False
+            if bool(getattr(self.config, "vision_continuous_servo_stop_at_confirm", False)):
+                trace = getattr(decision, "trace", None)
+                center_distance = None
+                confirm_z = None
+                if isinstance(trace, dict):
+                    center_distance = trace.get("center_distance_px")
+                    confirm_z = trace.get("confirm_z_mm")
+                try:
+                    center_text = f"{float(center_distance):.2f}px"
+                except (TypeError, ValueError):
+                    center_text = "--"
+                try:
+                    confirm_text = f"{float(confirm_z):.1f}"
+                except (TypeError, ValueError):
+                    confirm_text = "--"
+                release_mode = str(self._rt_get("release_mode_effective", "") or "--")
+                self._continuous_vision_servo_pick = None
+                self._rt_set(
+                    "vision_servo_status",
+                    "continuous_stop_at_confirm "
+                    f"slot={getattr(getattr(decision, 'pending', None), 'slot_id', '--')} "
+                    f"z={confirm_text} center={center_text} release_mode={release_mode} no_pick",
+                )
+                self._rt_set("vision_servo_confirm_command_blocked", command)
+                return True
+            self._continuous_vision_servo_pick = None
+            self._rt_set("vision_servo_status", str(decision.status))
+            self._send_robot_text_command(command, apply_pick_command_bias=False)
+            return True
+        if action == "STOP":
+            stop_reason = str(getattr(decision, "reason", "") or "")
+            if pending_dict is not None and stop_reason in {
+                "hold",
+                "lost_target_wait",
+                "frame_stale_wait",
+                "settle_near_center",
+            }:
+                self._continuous_vision_servo_pick = pending_dict
+                if stop_reason in {"hold", "settle_near_center"} and self._maybe_send_low_height_discrete_refine(
+                    decision=decision,
+                    pending_dict=pending_dict,
+                ):
+                    return True
+            else:
+                self._continuous_vision_servo_pick = None
+            if self.ros_client is not None:
+                try:
+                    self._teleop_cmd_seq = next_teleop_cmd_seq(self._teleop_cmd_seq)
+                    self.ros_client.stop_teleop(use_auto_z=False, cmd_seq=int(self._teleop_cmd_seq))
+                except Exception:
+                    pass
+            self._rt_set("vision_servo_status", str(decision.status))
+            return True
+        return False
+
+    def _pump_continuous_vision_servo(self, packet: dict[str, object]) -> None:
+        if not bool(getattr(self.config, "vision_continuous_servo_enabled", False)):
+            return
+        if not self._vision_eye_in_hand_pick_flow_enabled():
+            return
+        pending = getattr(self, "_continuous_vision_servo_pick", None)
+        if not isinstance(pending, dict):
+            self._rt_set("vision_servo_status", "continuous_idle awaiting_pick")
+            return
+        if bool(pending.get("waiting_for_refine_ack", False)):
+            self._rt_set("vision_servo_status", f"continuous_wait_refine_ack slot={pending.get('slot_id')}")
+            return
+        try:
+            min_frame_id = int(pending.get("min_frame_id", 0) or 0)
+            frame_id = int(packet.get("frame_id", 0) or 0)
+        except (TypeError, ValueError):
+            min_frame_id = 0
+            frame_id = 0
+        if min_frame_id > 0 and frame_id < min_frame_id:
+            self._rt_set("vision_servo_status", f"continuous_wait_fresh_frame slot={pending.get('slot_id')}")
+            return
+        if self.config.robot_mode == "real" and not self._uses_ros_transport():
+            self._rt_set("vision_servo_status", "continuous_stop reason=ros_transport_required")
+            return
+        if self._uses_ros_transport():
+            state_age_ms = self._current_state_age_ms()
+            stale_threshold_ms = float(getattr(self.config, "robot_state_stale_threshold_ms", 700.0))
+            if (
+                self.ros_client is None
+                or not self.ros_client.is_connected()
+                or not math.isfinite(state_age_ms)
+                or state_age_ms > stale_threshold_ms
+            ):
+                self._continuous_vision_servo_pick = None
+                if self.ros_client is not None:
+                    try:
+                        self.ros_client.stop_teleop(use_auto_z=False)
+                    except Exception:
+                        pass
+                self._rt_set("vision_servo_status", "continuous_stop reason=control_unavailable")
+                return
+        if self.controller.state in {TaskState.S3_PLACING, TaskState.ERROR}:
+            return
+        selected_slot = self._select_continuous_vision_servo_slot(packet)
+        slot_id = None
+        if selected_slot is not None:
+            try:
+                slot_id = int(selected_slot.get("slot_id", selected_slot.get("slot", 0)))
+            except (TypeError, ValueError):
+                slot_id = None
+        if slot_id is None and isinstance(pending, dict):
+            try:
+                slot_id = int(pending.get("slot_id"))
+            except (TypeError, ValueError):
+                slot_id = None
+        if slot_id is None:
+            return
+        decision = self._continuous_vision_servo_controller_instance().decide(
+            slot_id=int(slot_id),
+            slot_payload=selected_slot,
+            packet=packet,
+            pending=pending if isinstance(pending, dict) else None,
+            current_cyl_pose=self._current_robot_cyl_pose(),
+            frame_pose_age_ms=self._packet_frame_pose_age_ms(packet),
+        )
+        self._apply_continuous_vision_servo_decision(decision)
+
+    def _send_vision_servo_pick_move(self, slot_id: int, slot_payload: dict[str, object]) -> bool:
+        packet = self._latest_vision_packet if isinstance(self._latest_vision_packet, dict) else {}
+        pending = self._vision_servo_pick if isinstance(self._vision_servo_pick, dict) else None
+        decision = self._vision_servo_controller_instance().decide(
+            slot_id=int(slot_id),
+            slot_payload=slot_payload,
+            packet=packet,
+            pending=pending,
+            current_cyl_pose=self._current_robot_cyl_pose(),
+            at_confirm_z=self._is_at_vision_pick_confirm_z(),
+            eye_in_hand_enabled=self._vision_eye_in_hand_pick_flow_enabled(),
+        )
+        return self._apply_vision_servo_decision(decision)
+
+    def _on_manual_place_requested(self) -> None:
+        self._send_robot_text_command("PLACE")
+
+    def _on_pick_radius_bias_delta_requested(self, delta_mm: float) -> None:
+        self._pick_cyl_radius_bias_mm = float(self._pick_cyl_radius_bias_mm) + float(delta_mm)
+        self.main_window.update_pick_bias_display(
+            self._pick_cyl_radius_bias_mm,
+            self._pick_cyl_theta_bias_deg,
+            self._pick_cyl_tangent_bias_mm,
+        )
+        self._handle_runtime_status(
+            "robot",
+            "Pick bias -> r={0:+.1f}mm tangent={1:+.1f}mm theta={2:+.1f}deg".format(
+                self._pick_cyl_radius_bias_mm,
+                self._pick_cyl_tangent_bias_mm,
+                self._pick_cyl_theta_bias_deg,
+            ),
+        )
+
+    def _on_pick_bias_reset_requested(self) -> None:
+        self._pick_cyl_radius_bias_mm = float(self.config.pick_cyl_radius_bias_mm)
+        self._pick_cyl_tangent_bias_mm = float(self.config.pick_cyl_tangent_bias_mm)
+        self.main_window.update_pick_bias_display(
+            self._pick_cyl_radius_bias_mm,
+            self._pick_cyl_theta_bias_deg,
+            self._pick_cyl_tangent_bias_mm,
+        )
+        self._handle_runtime_status(
+            "robot",
+            "Pick bias reset -> r={0:+.1f}mm tangent={1:+.1f}mm theta={2:+.1f}deg".format(
+                self._pick_cyl_radius_bias_mm,
+                self._pick_cyl_tangent_bias_mm,
+                self._pick_cyl_theta_bias_deg,
+            ),
+        )
+
+    def _on_pick_tangent_bias_delta_requested(self, delta_mm: float) -> None:
+        self._pick_cyl_tangent_bias_mm = float(self._pick_cyl_tangent_bias_mm) + float(delta_mm)
+        self.main_window.update_pick_bias_display(
+            self._pick_cyl_radius_bias_mm,
+            self._pick_cyl_theta_bias_deg,
+            self._pick_cyl_tangent_bias_mm,
+        )
+        self._handle_runtime_status(
+            "robot",
+            "Pick bias -> r={0:+.1f}mm tangent={1:+.1f}mm theta={2:+.1f}deg".format(
+                self._pick_cyl_radius_bias_mm,
+                self._pick_cyl_tangent_bias_mm,
+                self._pick_cyl_theta_bias_deg,
+            ),
+        )
+
+    def _on_pick_tangent_bias_reset_requested(self) -> None:
+        self._pick_cyl_tangent_bias_mm = float(self.config.pick_cyl_tangent_bias_mm)
+        self.main_window.update_pick_bias_display(
+            self._pick_cyl_radius_bias_mm,
+            self._pick_cyl_theta_bias_deg,
+            self._pick_cyl_tangent_bias_mm,
+        )
+        self._handle_runtime_status(
+            "robot",
+            "Pick tangent bias reset -> r={0:+.1f}mm tangent={1:+.1f}mm theta={2:+.1f}deg".format(
+                self._pick_cyl_radius_bias_mm,
+                self._pick_cyl_tangent_bias_mm,
+                self._pick_cyl_theta_bias_deg,
+            ),
+        )
+
+    def _on_pick_theta_bias_delta_requested(self, delta_deg: float) -> None:
+        self._pick_cyl_theta_bias_deg = float(self._pick_cyl_theta_bias_deg) + float(delta_deg)
+        self.main_window.update_pick_bias_display(
+            self._pick_cyl_radius_bias_mm,
+            self._pick_cyl_theta_bias_deg,
+            self._pick_cyl_tangent_bias_mm,
+        )
+        self._handle_runtime_status(
+            "robot",
+            "Pick bias -> r={0:+.1f}mm tangent={1:+.1f}mm theta={2:+.1f}deg".format(
+                self._pick_cyl_radius_bias_mm,
+                self._pick_cyl_tangent_bias_mm,
+                self._pick_cyl_theta_bias_deg,
+            ),
+        )
+
+    def _on_pick_theta_bias_reset_requested(self) -> None:
+        self._pick_cyl_theta_bias_deg = float(self.config.pick_cyl_theta_bias_deg)
+        self.main_window.update_pick_bias_display(
+            self._pick_cyl_radius_bias_mm,
+            self._pick_cyl_theta_bias_deg,
+            self._pick_cyl_tangent_bias_mm,
+        )
+        self._handle_runtime_status(
+            "robot",
+            "Pick bias reset -> r={0:+.1f}mm tangent={1:+.1f}mm theta={2:+.1f}deg".format(
+                self._pick_cyl_radius_bias_mm,
+                self._pick_cyl_tangent_bias_mm,
+                self._pick_cyl_theta_bias_deg,
+            ),
+        )
+
+    def _on_pick_tuning_delta_requested(self, field: str, delta: float) -> None:
+        name = str(field or "").strip()
+        if not name or name not in self._pick_tuning_state:
+            return
+        current = self._pick_tuning_state.get(name)
+        if name == "place_release_mode":
+            return
+        try:
+            next_value = float(current) + float(delta)
+        except (TypeError, ValueError):
+            return
+        self._pick_tuning_state[name] = next_value
+        self._pick_tuning_state = self._sanitize_pick_tuning(self._pick_tuning_state)
+        self._pick_tuning_local_dirty = True
+        self._rt_set("pick_tuning", dict(self._pick_tuning_state))
+        self.main_window.update_pick_tuning_display(self._pick_tuning_state)
+
+    def _on_pick_release_mode_toggle_requested(self) -> None:
+        current_mode = str(self._pick_tuning_state.get("place_release_mode", "release")).strip().lower()
+        self._pick_tuning_state["place_release_mode"] = "off" if current_mode == "release" else "release"
+        self._pick_tuning_state = self._sanitize_pick_tuning(self._pick_tuning_state)
+        self._pick_tuning_local_dirty = True
+        self._rt_set("pick_tuning", dict(self._pick_tuning_state))
+        self.main_window.update_pick_tuning_display(self._pick_tuning_state)
+
+    def _on_pick_tuning_apply_requested(self) -> None:
+        if not self._uses_ros_transport() or self.ros_client is None:
+            self._handle_runtime_status("robot", "Pick tuning apply requires ROS transport.")
+            return
+        payload = dict(self._sanitize_pick_tuning(self._pick_tuning_state))
+        self._pick_tuning_state = dict(payload)
+        self._rt_set("pick_tuning", dict(payload))
+
+        def callback(result: RosServiceResult) -> None:
+            if result.ok:
+                self._pick_tuning_local_dirty = False
+                self._queue_runtime_status("robot", "Pick tuning applied.")
+                self._request_remote_snapshot()
+            else:
+                self._queue_runtime_status("robot", f"Pick tuning apply failed: {result.message}")
+
+        try:
+            self.ros_client.set_pick_tuning(payload, callback=callback)
+        except Exception as error:
+            self._handle_runtime_status("robot", f"Pick tuning apply failed: {error}")
+
+    def _on_pick_tuning_reset_requested(self) -> None:
+        self._pick_tuning_state = dict(self._pick_tuning_defaults)
+        self._pick_tuning_local_dirty = True
+        self._rt_set("pick_tuning", dict(self._pick_tuning_state))
+        self.main_window.update_pick_tuning_display(self._pick_tuning_state)
+        self._handle_runtime_status("robot", "Pick tuning reset to defaults (click Apply to send).")
+
+    def _on_pick_tuning_save_requested(self) -> None:
+        self._pick_tuning_state = self._sanitize_pick_tuning(self._pick_tuning_state)
+        self._rt_set("pick_tuning", dict(self._pick_tuning_state))
+        try:
+            saved_path = self._save_pick_tuning_profile()
+        except Exception as error:
+            self._handle_runtime_status("robot", f"Pick tuning save failed: {error}")
+            return
+        self._handle_runtime_status("robot", f"Pick tuning saved: {saved_path}")
+
+    def _build_manual_pick_command(self, slot_id: int) -> str | None:
+        packet = self._latest_vision_packet
+        if isinstance(packet, dict):
+            for slot in packet.get("slots", []):
+                if not isinstance(slot, dict):
+                    continue
+                if int(slot.get("slot_id", slot.get("slot", -1))) != int(slot_id):
+                    continue
+                if not bool(slot.get("valid", False)):
+                    continue
+                if not bool(slot.get("actionable", False)):
+                    continue
+                slot_for_command = dict(slot)
+                slot_for_command["grasp_angle_quality_threshold"] = float(self.config.sucker_rotation_angle_quality_threshold)
+                command = build_pick_command_from_slot_payload(slot_for_command)
+                if command is not None:
+                    return command
+        for target in self.controller.context.latest_vision_targets:
+            target_slot_id = getattr(target, "slot_id", None)
+            target_id = getattr(target, "id", None)
+            if int(target_slot_id or target_id or -1) != int(slot_id):
+                continue
+            command = build_pick_command_from_target(target)
+            if command is not None:
+                return command
+        if self.slot_catalog is not None and self.config.vision_mode != "robot_camera_detection":
+            for slot in self.slot_catalog.list_pick_slots(source=self._pick_slot_source()):
+                if int(getattr(slot, "slot_id", -1)) != int(slot_id):
+                    continue
+                command = build_catalog_pick_command(slot)
+                if command is not None:
+                    return command
+        return None
+
+    def _build_pick_command_from_slot_payload(self, slot: dict[str, object]) -> str | None:
+        return build_pick_command_from_slot_payload(slot)
+
+    def _build_pick_command_from_target(self, target: object) -> str | None:
+        return build_pick_command_from_target(target)
+
+    def _build_pick_command_from_mode_and_point(self, mode: str, point: object) -> str | None:
+        return build_pick_command_from_mode_and_point(mode, point)
+
+    def _resolve_vision_packet(self, packet: dict[str, object]) -> dict[str, object]:
+        from hybrid_controller.vision.target_resolver import resolve_vision_packet
+
+        snapshot = self._fetch_remote_robot_snapshot()
+        snapshot_age_ms = float(self._compute_remote_snapshot_age_ms())
+        frame_pose_age_ms: float | None = None
+        pose_buffer = getattr(self, "_robot_pose_buffer", None)
+        nearest = pose_buffer.nearest(packet.get("capture_ts")) if isinstance(pose_buffer, RobotPoseBuffer) else None
+        if nearest is not None:
+            snapshot = dict(nearest.sample.snapshot)
+            frame_pose_age_ms = float(nearest.age_ms)
+        self._rt_set("vision_frame_pose_age_ms", float("inf") if frame_pose_age_ms is None else frame_pose_age_ms)
+        self._rt_set("vision_snapshot_age_ms", snapshot_age_ms)
+        resolution = resolve_vision_packet(
+            packet,
+            config=self.config,
+            snapshot=snapshot,
+            snapshot_age_ms=snapshot_age_ms,
+            frame_pose_age_ms=frame_pose_age_ms,
+        )
+        self._rt_update(
+            {
+                "vision_mapping_mode": resolution.mapping_mode,
+                "vision_invalid_reason": resolution.first_invalid_reason,
+                "vision_last_resolved_base_xy": resolution.first_resolved_base_xy,
+                "vision_last_resolved_cyl": resolution.first_resolved_cyl,
+            }
+        )
+        return resolution.packet
+
+    def _start_ui_refresh_timer(self) -> None:
+        timer = QTimer(self.main_window)
+        timer.timeout.connect(self._refresh_view)
+        timer.start(int(self.config.ui_panel_refresh_interval_ms))
+        self.timers["ui-panels"] = timer
+
+    def _start_remote_snapshot_poller(self) -> None:
+        if self.config.robot_mode != "real":
+            return
+        if not bool(getattr(self, "_robot_connection_requested", False)):
+            if self._remote_snapshot_poller is not None:
+                self._remote_snapshot_poller.stop()
+                self._remote_snapshot_poller = None
+            return
+        if self._uses_ros_transport():
+            if self._remote_snapshot_poller is not None:
+                self._remote_snapshot_poller.stop()
+                self._remote_snapshot_poller = None
+            return
+        if self._remote_snapshot_poller is not None:
+            self._remote_snapshot_poller.stop()
+        self._remote_snapshot_poller = RemoteSnapshotPoller(
+            interval_ms=int(self.config.remote_snapshot_poll_interval_ms),
+            fetch_snapshot=self._poll_remote_snapshot_once,
+            on_snapshot=self._emit_polled_remote_snapshot,
+        )
+        self._remote_snapshot_poller.start()
+
+    def _start_teleop_timer(self) -> None:
+        timer = QTimer(self.main_window)
+        timer.setTimerType(Qt.PreciseTimer)
+        timer.timeout.connect(self._on_realtime_tick)
+        interval_ms = int(self.config.teleop_repeat_interval_ms)
+        if self.config.move_source == "mi":
+            interval_ms = max(10, int(self.config.mi_poll_interval_ms))
+        timer.start(interval_ms)
+        self.timers["teleop-step"] = timer
+
+    def _on_realtime_tick(self) -> None:
+        self._pump_robot_bootstrap()
+        self._pump_ros_reconnect()
+        self._pump_input_sources()
+        self._pump_teleop_command()
+        self._check_pending_command_timeout()
+
+    def _handle_runtime_status(self, component: str, message: str) -> None:
+        self._log_runtime(component, message)
+        if component == "vision":
+            self._rt_set("vision_health", message)
+        elif component == "robot":
+            lowered = message.lower()
+            if "send failed" in lowered:
+                self._rt_set("robot_health", "send_failed")
+            elif "connect failed" in lowered or "connect_failed" in lowered:
+                self._rt_set("robot_health", "connect_failed")
+            elif "start failed" in lowered or "start_failed" in lowered:
+                self._rt_set("robot_health", "start_failed")
+            elif "reconnecting" in lowered:
+                self._rt_set("robot_health", "reconnecting")
+        elif component == "ssvep":
+            self._rt_set("ssvep_runtime_status", message)
+            if "connected" in message.lower():
+                self._rt_set("ssvep_connected", True)
+        elif component == "mi":
+            lowered = message.lower()
+            if "error" in lowered or "failed" in lowered:
+                self._rt_set("mi_last_error", message)
+        self._refresh_view()
+
+    def _log_runtime(self, component: str, message: str) -> None:
+        self.logger.log_runtime_status(component, message)
+        self.main_window.append_log(f"[{component}] {message}")
+
+    def _is_move_token(self, token: str) -> bool:
+        return str(token).strip().lower() in {"a", "d", "w", "s", "left", "right", "up", "down"}
+
+    def _is_teleop_enabled(self) -> bool:
+        return self._keyboard_operator_profile or self.config.move_source == "sim"
+
+    def _teleop_state_allows_motion(self) -> bool:
+        if self._uses_ros_transport():
+            if self.controller.state in {TaskState.S2_PICKING, TaskState.S3_PLACING, TaskState.ERROR}:
+                return False
+            return True
+        return self.controller.state in {TaskState.S1_MI_MOVE, TaskState.S3_MI_CARRY}
+
+    def _should_log_teleop_warning(self) -> bool:
+        now = time.monotonic()
+        if (now - float(self._last_teleop_warn_ts)) < 1.0:
+            return False
+        self._last_teleop_warn_ts = now
+        return True
+
+    def _handle_move_key_pressed(self, token: str) -> None:
+        if not self._is_teleop_enabled():
+            if self.config.move_source == "mi" and self._should_emit_mi_status():
+                self._handle_runtime_status(
+                    "mi",
+                    "WASD ignored because move_source=mi (waiting for MI input provider events).",
+                )
+            return
+        if not self._teleop_state_allows_motion():
+            self._handle_runtime_status(
+                "robot",
+                f"WASD ignored in state={self.controller.state.value}. "
+                "Current gate blocks only pick/place/error while ROS teleop is active.",
+            )
+            return
+        self._pressed_move_tokens.add(str(token).strip().lower())
+        self._pump_teleop_command()
+
+    def _handle_move_key_released(self, token: str) -> None:
+        normalized = str(token).strip().lower()
+        self._pressed_move_tokens.discard(normalized)
+        if not self._pressed_move_tokens:
+            self._stop_teleop_motion(send_command=False, reason="key_release")
+
+    def _compute_teleop_delta(self) -> tuple[float, float]:
+        dtheta = 0.0
+        dr = 0.0
+        pressed = self._pressed_move_tokens
+        if "a" in pressed or "left" in pressed:
+            dtheta -= float(self.config.teleop_theta_step_deg)
+        if "d" in pressed or "right" in pressed:
+            dtheta += float(self.config.teleop_theta_step_deg)
+        if "w" in pressed or "up" in pressed:
+            dr += float(self.config.teleop_radius_step_mm)
+        if "s" in pressed or "down" in pressed:
+            dr -= float(self.config.teleop_radius_step_mm)
+        if dtheta == 0.0 and dr == 0.0:
+            return (0.0, 0.0)
+        return (dtheta, dr)
+
+    def _compute_teleop_rates(self) -> tuple[float, float]:
+        theta_rate = 0.0
+        radius_rate = 0.0
+        pressed = self._pressed_move_tokens
+        if "a" in pressed or "left" in pressed:
+            theta_rate -= float(self.config.teleop_theta_rate_deg_s)
+        if "d" in pressed or "right" in pressed:
+            theta_rate += float(self.config.teleop_theta_rate_deg_s)
+        if "w" in pressed or "up" in pressed:
+            radius_rate += float(self.config.teleop_radius_rate_mm_s)
+        if "s" in pressed or "down" in pressed:
+            radius_rate -= float(self.config.teleop_radius_rate_mm_s)
+        if theta_rate == 0.0 and radius_rate == 0.0:
+            return (0.0, 0.0)
+        return (theta_rate, radius_rate)
+
+    def _current_robot_cyl_for_teleop(self) -> tuple[float, float] | None:
+        snapshot = self._fetch_remote_robot_snapshot()
+        if isinstance(snapshot, dict):
+            robot_cyl = snapshot.get("robot_cyl")
+            if isinstance(robot_cyl, dict):
+                try:
+                    return (float(robot_cyl.get("theta_deg", 0.0)), float(robot_cyl.get("radius_mm", 0.0)))
+                except (TypeError, ValueError):
+                    return None
+        local_robot_cyl = self._rt_get("robot_cyl")
+        if isinstance(local_robot_cyl, dict):
+            try:
+                return (float(local_robot_cyl.get("theta_deg", 0.0)), float(local_robot_cyl.get("radius_mm", 0.0)))
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    def _maybe_send_ros_service_teleop_fallback(self, *, theta_rate: float, radius_rate: float) -> None:
+        if self.ros_client is None or not self.ros_client.is_connected():
+            return
+        current_pose = self._current_robot_cyl_for_teleop()
+        if current_pose is None:
+            return
+        plan = self._teleop_fallback.next_plan(
+            current_pose=current_pose,
+            theta_rate_deg_s=float(theta_rate),
+            radius_rate_mm_s=float(radius_rate),
+            now_monotonic=time.monotonic(),
+            theta_limits_deg=self.config.robot_theta_limits_deg,
+            radius_limits_mm=self.config.robot_auto_radius_limits_mm,
+        )
+        if plan is None:
+            return
+
+        if self._should_log_teleop_warning():
+            self._queue_runtime_status(
+                "robot",
+                f"ROS teleop fallback step -> theta={plan.target_theta_deg:.1f} r={plan.target_radius_mm:.1f}",
+            )
+
+        def _callback(result: RosServiceResult) -> None:
+            should_log_error = self._teleop_fallback.handle_service_result(
+                ok=bool(result.ok),
+                message=str(result.message or ""),
+                now_monotonic=time.monotonic(),
+            )
+            if not should_log_error:
+                return
+            if self._should_log_teleop_warning():
+                self._queue_runtime_status(
+                    "robot",
+                    f"ROS teleop fallback move failed: {str(result.message or '').strip() or 'unknown_error'}",
+                )
+
+        try:
+            self.ros_client.send_move_cyl_auto(
+                float(plan.target_theta_deg),
+                float(plan.target_radius_mm),
+                callback=_callback,
+            )
+        except Exception as error:
+            self._teleop_fallback.handle_service_call_exception()
+            if self._should_log_teleop_warning():
+                self._handle_runtime_status("robot", f"ROS teleop fallback call failed: {error}")
+
+    def _pump_ros_reconnect(self) -> None:
+        if not self._uses_ros_transport():
+            self._ros_last_connected = False
+            self._ros_reconnect_attempt = 0
+            self._ros_reconnect_next_ts = 0.0
+            self._ros_connected_since_ts = 0.0
+            return
+        if self.ros_client is None:
+            return
+        connected = bool(self.ros_client.is_connected())
+        if connected:
+            if not self._ros_last_connected:
+                self._ros_reconnect_attempt = 0
+                self._ros_reconnect_next_ts = 0.0
+                self._ros_stale_detection_count = 0
+                try:
+                    self.ros_client.stop_teleop()
+                except Exception:
+                    pass
+                self._queue_runtime_status("robot", "ROS bridge reconnected.")
+            if self._ros_connected_since_ts <= 0.0:
+                self._ros_connected_since_ts = time.monotonic()
+            self._ros_last_connected = True
+            return
+        self._ros_last_connected = False
+        self._ros_connected_since_ts = 0.0
+        self._ros_stale_detection_count = 0
+        if getattr(self, "_continuous_vision_servo_pick", None) is not None:
+            self._continuous_vision_servo_pick = None
+            self._rt_set("vision_servo_status", "continuous_stop reason=control_unavailable")
+        now = time.monotonic()
+        if now < float(self._ros_reconnect_next_ts):
+            return
+        try:
+            self.ros_client.connect()
+        except Exception as error:
+            self._ros_reconnect_attempt += 1
+            backoff = min(
+                float(self.config.ros_reconnect_max_delay_sec),
+                float(self.config.ros_reconnect_base_delay_sec) * (2 ** max(0, self._ros_reconnect_attempt - 1)),
+            )
+            jitter_scale = float(self.config.ros_reconnect_jitter_ratio)
+            jitter = random.uniform(-1.0, 1.0) * backoff * max(0.0, jitter_scale)
+            delay = max(0.2, backoff + jitter)
+            self._ros_reconnect_next_ts = now + delay
+            if (now - float(getattr(self, "_last_ros_reconnect_log_ts", 0.0))) >= 10.0:
+                self._last_ros_reconnect_log_ts = float(now)
+                self._queue_runtime_status(
+                    "robot",
+                    "ROS reconnect failed (attempt {0}), retry in {1:.2f}s: {2}".format(
+                        int(self._ros_reconnect_attempt),
+                        float(delay),
+                        str(error),
+                    ),
+                )
+            return
+        self._ros_reconnect_next_ts = now + max(0.2, float(self.config.ros_reconnect_base_delay_sec))
+
+    def _pump_input_sources(self) -> None:
+        result = self.input_orchestrator.poll()
+        self._update_mi_runtime_state(result.mi_health, emit_runtime_status=True)
+        for event in result.events:
+            self.dispatch_event(event)
+
+    def _pump_teleop_command(self) -> None:
+        if not self._is_teleop_enabled():
+            return
+        if not self._teleop_state_allows_motion():
+            self._stop_teleop_motion(send_command=False, reason="not_in_motion_state")
+            return
+        if self._uses_ros_transport():
+            theta_rate, radius_rate = self._compute_teleop_rates()
+            if self.ros_client is None or not self.ros_client.is_connected():
+                if self._should_log_teleop_warning():
+                    self._handle_runtime_status("robot", "ROS teleop skipped: rosbridge is not connected.")
+                self._teleop_ros_planner.reset()
+                return
+            command = self._teleop_ros_planner.next_command(
+                theta_rate_deg_s=theta_rate,
+                radius_rate_mm_s=radius_rate,
+                now_monotonic=time.monotonic(),
+            )
+            if command is None:
+                return
+            self._teleop_cmd_seq = next_teleop_cmd_seq(self._teleop_cmd_seq)
+            try:
+                self.ros_client.publish_teleop(
+                    theta_rate_deg_s=float(command.theta_rate_deg_s),
+                    radius_rate_mm_s=float(command.radius_rate_mm_s),
+                    z_rate_mm_s=float(command.z_rate_mm_s),
+                    use_auto_z=bool(command.use_auto_z),
+                    enabled=bool(command.enabled),
+                    cmd_seq=int(self._teleop_cmd_seq),
+                    client_ts=float(time.time()),
+                )
+            except Exception as error:
+                self._teleop_ros_planner.on_publish_failed()
+                self._handle_runtime_status("robot", f"ROS teleop publish failed: {error}")
+                return
+            if (
+                bool(command.enabled)
+                and bool(getattr(self.config, "teleop_ros_service_fallback_enabled", False))
+            ):
+                self._maybe_send_ros_service_teleop_fallback(theta_rate=theta_rate, radius_rate=radius_rate)
+            return
+        if self.controller.context.pending_robot_xy is not None:
+            return
+        if self.controller.context.robot_busy:
+            return
+        dtheta, dr = self._compute_teleop_delta()
+        if dtheta == 0.0 and dr == 0.0:
+            return
+        self.dispatch_event(Event(source="sim", type="move", value={"dtheta": dtheta, "dr": dr}))
+
+    def _stop_teleop_motion(self, *, send_command: bool, reason: str) -> None:
+        self._pressed_move_tokens.clear()
+        self._teleop_ros_planner.reset()
+        self._teleop_fallback.reset()
+        if self._uses_ros_transport() and self.ros_client is not None:
+            try:
+                self.ros_client.stop_teleop()
+            except Exception as error:
+                self._handle_runtime_status("robot", f"ROS teleop stop failed: {error}")
+
+    def _capture_world_snapshot(self, *, reason: str, force: bool = False) -> None:
+        snapshot = None
+        preflight_snapshot = None
+        local_snapshot = self._build_control_scene_snapshot()
+        remote_snapshot = self._fetch_remote_robot_snapshot()
+        preflight_snapshot = remote_snapshot
+        if remote_snapshot is not None:
+            snapshot = self._merge_scene_snapshots(local_snapshot, remote_snapshot)
+        else:
+            snapshot = local_snapshot
+        if snapshot is None:
+            self._latest_world_snapshot = None
+            return
+        self._sync_controller_from_snapshot(snapshot)
+        self._latest_world_snapshot = snapshot
+        self._evaluate_preflight_from_snapshot(preflight_snapshot)
+        revision = int(snapshot.get("revision", 0))
+        if force or revision != self._last_logged_world_revision:
+            self.logger.log_world_snapshot(snapshot, reason=reason)
+            self._last_logged_world_revision = revision
+
+    def _fetch_remote_robot_snapshot(self) -> dict[str, object] | None:
+        if self.config.robot_mode != "real":
+            return None
+        with self._remote_snapshot_lock:
+            if self._remote_snapshot_cache is None:
+                return None
+            return dict(self._remote_snapshot_cache)
+
+    def _compute_remote_snapshot_age_ms(self) -> float:
+        if self.config.robot_mode != "real":
+            return 0.0
+        with self._remote_snapshot_lock:
+            envelope = self._remote_snapshot_envelope
+        if envelope is None:
+            return float("inf")
+        return self._compute_envelope_age_ms(envelope)
+
+    @staticmethod
+    def _compute_envelope_age_ms(envelope: RobotSnapshotEnvelope) -> float:
+        now_ts = float(time.time())
+        recv_age_ms = max(0.0, (now_ts - float(envelope.ts)) * 1000.0)
+        payload = envelope.payload if isinstance(envelope.payload, dict) else None
+        if payload is None:
+            return recv_age_ms
+        try:
+            robot_ts = float(payload.get("robot_ts", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            return recv_age_ms
+        if not math.isfinite(robot_ts) or robot_ts <= 0.0:
+            return recv_age_ms
+        robot_age_ms = max(0.0, (now_ts - robot_ts) * 1000.0)
+        # Guard against unsynchronized clocks between desktop and robot.
+        if robot_age_ms > 60000.0:
+            return recv_age_ms
+        return max(recv_age_ms, robot_age_ms)
+
+    def _fetch_remote_robot_snapshot_direct(self) -> dict[str, object] | None:
+        if self.config.robot_mode != "real":
+            return None
+        if self._uses_ros_transport():
+            return self._fetch_remote_robot_snapshot()
+        try:
+            return fetch_robot_status(
+                self.config.robot_host,
+                self.config.robot_port,
+                timeout_sec=max(self.config.robot_timeout_sec, 0.2),
+            )
+        except Exception:
+            return None
+
+    def _fetch_vision_calibration_params(self) -> dict[str, object] | None:
+        if not self._uses_ros_transport() or self.ros_client is None:
+            return None
+        try:
+            params = self.ros_client.get_param("/camera_cal/block_params", timeout_sec=max(self.config.rosbridge_timeout_sec, 1.0))
+        except Exception as error:
+            self._log_runtime("vision", f"Calibration fetch failed: {error}")
+            return None
+        if not isinstance(params, dict):
+            self._log_runtime("vision", "Calibration fetch returned non-dict payload.")
+            return None
+        return params
+
+    def _merge_scene_snapshots(
+        self,
+        local_snapshot: dict[str, object] | None,
+        remote_snapshot: dict[str, object],
+    ) -> dict[str, object]:
+        if local_snapshot is None:
+            return dict(remote_snapshot)
+        merged = dict(local_snapshot)
+        merged["revision"] = int(remote_snapshot.get("revision", merged.get("revision", 0)))
+        for key in (
+            "robot_xy",
+            "robot_z",
+            "robot_cyl",
+            "home_pose",
+            "limits_x",
+            "limits_y",
+            "limits_cyl",
+            "approach_z",
+            "pick_z",
+            "carry_z",
+            "auto_z_enabled",
+            "auto_z_current",
+            "control_kernel",
+            "ik_valid",
+            "validation_error",
+            "busy",
+            "busy_action",
+            "state",
+            "state_seq",
+            "robot_ts",
+            "action_phase",
+            "last_ack",
+            "last_error",
+            "last_error_code",
+            "calibration_ready",
+            "carrying",
+            "pick_tuning",
+            "post_pick_settle_z",
+            "release_mode_effective",
+        ):
+            if key in remote_snapshot:
+                merged[key] = remote_snapshot[key]
+        if "position_xyz" in remote_snapshot and "robot_xy" not in remote_snapshot:
+            position = tuple(remote_snapshot["position_xyz"])
+            merged["robot_xy"] = position[:2]
+            merged["robot_z"] = position[2]
+        if "carrying" in remote_snapshot:
+            merged["carrying_target_id"] = merged.get("carrying_target_id") if remote_snapshot["carrying"] else None
+        for key in ("pick_slots", "place_slots"):
+            if key in remote_snapshot and remote_snapshot[key]:
+                merged[key] = remote_snapshot[key]
+        return merged
+
+    def _sync_controller_from_snapshot(self, snapshot: dict[str, object]) -> None:
+        robot_xy = snapshot.get("robot_xy")
+        if isinstance(robot_xy, (list, tuple)) and len(robot_xy) == 2:
+            self.controller.context.robot_xy = (float(robot_xy[0]), float(robot_xy[1]))
+        robot_cyl = snapshot.get("robot_cyl")
+        if isinstance(robot_cyl, dict):
+            self.controller.context.robot_cyl = (
+                float(robot_cyl.get("theta_deg", self.controller.context.robot_cyl[0])),
+                float(robot_cyl.get("radius_mm", self.controller.context.robot_cyl[1])),
+                float(robot_cyl.get("z_mm", self.controller.context.robot_cyl[2])),
+            )
+        elif isinstance(robot_xy, (list, tuple)) and len(robot_xy) == 2:
+            theta_deg, radius_mm, z_mm = cartesian_to_cylindrical(
+                float(robot_xy[0]),
+                float(robot_xy[1]),
+                float(snapshot.get("robot_z", self.config.robot_carry_z)),
+            )
+            self.controller.context.robot_cyl = (theta_deg, radius_mm, z_mm)
+        if "busy" in snapshot:
+            self.controller.context.robot_busy = bool(snapshot["busy"])
+        if "state" in snapshot:
+            self.controller.context.robot_execution_state = str(snapshot["state"])
+        if "carrying" in snapshot:
+            self.controller.context.carrying = bool(snapshot["carrying"])
+        if "auto_z_current" in snapshot and snapshot["auto_z_current"] is not None:
+            self.controller.context.robot_auto_z = float(snapshot["auto_z_current"])
+        self._rt_update(
+            {
+                "calibration_ready": snapshot.get("calibration_ready"),
+                "robot_cyl": snapshot.get("robot_cyl"),
+                "limits_cyl": snapshot.get("limits_cyl"),
+                "auto_z_current": snapshot.get("auto_z_current"),
+                "control_kernel": snapshot.get("control_kernel"),
+                "state_seq": snapshot.get("state_seq"),
+                "robot_ts": snapshot.get("robot_ts"),
+            }
+        )
+        last_ack = str(snapshot.get("last_ack", "")).strip()
+        if last_ack:
+            self._rt_set("last_robot_ack", last_ack)
+            self._dispatch_robot_ack_from_state_if_pending(snapshot)
+        if isinstance(snapshot.get("pick_tuning"), dict) and not bool(self._pick_tuning_local_dirty):
+            self._pick_tuning_state = self._sanitize_pick_tuning(snapshot.get("pick_tuning"))
+            self._rt_set("pick_tuning", dict(self._pick_tuning_state))
+        self._rt_update(
+            {
+                "post_pick_settle_z": snapshot.get("post_pick_settle_z"),
+                "release_mode_effective": snapshot.get("release_mode_effective"),
+            }
+        )
+        if snapshot.get("state") == "ERROR":
+            self.controller.context.last_error = str(snapshot.get("last_error") or self.controller.context.last_error)
+
+    def _queue_event(self, event: Event) -> None:
+        if self._shutdown_started:
+            return
+        try:
+            self._bridge.event_received.emit(event)
+        except RuntimeError:
+            return
+
+    def _queue_runtime_status(self, component: str, message: str) -> None:
+        if self._shutdown_started:
+            return
+        try:
+            self._bridge.runtime_status_received.emit(str(component), str(message))
+        except RuntimeError:
+            return
+
+    def _queue_ssvep_state(self, payload: dict[str, object]) -> None:
+        if self._shutdown_started:
+            return
+        try:
+            self._bridge.ssvep_state_received.emit(dict(payload))
+        except RuntimeError:
+            return
+
+    def _queue_vision_packet(self, packet: dict[str, object]) -> None:
+        if self._shutdown_started:
+            return
+        try:
+            self._bridge.vision_packet_received.emit(packet)
+        except RuntimeError:
+            return
+
+    def _queue_vision_frame(self, frame) -> None:
+        if self._shutdown_started:
+            return
+        should_emit = False
+        with self._vision_frame_lock:
+            self._vision_frame_staging = frame
+            if not self._vision_frame_signal_pending:
+                self._vision_frame_signal_pending = True
+                should_emit = True
+        if not should_emit:
+            return
+        try:
+            self._bridge.vision_frame_received.emit(None)
+        except RuntimeError:
+            with self._vision_frame_lock:
+                self._vision_frame_signal_pending = False
+            return
+
+    def _on_vision_packet_received(self, packet: object) -> None:
+        if not isinstance(packet, dict):
+            return
+        from hybrid_controller.vision.processing import packet_to_targets
+
+        resolved_packet = self._resolve_vision_packet(packet)
+        self._latest_vision_packet = resolved_packet
+        targets = packet_to_targets(resolved_packet)
+        self.dispatch_event(Event(source="vision", type="vision_update", value=targets))
+        valid_slots = sum(1 for slot in resolved_packet.get("slots", []) if slot.get("valid"))
+        actionable_slots = sum(1 for slot in resolved_packet.get("slots", []) if slot.get("actionable"))
+        queue_age_ms = float(resolved_packet.get("queue_age_ms", 0.0))
+        infer_interval_ms = float(resolved_packet.get("infer_interval_ms", self.config.vision_infer_interval_ms))
+        frame_drop_ratio = float(resolved_packet.get("frame_drop_ratio", 0.0))
+        frame_quality = resolved_packet.get("frame_quality", {})
+        frame_block_reason = str(resolved_packet.get("frame_block_reason") or "").strip()
+        if isinstance(frame_quality, dict):
+            brightness_mean = frame_quality.get("gray_mean")
+            brightness_p95 = frame_quality.get("gray_p95")
+        else:
+            brightness_mean = None
+            brightness_p95 = None
+        self._rt_update(
+            {
+                "queue_age_ms": queue_age_ms,
+                "infer_interval_ms": infer_interval_ms,
+                "frame_drop_ratio": frame_drop_ratio,
+                "vision_frame_block_reason": frame_block_reason or "--",
+                "vision_frame_brightness_mean": brightness_mean,
+                "vision_frame_brightness_p95": brightness_p95,
+            }
+        )
+        remote_age_ms = float(self._rt_get("remote_snapshot_age_ms", 0.0))
+        ui_refresh_ms = float(self._rt_get("ui_refresh_ms_ema", 0.0))
+        mapping_mode = str(resolved_packet.get("mapping_mode", self.config.vision_mapping_mode))
+        invalid_reason = str(self._rt_get("vision_invalid_reason", "--"))
+        if frame_block_reason and invalid_reason == "--":
+            invalid_reason = frame_block_reason
+        resolved_base_xy = self._rt_get("vision_last_resolved_base_xy")
+        resolved_cyl = self._rt_get("vision_last_resolved_cyl")
+        profile_id = str(resolved_packet.get("calibration_profile_id", "") or "--")
+        self._rt_set("vision_calibration_profile_id", profile_id)
+        brightness_text = ""
+        try:
+            if brightness_mean is not None:
+                brightness_text += f"brightness_mean={float(brightness_mean):.1f} "
+            if brightness_p95 is not None:
+                brightness_text += f"brightness_p95={float(brightness_p95):.1f} "
+        except (TypeError, ValueError):
+            brightness_text = ""
+        frame_block_text = f"frame_block={frame_block_reason} " if frame_block_reason else ""
+        vision_health = (
+            f"camera_fps={float(packet.get('capture_fps', 0.0)):.1f} "
+            f"infer_ms={float(packet.get('infer_ms', 0.0)):.1f} "
+            f"queue_age_ms={queue_age_ms:.1f} "
+            f"infer_interval_ms={infer_interval_ms:.0f} "
+            f"drop_ratio={frame_drop_ratio:.2f} "
+            f"{brightness_text}"
+            f"{frame_block_text}"
+            f"ui_refresh_ms={ui_refresh_ms:.1f} "
+            f"snapshot_age_ms={remote_age_ms:.1f} "
+            f"slots={valid_slots} actionable={actionable_slots} "
+            f"mapping={mapping_mode} profile={profile_id} "
+            f"servo_mode={'continuous' if bool(getattr(self.config, 'vision_continuous_servo_enabled', False)) else 'discrete'} "
+            f"grasp_profile={self._rt_get('vision_grasp_profile_id', '--')} "
+            f"confirm_z={float(getattr(self.config, 'vision_pick_confirm_z_mm', 0.0)):.1f} "
+            f"radius_bias={float(getattr(self.config, 'vision_eye_in_hand_pick_radius_bias_mm', 0.0)):.1f} "
+            f"release_mode={self._rt_get('release_mode_effective', '--')} "
+            f"invalid={invalid_reason} "
+            f"servo={self._rt_get('vision_servo_status', 'idle')} "
+            f"resolved_xy={resolved_base_xy} resolved_cyl={resolved_cyl}"
+        )
+        self._rt_set("vision_health", vision_health)
+        self.main_window.update_vision_payload(
+            packet=resolved_packet,
+            flash_enabled=bool(self._rt_get("ssvep_stim_enabled", False)),
+            status_text=str(self._rt_get("vision_health", "unknown")),
+        )
+        self._pump_pending_vision_servo_pick(resolved_packet)
+        self._pump_continuous_vision_servo(resolved_packet)
+
+    def _on_vision_frame_received(self, frame: object) -> None:
+        del frame
+        with self._vision_frame_lock:
+            self._latest_vision_frame = self._vision_frame_staging
+            self._vision_frame_staging = None
+            self._vision_frame_signal_pending = False
+        self.main_window.update_vision_payload(
+            frame_bgr=self._latest_vision_frame,
+            flash_enabled=bool(self._rt_get("ssvep_stim_enabled", False)),
+            status_text=str(self._rt_get("vision_health", "unknown")),
+        )
+
+    def _on_ssvep_state_received(self, payload: object) -> None:
+        if not isinstance(payload, dict):
+            return
+        payload_type = str(payload.get("type", "")).strip().lower()
+        if payload_type == "device_connected":
+            self._rt_set("ssvep_connected", True)
+        elif payload_type == "runtime_error":
+            self._rt_update(
+                {
+                    "ssvep_last_error": str(payload.get("message", "--")),
+                    "ssvep_runtime_status": "error",
+                    "ssvep_running": False,
+                }
+            )
+        elif payload_type == "profile_ready":
+            profile_update: dict[str, object] = {
+                "ssvep_profile_source": str(payload.get("profile_source", "trained"))
+            }
+            current_path = payload.get("current_profile_path") or payload.get("profile_path")
+            if current_path:
+                profile_update["ssvep_profile_path"] = str(current_path)
+            summary_text = str(payload.get("summary_text", "")).strip()
+            profile_update["ssvep_runtime_status"] = (
+                f"pretrain_ready {summary_text}".strip()
+                if summary_text
+                else "pretrain_ready"
+            )
+            self._rt_update(profile_update)
+        elif payload_type == "profile_loaded":
+            profile_update = {
+                "ssvep_profile_source": str(payload.get("profile_source", "loaded")),
+            }
+            profile_path = payload.get("profile_path")
+            if profile_path:
+                profile_update["ssvep_profile_path"] = str(profile_path)
+            self._rt_update(profile_update)
+        elif payload_type == "runtime_state":
+            state_update: dict[str, object] = {
+                "ssvep_running": bool(payload.get("running", False)),
+                "ssvep_busy": bool(payload.get("busy", False)),
+                "ssvep_connected": bool(payload.get("connected", False)),
+                "ssvep_connect_active": bool(payload.get("connect_active", False)),
+                "ssvep_pretrain_active": bool(payload.get("pretrain_active", False)),
+                "ssvep_online_active": bool(payload.get("online_active", False)),
+                "ssvep_mode": str(payload.get("mode", self._rt_get("ssvep_mode", "idle"))),
+                "ssvep_profile_source": str(
+                    payload.get("profile_source", self._rt_get("ssvep_profile_source", "fallback"))
+                ),
+            }
+            profile_path = payload.get("profile_path")
+            if profile_path:
+                state_update["ssvep_profile_path"] = str(profile_path)
+            state_update["ssvep_last_pretrain_time"] = payload.get("last_pretrain_time") or "--"
+            state_update["ssvep_runtime_status"] = "running" if payload.get("running") else "stopped"
+            state_update["ssvep_latest_profile_path"] = str(payload.get("latest_profile_path", "--"))
+            state_update["ssvep_profile_count"] = int(payload.get("profile_count", 0))
+            state_update["ssvep_available_profiles"] = tuple(
+                (str(item.get("display_name", item.get("name", ""))), str(item.get("path", "")))
+                for item in payload.get("available_profiles", [])
+                if isinstance(item, dict)
+            )
+            state_update["ssvep_allow_fallback_profile"] = bool(
+                payload.get("allow_fallback_profile", self.config.ssvep_allow_fallback_profile)
+            )
+            state_update["ssvep_status_hint"] = str(payload.get("status_hint", "--"))
+            state_update["ssvep_last_error"] = payload.get("last_error") or "--"
+            self._rt_update(state_update)
+            last_result = payload.get("last_result")
+            if isinstance(last_result, dict):
+                self._apply_ssvep_online_result(last_result)
+        elif payload_type == "online_result":
+            result_payload = payload.get("payload")
+            if isinstance(result_payload, dict):
+                self._apply_ssvep_online_result(result_payload)
+        elif payload_type == "pretrain_phase":
+            phase_payload = payload.get("payload")
+            if isinstance(phase_payload, dict):
+                self._rt_set("ssvep_runtime_status", str(phase_payload.get("title", "pretrain")))
+        elif payload_type == "online_phase":
+            phase_payload = payload.get("payload")
+            if isinstance(phase_payload, dict):
+                self._rt_set("ssvep_runtime_status", str(phase_payload.get("title", "online")))
+        self._refresh_view()
+
+    def _apply_ssvep_online_result(self, payload: dict[str, object]) -> None:
+        state = str(payload.get("state", "--"))
+        selected_freq = payload.get("selected_freq")
+        selected_text = (
+            "--" if selected_freq is None else f"{float(selected_freq):g}Hz"
+        )
+        margin_text = f"{float(payload.get('margin', 0.0)):.4f}"
+        ratio_text = f"{float(payload.get('ratio', 0.0)):.4f}"
+        stable_text = str(int(payload.get("stable_windows", 0)))
+        pred_freq = payload.get("pred_freq")
+        last_raw = (
+            "state={state} pred={pred} selected={selected} margin={margin} ratio={ratio} stable={stable}".format(
+                state=state,
+                pred="--" if pred_freq is None else f"{float(pred_freq):g}Hz",
+                selected=selected_text,
+                margin=margin_text,
+                ratio=ratio_text,
+                stable=stable_text,
+            )
+        )
+        self._rt_update(
+            {
+                "ssvep_last_state": state,
+                "ssvep_last_selected_freq": selected_text,
+                "ssvep_last_margin": margin_text,
+                "ssvep_last_ratio": ratio_text,
+                "ssvep_last_stable_windows": stable_text,
+                "last_ssvep_raw": last_raw,
+            }
+        )
+
+    def _on_ssvep_connect_requested(self) -> None:
+        if self.ssvep_runtime is None:
+            self._handle_runtime_status(
+                "ssvep",
+                "SSVEP runtime is disabled in keyboard operator mode. Use 02_SSVEP standalone or start with --enable-ssvep-runtime.",
+            )
+            return
+        if not self._apply_ssvep_runtime_config_from_ui(announce=True):
+            return
+        self.ssvep_coordinator.connect_device()
+
+    def _apply_ssvep_runtime_config_from_ui(self, *, announce: bool) -> bool:
+        if self.ssvep_runtime is None:
+            if announce:
+                self._handle_runtime_status(
+                    "ssvep",
+                    "SSVEP config ignored because keyboard operator mode disables the SSVEP runtime.",
+                )
+            return False
+        try:
+            runtime_config = self.main_window.ssvep_runtime_config()
+            resolved_serial = str(runtime_config["serial_port"] or "auto").strip() or "auto"
+            resolved_board = int(runtime_config["board_id"])
+            runtime_config["serial_port"] = resolved_serial
+            runtime_config["board_id"] = resolved_board
+            self.ssvep_runtime.set_runtime_config(**runtime_config)
+            pretrain_config = self.main_window.ssvep_pretrain_config()
+            trials = 4 * int(pretrain_config["target_repeats"]) + int(pretrain_config["idle_repeats"])
+            estimated_sec = float(pretrain_config["estimated_sec"])
+            self._rt_update(
+                {
+                    "ssvep_connected": bool(self.ssvep_runtime.connected),
+                    "ssvep_runtime_status": (
+                        f"config applied serial={resolved_serial} board={resolved_board} "
+                        f"pretrain={pretrain_config['preset']} trials={trials} est={estimated_sec:.0f}s"
+                    ),
+                }
+            )
+            if announce:
+                self._handle_runtime_status(
+                    "ssvep",
+                    (
+                        f"SSVEP config applied: serial={resolved_serial}, board={resolved_board}, "
+                        f"pretrain={pretrain_config['preset']} ({trials} trials, ~{estimated_sec:.0f}s)"
+                    ),
+                )
+            return True
+        except Exception as error:
+            self._handle_runtime_status("ssvep", f"Apply SSVEP config failed: {error}")
+            return False
+
+    def _on_ssvep_config_apply_requested(self, serial_port: str, board_id: int) -> None:
+        del serial_port, board_id
+        self._apply_ssvep_runtime_config_from_ui(announce=True)
+
+    def _on_ssvep_pretrain_requested(self) -> None:
+        if self.ssvep_runtime is None:
+            self._handle_runtime_status(
+                "ssvep",
+                "SSVEP pretrain is disabled in keyboard operator mode. Debug SSVEP inside 02_SSVEP first.",
+            )
+            return
+        if not self._apply_ssvep_runtime_config_from_ui(announce=True):
+            return
+        self.ssvep_coordinator.start_pretrain()
+
+    def _on_ssvep_load_profile_requested(self) -> None:
+        if self.ssvep_runtime is None:
+            self._handle_runtime_status(
+                "ssvep",
+                "SSVEP profile loading is disabled in keyboard operator mode.",
+            )
+            return
+        if self.main_window.is_ssvep_profile_auto_selected():
+            self.ssvep_coordinator.clear_session_profile()
+            return
+        path = self.main_window.selected_ssvep_profile_path()
+        if not path:
+            start_dir = str(self.config.ssvep_profile_dir.resolve())
+            path, _ = QFileDialog.getOpenFileName(
+                self.main_window,
+                "Load SSVEP Profile",
+                start_dir,
+                "JSON Files (*.json);;All Files (*)",
+            )
+        if not path:
+            return
+        try:
+            self.ssvep_coordinator.load_profile(path)
+        except Exception as error:
+            self._handle_runtime_status("ssvep", f"Load profile failed: {error}")
+
+    def _on_ssvep_open_profile_dir_requested(self) -> None:
+        profile_dir = self.config.ssvep_profile_dir.resolve()
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            os.startfile(str(profile_dir))  # type: ignore[attr-defined]
+        except Exception as error:
+            self._handle_runtime_status("ssvep", f"Open profile dir failed: {error}")
+
+    def _on_ssvep_start_requested(self) -> None:
+        if self.ssvep_runtime is None:
+            self._handle_runtime_status(
+                "ssvep",
+                "SSVEP recognition is disabled in keyboard operator mode. Keyboard decisions are active.",
+            )
+            return
+        if not self._apply_ssvep_runtime_config_from_ui(announce=True):
+            return
+        self.ssvep_coordinator.start_online()
+
+    def _on_ssvep_stop_requested(self) -> None:
+        if self.ssvep_runtime is None:
+            self._handle_runtime_status("ssvep", "SSVEP runtime is already disabled.")
+            return
+        self._rt_update(
+            {
+                "ssvep_running": False,
+                "ssvep_mode": "idle",
+                "ssvep_runtime_status": "stopping",
+            }
+        )
+        self._refresh_view()
+        self.ssvep_coordinator.stop_online()
+
+    def _set_ssvep_stim_enabled(self, enabled: bool, *, refresh: bool = True) -> bool:
+        next_enabled = bool(enabled)
+        current_enabled = bool(self._rt_get("ssvep_stim_enabled", False))
+        if current_enabled == next_enabled:
+            return False
+        self._rt_set("ssvep_stim_enabled", next_enabled)
+        self.main_window.update_vision_payload(
+            flash_enabled=next_enabled,
+            status_text=str(self._rt_get("vision_health", "unknown")),
+        )
+        if refresh:
+            self._refresh_view()
+        return True
+
+    def _on_ssvep_stim_toggled(self, enabled: bool) -> None:
+        self._set_ssvep_stim_enabled(enabled, refresh=True)
+
+    def _request_remote_snapshot(self) -> None:
+        poller = self._remote_snapshot_poller
+        if poller is None:
+            return
+        poller.request_now()
+
+    def _poll_remote_snapshot_once(self) -> RobotSnapshotEnvelope:
+        snapshot: dict[str, object] | None = None
+        error_text = ""
+        transport = "ros" if self._uses_ros_transport() else "tcp"
+        try:
+            if self._uses_ros_transport():
+                if self.ros_client is not None:
+                    snapshot = self.ros_client.latest_state_snapshot()
+            else:
+                snapshot = self._fetch_remote_robot_snapshot_direct()
+        except Exception as error:
+            snapshot = None
+            error_text = str(error)
+        if snapshot is None and not error_text:
+            error_text = "snapshot_unavailable"
+        return RobotSnapshotEnvelope(
+            payload=None if snapshot is None else dict(snapshot),
+            ts=time.time(),
+            transport=transport,
+            ok=snapshot is not None,
+            error=error_text,
+        )
+
+    def _emit_polled_remote_snapshot(self, envelope: RobotSnapshotEnvelope) -> None:
+        if self._shutdown_started:
+            return
+        try:
+            self._bridge.remote_snapshot_received.emit(envelope)
+        except RuntimeError:
+            return
+
+    def _on_remote_snapshot_received(self, snapshot: object) -> None:
+        if isinstance(snapshot, RobotSnapshotEnvelope):
+            envelope = snapshot
+        elif isinstance(snapshot, dict):
+            envelope = RobotSnapshotEnvelope(
+                payload=dict(snapshot),
+                ts=time.time(),
+                transport="legacy",
+                ok=True,
+                error="",
+            )
+        else:
+            envelope = RobotSnapshotEnvelope(
+                payload=None,
+                ts=time.time(),
+                transport="unknown",
+                ok=False,
+                error="invalid_envelope",
+            )
+        payload = envelope.payload if isinstance(envelope.payload, dict) else None
+        with self._remote_snapshot_lock:
+            self._remote_snapshot_envelope = envelope
+            if payload is not None:
+                self._remote_snapshot_cache = dict(payload)
+                pose_buffer = getattr(self, "_robot_pose_buffer", None)
+                if isinstance(pose_buffer, RobotPoseBuffer):
+                    pose_buffer.add_snapshot(
+                        payload,
+                        received_wall_ts=float(envelope.ts),
+                        received_perf_ts=float(time.perf_counter()),
+                    )
+                self._update_vision_runtime_robot_z(payload)
+        state_age_ms = self._compute_envelope_age_ms(envelope)
+        self._rt_set("state_age_ms", float(state_age_ms))
+        self._rt_set("remote_snapshot_age_ms", float(state_age_ms))
+        if isinstance(payload, dict):
+            last_ack = str(payload.get("last_ack", "")).strip()
+            if last_ack:
+                self._rt_set("last_robot_ack", last_ack)
+                self._dispatch_robot_ack_from_state_if_pending(payload)
+        connected = self.ros_client.is_connected() if self._uses_ros_transport() and self.ros_client is not None else self.robot_client.is_connected()
+        self._rt_set("robot_connected", bool(connected and payload is not None))
+        if envelope.ok and payload is not None:
+            self._ros_stale_detection_count = 0
+            self._rt_set("robot_health", "ok")
+            self._maybe_start_deferred_vision(source=str(envelope.transport or "snapshot"))
+            return
+        if envelope.error:
+            self._rt_set("robot_health", f"snapshot_error:{envelope.error}")
+
+    def _update_vision_runtime_robot_z(self, snapshot: dict[str, object]) -> None:
+        z_value: object | None = snapshot.get("robot_z")
+        cyl = snapshot.get("robot_cyl")
+        if isinstance(cyl, dict) and cyl.get("z_mm") is not None:
+            z_value = cyl.get("z_mm")
+        try:
+            z_mm = float(z_value)
+        except (TypeError, ValueError):
+            return
+        setter = getattr(getattr(self, "vision_runtime", None), "set_robot_z", None)
+        if callable(setter):
+            setter(z_mm)
+
+    def _reset_control_scene_state(self) -> None:
+        if self.slot_catalog is None:
+            self._scene_pick_slots = {}
+            self._scene_place_slots = {}
+            self._scene_carrying_target_id = None
+            self._scene_last_error = None
+            return
+
+        visible_pick_slot_ids = {slot.slot_id for slot in self.slot_catalog.list_pick_slots(source=self._pick_slot_source())}
+        if self.config.scenario_name == "empty_roi":
+            visible_pick_slot_ids = set()
+        elif self.config.scenario_name == "sparse_targets":
+            visible_pick_slot_ids = {1}
+
+        self._scene_pick_slots = {}
+        for slot in self.slot_catalog.list_pick_slots(source=self._pick_slot_source()):
+            occupied = slot.slot_id in visible_pick_slot_ids
+            self._scene_pick_slots[slot.slot_id] = {
+                "slot": slot,
+                "occupied": occupied,
+                "selected": False,
+                "object_id": slot.slot_id if occupied else None,
+            }
+
+        self._scene_place_slots = {
+            slot.slot_id: {"slot": slot, "object_id": None} for slot in self.slot_catalog.list_place_slots()
+        }
+        self._scene_carrying_target_id = None
+        self._scene_last_error = None
+        self._scene_revision += 1
+
+    def _current_control_selection_targets(self) -> list[object]:
+        if self.slot_catalog is None:
+            return []
+        targets: list[object] = []
+        for index, slot in enumerate(self.slot_catalog.list_pick_slots(source=self._pick_slot_source())):
+            slot_state = self._scene_pick_slots.get(slot.slot_id)
+            if not slot_state or not slot_state["occupied"]:
+                continue
+            targets.append(
+                slot.to_target(
+                    confidence=max(0.7, 1.0 - index * 0.05),
+                    command_mode=self._target_command_mode(),
+                )
+            )
+        return targets
+
+    def _pick_slot_source(self) -> str:
+        if self.config.vision_mode in {"fixed_world_slots", "fixed_cyl_slots"}:
+            return "hardware"
+        return "sim"
+
+    def _target_command_mode(self) -> str:
+        if self.config.vision_mode == "fixed_world_slots":
+            return "world"
+        if self.config.vision_mode == "fixed_cyl_slots":
+            return "cyl"
+        return "pixel"
+
+    def _update_control_scene_from_event(self, event: Event, *, selected_before: int | None) -> None:
+        if self.slot_catalog is None:
+            return
+        if event.type == "robot_error":
+            self._scene_last_error = str(event.value)
+            self._scene_revision += 1
+            return
+        if event.type == "robot_busy":
+            self._scene_last_error = "BUSY"
+            self._scene_revision += 1
+            return
+        if event.type == "target_selected":
+            selected_id = self.controller.context.selected_target_id
+            for slot_state in self._scene_pick_slots.values():
+                slot_state["selected"] = slot_state["slot"].slot_id == selected_id
+            self._scene_revision += 1
+            return
+        if event.type == "decision_cancel":
+            for slot_state in self._scene_pick_slots.values():
+                slot_state["selected"] = False
+            self._scene_revision += 1
+            return
+        if event.type == "robot_ack":
+            ack = str(event.value or "").strip().upper()
+            if ack == "PICK_DONE" and selected_before is not None and selected_before in self._scene_pick_slots:
+                self._scene_pick_slots[selected_before]["occupied"] = False
+                self._scene_pick_slots[selected_before]["selected"] = False
+                self._scene_pick_slots[selected_before]["object_id"] = None
+                self._scene_carrying_target_id = selected_before
+                self._scene_last_error = None
+                self._scene_revision += 1
+                self._publish_control_sim_targets()
+                return
+            if ack == "PLACE_DONE":
+                if self._scene_carrying_target_id is not None:
+                    place_slot = self.slot_catalog.nearest_place_slot(self.controller.context.robot_xy)
+                    if place_slot is not None:
+                        self._scene_place_slots[place_slot.slot_id]["object_id"] = self._scene_carrying_target_id
+                self._scene_carrying_target_id = None
+                self._scene_last_error = None
+                self._scene_revision += 1
+                self._publish_control_sim_targets()
+                return
+
+    def _build_control_scene_snapshot(self) -> dict[str, object] | None:
+        if self.slot_catalog is None:
+            return None
+        return {
+            "revision": self._scene_revision,
+            "scenario_name": self.config.scenario_name,
+            "robot_xy": self.controller.context.robot_xy,
+            "robot_z": self.config.robot_pick_z if self.controller.state in {TaskState.S2_PICKING, TaskState.S3_PLACING} else self.config.robot_carry_z,
+            "home_pose": (
+                self.config.robot_start_xy[0],
+                self.config.robot_start_xy[1],
+                self.config.robot_carry_z,
+            ),
+            "limits_x": self.config.robot_limits_x,
+            "limits_y": self.config.robot_limits_y,
+            "robot_cyl": {
+                "theta_deg": self.controller.context.robot_cyl[0],
+                "radius_mm": self.controller.context.robot_cyl[1],
+                "z_mm": self.controller.context.robot_cyl[2],
+            },
+            "limits_cyl": {
+                "theta_deg": self.config.robot_theta_limits_deg,
+                "radius_mm": self.config.robot_radius_limits_mm,
+                "z_mm": self.config.robot_height_limits_mm,
+            },
+            "limits_cyl_auto": {
+                "theta_deg": self.config.robot_theta_limits_deg,
+                "radius_mm": self.config.robot_auto_radius_limits_mm,
+                "z_mm": self.config.robot_height_limits_mm,
+            },
+            "travel_z": self.config.robot_travel_z,
+            "approach_z": self.config.robot_approach_z,
+            "pick_z": self.config.robot_pick_z,
+            "carry_z": self.config.robot_carry_z,
+            "auto_z_enabled": True,
+            "auto_z_current": self.controller.context.robot_auto_z,
+            "control_kernel": self._rt_get("control_kernel") or "cylindrical_kernel",
+            "busy_action": self._scene_busy_action(),
+            "busy": self._scene_busy_action() is not None,
+            "state": self.controller.state.value,
+            "action_phase": self.controller.state.value,
+            "carrying": self._scene_carrying_target_id is not None,
+            "calibration_ready": False if self.config.vision_mode == "fixed_world_slots" else True,
+            "carrying_target_id": self._scene_carrying_target_id,
+            "last_ack": self._rt_get("last_robot_ack"),
+            "last_error": self._scene_last_error or self._rt_get("last_robot_error"),
+            "pick_slots": [
+                {
+                    **slot_state["slot"].to_dict(),
+                    "occupied": slot_state["occupied"],
+                    "selected": slot_state["selected"],
+                    "object_id": slot_state["object_id"],
+                }
+                for slot_state in self._scene_pick_slots.values()
+            ],
+            "place_slots": [
+                {
+                    **slot_state["slot"].to_dict(),
+                    "object_id": slot_state["object_id"],
+                    "occupied": slot_state["object_id"] is not None,
+                }
+                for slot_state in self._scene_place_slots.values()
+            ],
+        }
+
+    def _scene_busy_action(self) -> str | None:
+        if self.controller.state == TaskState.S2_PICKING:
+            return "pick"
+        if self.controller.state == TaskState.S3_PLACING:
+            return "place"
+        if self.controller.state in {TaskState.S1_MI_MOVE, TaskState.S3_MI_CARRY}:
+            return "move"
+        return None
+
+
+def build_config_from_args(args: argparse.Namespace) -> AppConfig:
+    input_profile = str(getattr(args, "input_profile", AppConfig.input_profile) or AppConfig.input_profile).strip().lower()
+    move_source = str(args.move_source or AppConfig.move_source).strip().lower()
+    decision_source = str(args.decision_source or AppConfig.decision_source).strip().lower()
+    ssvep_runtime_enabled = bool(getattr(args, "ssvep_runtime_enabled", AppConfig.ssvep_runtime_enabled))
+    if decision_source == "ssvep":
+        ssvep_runtime_enabled = True
+    config = AppConfig(
+        control_sim_enabled=True,
+        sim_process_mode="external_lab",
+        slot_profile=args.slot_profile,
+        simulation_enabled=False,
+        timing_profile=args.timing_profile,
+        scenario_name=args.scenario_name,
+        input_profile=input_profile,
+        robot_mode=args.robot_mode,
+        vision_mode=args.vision_mode,
+        move_source=move_source,
+        decision_source=decision_source,
+        mi_backend=str(getattr(args, "mi_backend", AppConfig.mi_backend)),
+        mi_enabled=bool(getattr(args, "mi_enabled", AppConfig.mi_enabled)) and move_source == "mi",
+        mi_poll_interval_ms=int(getattr(args, "mi_poll_interval_ms", AppConfig.mi_poll_interval_ms)),
+        mi_command_cooldown_ms=int(
+            getattr(args, "mi_command_cooldown_ms", AppConfig.mi_command_cooldown_ms)
+        ),
+        robot_host=args.robot_host,
+        robot_port=args.robot_port,
+        robot_transport=getattr(args, "robot_transport", AppConfig.robot_transport),
+        robot_connect_on_start=bool(getattr(args, "robot_connect_on_start", AppConfig.robot_connect_on_start)),
+        rosbridge_port=getattr(args, "rosbridge_port", AppConfig.rosbridge_port),
+        ros_reconnect_base_delay_sec=float(
+            getattr(args, "ros_reconnect_base_delay_sec", AppConfig.ros_reconnect_base_delay_sec)
+        ),
+        ros_reconnect_max_delay_sec=float(
+            getattr(args, "ros_reconnect_max_delay_sec", AppConfig.ros_reconnect_max_delay_sec)
+        ),
+        ros_reconnect_jitter_ratio=float(
+            getattr(args, "ros_reconnect_jitter_ratio", AppConfig.ros_reconnect_jitter_ratio)
+        ),
+        ros_probe_before_connect=bool(
+            getattr(args, "ros_probe_before_connect", AppConfig.ros_probe_before_connect)
+        ),
+        ros_runtime_probe_timeout_sec=float(
+            getattr(args, "ros_runtime_probe_timeout_sec", AppConfig.ros_runtime_probe_timeout_sec)
+        ),
+        ros_runtime_state_grace_sec=float(
+            getattr(args, "ros_runtime_state_grace_sec", AppConfig.ros_runtime_state_grace_sec)
+        ),
+        robot_auto_start_on_ros_unavailable=bool(
+            getattr(args, "robot_auto_start_on_ros_unavailable", AppConfig.robot_auto_start_on_ros_unavailable)
+        ),
+        robot_auto_restart_on_state_stale=bool(
+            getattr(args, "robot_auto_restart_on_state_stale", AppConfig.robot_auto_restart_on_state_stale)
+        ),
+        robot_auto_start_cooldown_sec=float(
+            getattr(args, "robot_auto_start_cooldown_sec", AppConfig.robot_auto_start_cooldown_sec)
+        ),
+        robot_auto_start_max_attempts=int(
+            getattr(args, "robot_auto_start_max_attempts", AppConfig.robot_auto_start_max_attempts)
+        ),
+        robot_bootstrap_retry_enabled=bool(
+            getattr(args, "robot_bootstrap_retry_enabled", AppConfig.robot_bootstrap_retry_enabled)
+        ),
+        robot_bootstrap_probe_interval_sec=float(
+            getattr(args, "robot_bootstrap_probe_interval_sec", AppConfig.robot_bootstrap_probe_interval_sec)
+        ),
+        robot_bootstrap_probe_timeout_sec=float(
+            getattr(args, "robot_bootstrap_probe_timeout_sec", AppConfig.robot_bootstrap_probe_timeout_sec)
+        ),
+        robot_command_timeout_sec=float(
+            getattr(args, "robot_command_timeout_sec", AppConfig.robot_command_timeout_sec)
+        ),
+        robot_state_stale_threshold_ms=float(
+            getattr(args, "robot_state_stale_threshold_ms", AppConfig.robot_state_stale_threshold_ms)
+        ),
+        vision_stream_url=args.vision_stream_url,
+        vision_auto_start=bool(getattr(args, "vision_auto_start", AppConfig.vision_auto_start)),
+        vision_world_scale_xy=float(getattr(args, "vision_world_scale_xy", AppConfig.vision_world_scale_xy)),
+        vision_world_offset_xy_mm=(
+            float(getattr(args, "vision_world_offset_x_mm", AppConfig.vision_world_offset_xy_mm[0])),
+            float(getattr(args, "vision_world_offset_y_mm", AppConfig.vision_world_offset_xy_mm[1])),
+        ),
+        vision_mapping_mode=str(getattr(args, "vision_mapping_mode", AppConfig.vision_mapping_mode)),
+        vision_target_frame=str(getattr(args, "vision_target_frame", AppConfig.vision_target_frame)),
+        vision_snapshot_max_age_ms=float(
+            getattr(args, "vision_snapshot_max_age_ms", AppConfig.vision_snapshot_max_age_ms)
+        ),
+        vision_action_requires_calibration=bool(
+            getattr(args, "vision_action_requires_calibration", AppConfig.vision_action_requires_calibration)
+        ),
+        vision_calibration_profile_path=Path(
+            getattr(args, "vision_calibration_profile_path", AppConfig.vision_calibration_profile_path)
+        ),
+        vision_calibration_profile_required=bool(
+            getattr(args, "vision_calibration_profile_required", AppConfig.vision_calibration_profile_required)
+        ),
+        vision_action_max_error_mm=float(
+            getattr(args, "vision_action_max_error_mm", AppConfig.vision_action_max_error_mm)
+        ),
+        vision_grasp_quality_threshold=float(
+            getattr(args, "vision_grasp_quality_threshold", AppConfig.vision_grasp_quality_threshold)
+        ),
+        vision_grasp_history_frames=int(
+            getattr(args, "vision_grasp_history_frames", AppConfig.vision_grasp_history_frames)
+        ),
+        vision_grasp_stable_frames=int(
+            getattr(args, "vision_grasp_stable_frames", AppConfig.vision_grasp_stable_frames)
+        ),
+        vision_grasp_stability_tolerance_px=float(
+            getattr(args, "vision_grasp_stability_tolerance_px", AppConfig.vision_grasp_stability_tolerance_px)
+        ),
+        vision_grasp_angle_stability_tolerance_deg=float(
+            getattr(
+                args,
+                "vision_grasp_angle_stability_tolerance_deg",
+                AppConfig.vision_grasp_angle_stability_tolerance_deg,
+            )
+        ),
+        vision_grasp_history_reset_px=float(
+            getattr(args, "vision_grasp_history_reset_px", AppConfig.vision_grasp_history_reset_px)
+        ),
+        vision_grasp_stability_wait_frames=int(
+            getattr(args, "vision_grasp_stability_wait_frames", AppConfig.vision_grasp_stability_wait_frames)
+        ),
+        vision_frame_fallback_enabled=bool(
+            getattr(args, "vision_frame_fallback_enabled", AppConfig.vision_frame_fallback_enabled)
+        ),
+        vision_frame_min_brightness_mean=float(
+            getattr(args, "vision_frame_min_brightness_mean", AppConfig.vision_frame_min_brightness_mean)
+        ),
+        vision_frame_min_brightness_p95=float(
+            getattr(args, "vision_frame_min_brightness_p95", AppConfig.vision_frame_min_brightness_p95)
+        ),
+        vision_servo_center_tolerance_px=float(
+            getattr(args, "vision_servo_center_tolerance_px", AppConfig.vision_servo_center_tolerance_px)
+        ),
+        vision_servo_action_tolerance_px=float(
+            getattr(args, "vision_servo_action_tolerance_px", AppConfig.vision_servo_action_tolerance_px)
+        ),
+        vision_servo_move_gain=float(getattr(args, "vision_servo_move_gain", AppConfig.vision_servo_move_gain)),
+        vision_servo_fine_move_gain=float(
+            getattr(args, "vision_servo_fine_move_gain", AppConfig.vision_servo_fine_move_gain)
+        ),
+        vision_servo_fine_threshold_px=float(
+            getattr(args, "vision_servo_fine_threshold_px", AppConfig.vision_servo_fine_threshold_px)
+        ),
+        vision_servo_max_attempts=int(getattr(args, "vision_servo_max_attempts", AppConfig.vision_servo_max_attempts)),
+        vision_eye_in_hand_pick_flow_enabled=bool(
+            getattr(
+                args,
+                "vision_eye_in_hand_pick_flow_enabled",
+                AppConfig.vision_eye_in_hand_pick_flow_enabled,
+            )
+        ),
+        vision_eye_in_hand_pick_radius_bias_mm=float(
+            getattr(
+                args,
+                "vision_eye_in_hand_pick_radius_bias_mm",
+                AppConfig.vision_eye_in_hand_pick_radius_bias_mm,
+            )
+        ),
+        vision_pick_search_z_mm=float(getattr(args, "vision_pick_search_z_mm", AppConfig.vision_pick_search_z_mm)),
+        vision_pick_confirm_z_mm=float(getattr(args, "vision_pick_confirm_z_mm", AppConfig.vision_pick_confirm_z_mm)),
+        vision_pick_descent_step_mm=float(
+            getattr(args, "vision_pick_descent_step_mm", AppConfig.vision_pick_descent_step_mm)
+        ),
+        vision_pick_descent_coarse_step_mm=float(
+            getattr(args, "vision_pick_descent_coarse_step_mm", AppConfig.vision_pick_descent_coarse_step_mm)
+        ),
+        vision_pick_descent_fine_step_mm=float(
+            getattr(args, "vision_pick_descent_fine_step_mm", AppConfig.vision_pick_descent_fine_step_mm)
+        ),
+        vision_pick_descent_fine_band_mm=float(
+            getattr(args, "vision_pick_descent_fine_band_mm", AppConfig.vision_pick_descent_fine_band_mm)
+        ),
+        vision_pick_z_tolerance_mm=float(
+            getattr(args, "vision_pick_z_tolerance_mm", AppConfig.vision_pick_z_tolerance_mm)
+        ),
+        vision_continuous_servo_enabled=bool(
+            getattr(args, "vision_continuous_servo_enabled", AppConfig.vision_continuous_servo_enabled)
+        ),
+        vision_continuous_servo_theta_rate_limit_deg_s=float(
+            getattr(
+                args,
+                "vision_continuous_servo_theta_rate_limit_deg_s",
+                AppConfig.vision_continuous_servo_theta_rate_limit_deg_s,
+            )
+        ),
+        vision_continuous_servo_radius_rate_limit_mm_s=float(
+            getattr(
+                args,
+                "vision_continuous_servo_radius_rate_limit_mm_s",
+                AppConfig.vision_continuous_servo_radius_rate_limit_mm_s,
+            )
+        ),
+        vision_continuous_servo_z_rate_limit_mm_s=float(
+            getattr(args, "vision_continuous_servo_z_rate_limit_mm_s", AppConfig.vision_continuous_servo_z_rate_limit_mm_s)
+        ),
+        vision_continuous_servo_command_timeout_ms=float(
+            getattr(
+                args,
+                "vision_continuous_servo_command_timeout_ms",
+                AppConfig.vision_continuous_servo_command_timeout_ms,
+            )
+        ),
+        vision_continuous_servo_stop_at_confirm=bool(
+            getattr(
+                args,
+                "vision_continuous_servo_stop_at_confirm",
+                AppConfig.vision_continuous_servo_stop_at_confirm,
+            )
+        ),
+        vision_debug_bundle_enabled=bool(
+            getattr(args, "vision_debug_bundle_enabled", AppConfig.vision_debug_bundle_enabled)
+        ),
+        vision_debug_bundle_dir=Path(getattr(args, "vision_debug_bundle_dir", AppConfig.vision_debug_bundle_dir)),
+        pick_tool_offset_source=str(getattr(args, "pick_tool_offset_source", AppConfig.pick_tool_offset_source)),
+        vision_residual_model=str(getattr(args, "vision_residual_model", AppConfig.vision_residual_model)),
+        vision_calibration_grid_size=int(
+            getattr(args, "vision_calibration_grid_size", AppConfig.vision_calibration_grid_size)
+        ),
+        pick_cyl_radius_bias_mm=float(
+            getattr(args, "pick_cyl_radius_bias_mm", AppConfig.pick_cyl_radius_bias_mm)
+        ),
+        pick_cyl_tangent_bias_mm=float(
+            getattr(args, "pick_cyl_tangent_bias_mm", AppConfig.pick_cyl_tangent_bias_mm)
+        ),
+        pick_cyl_theta_bias_deg=float(
+            getattr(args, "pick_cyl_theta_bias_deg", AppConfig.pick_cyl_theta_bias_deg)
+        ),
+        sucker_rotation_enabled=bool(getattr(args, "sucker_rotation_enabled", AppConfig.sucker_rotation_enabled)),
+        sucker_rotation_offset_deg=float(
+            getattr(args, "sucker_rotation_offset_deg", AppConfig.sucker_rotation_offset_deg)
+        ),
+        sucker_rotation_invert=bool(getattr(args, "sucker_rotation_invert", AppConfig.sucker_rotation_invert)),
+        sucker_rotation_min_deg=float(getattr(args, "sucker_rotation_min_deg", AppConfig.sucker_rotation_min_deg)),
+        sucker_rotation_max_deg=float(getattr(args, "sucker_rotation_max_deg", AppConfig.sucker_rotation_max_deg)),
+        sucker_rotation_duration_sec=float(
+            getattr(args, "sucker_rotation_duration_sec", AppConfig.sucker_rotation_duration_sec)
+        ),
+        sucker_rotation_angle_quality_threshold=float(
+            getattr(
+                args,
+                "sucker_rotation_angle_quality_threshold",
+                AppConfig.sucker_rotation_angle_quality_threshold,
+            )
+        ),
+        vision_grasp_profile_path=Path(
+            getattr(args, "vision_grasp_profile_path", AppConfig.vision_grasp_profile_path)
+        ),
+        vision_grasp_profile_required=bool(
+            getattr(args, "vision_grasp_profile_required", AppConfig.vision_grasp_profile_required)
+        ),
+        vision_grasp_profile_real_pick_required=bool(
+            getattr(
+                args,
+                "vision_grasp_profile_real_pick_required",
+                AppConfig.vision_grasp_profile_real_pick_required,
+            )
+        ),
+        ssvep_runtime_enabled=ssvep_runtime_enabled,
+    )
+    profile_result = load_vision_grasp_profile(config)
+    if profile_result.ready:
+        config = apply_vision_grasp_profile(config, profile_result)
+    stage_motion_sec = getattr(args, "stage_motion_sec", None)
+    continue_motion_sec = getattr(args, "continue_motion_sec", None)
+    if stage_motion_sec is not None:
+        config = replace(config, stage_motion_sec=float(stage_motion_sec))
+    if continue_motion_sec is not None:
+        config = replace(config, continue_motion_sec=float(continue_motion_sec))
+    return config.resolved()
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Hybrid Controller v1")
+    parser.add_argument("--input-profile", choices=("operator_keyboard", "bci_experimental"), default=AppConfig.input_profile)
+    parser.add_argument("--robot-mode", choices=("real", "fake"), default="real")
+    parser.add_argument("--robot-transport", choices=("tcp", "ros"), default=AppConfig.robot_transport)
+    parser.add_argument(
+        "--vision-mode",
+        choices=("slots", "real", "robot_camera_detection", "fixed_world_slots", "fixed_cyl_slots"),
+        default="robot_camera_detection",
+    )
+    parser.add_argument("--move-source", choices=("sim", "mi"), default="sim")
+    parser.add_argument("--decision-source", choices=("sim", "ssvep"), default="sim")
+    parser.add_argument("--enable-ssvep-runtime", action="store_true", dest="ssvep_runtime_enabled", default=False)
+    parser.add_argument("--disable-ssvep-runtime", action="store_false", dest="ssvep_runtime_enabled")
+    parser.add_argument("--mi-backend", choices=("brainflow",), default=AppConfig.mi_backend)
+    parser.add_argument("--mi-enabled", action="store_true", default=AppConfig.mi_enabled)
+    parser.add_argument("--mi-disabled", action="store_false", dest="mi_enabled")
+    parser.add_argument("--mi-poll-interval-ms", type=int, default=AppConfig.mi_poll_interval_ms)
+    parser.add_argument("--mi-command-cooldown-ms", type=int, default=AppConfig.mi_command_cooldown_ms)
+    parser.add_argument("--timing-profile", choices=("formal", "fast"), default="formal")
+    parser.add_argument("--scenario-name", default="basic")
+    parser.add_argument("--slot-profile", default="default")
+    parser.add_argument("--robot-host", default=AppConfig.robot_host)
+    parser.add_argument("--robot-port", type=int, default=AppConfig.robot_port)
+    parser.add_argument("--robot-connect-on-start", action="store_true", default=AppConfig.robot_connect_on_start)
+    parser.add_argument("--no-robot-connect-on-start", action="store_false", dest="robot_connect_on_start")
+    parser.add_argument("--rosbridge-port", type=int, default=AppConfig.rosbridge_port)
+    parser.add_argument(
+        "--ros-reconnect-base-delay-sec",
+        type=float,
+        default=AppConfig.ros_reconnect_base_delay_sec,
+    )
+    parser.add_argument(
+        "--ros-reconnect-max-delay-sec",
+        type=float,
+        default=AppConfig.ros_reconnect_max_delay_sec,
+    )
+    parser.add_argument(
+        "--ros-reconnect-jitter-ratio",
+        type=float,
+        default=AppConfig.ros_reconnect_jitter_ratio,
+    )
+    parser.add_argument(
+        "--ros-probe-before-connect",
+        action="store_true",
+        default=AppConfig.ros_probe_before_connect,
+        help="Probe the rosbridge TCP port before opening the WebSocket. Disabled by default to reduce JetMax Wi-Fi churn.",
+    )
+    parser.add_argument(
+        "--no-ros-probe-before-connect",
+        action="store_false",
+        dest="ros_probe_before_connect",
+    )
+    parser.add_argument(
+        "--ros-runtime-probe-timeout-sec",
+        type=float,
+        default=AppConfig.ros_runtime_probe_timeout_sec,
+    )
+    parser.add_argument(
+        "--ros-runtime-state-grace-sec",
+        type=float,
+        default=AppConfig.ros_runtime_state_grace_sec,
+    )
+    parser.add_argument(
+        "--robot-auto-start-on-ros-unavailable",
+        action="store_true",
+        default=AppConfig.robot_auto_start_on_ros_unavailable,
+    )
+    parser.add_argument(
+        "--robot-auto-start-disabled",
+        action="store_false",
+        dest="robot_auto_start_on_ros_unavailable",
+    )
+    parser.add_argument(
+        "--robot-auto-restart-on-state-stale",
+        action="store_true",
+        default=AppConfig.robot_auto_restart_on_state_stale,
+    )
+    parser.add_argument(
+        "--robot-auto-restart-on-state-stale-disabled",
+        action="store_false",
+        dest="robot_auto_restart_on_state_stale",
+    )
+    parser.add_argument(
+        "--robot-auto-start-cooldown-sec",
+        type=float,
+        default=AppConfig.robot_auto_start_cooldown_sec,
+    )
+    parser.add_argument(
+        "--robot-auto-start-max-attempts",
+        type=int,
+        default=AppConfig.robot_auto_start_max_attempts,
+    )
+    parser.add_argument(
+        "--robot-bootstrap-retry-enabled",
+        action="store_true",
+        default=AppConfig.robot_bootstrap_retry_enabled,
+    )
+    parser.add_argument(
+        "--robot-bootstrap-retry-disabled",
+        action="store_false",
+        dest="robot_bootstrap_retry_enabled",
+    )
+    parser.add_argument(
+        "--robot-bootstrap-probe-interval-sec",
+        type=float,
+        default=AppConfig.robot_bootstrap_probe_interval_sec,
+    )
+    parser.add_argument(
+        "--robot-bootstrap-probe-timeout-sec",
+        type=float,
+        default=AppConfig.robot_bootstrap_probe_timeout_sec,
+    )
+    parser.add_argument(
+        "--robot-command-timeout-sec",
+        type=float,
+        default=AppConfig.robot_command_timeout_sec,
+    )
+    parser.add_argument(
+        "--robot-state-stale-threshold-ms",
+        type=float,
+        default=AppConfig.robot_state_stale_threshold_ms,
+    )
+    parser.add_argument("--vision-stream-url", default="")
+    parser.add_argument("--vision-auto-start", action="store_true", default=AppConfig.vision_auto_start)
+    parser.add_argument("--no-vision-auto-start", action="store_false", dest="vision_auto_start")
+    parser.add_argument("--vision-world-scale-xy", type=float, default=AppConfig.vision_world_scale_xy)
+    parser.add_argument("--vision-world-offset-x-mm", type=float, default=AppConfig.vision_world_offset_xy_mm[0])
+    parser.add_argument("--vision-world-offset-y-mm", type=float, default=AppConfig.vision_world_offset_xy_mm[1])
+    parser.add_argument(
+        "--vision-mapping-mode",
+        choices=("delta_servo", "absolute_base"),
+        default=AppConfig.vision_mapping_mode,
+    )
+    parser.add_argument("--vision-target-frame", default=AppConfig.vision_target_frame)
+    parser.add_argument(
+        "--vision-snapshot-max-age-ms",
+        type=float,
+        default=AppConfig.vision_snapshot_max_age_ms,
+    )
+    parser.add_argument(
+        "--vision-action-requires-calibration",
+        action="store_true",
+        default=AppConfig.vision_action_requires_calibration,
+    )
+    parser.add_argument(
+        "--vision-action-allows-no-calibration",
+        action="store_false",
+        dest="vision_action_requires_calibration",
+    )
+    parser.add_argument(
+        "--vision-calibration-profile-path",
+        default=str(AppConfig.vision_calibration_profile_path),
+    )
+    parser.add_argument(
+        "--vision-calibration-profile-required",
+        action="store_true",
+        default=AppConfig.vision_calibration_profile_required,
+    )
+    parser.add_argument(
+        "--vision-calibration-profile-optional",
+        action="store_false",
+        dest="vision_calibration_profile_required",
+    )
+    parser.add_argument("--vision-action-max-error-mm", type=float, default=AppConfig.vision_action_max_error_mm)
+    parser.add_argument(
+        "--vision-grasp-quality-threshold",
+        type=float,
+        default=AppConfig.vision_grasp_quality_threshold,
+    )
+    parser.add_argument("--vision-grasp-history-frames", type=int, default=AppConfig.vision_grasp_history_frames)
+    parser.add_argument("--vision-grasp-stable-frames", type=int, default=AppConfig.vision_grasp_stable_frames)
+    parser.add_argument(
+        "--vision-grasp-stability-tolerance-px",
+        type=float,
+        default=AppConfig.vision_grasp_stability_tolerance_px,
+    )
+    parser.add_argument(
+        "--vision-grasp-angle-stability-tolerance-deg",
+        type=float,
+        default=AppConfig.vision_grasp_angle_stability_tolerance_deg,
+    )
+    parser.add_argument(
+        "--vision-grasp-history-reset-px",
+        type=float,
+        default=AppConfig.vision_grasp_history_reset_px,
+    )
+    parser.add_argument(
+        "--vision-grasp-stability-wait-frames",
+        type=int,
+        default=AppConfig.vision_grasp_stability_wait_frames,
+    )
+    parser.add_argument(
+        "--vision-frame-fallback-enabled",
+        action="store_true",
+        default=AppConfig.vision_frame_fallback_enabled,
+    )
+    parser.add_argument(
+        "--no-vision-frame-fallback",
+        action="store_false",
+        dest="vision_frame_fallback_enabled",
+    )
+    parser.add_argument(
+        "--vision-frame-min-brightness-mean",
+        type=float,
+        default=AppConfig.vision_frame_min_brightness_mean,
+    )
+    parser.add_argument(
+        "--vision-frame-min-brightness-p95",
+        type=float,
+        default=AppConfig.vision_frame_min_brightness_p95,
+    )
+    parser.add_argument(
+        "--vision-servo-center-tolerance-px",
+        type=float,
+        default=AppConfig.vision_servo_center_tolerance_px,
+    )
+    parser.add_argument(
+        "--vision-servo-action-tolerance-px",
+        type=float,
+        default=AppConfig.vision_servo_action_tolerance_px,
+    )
+    parser.add_argument("--vision-servo-move-gain", type=float, default=AppConfig.vision_servo_move_gain)
+    parser.add_argument("--vision-servo-fine-move-gain", type=float, default=AppConfig.vision_servo_fine_move_gain)
+    parser.add_argument(
+        "--vision-servo-fine-threshold-px",
+        type=float,
+        default=AppConfig.vision_servo_fine_threshold_px,
+    )
+    parser.add_argument("--vision-servo-max-attempts", type=int, default=AppConfig.vision_servo_max_attempts)
+    parser.add_argument(
+        "--vision-eye-in-hand-pick-flow-enabled",
+        action="store_true",
+        default=AppConfig.vision_eye_in_hand_pick_flow_enabled,
+    )
+    parser.add_argument(
+        "--no-vision-eye-in-hand-pick-flow",
+        action="store_false",
+        dest="vision_eye_in_hand_pick_flow_enabled",
+    )
+    parser.add_argument(
+        "--vision-eye-in-hand-pick-radius-bias-mm",
+        type=float,
+        default=AppConfig.vision_eye_in_hand_pick_radius_bias_mm,
+        help="Final radius extension after low camera-center alignment; used only in command_bias mode.",
+    )
+    parser.add_argument("--vision-pick-search-z-mm", type=float, default=AppConfig.vision_pick_search_z_mm)
+    parser.add_argument("--vision-pick-confirm-z-mm", type=float, default=AppConfig.vision_pick_confirm_z_mm)
+    parser.add_argument("--vision-pick-descent-step-mm", type=float, default=AppConfig.vision_pick_descent_step_mm)
+    parser.add_argument(
+        "--vision-pick-descent-coarse-step-mm",
+        type=float,
+        default=AppConfig.vision_pick_descent_coarse_step_mm,
+    )
+    parser.add_argument(
+        "--vision-pick-descent-fine-step-mm",
+        type=float,
+        default=AppConfig.vision_pick_descent_fine_step_mm,
+    )
+    parser.add_argument(
+        "--vision-pick-descent-fine-band-mm",
+        type=float,
+        default=AppConfig.vision_pick_descent_fine_band_mm,
+    )
+    parser.add_argument("--vision-pick-z-tolerance-mm", type=float, default=AppConfig.vision_pick_z_tolerance_mm)
+    parser.add_argument(
+        "--vision-continuous-servo-enabled",
+        action="store_true",
+        default=AppConfig.vision_continuous_servo_enabled,
+        help="Experimental: publish continuous visual-servo teleop commands from the GUI runtime.",
+    )
+    parser.add_argument(
+        "--no-vision-continuous-servo",
+        action="store_false",
+        dest="vision_continuous_servo_enabled",
+    )
+    parser.add_argument(
+        "--vision-continuous-servo-theta-rate-limit-deg-s",
+        type=float,
+        default=AppConfig.vision_continuous_servo_theta_rate_limit_deg_s,
+    )
+    parser.add_argument(
+        "--vision-continuous-servo-radius-rate-limit-mm-s",
+        type=float,
+        default=AppConfig.vision_continuous_servo_radius_rate_limit_mm_s,
+    )
+    parser.add_argument(
+        "--vision-continuous-servo-z-rate-limit-mm-s",
+        type=float,
+        default=AppConfig.vision_continuous_servo_z_rate_limit_mm_s,
+    )
+    parser.add_argument(
+        "--vision-continuous-servo-command-timeout-ms",
+        type=float,
+        default=AppConfig.vision_continuous_servo_command_timeout_ms,
+    )
+    parser.add_argument(
+        "--vision-continuous-servo-stop-at-confirm",
+        action="store_true",
+        default=AppConfig.vision_continuous_servo_stop_at_confirm,
+        help="Stop at confirm height after continuous centering; do not issue the final PICK_CYL.",
+    )
+    parser.add_argument(
+        "--no-vision-continuous-servo-stop-at-confirm",
+        action="store_false",
+        dest="vision_continuous_servo_stop_at_confirm",
+    )
+    parser.add_argument(
+        "--vision-debug-bundle-enabled",
+        action="store_true",
+        default=AppConfig.vision_debug_bundle_enabled,
+    )
+    parser.add_argument(
+        "--no-vision-debug-bundle",
+        action="store_false",
+        dest="vision_debug_bundle_enabled",
+    )
+    parser.add_argument("--vision-debug-bundle-dir", type=Path, default=AppConfig.vision_debug_bundle_dir)
+    parser.add_argument(
+        "--pick-tool-offset-source",
+        choices=("target_pixel", "command_bias"),
+        default=AppConfig.pick_tool_offset_source,
+    )
+    parser.add_argument(
+        "--vision-residual-model",
+        choices=("grid", "idw", "none"),
+        default=AppConfig.vision_residual_model,
+    )
+    parser.add_argument("--vision-calibration-grid-size", type=int, default=AppConfig.vision_calibration_grid_size)
+    parser.add_argument("--pick-cyl-radius-bias-mm", type=float, default=AppConfig.pick_cyl_radius_bias_mm)
+    parser.add_argument("--pick-cyl-tangent-bias-mm", type=float, default=AppConfig.pick_cyl_tangent_bias_mm)
+    parser.add_argument("--pick-cyl-theta-bias-deg", type=float, default=AppConfig.pick_cyl_theta_bias_deg)
+    parser.add_argument("--sucker-rotation-enabled", action="store_true", default=AppConfig.sucker_rotation_enabled)
+    parser.add_argument("--no-sucker-rotation", action="store_false", dest="sucker_rotation_enabled")
+    parser.add_argument("--sucker-rotation-offset-deg", type=float, default=AppConfig.sucker_rotation_offset_deg)
+    parser.add_argument("--sucker-rotation-invert", action="store_true", default=AppConfig.sucker_rotation_invert)
+    parser.add_argument("--sucker-rotation-normal", action="store_false", dest="sucker_rotation_invert")
+    parser.add_argument("--sucker-rotation-min-deg", type=float, default=AppConfig.sucker_rotation_min_deg)
+    parser.add_argument("--sucker-rotation-max-deg", type=float, default=AppConfig.sucker_rotation_max_deg)
+    parser.add_argument("--sucker-rotation-duration-sec", type=float, default=AppConfig.sucker_rotation_duration_sec)
+    parser.add_argument(
+        "--sucker-rotation-angle-quality-threshold",
+        type=float,
+        default=AppConfig.sucker_rotation_angle_quality_threshold,
+    )
+    parser.add_argument("--vision-grasp-profile-path", type=Path, default=AppConfig.vision_grasp_profile_path)
+    parser.add_argument(
+        "--vision-grasp-profile-required",
+        action="store_true",
+        default=AppConfig.vision_grasp_profile_required,
+    )
+    parser.add_argument(
+        "--vision-grasp-profile-optional",
+        action="store_false",
+        dest="vision_grasp_profile_required",
+    )
+    parser.add_argument(
+        "--vision-grasp-profile-real-pick-required",
+        action="store_true",
+        default=AppConfig.vision_grasp_profile_real_pick_required,
+    )
+    parser.add_argument(
+        "--allow-real-pick-without-vision-grasp-profile",
+        action="store_false",
+        dest="vision_grasp_profile_real_pick_required",
+    )
+    parser.add_argument("--stage-motion-sec", type=float, default=None)
+    parser.add_argument("--continue-motion-sec", type=float, default=None)
+    parser.add_argument("--smoke-test-ms", type=int, default=0, help="Auto quit after N ms for smoke tests.")
+    args = parser.parse_args(argv)
+
+    config = build_config_from_args(args)
+    qt_app = QApplication(sys.argv if argv is None else argv)
+    runtime = HybridControllerApplication(config)
+    runtime.main_window.showMaximized()
+    if args.smoke_test_ms > 0:
+        QTimer.singleShot(args.smoke_test_ms, lambda: (runtime.shutdown(), qt_app.quit()))
+    exit_code = 0
+    try:
+        exit_code = qt_app.exec_()
+    finally:
+        runtime.shutdown()
+    return int(exit_code)
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

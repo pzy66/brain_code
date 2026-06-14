@@ -6,6 +6,7 @@ from pathlib import Path
 
 import numpy as np
 import cv2
+import pytest
 from PyQt5.QtCore import QCoreApplication
 
 from hybrid_controller.config import AppConfig
@@ -20,6 +21,14 @@ def _ensure_app() -> QCoreApplication:
     if app is None:
         app = QCoreApplication([])
     return app
+
+
+def _read_fixture_image(relative_path: str):
+    path = Path(relative_path)
+    image = cv2.imread(str(path))
+    if image is None:
+        pytest.skip(f"Missing vision fixture image: {path}")
+    return image
 
 
 class _FakeCapture:
@@ -172,6 +181,24 @@ def test_infer_interval_controller_respects_hysteresis_and_bounds() -> None:
     assert 45.0 <= third <= 220.0
 
 
+def test_worker_limits_visual_slots_to_four_even_when_config_requests_more() -> None:
+    worker = vision_runtime._VisionWorker(  # pylint: disable=protected-access
+        AppConfig(
+            vision_max_targets=9,
+            ssvep_freqs=(8.0, 10.0, 12.0, 15.0),
+        ),
+        calibration_params=None,
+        cv2_module=_FakeCv2,
+        yolo_class=_FakeYOLO,
+    )
+
+    slots = worker._slots  # pylint: disable=protected-access
+
+    assert len(slots) == 4
+    assert slots[-1].slot == 4
+    assert [slot.freq_hz for slot in slots[:4]] == [8.0, 10.0, 12.0, 15.0]
+
+
 def test_worker_reports_missing_target_pixel_for_target_pixel_pick_flow(tmp_path) -> None:
     profile_path = tmp_path / "current_profile.json"
     profile_path.write_text(
@@ -238,11 +265,9 @@ def test_default_vision_stream_url_matches_single_official_candidate() -> None:
 
 
 def test_horizontal_tearing_detector_rejects_spliced_mjpeg_frame() -> None:
-    clean = cv2.imread(
-        str(Path("hybrid_controller/logs/vision_debug/live_read_check/frame_03.jpg"))
-    )
-    torn = cv2.imread(
-        str(Path("hybrid_controller/logs/vision_debug/vision_grasp_20260511_152143/continuous_028/raw.jpg"))
+    clean = _read_fixture_image("hybrid_controller/logs/vision_debug/live_read_check/frame_03.jpg")
+    torn = _read_fixture_image(
+        "hybrid_controller/logs/vision_debug/vision_grasp_20260511_152143/continuous_028/raw.jpg"
     )
 
     assert vision_runtime._frame_has_horizontal_tearing(clean) is False  # pylint: disable=protected-access
@@ -250,12 +275,8 @@ def test_horizontal_tearing_detector_rejects_spliced_mjpeg_frame() -> None:
 
 
 def test_horizontal_tearing_detector_rejects_multi_band_low_height_frame() -> None:
-    torn = cv2.imread(
-        str(Path("hybrid_controller/logs/vision_debug/vision_grasp_20260511_223228/step_01/raw.jpg"))
-    )
-    clean = cv2.imread(
-        str(Path("hybrid_controller/logs/vision_debug/vision_grasp_20260511_222734/step_01/raw.jpg"))
-    )
+    torn = _read_fixture_image("hybrid_controller/logs/vision_debug/vision_grasp_20260511_223228/step_01/raw.jpg")
+    clean = _read_fixture_image("hybrid_controller/logs/vision_debug/vision_grasp_20260511_222734/step_01/raw.jpg")
 
     assert vision_runtime._frame_has_horizontal_tearing(clean) is False  # pylint: disable=protected-access
     assert vision_runtime._frame_has_horizontal_tearing(torn) is True  # pylint: disable=protected-access
@@ -271,14 +292,14 @@ def test_horizontal_tearing_detector_allows_guide_border_edges() -> None:
 
 
 def test_temporal_splice_detector_rejects_partial_frame_jump() -> None:
-    previous = cv2.imread(
-        str(Path("hybrid_controller/logs/vision_debug/vision_grasp_20260511_183500/continuous_096/raw.jpg"))
+    previous = _read_fixture_image(
+        "hybrid_controller/logs/vision_debug/vision_grasp_20260511_183500/continuous_096/raw.jpg"
     )
-    torn = cv2.imread(
-        str(Path("hybrid_controller/logs/vision_debug/vision_grasp_20260511_183500/continuous_097/raw.jpg"))
+    torn = _read_fixture_image(
+        "hybrid_controller/logs/vision_debug/vision_grasp_20260511_183500/continuous_097/raw.jpg"
     )
-    clean = cv2.imread(
-        str(Path("hybrid_controller/logs/vision_debug/vision_grasp_20260511_183500/continuous_093/raw.jpg"))
+    clean = _read_fixture_image(
+        "hybrid_controller/logs/vision_debug/vision_grasp_20260511_183500/continuous_093/raw.jpg"
     )
 
     assert vision_runtime._frame_is_temporal_splice(previous, torn) is True  # pylint: disable=protected-access
@@ -286,15 +307,10 @@ def test_temporal_splice_detector_rejects_partial_frame_jump() -> None:
 
 
 def test_camera_restore_bad_frame_fixture_is_rejected() -> None:
-    torn = cv2.imread(
-        str(Path("hybrid_controller/logs/vision_debug/camera_restore_verify_20260513/frame_after_runtime.jpg"))
+    torn = _read_fixture_image("hybrid_controller/logs/vision_debug/camera_restore_verify_20260513/frame_after_runtime.jpg")
+    clean = _read_fixture_image(
+        "hybrid_controller/logs/vision_debug/camera_live_single_reader_20260513_175524/decoded_000.png"
     )
-    clean = cv2.imread(
-        str(Path("hybrid_controller/logs/vision_debug/camera_live_single_reader_20260513_175524/decoded_000.png"))
-    )
-
-    assert torn is not None
-    assert clean is not None
     assert vision_runtime._frame_has_horizontal_tearing(torn) is True  # pylint: disable=protected-access
     assert vision_runtime._frame_has_horizontal_tearing(clean) is False  # pylint: disable=protected-access
 
@@ -307,13 +323,18 @@ def test_worker_startup_gate_drains_and_requires_clean_consecutive_frames() -> N
         yolo_class=_FakeYOLO,
     )
     frames = [
-        cv2.imread(str(Path("hybrid_controller/logs/vision_debug/camera_decode_diagnosis_20260513_173317/content_length_00.jpg"))),
-        cv2.imread(str(Path("hybrid_controller/logs/vision_debug/camera_decode_diagnosis_20260513_173317/content_length_01.jpg"))),
-        cv2.imread(str(Path("hybrid_controller/logs/vision_debug/camera_decode_diagnosis_20260513_173317/content_length_02.jpg"))),
-        cv2.imread(str(Path("hybrid_controller/logs/vision_debug/camera_live_single_reader_20260513_175524/decoded_000.png"))),
-        cv2.imread(str(Path("hybrid_controller/logs/vision_debug/camera_live_single_reader_20260513_175524/decoded_001.png"))),
+        _read_fixture_image(
+            "hybrid_controller/logs/vision_debug/camera_decode_diagnosis_20260513_173317/content_length_00.jpg"
+        ),
+        _read_fixture_image(
+            "hybrid_controller/logs/vision_debug/camera_decode_diagnosis_20260513_173317/content_length_01.jpg"
+        ),
+        _read_fixture_image(
+            "hybrid_controller/logs/vision_debug/camera_decode_diagnosis_20260513_173317/content_length_02.jpg"
+        ),
+        _read_fixture_image("hybrid_controller/logs/vision_debug/camera_live_single_reader_20260513_175524/decoded_000.png"),
+        _read_fixture_image("hybrid_controller/logs/vision_debug/camera_live_single_reader_20260513_175524/decoded_001.png"),
     ]
-    assert all(frame is not None for frame in frames)
 
     accepted = [worker._frame_is_stable_for_startup(frame) for frame in frames]  # pylint: disable=protected-access
 

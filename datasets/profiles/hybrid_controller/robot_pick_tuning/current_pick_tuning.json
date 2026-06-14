@@ -1,0 +1,16 @@
+{
+  "profile_id": "jetmax-default-pick-tuning-v1",
+  "pick_approach_z_mm": 130.0,
+  "pick_descend_z_mm": 85.0,
+  "pick_pre_suction_sec": 0.25,
+  "pick_bottom_hold_sec": 0.15,
+  "pick_lift_sec": 0.8,
+  "place_descend_z_mm": 85.0,
+  "place_release_mode": "release",
+  "place_release_sec": 0.25,
+  "place_post_release_hold_sec": 0.1,
+  "z_carry_floor_mm": 160.0,
+  "notes": [
+    "Default JetMax pick/place timing used when no operator-tuned profile has been saved."
+  ]
+}

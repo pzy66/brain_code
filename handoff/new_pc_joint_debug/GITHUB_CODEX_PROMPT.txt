@@ -1,0 +1,19 @@
+请先阅读 handoff/new_pc_joint_debug/README.md、CODEX_HANDOFF.md、CURRENT_STATE.md、GITHUB_SYNC.md、ROBOT_MANUAL_START.md 和 TROUBLESHOOTING.md。
+
+我现在在新电脑上继续联调脑机机械臂一体化控制台。当前代码来自 GitHub 分支 codex/integrated-workbench-robot-debug。
+
+请用中文回答，并按下面顺序帮我排查：
+1. 确认当前仓库路径、分支和文件是否完整；
+2. 如果没有现成 exe，说明如何从源码启动或重新打包；
+3. 检查电脑是否连上机械臂 Wi-Fi；
+4. 检查 192.168.149.1 的 22、9091、8080 端口；
+5. 如果 SSH 通但 9091 不通，指导我手动 SSH 到机械臂运行 /home/hiwonder/brain_code/hybrid_controller/robot/run_hybrid_controller_ros_runtime.sh；
+6. 检查脑电帽 COM 口和实时 EEG 显示；
+7. 继续联调机械臂连接、摄像头画面、视觉识别最多 4 个木块、目标选择、确认抓取和实际抓取；
+8. 如果需要改代码，先读相关文件再最小范围修改，并运行能跑的测试或 smoke test。
+
+重要约束：
+- 当前主链是 ROS rosbridge 9091，不要用 9092。
+- 摄像头走 JetMax 官方 web_video_server 8080，不要默认修改或重启 usb_cam.service。
+- UI 表面展示脑电控制，不要在界面上显示键盘提示。
+- exe 便携包如果不在 GitHub clone 里，需要单独复制 dist/BrainRobotWorkbench.zip 或重新打包。

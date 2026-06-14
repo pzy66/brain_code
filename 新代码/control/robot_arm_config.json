@@ -1,0 +1,15 @@
+{
+  "robot_name": "hiwonder_jetmax",
+  "host": "192.168.149.1",
+  "candidate_ports": [9091, 8080, 8888, 9090, 80, 22, 5000],
+  "rosbridge_port": 9091,
+  "camera_mjpeg_port": 8080,
+  "tcp_compat_port": 8888,
+  "control_port": 9091,
+  "socket_timeout_seconds": 2.0,
+  "notes": [
+    "Current PC WLAN was detected on 192.168.149.x, and 192.168.149.1 responds to ping.",
+    "GitHub robot docs say the main real-robot path uses rosbridge 9091, camera MJPEG 8080, and legacy TCP fallback 8888.",
+    "All candidate TCP service ports were closed during the first check, so the robot-side control server is probably not running yet."
+  ]
+}

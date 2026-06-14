@@ -1,0 +1,14 @@
+numpy
+scipy
+PyYAML
+requests
+websocket-client
+pyserial
+opencv-python
+PyQt5>=5.15,<6
+paramiko>=3.4,<4
+roslibpy>=1.6,<2
+ultralytics>=8,<9
+brainflow>=5,<6
+rospkg
+catkin-pkg

@@ -221,10 +221,18 @@ class RuntimeStore:
         text = str(key)
         perf_key = _PERF_KEY_MAP.get(text)
         if perf_key is not None:
-            setattr(self._state.perf, perf_key, float(value))
+            normalized_perf = float(value)
+            if getattr(self._state.perf, perf_key) == normalized_perf:
+                return
+            setattr(self._state.perf, perf_key, normalized_perf)
             return
         if text in self._field_names:
-            setattr(self._state, text, self._normalize_value(text, value))
+            normalized = self._normalize_value(text, value)
+            if getattr(self._state, text) == normalized:
+                return
+            setattr(self._state, text, normalized)
+            return
+        if text in self._extra and self._extra[text] == value:
             return
         self._extra[text] = value
 

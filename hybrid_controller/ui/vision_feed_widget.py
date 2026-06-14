@@ -96,9 +96,8 @@ class VisionFeedWidget(QWidget):
         self._status_text = "Waiting for vision runtime..."
         self._hud_font = QFont("Consolas", 10)
         self._label_font = QFont("Consolas", 12, QFont.Bold)
-        self._clock = StimClockThread(self._resolve_refresh_rate(refresh_rate_hz))
-        self._clock.tick.connect(self._on_tick)
-        self._clock.start()
+        self._refresh_rate_hz = self._resolve_refresh_rate(refresh_rate_hz)
+        self._clock: StimClockThread | None = None
         self.setMinimumSize(640, 420)
 
     @staticmethod
@@ -116,9 +115,7 @@ class VisionFeedWidget(QWidget):
         return min(requested, screen_refresh)
 
     def shutdown(self) -> None:
-        if self._clock.isRunning():
-            self._clock.request_stop()
-            self._clock.wait(1000)
+        self._stop_clock()
 
     def closeEvent(self, event) -> None:  # noqa: N802
         self.shutdown()
@@ -140,10 +137,36 @@ class VisionFeedWidget(QWidget):
                 self._frame_size = (int(frame_bgr.shape[1]), int(frame_bgr.shape[0]))
                 self._frame_object_id = frame_object_id
         self._packet = packet
-        self._flash_enabled = bool(flash_enabled)
+        self._set_flash_enabled(bool(flash_enabled))
         if status_text is not None:
             self._status_text = str(status_text)
         self.update()
+
+    def _set_flash_enabled(self, enabled: bool) -> None:
+        if self._flash_enabled == bool(enabled):
+            return
+        self._flash_enabled = bool(enabled)
+        if self._flash_enabled:
+            self._start_clock()
+        else:
+            self._stop_clock()
+
+    def _start_clock(self) -> None:
+        if self._clock is not None and self._clock.isRunning():
+            return
+        self._clock = StimClockThread(self._refresh_rate_hz)
+        self._clock.tick.connect(self._on_tick)
+        self._clock.start()
+
+    def _stop_clock(self) -> None:
+        clock = self._clock
+        self._clock = None
+        if clock is None:
+            return
+        if clock.isRunning():
+            clock.request_stop()
+            clock.wait(1000)
+        clock.deleteLater()
 
     def _on_tick(self, current_t: float, _frame_idx: int, jitter_ms: float) -> None:
         self._current_t = float(current_t)
@@ -151,9 +174,6 @@ class VisionFeedWidget(QWidget):
         if self._flash_enabled:
             self.update()
             return
-        if (self._current_t - self._last_passive_redraw_t) >= self._passive_redraw_interval_sec:
-            self._last_passive_redraw_t = self._current_t
-            self.update()
 
     @staticmethod
     def _frame_to_qimage(frame_bgr: np.ndarray) -> QImage:

@@ -1,0 +1,30 @@
+{
+  "profile_id": "eye-in-hand-fallback-uncalibrated-v1",
+  "created_at": "2026-06-14T00:00:00",
+  "image_size": [640, 480],
+  "servo": {
+    "target_pixel": [320.0, 240.0],
+    "center_tolerance_px": 8.0,
+    "gain": 0.8,
+    "max_attempts": 3
+  },
+  "limits": {
+    "max_allowed_error_mm": 6.0
+  },
+  "residual": {
+    "median_error_mm": null,
+    "p95_error_mm": null,
+    "max_error_mm": null,
+    "points": []
+  },
+  "metadata": {
+    "source": "fallback_placeholder",
+    "requires_live_calibration": true,
+    "precision_mapping_available": false
+  },
+  "notes": [
+    "This placeholder keeps the default path portable but is not a live hand-eye calibration.",
+    "It intentionally omits pixel_to_delta so precision visual grasping remains unavailable until a real calibration profile is saved.",
+    "For real calibrated visual servo grasping, replace this file with the latest live profile generated from calibration."
+  ]
+}

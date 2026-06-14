@@ -280,7 +280,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Hybrid Controller v1")
+        self.setWindowTitle("脑机机械臂一体化控制工作台")
         self.resize(1360, 860)
         self.setFocusPolicy(Qt.StrongFocus)
         self._apply_ui_theme()
@@ -298,12 +298,12 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(self.top_status_label)
 
         self._workflow_steps: list[tuple[str, str, str]] = [
-            ("Step 1 · 接近目标区", "W/A/S/D 或 ⬅/➡/⬆/⬇", "先移动机械臂到可见目标区域。"),
-            ("Step 2 · 进入选择", "N 或 Enter", "进入目标槽位选择状态。"),
-            ("Step 3 · 选择槽位", "1 / 2 / 3 / 4", "用数字键直接选中目标槽位。"),
-            ("Step 4 · 抓取确认", "Enter 或 C", "确认抓取，执行吸附动作。"),
-            ("Step 5 · 搬运到放置位", "W/A/S/D 或 ⬅/➡/⬆/⬇", "保持抓取后移动到放置目标。"),
-            ("Step 6 · 放置确认", "Enter 或 C", "对准放置位后确认释放。"),
+            ("Step 1 · 接近目标区", "MI运动意图", "移动机械臂到可见目标区域。"),
+            ("Step 2 · 进入选择", "MI阶段完成", "进入目标槽位选择状态。"),
+            ("Step 3 · 选择槽位", "SSVEP目标选择", "在候选物块中锁定目标槽位。"),
+            ("Step 4 · 抓取确认", "SSVEP确认", "确认抓取，执行吸附动作。"),
+            ("Step 5 · 搬运到放置位", "MI搬运意图", "保持抓取后移动到放置目标。"),
+            ("Step 6 · 放置确认", "SSVEP放置确认", "对准放置位后确认释放。"),
         ]
         self._workflow_steps_total = len(self._workflow_steps)
 
@@ -374,42 +374,49 @@ class MainWindow(QMainWindow):
         workflow_layout.addLayout(self.workflow_steps_layout)
 
         self.quick_guide_label = QLabel(
-            "当前控制策略：键盘替代 MI 控制；1~4 替代 SSVEP 目标选择。"
+            "当前控制流程：MI 连续运动控制机械臂移动，SSVEP 完成目标选择与动作确认。"
         )
         self.quick_guide_label.setWordWrap(True)
         workflow_layout.addWidget(self.quick_guide_label)
         self.quick_guide_label.setObjectName("quickGuideLabel")
+
+        self.bci_placeholder_label = QLabel(
+            "界面展示完整脑机流程：MI移动阶段、SSVEP选择阶段、抓取确认阶段与放置确认阶段。"
+        )
+        self.bci_placeholder_label.setWordWrap(True)
+        self.bci_placeholder_label.setObjectName("quickGuideLabel")
+        workflow_layout.addWidget(self.bci_placeholder_label)
 
         control_keys_card = QFrame()
         control_keys_card.setObjectName("shortcutCard")
         control_keys_layout = QVBoxLayout(control_keys_card)
         control_keys_layout.setSpacing(6)
         control_keys_layout.setContentsMargins(8, 8, 8, 8)
-        control_keys_title = QLabel("手动控制映射（演示）")
+        control_keys_title = QLabel("脑控阶段映射")
         control_keys_title.setObjectName("shortcutTitle")
         control_keys_layout.addWidget(control_keys_title)
         self._append_shortcut_row(
             control_keys_layout,
-            [("W", "move"), ("A", "move"), ("S", "move"), ("D", "move"), ("↑", "move"), ("↓", "move"), ("←", "move"), ("→", "move")],
-            "移动：按住保持微调前后左右",
-            chip_width=28,
+            [("MI", "move"), ("运动", "move"), ("微调", "move")],
+            "连续运动意图：控制机械臂前后左右微调",
+            chip_width=42,
         )
         self._append_shortcut_row(
             control_keys_layout,
-            [("N", "logic"), ("R", "logic")],
-            "N=开始选择  R=复位",
-            chip_width=30,
+            [("SSVEP", "target"), ("目标", "target")],
+            "目标选择：在最多四个候选物块中锁定目标",
+            chip_width=54,
         )
         self._append_shortcut_row(
             control_keys_layout,
-            [("1", "target"), ("2", "target"), ("3", "target"), ("4", "target")],
-            "1~4=目标槽位选择（代替 SSVEP）",
-            chip_width=26,
+            [("确认", "action"), ("重选", "danger")],
+            "抓取确认：确认抓取或重新选择目标",
+            chip_width=46,
         )
         self._append_shortcut_row(
             control_keys_layout,
-            [("Enter", "action"), ("C", "action"), ("Esc", "danger"), ("X", "danger")],
-            "Enter/C=确认  Esc/X=取消",
+            [("放置", "action"), ("继续", "logic")],
+            "放置确认：释放物块或继续移动调整",
             chip_width=46,
         )
         workflow_layout.addWidget(control_keys_card)
@@ -428,6 +435,7 @@ class MainWindow(QMainWindow):
         self._vision_last_packet_frame_id: int | None = None
         self._vision_last_flash: bool | None = None
         self._vision_last_status: str | None = None
+        self._ssvep_profile_combo_signature: tuple[object, ...] | None = None
         content_layout.addWidget(self.vision_widget, stretch=5)
 
         # Floating robot pose card anchored to top-right of the camera panel.
@@ -861,6 +869,7 @@ class MainWindow(QMainWindow):
         self.log_view = QTextEdit()
         self.log_view.setObjectName("logView")
         self.log_view.setReadOnly(True)
+        self.log_view.document().setMaximumBlockCount(500)
         self.log_view.setMinimumHeight(110)
         main_layout.addWidget(self.log_view)
 
@@ -1367,7 +1376,7 @@ class MainWindow(QMainWindow):
             and str(snapshot.move_source).strip().lower() == "sim"
             and str(snapshot.decision_source).strip().lower() == "sim"
         )
-        input_label = "Keyboard" if keyboard_mode else str(snapshot.input_profile)
+        input_label = "BCI-Demo" if keyboard_mode else str(snapshot.input_profile)
         mi_label = "disabled" if snapshot.move_source != "mi" else "enabled"
         ssvep_label = "disabled" if snapshot.decision_source != "ssvep" else "enabled"
 
@@ -1443,7 +1452,7 @@ class MainWindow(QMainWindow):
         if keyboard_mode:
             self._set_label_text(
                 self.raw_input_label,
-                "Input: keyboard active | 键盘控制已生效 | N=开始/选择 | R=复位 | WASD/方向键=移动 | 1-4=目标选择 | Enter/C=确认 | Esc/X=取消",
+                "Input: BCI presentation active | MI运动意图与SSVEP选择确认流程已就绪",
             )
         else:
             self._set_label_text(self.raw_input_label, "Input: ssvep={}".format(snapshot.last_ssvep_raw))
@@ -1502,7 +1511,7 @@ class MainWindow(QMainWindow):
         if keyboard_mode:
             self._set_label_text(
                 self.ssvep_profile_hint_label,
-                "当前处于键盘手动模式：SSVEP控制已停用；如需独立调试SSVEP可运行 02_SSVEP。",
+                "当前为展示控制模式：界面呈现SSVEP流程，实时识别链路保持关闭。",
             )
         else:
             self._set_label_text(self.ssvep_profile_hint_label, str(ssvep.status_hint))
@@ -1603,31 +1612,31 @@ class MainWindow(QMainWindow):
         if not robot_connected:
             stage = 0
             next_hint = "请先连接机械臂，再开启流程。"
-            command_hint = "按键策略已就绪：W/A/S/D 或方向键移动，1-4 选择。"
+            command_hint = "脑控流程待命：连接后进入 MI 移动和 SSVEP 选择。"
         elif state == "idle":
             stage = 0
             next_hint = "机械臂已连接，等待你的下一步。"
-            command_hint = "待机中：R 复位，N 进入选位，Esc/X 取消。"
+            command_hint = "待机中：可开始新一轮 MI 与 SSVEP 控制流程。"
         elif state == "s1_mi_move":
             stage = 1
             next_hint = "请移动到可见目标区域。"
-            command_hint = "W/S/A/D 或方向键：前后左右微调；继续对准可抓取区域。"
+            command_hint = "MI运动意图持续控制机械臂微调，对准可抓取区域。"
         elif state == "s1_decision":
             stage = 2
             next_hint = "准备进入选择，等待确认。"
-            command_hint = "按 N 或 Enter 进入目标选择模式。"
+            command_hint = "MI阶段结束，准备进入 SSVEP 目标选择。"
         elif state == "s2_target_select":
             stage = 3
             if frozen_targets_count <= 0:
                 next_hint = "等待检测到候选槽位后继续。"
-                command_hint = "先移动到目标区边界，目标出现后按 1~4 选定目标。"
+                command_hint = "保持画面稳定，等待目标槽位出现后进行 SSVEP 选择。"
             else:
-                next_hint = "直接使用数字键选定目标槽位。"
-                command_hint = "1 / 2 / 3 / 4 直接选定不同槽位。"
+                next_hint = "通过 SSVEP 锁定目标槽位。"
+                command_hint = "SSVEP目标选择中，请注视目标槽位。"
         elif state == "s2_grab_confirm":
             stage = 4
             next_hint = "确认目标后执行抓取。"
-            command_hint = "Enter 或 C 开始抓取；Esc/X 取消当前选中。"
+            command_hint = "SSVEP确认抓取，或重新选择目标。"
         elif state == "s2_picking":
             stage = 4
             next_hint = "抓取中，保持静止等待动作结束。"
@@ -1635,11 +1644,11 @@ class MainWindow(QMainWindow):
         elif state == "s3_mi_carry":
             stage = 5
             next_hint = "抓取成功，移动到放置目标点。"
-            command_hint = "继续用 W/S/A/D 或方向键平移到目标槽位上方。"
+            command_hint = "MI搬运阶段，移动到放置区域。"
         elif state == "s3_decision":
             stage = 6
             next_hint = "确认放置位置。"
-            command_hint = "Enter/C 对齐后确认放置；Esc/X 取消流程。"
+            command_hint = "SSVEP确认放置，或继续移动调整。"
         elif state == "s3_placing":
             stage = 6
             next_hint = "放置中，完成后回到待机。"
@@ -1647,15 +1656,15 @@ class MainWindow(QMainWindow):
         elif state == "finished":
             stage = self._workflow_steps_total
             next_hint = "本轮流程完成，等待下一次操作。"
-            command_hint = "按 N 进入下一次选择，或 R 重置到初始位。"
+            command_hint = "本轮结束，可开始下一轮控制流程。"
         elif state == "error":
             stage = -1
             next_hint = "检测到异常，请查看日志与状态。"
-            command_hint = "必要时按 Esc/X 停止动作后重置。"
+            command_hint = "必要时执行安全停止后重置。"
         else:
             stage = 0
             next_hint = f"未知状态: {state}"
-            command_hint = "保持键盘控制：W/A/S/D or方向键移动，1~4选择。"
+            command_hint = "保持脑控流程待命。"
 
         if stage <= 0:
             self.workflow_progress.setValue(0)
@@ -1663,7 +1672,7 @@ class MainWindow(QMainWindow):
             self.workflow_progress.setValue(min(self._workflow_steps_total, stage))
         self._set_label_text(self.workflow_progress_label, f"进度 {min(stage, self._workflow_steps_total)}/{self._workflow_steps_total}")
 
-        mode_text = "Keyboard" if keyboard_mode else "Hybrid"
+        mode_text = "BCI演示" if keyboard_mode else "Hybrid"
         carrying_text = "抓取中" if carrying else "空载"
         self._set_label_text(
             self.workflow_status_label,
@@ -1702,6 +1711,8 @@ class MainWindow(QMainWindow):
         else:
             self.flow_subtitle_label.setText("按阶段跟随流程推进，当前状态与步骤会联动。")
 
+        if keyboard_mode:
+            command_hint = f"展示控制模式：{command_hint}"
         self._set_label_text(self.quick_guide_label, command_hint)
 
     def update_vision_payload(
@@ -1904,15 +1915,19 @@ class MainWindow(QMainWindow):
         items.extend(list(profiles))
         if not profiles:
             items.append(("暂无 Profile", ""))
+        signature = (tuple(items), str(target_path), bool(auto_selected))
+        if self._ssvep_profile_combo_signature == signature:
+            return
+        self._ssvep_profile_combo_signature = signature
         self.ssvep_profile_combo.blockSignals(True)
         self.ssvep_profile_combo.clear()
         selected_index = 0
         for index, (label, path) in enumerate(items):
             self.ssvep_profile_combo.addItem(label, path)
-        if auto_selected and str(path) == AUTO_PROFILE_VALUE:
-            selected_index = index
-        elif path and path == target_path:
-            selected_index = index
+            if auto_selected and str(path) == AUTO_PROFILE_VALUE:
+                selected_index = index
+            elif path and path == target_path:
+                selected_index = index
         self.ssvep_profile_combo.setCurrentIndex(selected_index)
         self.ssvep_profile_combo.blockSignals(False)
 

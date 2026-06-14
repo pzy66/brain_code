@@ -1,0 +1,11 @@
+请先阅读 handoff/new_pc_joint_debug/README.md、CODEX_HANDOFF.md、CURRENT_STATE.md、ROBOT_MANUAL_START.md 和 TROUBLESHOOTING.md。
+
+现在我要在这台新电脑上联调 BrainRobotWorkbench.exe 和 JetMax/Hiwonder 机械臂。请用中文回答，先帮我检查：
+1. exe 是否能启动；
+2. 电脑是否连上机械臂 Wi-Fi；
+3. 192.168.149.1:22、9091、8080 是否可达；
+4. 脑电帽 COM 口是否能看到；
+5. 如果 SSH 自动启动失败，指导我手动在机械臂上运行 /home/hiwonder/brain_code/hybrid_controller/robot/run_hybrid_controller_ros_runtime.sh；
+6. 如果能连接但不能抓取，继续检查视觉识别、目标选择、确认抓取和 ROS 命令链路。
+
+不要把 9092 当主链端口；当前主链是 rosbridge 9091。不要默认修改或重启 JetMax 官方摄像头服务。

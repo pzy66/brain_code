@@ -111,14 +111,29 @@ def test_main_window_accepts_app_snapshot() -> None:
     )
     window = MainWindow()
     window.update_snapshot(snapshot)
+    assert window.windowTitle() == "脑机机械臂一体化控制工作台"
     assert "State=idle" in window.top_status_label.text()
-    assert "Input=Keyboard" in window.top_status_label.text()
+    assert "Input=BCI-Demo" in window.top_status_label.text()
     assert "SSVEP=disabled" in window.top_status_label.text()
-    assert "keyboard active" in window.raw_input_label.text()
+    assert "BCI presentation active" in window.raw_input_label.text()
+    assert "展示控制模式" in window.quick_guide_label.text()
+    assert "完整脑机流程" in window.bci_placeholder_label.text()
+    visible_text = "\n".join(
+        [
+            window.windowTitle(),
+            window.top_status_label.text(),
+            window.raw_input_label.text(),
+            window.quick_guide_label.text(),
+            window.bci_placeholder_label.text(),
+        ]
+    )
+    assert "键盘" not in visible_text
+    assert "keyboard" not in visible_text.lower()
     assert not window.ssvep_connect_button.isEnabled()
     assert not window.ssvep_recognition_toggle_button.isEnabled()
     assert "Vision:" in window.bottom_status_label.text()
     assert window.vision_widget._flash_enabled is False
+    assert window.vision_widget._clock is None
     window.close()
     app.processEvents()
 
@@ -180,5 +195,56 @@ def test_update_panels_does_not_drive_vision_channel() -> None:
     window.update_panels(snapshot)
     window.update_panels(snapshot)
     assert calls["count"] == 0
+    window.close()
+    app.processEvents()
+
+
+def test_main_window_log_view_is_bounded() -> None:
+    app = _ensure_app()
+    window = MainWindow()
+
+    for index in range(620):
+        window.append_log(f"line {index}")
+    app.processEvents()
+
+    assert window.log_view.document().maximumBlockCount() == 500
+    assert window.log_view.document().blockCount() <= 500
+    window.close()
+    app.processEvents()
+
+
+def test_vision_clock_runs_only_while_flash_is_enabled() -> None:
+    app = _ensure_app()
+    window = MainWindow()
+
+    assert window.vision_widget._clock is None
+    window.update_vision_payload(packet={"slots": []}, flash_enabled=False, force=True)
+    app.processEvents()
+    assert window.vision_widget._clock is None
+
+    window.update_vision_payload(packet={"slots": []}, flash_enabled=True, force=True)
+    app.processEvents()
+    assert window.vision_widget._clock is not None
+    assert window.vision_widget._clock.isRunning()
+
+    window.update_vision_payload(packet={"slots": []}, flash_enabled=False, force=True)
+    app.processEvents()
+    assert window.vision_widget._clock is None
+    window.close()
+    app.processEvents()
+
+
+def test_profile_combo_selects_matching_profile_without_rebuilding_same_items() -> None:
+    app = _ensure_app()
+    window = MainWindow()
+
+    profiles = (("A", "C:/profiles/a.json"), ("B", "C:/profiles/b.json"))
+    window._update_profile_combo(profiles, selected_path="C:/profiles/b.json", auto_selected=False)
+    first_signature = window._ssvep_profile_combo_signature
+
+    assert window.ssvep_profile_combo.currentData() == "C:/profiles/b.json"
+    window._update_profile_combo(profiles, selected_path="C:/profiles/b.json", auto_selected=False)
+    assert window._ssvep_profile_combo_signature == first_signature
+    assert window.ssvep_profile_combo.currentData() == "C:/profiles/b.json"
     window.close()
     app.processEvents()

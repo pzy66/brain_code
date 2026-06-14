@@ -4,6 +4,7 @@ import argparse
 import json
 import shlex
 import socket
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,6 +45,16 @@ DEFAULT_CAMERA_STREAM_PATH = (
     f"&height={HIWONDER_CAMERA_HEIGHT}"
     f"&quality={HIWONDER_CAMERA_QUALITY}"
 )
+
+
+def local_robot_bundle_dir() -> Path:
+    """Return the local robot bundle path in source and PyInstaller builds."""
+    bundle_root = getattr(sys, "_MEIPASS", "")
+    if bundle_root:
+        bundled = Path(str(bundle_root)) / "hybrid_controller" / "robot"
+        if bundled.exists():
+            return bundled
+    return Path(__file__).resolve().parents[1]
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,7 +229,7 @@ def main(argv: list[str] | None = None) -> int:
             "Refusing to modify JetMax camera output. The camera sender is fixed to the Hiwonder official "
             "default path; pass --allow-camera-sender-mutation only for an intentional camera repair."
         )
-    local_robot_dir = Path(__file__).resolve().parents[1]
+    local_robot_dir = local_robot_bundle_dir()
     remote_robot_dir = f"{args.remote_root}/hybrid_controller/robot"
     remote_log = f"{args.remote_root}/hybrid_ros_runtime.log"
 
@@ -305,7 +316,8 @@ def main(argv: list[str] | None = None) -> int:
         host=args.host,
         user=args.user,
         password=args.password,
-        timeout_sec=float(args.ssh_timeout_sec),
+        ssh_timeout_sec=float(args.ssh_timeout_sec),
+        ready_timeout_sec=float(args.ready_timeout_sec),
     )
     if not args.skip_camera_check:
         verify_official_camera_sender(
@@ -679,6 +691,23 @@ def upload_text(ssh: paramiko.SSHClient, remote_path: str, content: str) -> None
             pass
 
 
+def put_robot_bundle_file(sftp: paramiko.SFTPClient, source: Path, remote_file: str) -> None:
+    if source.suffix == ".sh":
+        content = source.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n")
+        with NamedTemporaryFile("w", encoding="utf-8", delete=False, newline="\n") as handle:
+            local_path = Path(handle.name)
+            handle.write(content)
+        try:
+            sftp.put(str(local_path), remote_file)
+        finally:
+            try:
+                local_path.unlink()
+            except OSError:
+                pass
+        return
+    sftp.put(str(source), remote_file)
+
+
 def sync_robot_bundle(ssh: paramiko.SSHClient, *, local_robot_dir: Path, remote_robot_dir: str) -> None:
     local_robot_dir = local_robot_dir.resolve()
     sync_paths = [
@@ -697,7 +726,7 @@ def sync_robot_bundle(ssh: paramiko.SSHClient, *, local_robot_dir: Path, remote_
                 rel = source.relative_to(local_robot_dir)
                 remote_file = f"{remote_robot_dir}/{rel.as_posix()}"
                 ensure_remote_dir(sftp, remote_file.rsplit("/", 1)[0])
-                sftp.put(str(source), remote_file)
+                put_robot_bundle_file(sftp, source, remote_file)
                 continue
             for file_path in source.rglob("*"):
                 if not file_path.is_file():
@@ -709,7 +738,7 @@ def sync_robot_bundle(ssh: paramiko.SSHClient, *, local_robot_dir: Path, remote_
                 rel = file_path.relative_to(local_robot_dir)
                 remote_file = f"{remote_robot_dir}/{rel.as_posix()}"
                 ensure_remote_dir(sftp, remote_file.rsplit("/", 1)[0])
-                sftp.put(str(file_path), remote_file)
+                put_robot_bundle_file(sftp, file_path, remote_file)
     finally:
         sftp.close()
 
@@ -834,18 +863,11 @@ def verify_official_camera_sender(*, host: str, user: str, password: str, timeou
         ssh.close()
 
 
-def verify_runtime_services(*, host: str, user: str, password: str, timeout_sec: float) -> None:
+def verify_runtime_services(*, host: str, user: str, password: str, ssh_timeout_sec: float, ready_timeout_sec: float) -> None:
     ssh = paramiko.SSHClient()
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    ssh.connect(host, username=user, password=password, timeout=float(timeout_sec))
+    ssh.connect(host, username=user, password=password, timeout=float(ssh_timeout_sec))
     try:
-        process_info = run_remote_command(
-            ssh,
-            "pgrep -af hybrid_controller_runtime_node.py || true",
-            capture=True,
-        )
-        if not process_info:
-            raise RuntimeError("hybrid_controller_runtime_node.py is not running on JetMax.")
         required = {
             "/hybrid_controller/move_cyl",
             "/hybrid_controller/move_cyl_auto",
@@ -856,26 +878,43 @@ def verify_runtime_services(*, host: str, user: str, password: str, timeout_sec:
             "/hybrid_controller/sucker_off",
             "/hybrid_controller/sucker_freeze",
         }
-        listed = run_remote_command(
-            ssh,
-            "source /opt/ros/melodic/setup.bash; "
-            "source ~/catkin_ws/devel/setup.bash; "
-            "rosservice list 2>/dev/null | grep -E \"^/hybrid_controller/\" || true",
-            capture=True,
-        )
-        available = {line.strip() for line in str(listed).splitlines() if line.strip()}
-        missing = sorted(required - available)
-        if missing:
-            raise RuntimeError("Missing ROS services: {0}".format(", ".join(missing)))
-        state_payload = run_remote_command(
-            ssh,
-            "source /opt/ros/melodic/setup.bash; "
-            "source ~/catkin_ws/devel/setup.bash; "
-            "timeout 8 rostopic echo -n 1 --noarr /hybrid_controller/state 2>/dev/null || true",
-            capture=True,
-        )
-        if "state:" not in state_payload or "busy:" not in state_payload or "robot_ts:" not in state_payload:
-            raise RuntimeError("/hybrid_controller/state did not publish a complete runtime state sample.")
+        deadline = time.time() + max(1.0, float(ready_timeout_sec))
+        last_error = "runtime service verification did not run"
+        while time.time() < deadline:
+            process_info = run_remote_command(
+                ssh,
+                "pgrep -af hybrid_controller_runtime_node.py || true",
+                capture=True,
+            )
+            if not process_info:
+                last_error = "hybrid_controller_runtime_node.py is not running on JetMax."
+                time.sleep(1.0)
+                continue
+            listed = run_remote_command(
+                ssh,
+                "source /opt/ros/melodic/setup.bash; "
+                "source ~/catkin_ws/devel/setup.bash; "
+                "rosservice list 2>/dev/null | grep -E \"^/hybrid_controller/\" || true",
+                capture=True,
+            )
+            available = {line.strip() for line in str(listed).splitlines() if line.strip()}
+            missing = sorted(required - available)
+            if missing:
+                last_error = "Missing ROS services: {0}".format(", ".join(missing))
+                time.sleep(1.0)
+                continue
+            state_payload = run_remote_command(
+                ssh,
+                "source /opt/ros/melodic/setup.bash; "
+                "source ~/catkin_ws/devel/setup.bash; "
+                "timeout 4 rostopic echo -n 1 --noarr /hybrid_controller/state 2>/dev/null || true",
+                capture=True,
+            )
+            if "state:" in state_payload and "busy:" in state_payload and "robot_ts:" in state_payload:
+                return
+            last_error = "/hybrid_controller/state did not publish a complete runtime state sample."
+            time.sleep(1.0)
+        raise RuntimeError(last_error)
     finally:
         ssh.close()
 

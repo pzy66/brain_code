@@ -1,0 +1,24 @@
+Windows PowerShell:
+
+ssh hiwonder@192.168.149.1
+
+Robot password:
+
+hiwonder
+
+Run on the robot:
+
+cd /home/hiwonder/brain_code/hybrid_controller/robot
+pkill -f hybrid_controller_runtime_node.py || true
+bash run_hybrid_controller_ros_runtime.sh
+
+Background mode:
+
+cd /home/hiwonder/brain_code/hybrid_controller/robot
+pkill -f hybrid_controller_runtime_node.py || true
+nohup bash run_hybrid_controller_ros_runtime.sh > ~/hybrid_controller_runtime.log 2>&1 &
+tail -f ~/hybrid_controller_runtime.log
+
+Check from Windows:
+
+Test-NetConnection 192.168.149.1 -Port 9091

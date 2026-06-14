@@ -71,6 +71,8 @@ def _candidate_brain_code_pythons() -> tuple[Path, ...]:
 
 
 def _enforce_brain_code_interpreter() -> None:
+    if getattr(sys, "frozen", False):
+        return
     override = os.environ.get("BRAIN_PYTHON_EXE", "").strip()
     expected_paths: tuple[Path, ...]
     if override:

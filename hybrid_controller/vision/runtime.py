@@ -436,6 +436,25 @@ def _resolve_vision_device(request: str) -> tuple[str | None, bool]:
     return str(request).strip(), False
 
 
+def _slot_frequency_for_index(config: AppConfig, index: int) -> float:
+    raw_freqs = getattr(config, "ssvep_freqs", ())
+    freqs: list[float] = []
+    if isinstance(raw_freqs, (tuple, list)):
+        for raw in raw_freqs:
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                continue
+            if np.isfinite(value) and value > 0:
+                freqs.append(value)
+    if not freqs:
+        return 0.0
+    normalized_index = max(0, int(index))
+    if normalized_index < len(freqs):
+        return float(freqs[normalized_index])
+    return float(freqs[normalized_index % len(freqs)])
+
+
 class _VisionWorker(QObject):
     targets_ready = pyqtSignal(object)
     packet_ready = pyqtSignal(object)
@@ -540,7 +559,11 @@ class _VisionWorker(QObject):
         self._capture_lost = False
         self._predict_device, auto_half = _resolve_vision_device(str(self.config.vision_device))
         self._predict_half = bool(self.config.vision_half or auto_half)
-        self._slots = [SlotState(slot=index + 1, freq_hz=config.ssvep_freqs[index]) for index in range(config.vision_max_targets)]
+        target_count = max(1, min(4, int(getattr(config, "vision_max_targets", 1))))
+        self._slots = [
+            SlotState(slot=index + 1, freq_hz=_slot_frequency_for_index(config, index))
+            for index in range(target_count)
+        ]
 
     @pyqtSlot()
     def start(self) -> None:

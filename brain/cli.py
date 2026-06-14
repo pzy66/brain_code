@@ -78,6 +78,12 @@ def _run_hybrid(argv: Sequence[str], *, simulate: bool) -> int:
     return int(hybrid_main([*base_args, *argv]))
 
 
+def _run_integrated_workbench(argv: Sequence[str]) -> int:
+    from robot_workbench.app import main as workbench_main
+
+    return int(workbench_main(list(argv)))
+
+
 def _run_mi_collection(argv: Sequence[str]) -> int:
     ensure_runtime_import_paths()
     target = BRAIN_CODE_ROOT / "01_MI" / "mi_classifier_latest" / "run_01_collection_only.py"
@@ -91,8 +97,8 @@ def launch(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Launch a brain-code application entrypoint.")
     parser.add_argument(
         "--target",
-        choices=("unified", "mi", "ssvep", "hybrid"),
-        default="unified",
+        choices=("workbench", "unified", "mi", "ssvep", "hybrid"),
+        default="workbench",
         help="application to launch",
     )
     parser.add_argument("--simulate", action="store_true", help="validate launch paths without requiring hardware")
@@ -106,6 +112,8 @@ def launch(argv: Sequence[str] | None = None) -> int:
         print(f"launch_target={args.target}")
         print("simulate=true")
         return 0
+    if args.target == "workbench":
+        return _run_integrated_workbench(forwarded)
     if args.target == "unified":
         return _run_unified_collection(forwarded)
     if args.target == "mi":
@@ -123,7 +131,7 @@ def build_parser() -> argparse.ArgumentParser:
     diagnose_parser = subparsers.add_parser("diagnose", help="check environment and local asset roots")
     diagnose_parser.add_argument("--strict", action="store_true")
     launch_parser = subparsers.add_parser("launch", help="launch the unified GUI or a subsystem")
-    launch_parser.add_argument("--target", choices=("unified", "mi", "ssvep", "hybrid"), default="unified")
+    launch_parser.add_argument("--target", choices=("workbench", "unified", "mi", "ssvep", "hybrid"), default="workbench")
     launch_parser.add_argument("--simulate", action="store_true")
     launch_parser.add_argument("args", nargs=argparse.REMAINDER)
     return parser
@@ -133,6 +141,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     raw_args = list(sys.argv[1:] if argv is None else argv)
     if not raw_args:
         return launch(())
+    if raw_args[0] in {"-h", "--help"}:
+        parser = build_parser()
+        parser.parse_args(raw_args)
+        return 0
+    if raw_args[0].startswith("-"):
+        return _run_integrated_workbench(raw_args)
     command = raw_args[0]
     if command == "diagnose":
         return diagnose(raw_args[1:])

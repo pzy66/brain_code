@@ -1,6 +1,23 @@
 # brain_code
 
-Current main-program policy: `hybrid_controller/run_real.py` is the recommended real-robot launcher and runs in `operator_keyboard` mode by default. MI and SSVEP remain independent modules for standalone testing, but the main program does not start their realtime recognition path unless an experimental BCI launcher/flag is used.
+Current main-program policy: `python -m brain` starts the integrated robot workbench, backed by `hybrid_controller/run_real.py`, in `operator_keyboard` mode by default. MI and SSVEP realtime recognition are not started in this main path; the UI keeps the brain-computer workflow visible and injects keyboard events instead. Legacy MI/SSVEP collection remains available with `python -m brain launch --target unified`.
+
+一体化机械臂界面启动入口：
+
+```powershell
+$py = & .\tools\resolve_brain_python.cmd
+& $py -m brain
+# or
+& $py .\run_integrated_workbench.py
+```
+
+构建成 Windows 桌面软件：
+
+```powershell
+.\tools\build_integrated_workbench.ps1
+```
+
+生成路径：`dist\BrainRobotWorkbench\BrainRobotWorkbench.exe`。
 
 这是团队协作使用的正式 Git 仓库。上一级 `brain` 目录只作为本地工作区，用来放个人环境文件、未入库数据、备份和交付物。
 
@@ -27,10 +44,12 @@ $env:BRAIN_PYTHON_EXE = "C:\path\to\python.exe"
 
 ## 主入口
 
-- `python -m brain`：启动统一入口。
+- `python -m brain`：启动一体化机械臂控制工作台，默认键盘替代脑电识别。
 - `brain`：安装后等价入口。
 - `brain diagnose`：检查 Python、依赖、仓库路径和本地资产位置。
 - `brain launch --simulate`：无硬件、无 GUI 启动的快速检查。
+- `brain launch --target unified`：旧 MI/SSVEP 统一采集界面。
+- `brain-integrated-workbench`：安装后的一体化机械臂软件入口。
 - `run_unified_collection.py`、`02_SSVEP/START_SSVEP.py`、`hybrid_controller/run_real.py`：保留为兼容入口。
 
 ## 本地数据和模型

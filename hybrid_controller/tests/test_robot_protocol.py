@@ -266,7 +266,9 @@ def test_jetmax_runtime_start_uses_safe_control_restart_and_ready_checks() -> No
     assert "--ssh-ready-timeout-sec" in source
     assert '--force-catkin-rebuild' in source
     assert 'HYBRID_FORCE_CATKIN_REBUILD={1 if bool(args.force_catkin_rebuild) else 0}' in source
-    assert 'timeout 8 rostopic echo -n 1 --noarr /hybrid_controller/state' in source
+    assert 'rostopic echo -n 1 --noarr /hybrid_controller/state' in source
+    assert "ready_timeout_sec=float(args.ready_timeout_sec)" in source
+    assert "while time.time() < deadline:" in source
     assert '"/hybrid_controller/state did not publish a complete runtime state sample."' in source
     assert 'rospy.init_node("hybrid_controller_runtime_node", anonymous=False' in runtime_source
     assert "self._teleop_last_cmd_seq = 0" in runtime_source
@@ -278,6 +280,18 @@ def test_jetmax_runtime_start_uses_safe_control_restart_and_ready_checks() -> No
     assert 'HYBRID_FORCE_CATKIN_REBUILD="${HYBRID_FORCE_CATKIN_REBUILD:-0}"' in run_source
     assert "catkin_make --force-cmake" not in run_source
     assert "rsync -a --delete" in run_source
+
+
+def test_jetmax_bundle_sync_normalizes_shell_script_line_endings() -> None:
+    source = Path(jetmax_start_ros_runtime.__file__).read_text(encoding="utf-8")
+    run_script = Path(jetmax_start_ros_runtime.__file__).parents[1] / "run_hybrid_controller_ros_runtime.sh"
+    run_source = run_script.read_text(encoding="utf-8")
+
+    assert "def put_robot_bundle_file" in source
+    assert 'source.suffix == ".sh"' in source
+    assert '.replace("\\r\\n", "\\n").replace("\\r", "\\n")' in source
+    assert "put_robot_bundle_file(sftp, source, remote_file)" in source
+    assert "put_robot_bundle_file(sftp, file_path, remote_file)" in source
     assert "hybrid_controller_ros catkin build is current; skipping rebuild." in run_source
     assert ".hybrid_interface.sha256" in run_source
 

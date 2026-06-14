@@ -36,5 +36,20 @@ def test_brain_launch_simulate_runs_without_hardware_or_gui() -> None:
     result = _run_brain("launch", "--simulate")
 
     assert result.returncode == 0
+    assert "launch_target=workbench" in result.stdout
+    assert "simulate=true" in result.stdout
+
+
+def test_brain_launch_unified_simulate_keeps_legacy_collection_entrypoint() -> None:
+    result = _run_brain("launch", "--target", "unified", "--simulate")
+
+    assert result.returncode == 0
     assert "launch_target=unified" in result.stdout
     assert "simulate=true" in result.stdout
+
+
+def test_brain_rejects_unknown_non_option_command() -> None:
+    result = _run_brain("not-a-command")
+
+    assert result.returncode != 0
+    assert "invalid choice" in result.stderr

@@ -200,6 +200,7 @@ class AppConfig:
     teleop_theta_step_deg: float = 4.0
     teleop_radius_step_mm: float = 8.0
     teleop_repeat_interval_ms: int = 50
+    idle_runtime_tick_interval_ms: int = 250
     teleop_theta_rate_deg_s: float = 80.0
     teleop_radius_rate_mm_s: float = 160.0
     teleop_deadman_timeout_sec: float = 0.2
@@ -228,7 +229,7 @@ class AppConfig:
     vision_model_imgsz: int = 512
     vision_confidence_threshold: float = 0.25
     vision_iou_threshold: float = 0.50
-    vision_max_det: int = 6
+    vision_max_det: int = 4
     vision_device: str = "auto"
     vision_half: bool = False
     vision_warmup_runs: int = 1
@@ -474,6 +475,8 @@ class AppConfig:
             motion_bounds_y=config.robot_limits_y,
             fake_robot_ack_delay_sec=float(config.sim_pick_delay_sec),
             fake_vision_interval_ms=int(config.sim_vision_interval_ms),
+            vision_max_targets=max(1, min(4, int(config.vision_max_targets))),
+            vision_max_det=max(1, min(4, int(config.vision_max_det))),
             pick_tool_offset_source=offset_source,
             vision_residual_model=residual_model,
             vision_servo_measurement_point=servo_measurement,
