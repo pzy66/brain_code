@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from enum import Enum
 
 
@@ -31,19 +29,19 @@ class RobotErrorCode(str, Enum):
 
 
 class RobotCommandError(RuntimeError):
-    def __init__(self, code: RobotErrorCode | str, message: str) -> None:
+    def __init__(self, code, message):
         self.code = code.value if isinstance(code, Enum) else str(code)
         self.message = str(message)
         super().__init__(self.message)
 
-    def to_wire_payload(self) -> str:
-        return f"{self.code}: {self.message}"
+    def to_wire_payload(self):
+        return "{0}: {1}".format(self.code, self.message)
 
 
-def format_error_line(code: RobotErrorCode | str, message: str) -> str:
+def format_error_line(code, message):
     code_text = code.value if isinstance(code, Enum) else str(code)
-    return f"ERR {code_text}: {message}"
+    return "ERR {0}: {1}".format(code_text, message)
 
 
-def is_busy_state(state: RobotExecutorState) -> bool:
+def is_busy_state(state):
     return state not in {RobotExecutorState.IDLE, RobotExecutorState.CARRY_READY, RobotExecutorState.ERROR}

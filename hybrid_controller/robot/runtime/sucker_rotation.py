@@ -5,8 +5,6 @@ servo convention is centered at 90 degrees, so the runtime maps the logical
 angle into the physical PWM servo range before sending it to the robot.
 """
 
-from __future__ import annotations
-
 import math
 
 DEFAULT_SERVO_CENTER_DEG = 90.0
@@ -14,7 +12,7 @@ DEFAULT_SERVO_MIN_DEG = 45.0
 DEFAULT_SERVO_MAX_DEG = 135.0
 
 
-def clamp_float(value: float, lower: float, upper: float) -> float:
+def clamp_float(value, lower, upper):
     low = float(lower)
     high = float(upper)
     if low > high:
@@ -22,7 +20,7 @@ def clamp_float(value: float, lower: float, upper: float) -> float:
     return max(low, min(high, float(value)))
 
 
-def normalize_logical_sucker_angle_deg(angle_deg: float) -> float:
+def normalize_logical_sucker_angle_deg(angle_deg):
     """Normalize a grasp/wrist angle into the symmetric [-45, 45] range."""
     value = float(angle_deg)
     if not math.isfinite(value):
@@ -35,14 +33,13 @@ def normalize_logical_sucker_angle_deg(angle_deg: float) -> float:
 
 
 def map_logical_to_servo_angle_deg(
-    logical_angle_deg: float,
-    *,
-    offset_deg: float = 0.0,
-    invert: bool = False,
-    center_deg: float = DEFAULT_SERVO_CENTER_DEG,
-    min_deg: float = DEFAULT_SERVO_MIN_DEG,
-    max_deg: float = DEFAULT_SERVO_MAX_DEG,
-) -> float:
+    logical_angle_deg,
+    offset_deg=0.0,
+    invert=False,
+    center_deg=DEFAULT_SERVO_CENTER_DEG,
+    min_deg=DEFAULT_SERVO_MIN_DEG,
+    max_deg=DEFAULT_SERVO_MAX_DEG,
+):
     logical = normalize_logical_sucker_angle_deg(float(logical_angle_deg))
     if bool(invert):
         logical = -logical

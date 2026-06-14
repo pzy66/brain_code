@@ -583,6 +583,7 @@ class RobotCommandBackend(QWidget):
         self._last_connect_phase = ""
         self._last_connect_detail = ""
         self._last_state_snapshot: dict[str, object] | None = None
+        self._closed = False
 
     @property
     def connected(self) -> bool:
@@ -594,19 +595,52 @@ class RobotCommandBackend(QWidget):
             return self._tcp.is_connected()
         return False
 
+    def _emit_status(self, message: object, allow_closed: bool = False) -> None:
+        if self._closed and not allow_closed:
+            return
+        try:
+            self.status_changed.emit(str(message))
+        except RuntimeError:
+            pass
+
+    def _emit_connection(self, connected: bool, allow_closed: bool = False) -> None:
+        if self._closed and not allow_closed:
+            return
+        try:
+            self.connection_changed.emit(bool(connected))
+        except RuntimeError:
+            pass
+
+    def _emit_pose(self, theta: float, radius: float, z_mm: float, allow_closed: bool = False) -> None:
+        if self._closed and not allow_closed:
+            return
+        try:
+            self.pose_changed.emit(float(theta), float(radius), float(z_mm))
+        except RuntimeError:
+            pass
+
+    def _emit_command_finished(self, action: object, ok: object, message: object, allow_closed: bool = False) -> None:
+        if self._closed and not allow_closed:
+            return
+        try:
+            self.command_finished.emit(str(action), bool(ok), str(message))
+        except RuntimeError:
+            pass
+
     def connect_robot(self) -> None:
+        self._closed = False
         if self.config.robot_mode == "fake":
             self._connected = True
             self._last_state_snapshot = self._fake_state_snapshot()
             self._emit_connect_progress(100, "连接完成", "模拟机械臂已连接，可以进入控制界面。")
-            self.connection_changed.emit(True)
-            self.pose_changed.emit(self._fake_theta, self._fake_radius, self._fake_z)
-            self.status_changed.emit("fake backend connected; simulated pose active.")
+            self._emit_connection(True)
+            self._emit_pose(self._fake_theta, self._fake_radius, self._fake_z)
+            self._emit_status("fake backend connected; simulated pose active.")
             return
         if self.connected:
             self._emit_connect_progress(100, "连接完成", "机械臂控制链路已连接。")
-            self.connection_changed.emit(True)
-            self.status_changed.emit("robot backend already connected.")
+            self._emit_connection(True)
+            self._emit_status("robot backend already connected.")
             return
         with self._connect_lock:
             if self._connect_in_progress:
@@ -637,14 +671,14 @@ class RobotCommandBackend(QWidget):
                             "自动启动远端程序",
                             "rosbridge 或状态话题暂未就绪，开始通过 SSH 拉起机械臂端程序。",
                         )
-                        self.status_changed.emit("robot runtime is unavailable; starting JetMax runtime over SSH.")
+                        self._emit_status("robot runtime is unavailable; starting JetMax runtime over SSH.")
                         if self._start_remote_ros_runtime():
                             self._emit_connect_progress(
                                 74,
                                 "重新连接机械臂",
                                 "远端程序启动完成，正在重新连接 rosbridge 和状态话题。",
                             )
-                            self.status_changed.emit("robot runtime start finished; reconnecting ROS bridge.")
+                            self._emit_status("robot runtime start finished; reconnecting ROS bridge.")
                             if not self._connect_rosbridge_once(
                                 attempt_label="启动后重连",
                                 progress_start=76,
@@ -665,14 +699,14 @@ class RobotCommandBackend(QWidget):
                 self._tcp.connect()
                 self._emit_connect_progress(86, "TCP 已连接", "机械臂 TCP 控制端口已连接。")
             self._connected = True
-            self.connection_changed.emit(True)
+            self._emit_connection(True)
             self._emit_connect_progress(100, "连接完成", "机械臂已连接，可以进入控制界面。")
-            self.status_changed.emit("robot backend connected.")
+            self._emit_status("robot backend connected.")
         except Exception as error:
             self._connected = False
-            self.connection_changed.emit(False)
+            self._emit_connection(False)
             self._emit_connect_progress(0, "连接失败", f"机械臂连接失败：{error}")
-            self.status_changed.emit(f"connect failed: {error}")
+            self._emit_status(f"connect failed: {error}")
         finally:
             with self._connect_lock:
                 self._connect_in_progress = False
@@ -778,7 +812,7 @@ class RobotCommandBackend(QWidget):
         try:
             from hybrid_controller.robot.tools import jetmax_start_ros_runtime
         except Exception as error:
-            self.status_changed.emit(f"robot runtime start unavailable: {error}")
+            self._emit_status(f"robot runtime start unavailable: {error}")
             return False
         args = [
             "--host",
@@ -820,8 +854,8 @@ class RobotCommandBackend(QWidget):
             details = "\n".join(part.strip() for part in (stdout.getvalue(), stderr.getvalue()) if part.strip())
             if details:
                 for line in details.splitlines()[-8:]:
-                    self.status_changed.emit(f"robot-start: {line}")
-            self.status_changed.emit(f"robot runtime start failed: {error}")
+                    self._emit_status(f"robot-start: {line}")
+            self._emit_status(f"robot runtime start failed: {error}")
             self._emit_connect_progress(0, "远端启动失败", f"通过 SSH 拉起机械臂端程序失败：{error}")
             return False
         finally:
@@ -830,7 +864,7 @@ class RobotCommandBackend(QWidget):
         details = "\n".join(part.strip() for part in (stdout.getvalue(), stderr.getvalue()) if part.strip())
         if details:
             for line in details.splitlines()[-8:]:
-                self.status_changed.emit(f"robot-start: {line}")
+                self._emit_status(f"robot-start: {line}")
         if exit_code == 0:
             self._emit_connect_progress(72, "远端启动完成", "机械臂端程序已启动，准备重新确认 rosbridge 状态。")
         else:
@@ -838,6 +872,7 @@ class RobotCommandBackend(QWidget):
         return exit_code == 0
 
     def close_backend(self) -> None:
+        self._closed = True
         try:
             if self._ros is not None:
                 self._ros.close()
@@ -845,15 +880,20 @@ class RobotCommandBackend(QWidget):
                 self._tcp.close()
         finally:
             self._connected = False
-            self.connection_changed.emit(False)
+            self._emit_connection(False, allow_closed=True)
             self._emit_connect_progress(0, "已断开", "机械臂连接已断开。")
 
-    def _emit_connect_progress(self, percent: int, phase: str, detail: str) -> None:
+    def _emit_connect_progress(self, percent: int, phase: str, detail: str, allow_closed: bool = False) -> None:
         value = max(0, min(100, int(percent)))
         self._last_connect_percent = value
         self._last_connect_phase = str(phase)
         self._last_connect_detail = str(detail)
-        self.connect_progress_changed.emit(value, self._last_connect_phase, self._last_connect_detail)
+        if self._closed and not allow_closed:
+            return
+        try:
+            self.connect_progress_changed.emit(value, self._last_connect_phase, self._last_connect_detail)
+        except RuntimeError:
+            pass
 
     def _close_rosbridge_silently(self) -> None:
         try:
@@ -877,7 +917,7 @@ class RobotCommandBackend(QWidget):
                 return
             if "closed" in lower and self._last_connect_percent < 100:
                 return
-        self.status_changed.emit(text)
+        self._emit_status(text)
 
     def _on_ros_state(self, snapshot: dict[str, object]) -> None:
         self._last_state_snapshot = dict(snapshot)
@@ -887,7 +927,7 @@ class RobotCommandBackend(QWidget):
                 theta = float(robot_cyl.get("theta_deg", 0.0))
                 radius = float(robot_cyl.get("radius_mm", 0.0))
                 z_mm = float(robot_cyl.get("z_mm", 0.0))
-                self.pose_changed.emit(theta, radius, z_mm)
+                self._emit_pose(theta, radius, z_mm)
                 return
             except (TypeError, ValueError):
                 pass
@@ -895,7 +935,7 @@ class RobotCommandBackend(QWidget):
             theta = float(snapshot.get("theta_deg", self._fake_theta))
             radius = float(snapshot.get("radius_mm", self._fake_radius))
             z_mm = float(snapshot.get("z_mm", self._fake_z))
-            self.pose_changed.emit(theta, radius, z_mm)
+            self._emit_pose(theta, radius, z_mm)
         except (TypeError, ValueError):
             return
 
@@ -940,7 +980,7 @@ class RobotCommandBackend(QWidget):
             self._fake_theta = max(-120.0, min(120.0, self._fake_theta + theta_rate * dt))
             self._fake_radius = max(80.0, min(260.0, self._fake_radius + radius_rate * dt))
             self._last_state_snapshot = self._fake_state_snapshot()
-            self.pose_changed.emit(self._fake_theta, self._fake_radius, self._fake_z)
+            self._emit_pose(self._fake_theta, self._fake_radius, self._fake_z)
             return
         if self.config.robot_transport == "ros" and self._ros is not None and self._ros.is_connected():
             self._teleop_seq = next_teleop_cmd_seq(self._teleop_seq)
@@ -1017,24 +1057,24 @@ class RobotCommandBackend(QWidget):
     def pick_target(self, target_id: str) -> None:
         theta, radius = TARGET_POSES.get(str(target_id), TARGET_POSES["2"])
         if self.config.robot_mode == "fake":
-            self.status_changed.emit(f"fake pick target {target_id}: theta={theta:.1f}, radius={radius:.1f}")
-            QTimer.singleShot(250, lambda: self.command_finished.emit("pick", True, "fake pick complete"))
+            self._emit_status(f"fake pick target {target_id}: theta={theta:.1f}, radius={radius:.1f}")
+            QTimer.singleShot(250, lambda: self._emit_command_finished("pick", True, "fake pick complete"))
             return
         callback = self._callback_for("pick")
         if self.config.robot_transport == "ros" and self._ros is not None and self._ros.is_connected():
             try:
                 self._ros.send_pick_cyl(theta, radius, callback=callback)
             except Exception as error:
-                self.command_finished.emit("pick", False, str(error))
+                self._emit_command_finished("pick", False, str(error))
             return
         if self._tcp is not None and self._tcp.is_connected():
             try:
                 self._tcp.send_pick_cyl(theta, radius)
-                self.command_finished.emit("pick", True, "tcp pick command sent")
+                self._emit_command_finished("pick", True, "tcp pick command sent")
             except Exception as error:
-                self.command_finished.emit("pick", False, str(error))
+                self._emit_command_finished("pick", False, str(error))
             return
-        self.command_finished.emit("pick", False, "robot is not connected")
+        self._emit_command_finished("pick", False, "robot is not connected")
 
     def pick_vision_target(self, target_id: str, target: VisionTarget | None) -> None:
         if target is None:
@@ -1043,18 +1083,18 @@ class RobotCommandBackend(QWidget):
         command = build_pick_command_from_target(target)
         if not command:
             reason = str(target.invalid_reason or "视觉目标未达到可抓取状态")
-            self.command_finished.emit("pick", False, reason)
+            self._emit_command_finished("pick", False, reason)
             return
         if self.config.robot_mode == "fake":
-            self.status_changed.emit(f"fake vision pick target {target_id}: {command}")
-            QTimer.singleShot(250, lambda: self.command_finished.emit("pick", True, "fake vision pick complete"))
+            self._emit_status(f"fake vision pick target {target_id}: {command}")
+            QTimer.singleShot(250, lambda: self._emit_command_finished("pick", True, "fake vision pick complete"))
             return
         self._send_robot_pick_command(command)
 
     def pick_camera_center_target(self, target_id: str, target: VisionTarget | None) -> None:
         pose = self._current_cyl_pose_and_limits()
         if pose is None:
-            self.command_finished.emit("pick", False, "robot pose is unavailable for camera-center pick")
+            self._emit_command_finished("pick", False, "robot pose is unavailable for camera-center pick")
             return
         theta, radius, _z_mm, _theta_limits, radius_limits = pose
         pick_radius = _clamp_float(
@@ -1066,26 +1106,26 @@ class RobotCommandBackend(QWidget):
         if target is not None and float(target.grasp_angle_quality or 0.0) >= 0.20 and target.grasp_angle_deg is not None:
             angle = float(target.grasp_angle_deg)
         if self.config.robot_mode == "fake":
-            self.status_changed.emit(
+            self._emit_status(
                 f"fake camera-center pick target {target_id}: theta={theta:.1f}, radius={pick_radius:.1f}"
             )
-            QTimer.singleShot(250, lambda: self.command_finished.emit("pick", True, "fake camera-center pick complete"))
+            QTimer.singleShot(250, lambda: self._emit_command_finished("pick", True, "fake camera-center pick complete"))
             return
         callback = self._callback_for("pick")
         if self.config.robot_transport == "ros" and self._ros is not None and self._ros.is_connected():
             try:
                 self._ros.send_pick_cyl(float(theta), float(pick_radius), sucker_rotation_deg=angle, callback=callback)
             except Exception as error:
-                self.command_finished.emit("pick", False, str(error))
+                self._emit_command_finished("pick", False, str(error))
             return
         if self._tcp is not None and self._tcp.is_connected():
             try:
                 self._tcp.send_pick_cyl(float(theta), float(pick_radius), sucker_rotation_deg=angle)
-                self.command_finished.emit("pick", True, "tcp camera-center pick command sent")
+                self._emit_command_finished("pick", True, "tcp camera-center pick command sent")
             except Exception as error:
-                self.command_finished.emit("pick", False, str(error))
+                self._emit_command_finished("pick", False, str(error))
             return
-        self.command_finished.emit("pick", False, "robot is not connected")
+        self._emit_command_finished("pick", False, "robot is not connected")
 
     def align_to_vision_target(self, target_id: str, target: VisionTarget | None) -> bool:
         if target is None:
@@ -1101,30 +1141,30 @@ class RobotCommandBackend(QWidget):
             self._fake_theta = float(theta)
             self._fake_radius = float(radius)
             self._last_state_snapshot = self._fake_state_snapshot()
-            self.pose_changed.emit(self._fake_theta, self._fake_radius, self._fake_z)
-            self.command_finished.emit("vision-align", True, f"fake aligned target {target_id}")
+            self._emit_pose(self._fake_theta, self._fake_radius, self._fake_z)
+            self._emit_command_finished("vision-align", True, f"fake aligned target {target_id}")
             return True
         callback = self._callback_for("vision-align")
         if self.config.robot_transport == "ros" and self._ros is not None and self._ros.is_connected():
             try:
                 self._ros.send_move_cyl_auto(float(theta), float(radius), callback=callback)
             except Exception as error:
-                self.command_finished.emit("vision-align", False, str(error))
+                self._emit_command_finished("vision-align", False, str(error))
             return True
         if self._tcp is not None and self._tcp.is_connected():
             try:
                 self._tcp.send_move_cyl_auto(float(theta), float(radius))
-                self.command_finished.emit("vision-align", True, "tcp vision align command sent")
+                self._emit_command_finished("vision-align", True, "tcp vision align command sent")
             except Exception as error:
-                self.command_finished.emit("vision-align", False, str(error))
+                self._emit_command_finished("vision-align", False, str(error))
             return True
-        self.command_finished.emit("vision-align", False, "robot is not connected")
+        self._emit_command_finished("vision-align", False, "robot is not connected")
         return True
 
     def _send_robot_pick_command(self, command: str) -> None:
         parts = str(command).strip().split()
         if len(parts) not in {3, 4}:
-            self.command_finished.emit("pick", False, f"invalid pick command: {command}")
+            self._emit_command_finished("pick", False, f"invalid pick command: {command}")
             return
         op = parts[0].upper()
         angle = None if len(parts) < 4 else _coerce_float(parts[3], 0.0)
@@ -1133,7 +1173,7 @@ class RobotCommandBackend(QWidget):
             a_value = float(parts[1])
             b_value = float(parts[2])
         except (TypeError, ValueError) as error:
-            self.command_finished.emit("pick", False, f"invalid pick coordinate: {error}")
+            self._emit_command_finished("pick", False, f"invalid pick coordinate: {error}")
             return
         if self.config.robot_transport == "ros" and self._ros is not None and self._ros.is_connected():
             try:
@@ -1145,7 +1185,7 @@ class RobotCommandBackend(QWidget):
                     return
                 raise RuntimeError(f"unsupported pick command: {op}")
             except Exception as error:
-                self.command_finished.emit("pick", False, str(error))
+                self._emit_command_finished("pick", False, str(error))
                 return
         if self._tcp is not None and self._tcp.is_connected():
             try:
@@ -1155,37 +1195,37 @@ class RobotCommandBackend(QWidget):
                     self._tcp.send_command(command)
                 else:
                     raise RuntimeError(f"unsupported pick command: {op}")
-                self.command_finished.emit("pick", True, "tcp vision pick command sent")
+                self._emit_command_finished("pick", True, "tcp vision pick command sent")
             except Exception as error:
-                self.command_finished.emit("pick", False, str(error))
+                self._emit_command_finished("pick", False, str(error))
             return
-        self.command_finished.emit("pick", False, "robot is not connected")
+        self._emit_command_finished("pick", False, "robot is not connected")
 
     def place(self) -> None:
         if self.config.robot_mode == "fake":
-            self.status_changed.emit("fake place command")
-            QTimer.singleShot(250, lambda: self.command_finished.emit("place", True, "fake place complete"))
+            self._emit_status("fake place command")
+            QTimer.singleShot(250, lambda: self._emit_command_finished("place", True, "fake place complete"))
             return
         callback = self._callback_for("place")
         if self.config.robot_transport == "ros" and self._ros is not None and self._ros.is_connected():
             try:
                 self._ros.send_place(callback=callback)
             except Exception as error:
-                self.command_finished.emit("place", False, str(error))
+                self._emit_command_finished("place", False, str(error))
             return
         if self._tcp is not None and self._tcp.is_connected():
             try:
                 self._tcp.send_place()
-                self.command_finished.emit("place", True, "tcp place command sent")
+                self._emit_command_finished("place", True, "tcp place command sent")
             except Exception as error:
-                self.command_finished.emit("place", False, str(error))
+                self._emit_command_finished("place", False, str(error))
             return
-        self.command_finished.emit("place", False, "robot is not connected")
+        self._emit_command_finished("place", False, "robot is not connected")
 
     def abort(self) -> None:
         self.stop_teleop()
         if self.config.robot_mode == "fake":
-            self.command_finished.emit("abort", True, "fake abort complete")
+            self._emit_command_finished("abort", True, "fake abort complete")
             return
         try:
             if self.config.robot_transport == "ros" and self._ros is not None:
@@ -1193,14 +1233,14 @@ class RobotCommandBackend(QWidget):
             elif self._tcp is not None:
                 self._tcp.send_command("ABORT")
         except Exception as error:
-            self.status_changed.emit(f"abort failed: {error}")
+            self._emit_status(f"abort failed: {error}")
 
     def reset(self) -> None:
         self.stop_teleop()
         if self.config.robot_mode == "fake":
             self._fake_theta, self._fake_radius, self._fake_z = 0.0, 150.0, 160.0
-            self.pose_changed.emit(self._fake_theta, self._fake_radius, self._fake_z)
-            self.command_finished.emit("reset", True, "fake reset complete")
+            self._emit_pose(self._fake_theta, self._fake_radius, self._fake_z)
+            self._emit_command_finished("reset", True, "fake reset complete")
             return
         try:
             if self.config.robot_transport == "ros" and self._ros is not None:
@@ -1208,12 +1248,12 @@ class RobotCommandBackend(QWidget):
             elif self._tcp is not None:
                 self._tcp.send_command("RESET")
         except Exception as error:
-            self.status_changed.emit(f"reset failed: {error}")
+            self._emit_status(f"reset failed: {error}")
 
     def sucker_off(self) -> None:
         self.stop_teleop()
         if self.config.robot_mode == "fake":
-            self.command_finished.emit("sucker_off", True, "fake sucker off complete")
+            self._emit_command_finished("sucker_off", True, "fake sucker off complete")
             return
         try:
             if self.config.robot_transport == "ros" and self._ros is not None:
@@ -1221,11 +1261,11 @@ class RobotCommandBackend(QWidget):
             elif self._tcp is not None:
                 self._tcp.send_command("SUCKER_OFF")
         except Exception as error:
-            self.status_changed.emit(f"sucker off failed: {error}")
+            self._emit_status(f"sucker off failed: {error}")
 
     def _callback_for(self, action: str) -> Callable[[RosServiceResult], None]:
         def _callback(result: RosServiceResult) -> None:
-            self.command_finished.emit(str(action), bool(result.ok), str(result.message or ""))
+            self._emit_command_finished(str(action), bool(result.ok), str(result.message or ""))
 
         return _callback
 

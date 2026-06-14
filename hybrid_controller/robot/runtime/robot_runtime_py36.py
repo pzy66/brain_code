@@ -11,27 +11,20 @@ import os
 import sys
 
 try:
+    _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+    if _THIS_DIR not in sys.path:
+        sys.path.insert(0, _THIS_DIR)
+    from runtime_core import CommandParseError, parse_command_text
+    from sucker_rotation import map_logical_to_servo_angle_deg, normalize_logical_sucker_angle_deg
+except Exception:
+    _REPO_ROOT = os.path.abspath(os.path.join(_THIS_DIR, "..", "..", ".."))
+    if _REPO_ROOT not in sys.path:
+        sys.path.insert(0, _REPO_ROOT)
     from hybrid_controller.robot.runtime.runtime_core import CommandParseError, parse_command_text
     from hybrid_controller.robot.runtime.sucker_rotation import (
         map_logical_to_servo_angle_deg,
         normalize_logical_sucker_angle_deg,
     )
-except Exception:
-    _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-    if _THIS_DIR not in sys.path:
-        sys.path.insert(0, _THIS_DIR)
-    try:
-        from runtime_core import CommandParseError, parse_command_text
-        from sucker_rotation import map_logical_to_servo_angle_deg, normalize_logical_sucker_angle_deg
-    except Exception:
-        _REPO_ROOT = os.path.abspath(os.path.join(_THIS_DIR, "..", "..", ".."))
-        if _REPO_ROOT not in sys.path:
-            sys.path.insert(0, _REPO_ROOT)
-        from hybrid_controller.robot.runtime.runtime_core import CommandParseError, parse_command_text
-        from hybrid_controller.robot.runtime.sucker_rotation import (
-            map_logical_to_servo_angle_deg,
-            normalize_logical_sucker_angle_deg,
-        )
 
 
 STATE_IDLE = "IDLE"
